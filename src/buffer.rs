@@ -1,19 +1,26 @@
 use std::cell::Cell;
+use std::ops::{Range, RangeBounds};
 use std::slice::SliceIndex;
+use bytemuck::{from_bytes, from_bytes_mut, Pod};
 
 pub struct DummyMemoryMappedBuffer {
-    data: Box<[Cell<u8>]>,
+    data: *mut u8,
+    data_len: usize,
     pointer: Cell<usize>,
 }
 impl Default for DummyMemoryMappedBuffer {
     fn default() -> Self {
+        let boxed : Box<[u8]> = vec![0; 10_000].into();
+
+        let len = boxed.len();
+        let raw_ptr = Box::into_raw(boxed);
         Self {
-            data: vec![Cell::new(0);10_000].into(),
-            pointer: 0.into()
+            data: raw_ptr as *mut u8,
+            data_len: len,
+            pointer: 0.into(),
         }
     }
 }
-
 
 // This has been shamelessly lifted from the rust std
 #[inline]
@@ -43,43 +50,59 @@ fn size_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> {
     }
 }
 
-
 impl DummyMemoryMappedBuffer {
     pub fn pointer(&self) -> usize {
         self.pointer.get()
     }
 
     pub fn start_ptr(&self) -> *const u8 {
-        self.data.as_ptr() as *const u8
+        self.data
     }
 
-    pub fn allocate<const N: usize, const ALIGN: usize>(&self) -> &[Cell<u8>; N] {
-        self.allocate_dyn(N,ALIGN).try_into().unwrap()
+    pub unsafe fn allocate_pod<'a, T:Pod>(&self) -> &'a mut T {
+        let bytes = self.allocate_raw(
+            std::mem::size_of::<T>(),
+            std::mem::align_of::<T>()
+        );
+        unsafe { &mut *(bytes as *mut T) }
     }
-    pub fn allocate_dyn(&self, N: usize, ALIGN: usize) -> &[Cell<u8>] {
+    pub fn allocate_raw(&self, N: usize, ALIGN: usize) -> *mut u8 {
         if ALIGN > 256 {
             panic!("Noatun arbitrarily does not support types with alignment > 256");
         }
 
         let aligned_pos = size_rounded_up_to_custom_align(self.pointer.get(), ALIGN).unwrap();
         self.pointer.set(aligned_pos.checked_add(N).unwrap());
-        if self.pointer.get() > self.data.len() {
+        if self.pointer.get() > self.data_len {
             panic!("Out of memory");
         }
-        &self.data[self.pointer.get()-N..self.pointer.get()]
+        unsafe {self.data.wrapping_add(self.pointer.get()-N) }
     }
-    pub fn access(&self, range: impl SliceIndex<[Cell<u8>], Output = [Cell<u8>]>) -> &[Cell<u8>] {
-        &self.data[range]
+    pub fn allocate<const N: usize, const ALIGN: usize>(&self) -> &mut [u8; N] {
+        self.allocate_dyn(N, ALIGN).try_into().unwrap()
+    }
+    pub fn allocate_dyn(&self, N: usize, ALIGN: usize) -> &mut [u8] {
+        if ALIGN > 256 {
+            panic!("Noatun arbitrarily does not support types with alignment > 256");
+        }
+
+        let aligned_pos = size_rounded_up_to_custom_align(self.pointer.get(), ALIGN).unwrap();
+        self.pointer.set(aligned_pos.checked_add(N).unwrap());
+        if self.pointer.get() > self.data_len {
+            panic!("Out of memory");
+        }
+        unsafe { std::slice::from_raw_parts_mut(self.data.wrapping_add(self.pointer.get()-N), N) }
+    }
+    pub unsafe fn access(&self, range: Range<usize>) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.data.wrapping_add(range.start), range.end - range.start) }
+    }
+    pub unsafe fn access_mut(&self, range: Range<usize>) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.data.wrapping_add(range.start), range.end - range.start) }
     }
 
     pub fn write(&self, index: usize, data: &[u8]) {
-        let target = &self.data[index..index+data.len()];
-        for (dst,src) in target.iter().zip(data.iter().copied()) {
-            dst.set(src);
-        }
-    }
-
-    pub fn index_of<T>(&self, t: &T) -> usize {
-        (t as *const _ as *const u8 as usize)  - (self.data.as_ptr() as *const u8 as usize)
+        debug_assert!(index+data.len() <= self.data_len);
+        let target = unsafe { self.access_mut(index..index+data.len()) };
+        target.copy_from_slice(data);
     }
 }
