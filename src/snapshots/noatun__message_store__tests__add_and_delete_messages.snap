@@ -1,0 +1,15 @@
+---
+source: src/message_store.rs
+expression: test_recorder.get_metrics_text()
+---
+Key(index_compaction_count): 1
+Key(messages_written): 6
+Key(message_bytes_written): 168
+Key(store0): 4096
+Key(store1): 4096
+Key(index_file): 4096
+Key(index_size): 0
+Key(index_holes): 0
+Key(data_frag0): 100
+Key(data_frag1): 0
+Key(update_head): 8192

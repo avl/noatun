@@ -1,0 +1,13 @@
+---
+source: src/tests/distributor_tests.rs
+expression: result
+---
+[
+    SendMessageAndAllDescendants {
+        source: #2,
+        destination: #1,
+        message_id: [
+            "2021-01-01T00:00:00.000Z"-0-0-0,
+        ],
+    },
+]

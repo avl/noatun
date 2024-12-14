@@ -1,0 +1,27 @@
+name: Clippy
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install rust
+        run: rustup toolchain install stable && rustup component add --toolchain stable-x86_64-unknown-linux-gnu clippy && rustup component add --toolchain stable-x86_64-unknown-linux-gnu rustfmt
+      - name: Run Clippy
+        run: RUSTFLAGS="-Dwarnings" cargo +stable clippy --all-features --workspace
+      - name: Run Clippy (no features)
+        run: RUSTFLAGS="-Dwarnings" cargo +stable clippy --no-default-features --workspace
+      - name: Check fmt
+        run: cargo +stable fmt --check

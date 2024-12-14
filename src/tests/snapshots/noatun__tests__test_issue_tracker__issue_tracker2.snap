@@ -1,0 +1,49 @@
+---
+source: src/tests/test_issue_tracker.rs
+expression: sess.get_all_messages_vec()
+---
+Ok(
+    [
+        MessageFrame {
+            header: MessageHeader {
+                id: "2020-01-01T00:01:00.000Z"-0-0-0,
+                parents: [],
+            },
+            payload: AddIssue {
+                reporter: "user1",
+                heading: "heading2",
+            },
+        },
+        MessageFrame {
+            header: MessageHeader {
+                id: "2020-01-01T01:01:00.000Z"-1-0-0,
+                parents: [],
+            },
+            payload: AppendText {
+                id: "heading2",
+                reporter: "user1",
+                text: "think",
+            },
+        },
+        MessageFrame {
+            header: MessageHeader {
+                id: "2020-01-01T01:04:00.000Z"-4-0-0,
+                parents: [],
+            },
+            payload: AddIssue {
+                reporter: "user1",
+                heading: "4",
+            },
+        },
+        MessageFrame {
+            header: MessageHeader {
+                id: "2020-01-01T04:00:00.000Z"-5-0-0,
+                parents: [],
+            },
+            payload: AddIssue {
+                reporter: "user1",
+                heading: "5",
+            },
+        },
+    ],
+)

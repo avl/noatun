@@ -1,0 +1,8 @@
+---
+source: src/tests/all_up_sync_test.rs
+expression: test_recorder.get_counters()
+---
+Key(index_compaction_count): 0
+Key(messages_written): 34
+Key(index_size): 17
+Key(index_holes): 14

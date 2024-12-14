@@ -1,0 +1,71 @@
+use crate::{NoatunPod, NoatunStorable, SchemaHasher};
+use savefile_derive::Savefile;
+
+/// Noatun equivalent to [`Option`].
+///
+/// This type does not implement [`crate::Object`]. To use an Option, it must
+/// be placed in a [`crate::data_types::NoatunCell`] or similar.
+///
+/// Note, this type does not contain a tracker.
+#[derive(Copy, Clone, Debug, Savefile)]
+#[repr(C)]
+pub struct NoatunOption<T: NoatunPod> {
+    value: T,
+    present: u8,
+}
+
+// Safety: NoatunOption<T> contains only NoatunPod objects
+unsafe impl<T: NoatunPod> NoatunPod for NoatunOption<T> {}
+
+// Safety: NoatunOption<T> contains only NoatunStorable objects
+unsafe impl<T: NoatunPod> NoatunStorable for NoatunOption<T> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::NoatunOption/1");
+        T::hash_schema(hasher);
+    }
+}
+
+impl<T: NoatunPod> NoatunOption<T> {
+    /// Convert the given NoatunOption to an std Option
+    ///
+    /// This does not cause a read dependency.
+    pub fn into_option(self) -> Option<T> {
+        self.into()
+    }
+    /// Returns true if the option has a value
+    ///
+    /// This does not cause a read dependency.
+    pub fn is_some(&self) -> bool {
+        self.present == 1
+    }
+    /// Returns true if the option has no value
+    ///
+    /// This does not cause a read dependency.
+    pub fn is_none(&self) -> bool {
+        self.present == 0
+    }
+}
+
+impl<T: NoatunPod> From<Option<T>> for NoatunOption<T> {
+    fn from(value: Option<T>) -> Self {
+        match value {
+            None => Self {
+                value: T::zeroed(),
+                present: 0,
+            },
+            Some(t) => Self {
+                value: t,
+                present: 1,
+            },
+        }
+    }
+}
+impl<T: NoatunPod> From<NoatunOption<T>> for Option<T> {
+    fn from(value: NoatunOption<T>) -> Self {
+        if value.present == 0 {
+            None
+        } else {
+            Some(value.value)
+        }
+    }
+}

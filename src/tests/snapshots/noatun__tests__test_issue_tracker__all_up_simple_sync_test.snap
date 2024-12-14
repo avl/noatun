@@ -1,0 +1,16 @@
+---
+source: src/tests/test_issue_tracker.rs
+expression: driver.messages_snapshot()
+---
+     0ns: #0:    10ms Send(ReportHeads: cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [], src: #0, neigh: [])
+     0ns: #0:    64ms Send(Message: id = "*00:00.000Z"-0-0-0, parents = [], need_ack = false, msg = AddIssue { reporter: "user1", heading: "heading1" }, src = #0, origin = #0, retransmit = false)
+     0ns: #1:    10ms Send(ReportHeads: cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [], src: #1, neigh: [])
+     0ns: #1:    64ms Send(Message: id = "*00:00.000Z"-1-0-0, parents = [], need_ack = false, msg = AddIssue { reporter: "user2", heading: "heading2" }, src = #1, origin = #1, retransmit = false)
+    10ms: #0:         Receive(ReportHeads: cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [], src: #1, neigh: [])
+    10ms: #1:         Receive(ReportHeads: cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [], src: #0, neigh: [])
+    64ms: #1:         Receive(Message: id = "*00:00.000Z"-0-0-0, parents = [], need_ack = false, msg = AddIssue { reporter: "user1", heading: "heading1" }, src = #0, origin = #0, retransmit = false)
+    64ms: #0:         Receive(Message: id = "*00:00.000Z"-1-0-0, parents = [], need_ack = false, msg = AddIssue { reporter: "user2", heading: "heading2" }, src = #1, origin = #1, retransmit = false)
+      5s: #1:     0ns Send(ReportHeads: cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [Head { msg: "*00:00.000Z"-0-0-0, origin: Some(#0) }, Head { msg: "*00:00.000Z"-1-0-0, origin: None }], src: #1, neigh: [#0])
+      5s: #0:         Receive(ReportHeads: cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [Head { msg: "*00:00.000Z"-0-0-0, origin: Some(#0) }, Head { msg: "*00:00.000Z"-1-0-0, origin: None }], src: #1, neigh: [#0])
+      5s: #0:     0ns Send(ReportHeads: cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [Head { msg: "*00:00.000Z"-0-0-0, origin: Some(#1) }, Head { msg: "*00:00.000Z"-1-0-0, origin: Some(#1) }], src: #0, neigh: [#1])
+      5s: #1:         Receive(ReportHeads: cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [Head { msg: "*00:00.000Z"-0-0-0, origin: Some(#1) }, Head { msg: "*00:00.000Z"-1-0-0, origin: Some(#1) }], src: #0, neigh: [#1])

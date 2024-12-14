@@ -1,0 +1,11 @@
+---
+source: src/lib.rs
+expression: result
+---
+[
+    SendMessageAndAllDescendants {
+        message_id: [
+            "2021-01-01T00:00:00.000Z"-0-0-0,
+        ],
+    },
+]
