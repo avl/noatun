@@ -1,6 +1,5 @@
 use std::alloc::Layout;
 use std::cell::Cell;
-use std::ops::{Range, RangeBounds};
 use std::slice;
 use std::slice::SliceIndex;
 use bytemuck::{from_bytes, from_bytes_mut, Pod};
@@ -123,13 +122,13 @@ impl DatabaseContext {
     pub unsafe fn access_mut<'a>(&mut self, range: FatPtr) -> &'a mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.data.wrapping_add(range.start), range.len) }
     }
-    pub unsafe fn access_pod<'a, T:Pod>(&self, index: usize) -> &'a T {
+    pub unsafe fn access_pod<'a, T:Pod>(&self, index: usize) -> &'a T { unsafe {
         from_bytes(std::slice::from_raw_parts(self.data.wrapping_add(index), size_of::<T>()))
-    }
-    pub unsafe fn access_pod_mut<'a, T:Pod>(&self, index: usize) -> &'a mut T {
+    }}
+    pub unsafe fn access_pod_mut<'a, T:Pod>(&self, index: usize) -> &'a mut T { unsafe {
         let data_p = (self).data.wrapping_add(index);
         from_bytes_mut(std::slice::from_raw_parts_mut(data_p.wrapping_add(index), size_of::<T>()))
-    }
+    }}
 
     pub fn write(&mut self, index: usize, data: &[u8]) {
         debug_assert!(index+data.len() <= self.data_len);

@@ -1,5 +1,5 @@
 use byteorder::{LittleEndian, WriteBytesExt};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::io::Write;
 
 pub enum UndoLogEntry<'a> {
@@ -23,7 +23,7 @@ impl UndoLog {
     }
     pub fn record(&self, entry: UndoLogEntry) {
         let mut store = self.store.borrow_mut();
-        let mut store = &mut *store;
+        let store = &mut *store;
         match entry {
             UndoLogEntry::SetPointer(size) => {
                 store.write_u8(1).expect("Failed to write to undo store");
