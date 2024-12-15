@@ -1,9 +1,9 @@
+use crate::{FatPtr, Object, Pointer, ThinPtr};
+use bytemuck::{Pod, from_bytes, from_bytes_mut};
 use std::alloc::Layout;
 use std::cell::Cell;
 use std::slice;
 use std::slice::SliceIndex;
-use bytemuck::{from_bytes, from_bytes_mut, Pod};
-use crate::{FatPtr, Object, Pointer, ThinPtr};
 
 pub struct DatabaseContext {
     data: *mut u8,
@@ -12,7 +12,6 @@ pub struct DatabaseContext {
 }
 impl Default for DatabaseContext {
     fn default() -> Self {
-
         let layout = Layout::from_size_align(1024, 256).unwrap();
 
         let data = unsafe { std::alloc::alloc_zeroed(layout) };
@@ -30,7 +29,6 @@ impl Drop for DatabaseContext {
         //let _: Box<[u8]> = unsafe { Box::from_raw(self.data_orig) };
         let layout = Layout::from_size_align(1024, 256).unwrap();
         unsafe { std::alloc::dealloc(self.data, layout) }
-
     }
 }
 
@@ -75,18 +73,13 @@ impl DatabaseContext {
         unsafe { slice::from_raw_parts_mut(self.data, self.data_len) }
     }
 
-    pub fn copy(&mut self,
-                source: FatPtr,
-                dest_index: usize
-    ) {
-        self.all_mut().copy_within(source.start..source.start+source.len, dest_index);
+    pub fn copy(&mut self, source: FatPtr, dest_index: usize) {
+        self.all_mut()
+            .copy_within(source.start..source.start + source.len, dest_index);
     }
 
-    pub unsafe fn allocate_pod<'a, T:Pod>(&self) -> &'a mut T {
-        let bytes = self.allocate_raw(
-            std::mem::size_of::<T>(),
-            std::mem::align_of::<T>()
-        );
+    pub unsafe fn allocate_pod<'a, T: Pod>(&self) -> &'a mut T {
+        let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { &mut *(bytes as *mut T) }
     }
     pub fn allocate_raw(&self, N: usize, ALIGN: usize) -> *mut u8 {
@@ -99,7 +92,7 @@ impl DatabaseContext {
         if self.pointer.get() > self.data_len {
             panic!("Out of memory");
         }
-        unsafe {self.data.wrapping_add(self.pointer.get()-N) }
+        unsafe { self.data.wrapping_add(self.pointer.get() - N) }
     }
     pub fn allocate<const N: usize, const ALIGN: usize>(&self) -> &mut [u8; N] {
         self.allocate_dyn(N, ALIGN).try_into().unwrap()
@@ -114,7 +107,7 @@ impl DatabaseContext {
         if self.pointer.get() > self.data_len {
             panic!("Out of memory");
         }
-        unsafe { std::slice::from_raw_parts_mut(self.data.wrapping_add(self.pointer.get()-N), N) }
+        unsafe { std::slice::from_raw_parts_mut(self.data.wrapping_add(self.pointer.get() - N), N) }
     }
     pub unsafe fn access<'a>(&self, range: FatPtr) -> &'a [u8] {
         unsafe { std::slice::from_raw_parts(self.data.wrapping_add(range.start), range.len) }
@@ -122,16 +115,26 @@ impl DatabaseContext {
     pub unsafe fn access_mut<'a>(&mut self, range: FatPtr) -> &'a mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.data.wrapping_add(range.start), range.len) }
     }
-    pub unsafe fn access_pod<'a, T:Pod>(&self, index: usize) -> &'a T { unsafe {
-        from_bytes(std::slice::from_raw_parts(self.data.wrapping_add(index), size_of::<T>()))
-    }}
-    pub unsafe fn access_pod_mut<'a, T:Pod>(&self, index: usize) -> &'a mut T { unsafe {
-        let data_p = (self).data.wrapping_add(index);
-        from_bytes_mut(std::slice::from_raw_parts_mut(data_p.wrapping_add(index), size_of::<T>()))
-    }}
+    pub unsafe fn access_pod<'a, T: Pod>(&self, index: usize) -> &'a T {
+        unsafe {
+            from_bytes(std::slice::from_raw_parts(
+                self.data.wrapping_add(index),
+                size_of::<T>(),
+            ))
+        }
+    }
+    pub unsafe fn access_pod_mut<'a, T: Pod>(&self, index: usize) -> &'a mut T {
+        unsafe {
+            let data_p = (self).data.wrapping_add(index);
+            from_bytes_mut(std::slice::from_raw_parts_mut(
+                data_p.wrapping_add(index),
+                size_of::<T>(),
+            ))
+        }
+    }
 
     pub fn write(&mut self, index: usize, data: &[u8]) {
-        debug_assert!(index+data.len() <= self.data_len);
+        debug_assert!(index + data.len() <= self.data_len);
         let fat = FatPtr {
             start: index,
             len: data.len(),
@@ -139,7 +142,10 @@ impl DatabaseContext {
         let target = unsafe { self.access_mut(fat) };
         target.copy_from_slice(data);
     }
-    pub fn index_of<T>(&self, t: &T) -> ThinPtr where T: Object<Ptr=ThinPtr> + ?Sized {
+    pub fn index_of<T>(&self, t: &T) -> ThinPtr
+    where
+        T: Object<Ptr = ThinPtr> + ?Sized,
+    {
         ThinPtr((t as *const T as *const u8 as usize) - (self.data as usize))
     }
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {

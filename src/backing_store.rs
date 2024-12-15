@@ -1,6 +1,6 @@
+use crate::FatPtr;
 use crate::buffer::DatabaseContext;
 use crate::undo_store::{UndoLog, UndoLogEntry};
-use crate::FatPtr;
 
 pub trait BackingStore {
     fn allocate<const N: usize, const ALIGN: usize>(&self) -> &[u8; N];
@@ -18,9 +18,9 @@ impl BackingStore for DummyBackingStore {
         self.undo_log.record_ptr(self.data_store.pointer());
         self.data_store.allocate::<N, ALIGN>()
     }
-    unsafe fn access(&self, range: FatPtr) -> &[u8] { unsafe {
-        self.data_store.access(range)
-    }}
+    unsafe fn access(&self, range: FatPtr) -> &[u8] {
+        unsafe { self.data_store.access(range) }
+    }
 
     fn write(&mut self, index: usize, data: &[u8]) {
         let fat = FatPtr {
