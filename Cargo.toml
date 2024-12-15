@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 byteorder = "1.5"
-bytemuck = "1.20"
+bytemuck = { version = "1.20", features = ["derive"] }

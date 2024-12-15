@@ -1,24 +1,35 @@
-use crate::{FatPtr, Object, Pointer, ThinPtr};
-use bytemuck::{Pod, from_bytes, from_bytes_mut};
+use crate::{FatPtr, FixedSizeObject, GenPtr, Object, Pointer, ThinPtr};
+use bytemuck::{Pod, from_bytes, from_bytes_mut, bytes_of};
 use std::alloc::Layout;
+use std::any::{Any, TypeId};
 use std::cell::Cell;
+use std::mem::transmute_copy;
+use std::ops::Range;
 use std::slice;
 use std::slice::SliceIndex;
+use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 
 pub struct DatabaseContext {
     data: *mut u8,
     data_len: usize,
     pointer: Cell<usize>,
+    root_index: Option<GenPtr>,
+
+    time: u64,
+    undo_log: UndoLog
 }
 impl Default for DatabaseContext {
     fn default() -> Self {
-        let layout = Layout::from_size_align(1024, 256).unwrap();
+        let layout = Layout::from_size_align(10000, 256).unwrap();
 
         let data = unsafe { std::alloc::alloc_zeroed(layout) };
         Self {
             data,
-            data_len: 1024,
+            data_len: 10000,
             pointer: 0.into(),
+            root_index: None,
+            time: 0,
+            undo_log: UndoLog::new(),
         }
     }
 }
@@ -27,14 +38,14 @@ impl Drop for DatabaseContext {
         /*let r = unsafe { slice::from_raw_parts_mut(self.data, self.data_len) };
         let p = r as *mut _;*/
         //let _: Box<[u8]> = unsafe { Box::from_raw(self.data_orig) };
-        let layout = Layout::from_size_align(1024, 256).unwrap();
+        let layout = Layout::from_size_align(10000, 256).unwrap();
         unsafe { std::alloc::dealloc(self.data, layout) }
     }
 }
 
 // This has been shamelessly lifted from the rust std
 #[inline]
-fn size_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> {
+fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> {
     // SAFETY:
     // Rounded up value is:
     //   size_rounded_up = (size + align - 1) & !(align - 1);
@@ -60,7 +71,48 @@ fn size_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> {
     }
 }
 
+
 impl DatabaseContext {
+
+    pub fn rewind(&mut self, new_time: u64) {
+
+        let result = self.undo_log.rewind(|entry|{
+            println!("Parsed entry: {:?}", entry);
+            match entry {
+                UndoLogEntry::SetPointer(new_pointer) => {
+                    let cur = self.pointer.get();
+                    debug_assert!(new_pointer <= cur);
+                    unsafe { Self::mut_slice(self.data, new_pointer..cur).fill(0) };
+                    self.pointer.set(new_pointer);
+                    HowToProceed::Proceed
+                }
+                UndoLogEntry::ZeroOut { start, len } => {
+                    unsafe { Self::mut_slice(self.data, start..start+len).fill(0) };
+                    HowToProceed::Proceed
+                }
+                UndoLogEntry::Restore { start, data } => {
+                    unsafe { Self::mut_slice(self.data, start..start+data.len()).copy_from_slice(data)};
+                    HowToProceed::Proceed
+                }
+                UndoLogEntry::Rewind(time) => {
+                    if time == new_time {
+                        self.time = new_time;
+                        HowToProceed::PutBackAndStop
+                    } else if time > new_time {
+                        self.time = new_time;
+                        HowToProceed::Proceed
+                    } else {
+                        panic!("Couldn't rewind time to {}, ended up back at {}", time, new_time);
+                    }
+                }
+            }
+        });
+        if !result {
+            panic!("Rewind failed");
+        }
+
+    }
+
     pub fn pointer(&self) -> usize {
         self.pointer.get()
     }
@@ -69,51 +121,93 @@ impl DatabaseContext {
         self.data
     }
 
-    fn all_mut(&mut self) -> &mut [u8] {
-        unsafe { slice::from_raw_parts_mut(self.data, self.data_len) }
+    pub fn set_time(&mut self, time: u64) {
+        if time != self.time {
+            self.undo_log.record(UndoLogEntry::Rewind(time));
+        }
+        self.time = time;
     }
+
+    pub fn set_root_ptr(&mut self, genptr: GenPtr)  {
+        self.root_index = Some(genptr);
+    }
+
+    pub fn get_root_ptr<Ptr:Pointer+Any+'static>(&self) -> Ptr {
+        match self.root_index {
+            Some(GenPtr::Thin(ptr)) => {
+                if TypeId::of::<Ptr>()  == TypeId::of::<ThinPtr>() {
+                    return unsafe  { transmute_copy(&ptr) };
+                }
+                panic!("Wrong type of root pointer in database. Has schema changed significantly since last access?");
+            }
+            Some(GenPtr::Fat(ptr)) => {
+                if TypeId::of::<Ptr>()  == TypeId::of::<FatPtr>() {
+                    return unsafe  { transmute_copy(&ptr) };
+                }
+                panic!("Wrong type of root pointer in database. Has schema changed significantly since last access?");
+            }
+            None => {
+                panic!("Unknown root pointer");
+            }
+        }
+    }
+
 
     pub fn copy(&mut self, source: FatPtr, dest_index: usize) {
-        self.all_mut()
-            .copy_within(source.start..source.start + source.len, dest_index);
+
+        unsafe {
+            dbg!(&source, &dest_index);
+
+            self.undo_log.record(UndoLogEntry::Restore {
+                start: dest_index,
+                data: self.access(FatPtr::from(dest_index, source.len)),
+            });
+
+            let dest = self.access_mut(FatPtr {
+                start: dest_index,
+                len: source.len,
+            });
+
+            let src = self.access(source);
+
+            dest.copy_from_slice(src);
+        }
     }
 
-    pub unsafe fn allocate_pod<'a, T: Pod>(&self) -> &'a mut T {
+    pub unsafe fn allocate_pod<'a, T: Pod>(&mut self) -> &'a mut T {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { &mut *(bytes as *mut T) }
     }
-    pub fn allocate_raw(&self, N: usize, ALIGN: usize) -> *mut u8 {
-        if ALIGN > 256 {
+    pub fn allocate_raw(&mut self, size: usize, align: usize) -> *mut u8 {
+        if align > 256 {
             panic!("Noatun arbitrarily does not support types with alignment > 256");
         }
 
-        let aligned_pos = size_rounded_up_to_custom_align(self.pointer.get(), ALIGN).unwrap();
-        self.pointer.set(aligned_pos.checked_add(N).unwrap());
+        let alignment_adjustment = index_rounded_up_to_custom_align(self.pointer.get(), align).unwrap();
+        self.undo_log.record(UndoLogEntry::SetPointer(
+            self.pointer.get()
+        ));
+        self.pointer.set(alignment_adjustment.checked_add(size).unwrap());
         if self.pointer.get() > self.data_len {
             panic!("Out of memory");
         }
-        unsafe { self.data.wrapping_add(self.pointer.get() - N) }
+        unsafe { self.data.wrapping_add(self.pointer.get() - size) }
     }
-    pub fn allocate<const N: usize, const ALIGN: usize>(&self) -> &mut [u8; N] {
-        self.allocate_dyn(N, ALIGN).try_into().unwrap()
+    pub fn allocate_array<const N: usize, const ALIGN: usize>(&mut self) -> &mut [u8; N] {
+        self.allocate_slice(N, ALIGN).try_into().unwrap()
     }
-    pub fn allocate_dyn(&self, N: usize, ALIGN: usize) -> &mut [u8] {
-        if ALIGN > 256 {
-            panic!("Noatun arbitrarily does not support types with alignment > 256");
-        }
-
-        let aligned_pos = size_rounded_up_to_custom_align(self.pointer.get(), ALIGN).unwrap();
-        self.pointer.set(aligned_pos.checked_add(N).unwrap());
-        if self.pointer.get() > self.data_len {
-            panic!("Out of memory");
-        }
-        unsafe { std::slice::from_raw_parts_mut(self.data.wrapping_add(self.pointer.get() - N), N) }
+    pub fn allocate_slice(&mut self, size: usize, align: usize) -> &mut [u8] {
+        let start = self.allocate_raw(size, align);
+        unsafe { std::slice::from_raw_parts_mut(start, size) }
     }
     pub unsafe fn access<'a>(&self, range: FatPtr) -> &'a [u8] {
         unsafe { std::slice::from_raw_parts(self.data.wrapping_add(range.start), range.len) }
     }
     pub unsafe fn access_mut<'a>(&mut self, range: FatPtr) -> &'a mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.data.wrapping_add(range.start), range.len) }
+    }
+    pub unsafe fn mut_slice<'a>(data: *mut u8, range: Range<usize>) -> &'a mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(data.wrapping_add(range.start), range.end-range.start) }
     }
     pub unsafe fn access_pod<'a, T: Pod>(&self, index: usize) -> &'a T {
         unsafe {
@@ -123,11 +217,10 @@ impl DatabaseContext {
             ))
         }
     }
-    pub unsafe fn access_pod_mut<'a, T: Pod>(&self, index: usize) -> &'a mut T {
+    pub unsafe fn access_pod_mut<'a, T: Pod>(&self, index: ThinPtr) -> &'a mut T {
         unsafe {
-            let data_p = (self).data.wrapping_add(index);
             from_bytes_mut(std::slice::from_raw_parts_mut(
-                data_p.wrapping_add(index),
+                self.data.wrapping_add(index.0),
                 size_of::<T>(),
             ))
         }
@@ -142,11 +235,22 @@ impl DatabaseContext {
         let target = unsafe { self.access_mut(fat) };
         target.copy_from_slice(data);
     }
-    pub fn index_of<T>(&self, t: &T) -> ThinPtr
-    where
-        T: Object<Ptr = ThinPtr> + ?Sized,
+    pub fn write_pod<T:Pod>(&mut self, src: T, dest: &mut T) {
+        let dest_index = self.index_of_sized(dest);
+
+        self.undo_log.record(UndoLogEntry::Restore {
+            start: dest_index.0,
+            data: bytes_of(dest),
+        });
+        *dest = src;
+    }
+    pub fn index_of_sized<T:Sized>(&self, t: &T) -> ThinPtr
     {
-        ThinPtr((t as *const T as *const u8 as usize) - (self.data as usize))
+        ThinPtr::create(t, self.data as *const u8)
+    }
+    pub fn index_of<T:Object>(&self, t: &T) -> T::Ptr
+    {
+        T::Ptr::create(t, self.data)
     }
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {
         ThinPtr((t as *const u8 as usize) - (self.data as usize))
