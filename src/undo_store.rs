@@ -99,7 +99,7 @@ impl UndoLog {
         }
     }
     pub fn record(&mut self, entry: UndoLogEntry) {
-        println!("Record entry: {:?}: {:#?}", entry, Backtrace::capture());
+
         let store = &mut self.store;
         match entry {
             UndoLogEntry::SetPointer(size) => {

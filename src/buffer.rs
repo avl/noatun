@@ -1,14 +1,74 @@
-use crate::{FatPtr, FixedSizeObject, GenPtr, Object, Pointer, ThinPtr};
+use crate::{FatPtr, FixedSizeObject, GenPtr, Object, Pointer, SequenceNr, ThinPtr};
 use bytemuck::{Pod, from_bytes, from_bytes_mut, bytes_of};
 use std::alloc::Layout;
 use std::any::{Any, TypeId};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::mem::transmute_copy;
 use std::ops::Range;
 use std::slice;
 use std::slice::SliceIndex;
+use indexmap::{IndexMap, IndexSet};
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
+
+#[derive(Default,Debug)]
+struct RegistrarTracker {
+    uses: Vec<u32>,
+    /// Messages are added to this list when their
+    /// last registrar_point is overwritten
+    /// Such messages are candidates to be removed, but only if
+    /// no other message (that isn't also to be removed), depend on it.
+    unused_messages: Vec<SequenceNr>,
+
+
+    /// Mapping from message-id to other messages that have read output
+    /// from said message
+    message_dependencies: IndexMap<SequenceNr, Vec<SequenceNr>>
+}
+
+impl RegistrarTracker {
+
+    fn calculate_unused_messages(&mut self) -> IndexSet<SequenceNr> {
+        self.unused_messages.sort();
+        let mut deleted = IndexSet::new();
+        println!("Update tracking: {:#?}", self);
+        'outer: for msg in self.unused_messages.iter().rev() {
+            if let Some(observers) = self.message_dependencies.get(msg) {
+                println!("Observers of {:?} are {:?}. Deleted: {:?}", msg, observers, deleted);
+                for observer in observers {
+                    if !deleted.contains(observer) {
+                        // 'msg' can't be deleted, because it's observed by
+                        // 'observer' that is a later message that has not been deleted.
+                        println!("Can't delete {:?} because it's observed by {:?}", msg, observer);
+                        continue 'outer;
+                    }
+                }
+            }
+            deleted.insert(*msg);
+        }
+        deleted
+    }
+    fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
+        self.message_dependencies.entry(observee).or_default().push(observer);
+    }
+    fn increase_use(&mut self, registrar: SequenceNr) {
+        if self.uses.len() <= registrar.0 as usize {
+            self.uses.resize(registrar.0 as usize + 1, 0);
+        }
+        self.uses[registrar.0 as usize] += 1;
+    }
+    fn decrease_use(&mut self, registrar: SequenceNr) {
+        let cur = &mut self.uses[registrar.0 as usize];
+        if *cur == 0 {
+            panic!("Corrupt use count for sequence nr {}", registrar.0);
+        }
+        *cur -= 1;
+        if *cur == 0 {
+            self.unused_messages.push(registrar);
+        }
+    }
+}
 
 pub struct DatabaseContext {
     data: *mut u8,
@@ -19,6 +79,11 @@ pub struct DatabaseContext {
     undo_log: UndoLog,
     // Make sure neither Send nor Sync
     phantom: PhantomData<*mut ()>,
+
+    // The current message being written (or None if not open for writing)
+    current_registrar: Option<SequenceNr>,
+    registrar_tracker: RefCell<RegistrarTracker>,
+
 
     /// The next message expected to be applied.
     /// Starts at 0.
@@ -37,6 +102,8 @@ impl Default for DatabaseContext {
             most_recent_recorded_time: None,
             undo_log: UndoLog::new(),
             phantom: Default::default(),
+            current_registrar: None,
+            registrar_tracker: Default::default(),
             next_seqnr: 0,
         }
     }
@@ -290,4 +357,36 @@ impl DatabaseContext {
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {
         ThinPtr((t as *const u8 as usize) - (self.data as usize))
     }
+
+    pub fn get_msg_to_remove(&mut self) -> Vec<SequenceNr> {
+        self.registrar_tracker.borrow_mut().calculate_unused_messages().into_iter().collect()
+    }
+
+    pub fn set_current_registrar(&mut self, seq: SequenceNr) {
+        self.current_registrar = Some(seq);
+    }
+    pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr) {
+        let mut track = self.registrar_tracker.borrow_mut();
+        if registrar_point.0 != 0 {
+            track.decrease_use(*registrar_point);
+        }
+        let current_registrar = self.current_registrar.expect("A registrar must exist when writing to db");
+        track.increase_use(current_registrar);
+        drop(track);
+        self.write_pod(current_registrar, registrar_point)
+    }
+
+    /// Signify that the current message has observed data previously written
+    /// by 'registrar'.
+    pub fn observe_registrar(&self, observee: SequenceNr) {
+        if observee.0 == 0 {
+            return;
+        }
+        let observer = self.current_registrar.expect("A registrar must exist when writing to db");
+        println!("OPbserver: {:?} observing {:?}", observer, observee);
+        if observer != observee {
+            self.registrar_tracker.borrow_mut().report_observed(observer, observee);
+        }
+    }
+
 }

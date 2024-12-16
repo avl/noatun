@@ -1,5 +1,9 @@
+#![feature(test)]
 #![allow(unused)]
 #![allow(dead_code)]
+
+extern crate test;
+
 
 use bytemuck::{Pod, Zeroable};
 use std::fmt::Debug;
@@ -14,7 +18,25 @@ pub(crate) mod backing_store;
 pub(crate) mod buffer;
 pub(crate) mod undo_store;
 
+
+struct MessageComponent<const ID:u32, T> {
+    value: Option<T>,
+}
+
+
+struct Digest {
+    bytes: [u8;12],
+}
+
+
+#[derive(Pod, Zeroable, Copy, Default, Clone, Debug,PartialEq,Eq,Hash,PartialOrd,Ord)]
+#[repr(transparent)]
+// 0 is an invalid sequence number, used to represent 'not a number'
+pub struct SequenceNr(u32);
+
 trait Message<Root: Object> {
+    fn id(&self) -> Digest;
+    fn parents(&self) -> impl Iterator<Item=Digest>;
     fn time(&self) -> u64;
     fn apply(&self, context: &mut DatabaseContext, root: &mut Root);
 }
@@ -26,15 +48,17 @@ struct MessageStore<APP:Application, M:Message<APP::Root>> {
     phantom_data: PhantomData<*const APP::Root>
 }
 
+
 impl<App:Application, M:Message<App::Root>> MessageStore<App, M> {
     pub fn new() -> MessageStore<App, M> {
         MessageStore { messages: Vec::new(), phantom_data: PhantomData }
     }
     pub fn apply(&self, database: &mut Database<App>) {
         let (root, context) = database.get_root();
-
         let mut cur_time = context.time();
-        for msg in self.messages.iter().skip(context.next_seqnr()) {
+        for (seq,msg) in self.messages.iter().enumerate().skip(context.next_seqnr()) {
+            let seqnr = SequenceNr(seq as u32+1);
+            context.set_current_registrar(seqnr);
             let msg_time = msg.time();
             if msg_time < cur_time {
                 panic!("A later message had an earlier timestamp");
@@ -44,6 +68,10 @@ impl<App:Application, M:Message<App::Root>> MessageStore<App, M> {
             msg.apply(context, root);
         }
         context.set_next_seqnr(self.messages.len());
+        let can_remove = context.get_msg_to_remove();
+        println!("Can remove: {:?}", can_remove);
+        compile_error!("Remove seqnrs from 'can_remove', and recalculate their parents.");
+
     }
 }
 
@@ -133,10 +161,11 @@ pub struct Database<Base> {
     app: Base,
 }
 
-#[repr(transparent)]
 #[derive(Copy, Clone)]
+#[repr(C)]
 pub struct DatabaseCell<T: Copy> {
     value: T,
+    registrar: SequenceNr,
 }
 
 impl<T:Copy> Deref for DatabaseCell<T> {
@@ -220,13 +249,16 @@ unsafe impl<T> Zeroable for DatabaseCell<T> where T: Pod {}
 
 unsafe impl<T> Pod for DatabaseCell<T> where T: Pod {}
 impl<T: Pod> DatabaseCell<T> {
-    pub fn get(&self) -> T {
+    pub fn get(&self, context: &DatabaseContext) -> T {
+        context.observe_registrar(self.registrar);
         self.value
+
     }
     pub fn set<'a>(&'a mut self, context: &'a mut DatabaseContext, new_value: T) {
         let index = context.index_of(self);
         //context.write(index, bytes_of(&new_value));
         context.write_pod(new_value, &mut self.value);
+        context.update_registrar(&mut self.registrar);
     }
 }
 
@@ -237,6 +269,7 @@ pub struct DatabaseVec<T> {
     length: usize,
     capacity: usize,
     data: usize,
+    length_registrar: SequenceNr,
     phantom_data: PhantomData<T>,
 }
 
@@ -259,7 +292,8 @@ where
     pub fn new<'a>(ctx: &mut DatabaseContext) -> &'a mut DatabaseVec<T> {
         unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
     }
-    pub fn len(&self) -> usize {
+    pub fn len(&self, ctx: &mut DatabaseContext) -> usize {
+        ctx.observe_registrar(self.length_registrar);
         self.length
     }
     pub fn get(&self, ctx: &DatabaseContext, index: usize) -> &T {
@@ -290,6 +324,7 @@ where
             length: new_len,
             capacity: new_capacity,
             data: dest_index.0,
+            length_registrar: SequenceNr::default(),
             phantom_data: Default::default(),
         }, self)
     }
@@ -302,6 +337,7 @@ where
             println!("no-Realloc-leg");
             ctx.write_pod(self.length + 1, &mut self.length);
         }
+        ctx.update_registrar(&mut self.length_registrar);
 
         self.get_mut(ctx, self.length - 1)
     }
@@ -446,6 +482,8 @@ impl<APP> Drop for Database<APP> {
 
 #[cfg(test)]
 mod tests {
+    use test::Bencher;
+    use sha2::{Digest, Sha256};
     use super::*;
 
     #[derive(Clone, Copy, Zeroable, Pod)]
@@ -512,29 +550,41 @@ mod tests {
         let context = &db.context;
 
         let (counter, context) = db.get_root();
-        assert_eq!(counter.counter.get(), 0);
+        assert_eq!(counter.counter.get(context), 0);
         counter.counter.set(context, 42);
         counter.counter2.set(context, 43);
         counter.counter.set(context, 44);
 
         assert_eq!(*counter.counter, 44);
-        assert_eq!(counter.counter.get(), 44);
-        assert_eq!(counter.counter2.get(), 43);
+        assert_eq!(counter.counter.get(context), 44);
+        assert_eq!(counter.counter2.get(context), 43);
     }
 
     struct CounterMessage {
         time: u64,
         inc1: i32,
-        inc2: i32,
+        set1: u32,
     }
     impl Message<CounterObject> for CounterMessage {
+        fn id(&self) -> crate::Digest {
+            todo!()
+        }
+
+        fn parents(&self) -> impl Iterator<Item=crate::Digest> {
+            todo!();
+            [].into_iter()
+        }
+
         fn time(&self) -> u64 {
             self.time
         }
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut CounterObject) {
-            root.counter.set(context, root.counter.get().saturating_add_signed(self.inc1));
-            root.counter2.set(context, root.counter2.get().saturating_add_signed(self.inc2));
+            if self.inc1 != 0 {
+                root.counter.set(context, root.counter.get(context).saturating_add_signed(self.inc1));
+            } else {
+                root.counter.set(context, self.set1);
+            }
         }
     }
 
@@ -545,13 +595,18 @@ mod tests {
         messages.messages.push(CounterMessage {
             time: 1,
             inc1: 2,
-            inc2: 1,
+            set1: 0,
+        });
+        messages.messages.push(CounterMessage {
+            time: 1,
+            inc1: 0,
+            set1: 42,
         });
 
         messages.apply(&mut db);
 
         let (counter, context) = db.get_root();
-        assert_eq!(counter.counter.get(), 2);
+        assert_eq!(counter.counter.get(context), 42);
 
 
     }
@@ -598,7 +653,7 @@ mod tests {
 
         let mut db: Database<CounterVecApplication> = Database::create(CounterVecApplication);
         let (counter_vec, context) = db.get_root();
-        assert_eq!(counter_vec.len(), 0);
+        assert_eq!(counter_vec.len(context), 0);
 
         println!("1");
         let new_element = counter_vec.push_new(context);
@@ -610,7 +665,7 @@ mod tests {
         new_element.counter.set(context, 48);
         println!("3");
 
-        assert_eq!(counter_vec.len(), 2);
+        assert_eq!(counter_vec.len(context), 2);
 
         let item = counter_vec.get_mut(context, 1);
         assert_eq!(*item.counter, 48);
@@ -650,14 +705,14 @@ mod tests {
         {
             let (counter_vec, context) = db.get_root();
             context.set_time(1);
-            assert_eq!(counter_vec.len(), 0);
+            assert_eq!(counter_vec.len(context), 0);
             println!("Pre-push");
             let new_element = counter_vec.push_new(context);
             new_element.counter.set(context, 47);
             new_element.counter2.set(context, 48);
             println!("Pre-set-time");
             context.set_time(2);
-            assert_eq!(counter_vec.len(), 1);
+            assert_eq!(counter_vec.len(context), 1);
             context.set_time(3);
         }
 
@@ -666,7 +721,7 @@ mod tests {
             let counter = counter_vec.get_mut(context, 0);
             counter.counter.set(context, 50);
             context.rewind(2);
-            assert_eq!(counter.counter.get(), 47);
+            assert_eq!(counter.counter.get(context), 47);
         }
 
         println!("Rewind!");
@@ -674,7 +729,22 @@ mod tests {
 
         {
             let (counter_vec, context) = db.get_root();
-            assert_eq!(counter_vec.len(), 0);
+            assert_eq!(counter_vec.len(context), 0);
         }
     }
-}
+
+    #[bench]
+    fn bench_sha256(b: &mut Bencher) {
+
+        // write input message
+
+        // read hash digest and consume hasher
+
+        b.iter(||{
+            let mut hasher = Sha256::new();
+            hasher.update(b"hello world");
+            hasher.finalize()
+        });
+    }
+
+    }
