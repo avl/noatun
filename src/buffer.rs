@@ -3,6 +3,7 @@ use bytemuck::{Pod, from_bytes, from_bytes_mut, bytes_of};
 use std::alloc::Layout;
 use std::any::{Any, TypeId};
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::mem::transmute_copy;
 use std::ops::Range;
 use std::slice;
@@ -14,9 +15,14 @@ pub struct DatabaseContext {
     data_len: usize,
     pointer: Cell<usize>,
     root_index: Option<GenPtr>,
+    most_recent_recorded_time: Option<u64>,
+    undo_log: UndoLog,
+    // Make sure neither Send nor Sync
+    phantom: PhantomData<*mut ()>,
 
-    time: u64,
-    undo_log: UndoLog
+    /// The next message expected to be applied.
+    /// Starts at 0.
+    next_seqnr: usize,
 }
 impl Default for DatabaseContext {
     fn default() -> Self {
@@ -28,8 +34,10 @@ impl Default for DatabaseContext {
             data_len: 10000,
             pointer: 0.into(),
             root_index: None,
-            time: 0,
+            most_recent_recorded_time: None,
             undo_log: UndoLog::new(),
+            phantom: Default::default(),
+            next_seqnr: 0,
         }
     }
 }
@@ -74,7 +82,22 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
 
 impl DatabaseContext {
 
-    pub fn rewind(&mut self, new_time: u64) {
+    pub fn next_seqnr(&self) -> usize {
+        self.next_seqnr
+    }
+    pub fn set_next_seqnr(&mut self, next:usize)  {
+        self.next_seqnr = next;
+    }
+
+    /// Note: Must not be public, since while output of [`crate::Database::get_root`] is still
+    /// live, time travel _must not_ occur, since it would lead to unsoundness (potentially
+    /// changing objects while they were used).
+    /// Rewinding during construction of the root object is not allowed.
+    pub(crate) fn rewind(&mut self, new_time: u64) {
+        if self.most_recent_recorded_time.is_none() {
+            panic!("Attempt to rewind time before any time snapshot was recorded.\
+                    It is not allowed to rewind time before/while constructing the root object.")
+        }
 
         let result = self.undo_log.rewind(|entry|{
             println!("Parsed entry: {:?}", entry);
@@ -96,10 +119,9 @@ impl DatabaseContext {
                 }
                 UndoLogEntry::Rewind(time) => {
                     if time == new_time {
-                        self.time = new_time;
+                        self.most_recent_recorded_time = Some(new_time);
                         HowToProceed::PutBackAndStop
                     } else if time > new_time {
-                        self.time = new_time;
                         HowToProceed::Proceed
                     } else {
                         panic!("Couldn't rewind time to {}, ended up back at {}", time, new_time);
@@ -121,11 +143,24 @@ impl DatabaseContext {
         self.data
     }
 
+    /// Returns the most recently recorded time.
+    /// This returns 0 if time has not been set yet (for example when
+    /// constructing the root object).
+    /// After the root object has been constructed, time 0 actually begins.
+    /// Rewinding to time 0 does not rewind the construction of the root object itself.
+    pub fn time(&self) -> u64 {
+        self.most_recent_recorded_time.unwrap_or(0)
+    }
     pub fn set_time(&mut self, time: u64) {
-        if time != self.time {
-            self.undo_log.record(UndoLogEntry::Rewind(time));
+        if let Some(prev) = self.most_recent_recorded_time {
+            if time < prev {
+                panic!("Attempt to set time to a smaller value. Use the rewind function instead.");
+            }
         }
-        self.time = time;
+        if Some(time) != self.most_recent_recorded_time {
+            self.undo_log.record(UndoLogEntry::Rewind(time));
+            self.most_recent_recorded_time = Some(time);
+        }
     }
 
     pub fn set_root_ptr(&mut self, genptr: GenPtr)  {

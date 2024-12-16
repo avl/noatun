@@ -1,10 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use noatun::{Application, Database, DatabaseCell, DatabaseContext, FixedSizeObject, Object, ThinPtr};
 
-impl FixedSizeObject for CounterObject {
-    const SIZE: usize = 8;
-    const ALIGN: usize = 4;
-}
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
 struct CounterObject {
@@ -67,4 +63,18 @@ fn test_counter_object() {
     counter.counter.set(context, 44);
 
     assert_eq!(*counter.counter, 44);
+
+}
+#[test]
+fn test_counter_mayhem() {
+    let mut db1: Database<CounterApplication> = Database::create(CounterApplication);
+    let (counter1, context1) = db1.get_root();
+    drop(db1);
+    let mut db2: Database<CounterApplication> = Database::create(CounterApplication);
+
+
+    let (counter2, context2) = db2.get_root();
+
+    counter2.counter.set(context2, 42);
+
 }

@@ -7,15 +7,46 @@ use std::marker::PhantomData;
 use std::mem::{transmute, transmute_copy};
 use std::ops::Deref;
 use std::slice::SliceIndex;
+use std::cell::Cell;
 pub use buffer::DatabaseContext;
 pub(crate) mod backing_store;
 
 pub(crate) mod buffer;
 pub(crate) mod undo_store;
 
-trait Message<Base: Object> {
-    fn apply(&self, database: Database<Base>);
+trait Message<Root: Object> {
+    fn time(&self) -> u64;
+    fn apply(&self, context: &mut DatabaseContext, root: &mut Root);
 }
+
+
+
+struct MessageStore<APP:Application, M:Message<APP::Root>> {
+    messages: Vec<M>,
+    phantom_data: PhantomData<*const APP::Root>
+}
+
+impl<App:Application, M:Message<App::Root>> MessageStore<App, M> {
+    pub fn new() -> MessageStore<App, M> {
+        MessageStore { messages: Vec::new(), phantom_data: PhantomData }
+    }
+    pub fn apply(&self, database: &mut Database<App>) {
+        let (root, context) = database.get_root();
+
+        let mut cur_time = context.time();
+        for msg in self.messages.iter().skip(context.next_seqnr()) {
+            let msg_time = msg.time();
+            if msg_time < cur_time {
+                panic!("A later message had an earlier timestamp");
+            } else if msg_time != cur_time {
+                context.set_time(msg_time);
+            }
+            msg.apply(context, root);
+        }
+        context.set_next_seqnr(self.messages.len());
+    }
+}
+
 
 pub enum GenPtr {
     Thin(ThinPtr),
@@ -44,9 +75,11 @@ pub trait FixedSizeObject: Object<Ptr=ThinPtr> + Sized + Pod {
 
 }
 
-impl FixedSizeObject for u32 {}
+impl<T:Object<Ptr=ThinPtr>+Sized+Copy+Pod> FixedSizeObject for T {
+    const SIZE: usize = std::mem::size_of::<Self>();
+    const ALIGN: usize = std::mem::align_of::<Self>();
+}
 
-impl FixedSizeObject for usize {}
 
 impl Object for usize {
     type Ptr = ThinPtr;
@@ -190,7 +223,7 @@ impl<T: Pod> DatabaseCell<T> {
     pub fn get(&self) -> T {
         self.value
     }
-    pub fn set(&mut self, context: &mut DatabaseContext, new_value: T) {
+    pub fn set<'a>(&'a mut self, context: &'a mut DatabaseContext, new_value: T) {
         let index = context.index_of(self);
         //context.write(index, bytes_of(&new_value));
         context.write_pod(new_value, &mut self.value);
@@ -274,13 +307,6 @@ where
     }
 }
 
-impl<T> FixedSizeObject for DatabaseVec<T>
-where
-    T: FixedSizeObject + 'static,
-{
-    const SIZE: usize = 3 * std::mem::size_of::<usize>();
-    const ALIGN: usize = std::mem::align_of::<usize>();
-}
 
 impl<T> Object for DatabaseVec<T>
 where
@@ -316,7 +342,6 @@ impl<T: Object> Clone for DatabaseObjectHandle<T> {
 }
 
 unsafe impl<T: Object + 'static> Pod for DatabaseObjectHandle<T> {}
-impl<T: Object + 'static> FixedSizeObject for DatabaseObjectHandle<T> {}
 impl<T: Object> Object for DatabaseObjectHandle<T> {
     type Ptr = ThinPtr;
 
@@ -357,10 +382,6 @@ impl<T: Object> DatabaseObjectHandle<T> {
     }
 }
 
-impl<T: Object + Pod> FixedSizeObject for DatabaseCell<T> {
-    const SIZE: usize = std::mem::size_of::<T>();
-    const ALIGN: usize = std::mem::align_of::<T>();
-}
 
 impl<T: Pod + Object> DatabaseCell<T> {
     pub fn new<'a>(context: &mut DatabaseContext) -> &'a mut Self {
@@ -383,37 +404,50 @@ impl<T: Pod> Object for DatabaseCell<T> {
         unsafe { context.access_pod_mut(index) }
     }
 }
+thread_local! {
+    static MULTI_INSTANCE_BLOCKER: Cell<bool> = Cell::new(false);
+}
 
 impl<APP: Application> Database<APP> {
     pub fn get_root<'a>(&'a mut self) -> (&'a mut APP::Root, &'a mut DatabaseContext) {
-
         let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
         let root = APP::get_root(&mut self.app, &mut self.context, root_ptr);
         (root, &mut self.context)
     }
     pub fn create(app: APP) -> Database<APP> {
+        if MULTI_INSTANCE_BLOCKER.get() {
+            if !std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_ok() {
+                panic!("Noatun: Multiple active DB-roots in the same thread are not allowed.\
+                        You can disable this warning by setting env-var NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE.\
+                        Note, unsoundness can occur if DatabaseContext from one instance is used by data \
+                        for other.");
+            }
+        }
+        MULTI_INSTANCE_BLOCKER.set(true);
+
         let mut ctx = DatabaseContext::default();
         let start_ptr = ctx.start_ptr();
         let root = APP::initialize_root(&mut ctx);
         let root_ptr = <APP::Root as Object>::Ptr::create(root, start_ptr);
         ctx.set_root_ptr(root_ptr.as_generic());
+        ctx.set_time(0);
         Database { context: ctx, app }
     }
 
     pub fn rewind(&mut self, time: u64) {
         self.context.rewind(time as u64);
     }
-
+}
+impl<APP> Drop for Database<APP> {
+    fn drop(&mut self) {
+        MULTI_INSTANCE_BLOCKER.set(false);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    impl FixedSizeObject for CounterObject {
-        const SIZE: usize = 8;
-        const ALIGN: usize = 4;
-    }
     #[derive(Clone, Copy, Zeroable, Pod)]
     #[repr(C)]
     struct CounterObject {
@@ -486,6 +520,40 @@ mod tests {
         assert_eq!(*counter.counter, 44);
         assert_eq!(counter.counter.get(), 44);
         assert_eq!(counter.counter2.get(), 43);
+    }
+
+    struct CounterMessage {
+        time: u64,
+        inc1: i32,
+        inc2: i32,
+    }
+    impl Message<CounterObject> for CounterMessage {
+        fn time(&self) -> u64 {
+            self.time
+        }
+
+        fn apply(&self, context: &mut DatabaseContext, root: &mut CounterObject) {
+            root.counter.set(context, root.counter.get().saturating_add_signed(self.inc1));
+            root.counter2.set(context, root.counter2.get().saturating_add_signed(self.inc2));
+        }
+    }
+
+    #[test]
+    fn test_msg_store() {
+        let mut db: Database<CounterApplication> = Database::create(CounterApplication);
+        let mut messages = MessageStore::new();
+        messages.messages.push(CounterMessage {
+            time: 1,
+            inc1: 2,
+            inc2: 1,
+        });
+
+        messages.apply(&mut db);
+
+        let (counter, context) = db.get_root();
+        assert_eq!(counter.counter.get(), 2);
+
+
     }
 
     #[test]
@@ -590,7 +658,17 @@ mod tests {
             println!("Pre-set-time");
             context.set_time(2);
             assert_eq!(counter_vec.len(), 1);
+            context.set_time(3);
         }
+
+        {
+            let (counter_vec, context) = db.get_root();
+            let counter = counter_vec.get_mut(context, 0);
+            counter.counter.set(context, 50);
+            context.rewind(2);
+            assert_eq!(counter.counter.get(), 47);
+        }
+
         println!("Rewind!");
         db.rewind(1);
 
@@ -598,8 +676,5 @@ mod tests {
             let (counter_vec, context) = db.get_root();
             assert_eq!(counter_vec.len(), 0);
         }
-
-
-
     }
 }
