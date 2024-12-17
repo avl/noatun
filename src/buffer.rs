@@ -1,18 +1,23 @@
-use crate::{FatPtr, FixedSizeObject, GenPtr, Object, Pointer, SequenceNr, ThinPtr};
-use bytemuck::{Pod, from_bytes, from_bytes_mut, bytes_of};
+use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
+use crate::{
+    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, SequenceNr,
+    ThinPtr,
+};
+use bumpalo::Bump;
+use bytemuck::{Pod, bytes_of, from_bytes, from_bytes_mut};
+use indexmap::{IndexMap, IndexSet};
 use std::alloc::Layout;
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem::transmute_copy;
 use std::ops::Range;
 use std::slice;
 use std::slice::SliceIndex;
-use indexmap::{IndexMap, IndexSet};
-use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 
-#[derive(Default,Debug)]
+#[derive(Default, Debug)]
 struct RegistrarTracker {
     uses: Vec<u32>,
     /// Messages are added to this list when their
@@ -21,51 +26,94 @@ struct RegistrarTracker {
     /// no other message (that isn't also to be removed), depend on it.
     unused_messages: Vec<SequenceNr>,
 
-
     /// Mapping from message-id to other messages that have read output
     /// from said message
-    message_dependencies: IndexMap<SequenceNr, Vec<SequenceNr>>
+    message_dependencies: IndexMap<SequenceNr, Vec<SequenceNr>>,
 }
 
 impl RegistrarTracker {
+    fn finalize_message(&mut self, message_id: SequenceNr) {
+        debug_assert_ne!(message_id.0, 0);
+        if self.uses.len() <= message_id.index() as usize || self.uses[message_id.index()] == 0 {
+            println!("No uses even directly: {:?}", message_id);
+            self.unused_messages.push(message_id);
+        }
+    }
 
-    fn calculate_unused_messages(&mut self) -> IndexSet<SequenceNr> {
-        self.unused_messages.sort();
+    fn finalize_transaction<M: Message+Debug>(
+        &mut self,
+        messages: &IndexMap<MessageId, M>,
+    ) -> IndexSet<SequenceNr> {
+        //println!("Messages: {:#?}", messages);
+        println!("Uses: {:?}", self.uses);
+        self.unused_messages.sort(); //Sort in seq-nr order
         let mut deleted = IndexSet::new();
-        println!("Update tracking: {:#?}", self);
+        let mut parent_lists = Bump::new();
+
         'outer: for msg in self.unused_messages.iter().rev() {
             if let Some(observers) = self.message_dependencies.get(msg) {
-                println!("Observers of {:?} are {:?}. Deleted: {:?}", msg, observers, deleted);
                 for observer in observers {
                     if !deleted.contains(observer) {
                         // 'msg' can't be deleted, because it's observed by
                         // 'observer' that is a later message that has not been deleted.
-                        println!("Can't delete {:?} because it's observed by {:?}", msg, observer);
+                        println!(
+                            "Can't delete {:?} because it's observed by {:?}",
+                            msg, observer
+                        );
                         continue 'outer;
                     }
                 }
             }
+            println!("Deleted: {:?}", msg);
             deleted.insert(*msg);
         }
+        // 'deleted' ends up in reverse seqnr-order
+        // iterate in seq-nr order.
+        let mut parent_remap: IndexMap<SequenceNr, Vec<SequenceNr>> = IndexMap::new();
+        for deleted in deleted.iter().rev() {
+            let mut parent_list = vec![];
+            for parent in messages[deleted.index()].parents() {
+                let parent_index = SequenceNr::from_index(messages.get_index_of(&parent)
+                    .expect("Parent unknown. This is not supported like this - it needs to be cleansed before msg added to store.").try_into().unwrap());
+                println!("Parent of {:?}: {:?}", deleted, parent_index);
+                if let Some(remapping) = parent_remap.get(&parent_index) {
+                    parent_list.extend(remapping);
+                } else {
+                    parent_list.push(parent_index);
+                }
+            }
+
+            parent_list.sort();
+            parent_list.dedup();
+            parent_remap.insert(*deleted, parent_list);
+        }
+        println!("Parent remap: {:#?}", parent_remap);
+        compile_error!("Apply the parent-remap. I.e, scan through un-deleted messages and update their parents!")
         deleted
     }
     fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
-        self.message_dependencies.entry(observee).or_default().push(observer);
+        self.message_dependencies
+            .entry(observee)
+            .or_default()
+            .push(observer);
     }
     fn increase_use(&mut self, registrar: SequenceNr) {
-        if self.uses.len() <= registrar.0 as usize {
-            self.uses.resize(registrar.0 as usize + 1, 0);
+        if self.uses.len() <= registrar.index() {
+            self.uses.resize(registrar.index()+1, 0);
         }
-        self.uses[registrar.0 as usize] += 1;
+        self.uses[registrar.index()] += 1;
+        println!("Increased use {:?} for {:?}", self.uses, registrar);
     }
     fn decrease_use(&mut self, registrar: SequenceNr) {
-        let cur = &mut self.uses[registrar.0 as usize];
+        let cur = &mut self.uses[registrar.index()];
         if *cur == 0 {
-            panic!("Corrupt use count for sequence nr {}", registrar.0);
+            panic!("Corrupt use count for sequence nr {:?}", registrar);
         }
         *cur -= 1;
         if *cur == 0 {
+            println!("Uses: {:?}, unusing {:?}", self.uses, registrar);
             self.unused_messages.push(registrar);
+            println!("Unused mesg: {:?}", self.unused_messages);
         }
     }
 }
@@ -83,7 +131,6 @@ pub struct DatabaseContext {
     // The current message being written (or None if not open for writing)
     current_registrar: Option<SequenceNr>,
     registrar_tracker: RefCell<RegistrarTracker>,
-
 
     /// The next message expected to be applied.
     /// Starts at 0.
@@ -146,13 +193,11 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
     }
 }
 
-
 impl DatabaseContext {
-
     pub fn next_seqnr(&self) -> usize {
         self.next_seqnr
     }
-    pub fn set_next_seqnr(&mut self, next:usize)  {
+    pub fn set_next_seqnr(&mut self, next: usize) {
         self.next_seqnr = next;
     }
 
@@ -162,11 +207,13 @@ impl DatabaseContext {
     /// Rewinding during construction of the root object is not allowed.
     pub(crate) fn rewind(&mut self, new_time: u64) {
         if self.most_recent_recorded_time.is_none() {
-            panic!("Attempt to rewind time before any time snapshot was recorded.\
-                    It is not allowed to rewind time before/while constructing the root object.")
+            panic!(
+                "Attempt to rewind time before any time snapshot was recorded.\
+                    It is not allowed to rewind time before/while constructing the root object."
+            )
         }
 
-        let result = self.undo_log.rewind(|entry|{
+        let result = self.undo_log.rewind(|entry| {
             println!("Parsed entry: {:?}", entry);
             match entry {
                 UndoLogEntry::SetPointer(new_pointer) => {
@@ -177,11 +224,13 @@ impl DatabaseContext {
                     HowToProceed::Proceed
                 }
                 UndoLogEntry::ZeroOut { start, len } => {
-                    unsafe { Self::mut_slice(self.data, start..start+len).fill(0) };
+                    unsafe { Self::mut_slice(self.data, start..start + len).fill(0) };
                     HowToProceed::Proceed
                 }
                 UndoLogEntry::Restore { start, data } => {
-                    unsafe { Self::mut_slice(self.data, start..start+data.len()).copy_from_slice(data)};
+                    unsafe {
+                        Self::mut_slice(self.data, start..start + data.len()).copy_from_slice(data)
+                    };
                     HowToProceed::Proceed
                 }
                 UndoLogEntry::Rewind(time) => {
@@ -191,7 +240,10 @@ impl DatabaseContext {
                     } else if time > new_time {
                         HowToProceed::Proceed
                     } else {
-                        panic!("Couldn't rewind time to {}, ended up back at {}", time, new_time);
+                        panic!(
+                            "Couldn't rewind time to {}, ended up back at {}",
+                            time, new_time
+                        );
                     }
                 }
             }
@@ -199,7 +251,6 @@ impl DatabaseContext {
         if !result {
             panic!("Rewind failed");
         }
-
     }
 
     pub fn pointer(&self) -> usize {
@@ -230,23 +281,27 @@ impl DatabaseContext {
         }
     }
 
-    pub fn set_root_ptr(&mut self, genptr: GenPtr)  {
+    pub fn set_root_ptr(&mut self, genptr: GenPtr) {
         self.root_index = Some(genptr);
     }
 
-    pub fn get_root_ptr<Ptr:Pointer+Any+'static>(&self) -> Ptr {
+    pub fn get_root_ptr<Ptr: Pointer + Any + 'static>(&self) -> Ptr {
         match self.root_index {
             Some(GenPtr::Thin(ptr)) => {
-                if TypeId::of::<Ptr>()  == TypeId::of::<ThinPtr>() {
-                    return unsafe  { transmute_copy(&ptr) };
+                if TypeId::of::<Ptr>() == TypeId::of::<ThinPtr>() {
+                    return unsafe { transmute_copy(&ptr) };
                 }
-                panic!("Wrong type of root pointer in database. Has schema changed significantly since last access?");
+                panic!(
+                    "Wrong type of root pointer in database. Has schema changed significantly since last access?"
+                );
             }
             Some(GenPtr::Fat(ptr)) => {
-                if TypeId::of::<Ptr>()  == TypeId::of::<FatPtr>() {
-                    return unsafe  { transmute_copy(&ptr) };
+                if TypeId::of::<Ptr>() == TypeId::of::<FatPtr>() {
+                    return unsafe { transmute_copy(&ptr) };
                 }
-                panic!("Wrong type of root pointer in database. Has schema changed significantly since last access?");
+                panic!(
+                    "Wrong type of root pointer in database. Has schema changed significantly since last access?"
+                );
             }
             None => {
                 panic!("Unknown root pointer");
@@ -254,9 +309,7 @@ impl DatabaseContext {
         }
     }
 
-
     pub fn copy(&mut self, source: FatPtr, dest_index: usize) {
-
         unsafe {
             dbg!(&source, &dest_index);
 
@@ -285,11 +338,12 @@ impl DatabaseContext {
             panic!("Noatun arbitrarily does not support types with alignment > 256");
         }
 
-        let alignment_adjustment = index_rounded_up_to_custom_align(self.pointer.get(), align).unwrap();
-        self.undo_log.record(UndoLogEntry::SetPointer(
-            self.pointer.get()
-        ));
-        self.pointer.set(alignment_adjustment.checked_add(size).unwrap());
+        let alignment_adjustment =
+            index_rounded_up_to_custom_align(self.pointer.get(), align).unwrap();
+        self.undo_log
+            .record(UndoLogEntry::SetPointer(self.pointer.get()));
+        self.pointer
+            .set(alignment_adjustment.checked_add(size).unwrap());
         if self.pointer.get() > self.data_len {
             panic!("Out of memory");
         }
@@ -309,7 +363,9 @@ impl DatabaseContext {
         unsafe { std::slice::from_raw_parts_mut(self.data.wrapping_add(range.start), range.len) }
     }
     pub unsafe fn mut_slice<'a>(data: *mut u8, range: Range<usize>) -> &'a mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(data.wrapping_add(range.start), range.end-range.start) }
+        unsafe {
+            std::slice::from_raw_parts_mut(data.wrapping_add(range.start), range.end - range.start)
+        }
     }
     pub unsafe fn access_pod<'a, T: Pod>(&self, index: usize) -> &'a T {
         unsafe {
@@ -337,7 +393,7 @@ impl DatabaseContext {
         let target = unsafe { self.access_mut(fat) };
         target.copy_from_slice(data);
     }
-    pub fn write_pod<T:Pod>(&mut self, src: T, dest: &mut T) {
+    pub fn write_pod<T: Pod>(&mut self, src: T, dest: &mut T) {
         let dest_index = self.index_of_sized(dest);
 
         self.undo_log.record(UndoLogEntry::Restore {
@@ -346,23 +402,38 @@ impl DatabaseContext {
         });
         *dest = src;
     }
-    pub fn index_of_sized<T:Sized>(&self, t: &T) -> ThinPtr
-    {
+    pub fn index_of_sized<T: Sized>(&self, t: &T) -> ThinPtr {
         ThinPtr::create(t, self.data as *const u8)
     }
-    pub fn index_of<T:Object>(&self, t: &T) -> T::Ptr
-    {
+    pub fn index_of<T: Object>(&self, t: &T) -> T::Ptr {
         T::Ptr::create(t, self.data)
     }
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {
         ThinPtr((t as *const u8 as usize) - (self.data as usize))
     }
 
-    pub fn get_msg_to_remove(&mut self) -> Vec<SequenceNr> {
-        self.registrar_tracker.borrow_mut().calculate_unused_messages().into_iter().collect()
+    /// Call after writing a message.
+    pub fn finalize_message(&mut self) {
+        self.registrar_tracker.borrow_mut().finalize_message(
+            self.current_registrar
+                .expect("A registrar must exist while writing to the db"),
+        );
+    }
+    /// Call after a complete update, i.e, applying multiple messages
+    /// Returns all messages that can now be removed.
+    pub fn finalize_transaction<M: Message+Debug>(
+        &mut self,
+        message_store: &IndexMap<MessageId, M>,
+    ) -> Vec<SequenceNr> {
+        self.registrar_tracker
+            .borrow_mut()
+            .finalize_transaction(message_store)
+            .into_iter()
+            .collect()
     }
 
     pub fn set_current_registrar(&mut self, seq: SequenceNr) {
+        println!("Set current reg: {:?}", seq);
         self.current_registrar = Some(seq);
     }
     pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr) {
@@ -370,8 +441,11 @@ impl DatabaseContext {
         if registrar_point.0 != 0 {
             track.decrease_use(*registrar_point);
         }
-        let current_registrar = self.current_registrar.expect("A registrar must exist when writing to db");
+        let current_registrar = self
+            .current_registrar
+            .expect("A registrar must exist when writing to db");
         track.increase_use(current_registrar);
+        println!("Updated registrar: {:?}", current_registrar);
         drop(track);
         self.write_pod(current_registrar, registrar_point)
     }
@@ -382,11 +456,13 @@ impl DatabaseContext {
         if observee.0 == 0 {
             return;
         }
-        let observer = self.current_registrar.expect("A registrar must exist when writing to db");
-        println!("OPbserver: {:?} observing {:?}", observer, observee);
+        let observer = self
+            .current_registrar
+            .expect("A registrar must exist when writing to db");
         if observer != observee {
-            self.registrar_tracker.borrow_mut().report_observed(observer, observee);
+            self.registrar_tracker
+                .borrow_mut()
+                .report_observed(observer, observee);
         }
     }
-
 }

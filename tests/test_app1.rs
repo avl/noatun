@@ -1,5 +1,7 @@
 use bytemuck::{Pod, Zeroable};
-use noatun::{Application, Database, DatabaseCell, DatabaseContext, FixedSizeObject, Object, ThinPtr};
+use noatun::{
+    Application, Database, DatabaseCell, DatabaseContext, FixedSizeObject, Object, ThinPtr,
+};
 
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
@@ -17,10 +19,7 @@ impl Object for CounterObject {
         unsafe { context.access_pod(index.0) }
     }
 
-    unsafe fn access_mut<'a>(
-        context: &mut DatabaseContext,
-        index: Self::Ptr,
-    ) -> &'a mut Self {
+    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
         unsafe { context.access_pod_mut(index) }
     }
 }
@@ -43,18 +42,17 @@ impl Application for CounterApplication {
     type Root = CounterObject;
 
     fn initialize_root(ctx: &mut DatabaseContext) -> &mut CounterObject {
-        unsafe  { ctx.allocate_pod::<CounterObject>() }
+        unsafe { ctx.allocate_pod::<CounterObject>() }
     }
 
     fn get_root<'a>(&'a mut self, ctx: &mut DatabaseContext, ptr: ThinPtr) -> &'a mut Self::Root {
-        unsafe  { ctx.access_pod_mut(ptr) }
+        unsafe { ctx.access_pod_mut(ptr) }
     }
 }
 
 #[test]
 fn test_counter_object() {
     let mut db: Database<CounterApplication> = Database::create(CounterApplication);
-
 
     let (counter, context) = db.get_root();
     assert_eq!(counter.counter.get(), 0);
@@ -63,7 +61,6 @@ fn test_counter_object() {
     counter.counter.set(context, 44);
 
     assert_eq!(*counter.counter, 44);
-
 }
 #[test]
 fn test_counter_mayhem() {
@@ -72,9 +69,7 @@ fn test_counter_mayhem() {
     drop(db1);
     let mut db2: Database<CounterApplication> = Database::create(CounterApplication);
 
-
     let (counter2, context2) = db2.get_root();
 
     counter2.counter.set(context2, 42);
-
 }
