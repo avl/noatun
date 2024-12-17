@@ -42,7 +42,7 @@ impl RegistrarTracker {
 
     fn finalize_transaction<M: Message+Debug>(
         &mut self,
-        messages: &IndexMap<MessageId, M>,
+        messages: &IndexMap<MessageId, Option<M>>,
     ) -> IndexSet<SequenceNr> {
         //println!("Messages: {:#?}", messages);
         println!("Uses: {:?}", self.uses);
@@ -72,7 +72,10 @@ impl RegistrarTracker {
         let mut parent_remap: IndexMap<SequenceNr, Vec<SequenceNr>> = IndexMap::new();
         for deleted in deleted.iter().rev() {
             let mut parent_list = vec![];
-            for parent in messages[deleted.index()].parents() {
+            let Some(msg) = &messages[deleted.index()] else {
+                panic!("Attempt to delete already-deleted message.");
+            };
+            for parent in msg.parents() {
                 let parent_index = SequenceNr::from_index(messages.get_index_of(&parent)
                     .expect("Parent unknown. This is not supported like this - it needs to be cleansed before msg added to store.").try_into().unwrap());
                 println!("Parent of {:?}: {:?}", deleted, parent_index);
@@ -88,7 +91,6 @@ impl RegistrarTracker {
             parent_remap.insert(*deleted, parent_list);
         }
         println!("Parent remap: {:#?}", parent_remap);
-        compile_error!("Apply the parent-remap. I.e, scan through un-deleted messages and update their parents!")
         deleted
     }
     fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
@@ -118,23 +120,24 @@ impl RegistrarTracker {
     }
 }
 
+
+
 pub struct DatabaseContext {
     data: *mut u8,
     data_len: usize,
     pointer: Cell<usize>,
     root_index: Option<GenPtr>,
-    most_recent_recorded_time: Option<u64>,
     undo_log: UndoLog,
     // Make sure neither Send nor Sync
     phantom: PhantomData<*mut ()>,
 
     // The current message being written (or None if not open for writing)
-    current_registrar: Option<SequenceNr>,
     registrar_tracker: RefCell<RegistrarTracker>,
 
     /// The next message expected to be applied.
-    /// Starts at 0.
-    next_seqnr: usize,
+    /// Starts at 0. When a message is being applied, this field
+    /// will have the seqnr of the message being applied, not the next one.
+    next_seqnr: SequenceNr,
 }
 impl Default for DatabaseContext {
     fn default() -> Self {
@@ -146,12 +149,10 @@ impl Default for DatabaseContext {
             data_len: 10000,
             pointer: 0.into(),
             root_index: None,
-            most_recent_recorded_time: None,
             undo_log: UndoLog::new(),
             phantom: Default::default(),
-            current_registrar: None,
             registrar_tracker: Default::default(),
-            next_seqnr: 0,
+            next_seqnr: SequenceNr::INVALID,
         }
     }
 }
@@ -194,19 +195,17 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
 }
 
 impl DatabaseContext {
-    pub fn next_seqnr(&self) -> usize {
+    pub fn next_seqnr(&self) -> SequenceNr {
         self.next_seqnr
-    }
-    pub fn set_next_seqnr(&mut self, next: usize) {
-        self.next_seqnr = next;
     }
 
     /// Note: Must not be public, since while output of [`crate::Database::get_root`] is still
     /// live, time travel _must not_ occur, since it would lead to unsoundness (potentially
     /// changing objects while they were used).
     /// Rewinding during construction of the root object is not allowed.
-    pub(crate) fn rewind(&mut self, new_time: u64) {
-        if self.most_recent_recorded_time.is_none() {
+    /// This rewinds time to just _before_ the given sequence number was added.
+    pub(crate) fn rewind(&mut self, new_time: SequenceNr) {
+        if self.next_seqnr().is_invalid() {
             panic!(
                 "Attempt to rewind time before any time snapshot was recorded.\
                     It is not allowed to rewind time before/while constructing the root object."
@@ -221,28 +220,28 @@ impl DatabaseContext {
                     debug_assert!(new_pointer <= cur);
                     unsafe { Self::mut_slice(self.data, new_pointer..cur).fill(0) };
                     self.pointer.set(new_pointer);
-                    HowToProceed::Proceed
+                    HowToProceed::PopAndContinue
                 }
                 UndoLogEntry::ZeroOut { start, len } => {
                     unsafe { Self::mut_slice(self.data, start..start + len).fill(0) };
-                    HowToProceed::Proceed
+                    HowToProceed::PopAndContinue
                 }
                 UndoLogEntry::Restore { start, data } => {
                     unsafe {
                         Self::mut_slice(self.data, start..start + data.len()).copy_from_slice(data)
                     };
-                    HowToProceed::Proceed
+                    HowToProceed::PopAndContinue
                 }
                 UndoLogEntry::Rewind(time) => {
                     if time == new_time {
-                        self.most_recent_recorded_time = Some(new_time);
-                        HowToProceed::PutBackAndStop
+                        self.next_seqnr = new_time;
+                        HowToProceed::PopAndStop
                     } else if time > new_time {
-                        HowToProceed::Proceed
+                        HowToProceed::PopAndContinue
                     } else {
                         panic!(
                             "Couldn't rewind time to {}, ended up back at {}",
-                            time, new_time
+                            new_time, time
                         );
                     }
                 }
@@ -261,24 +260,17 @@ impl DatabaseContext {
         self.data
     }
 
-    /// Returns the most recently recorded time.
-    /// This returns 0 if time has not been set yet (for example when
-    /// constructing the root object).
-    /// After the root object has been constructed, time 0 actually begins.
-    /// Rewinding to time 0 does not rewind the construction of the root object itself.
-    pub fn time(&self) -> u64 {
-        self.most_recent_recorded_time.unwrap_or(0)
-    }
-    pub fn set_time(&mut self, time: u64) {
-        if let Some(prev) = self.most_recent_recorded_time {
-            if time < prev {
-                panic!("Attempt to set time to a smaller value. Use the rewind function instead.");
-            }
+    pub fn set_next_seqnr(&mut self, seqnr: SequenceNr) {
+        if seqnr.is_invalid() {
+            panic!("Attempt to set sequence number to an invalid value");
         }
-        if Some(time) != self.most_recent_recorded_time {
-            self.undo_log.record(UndoLogEntry::Rewind(time));
-            self.most_recent_recorded_time = Some(time);
+        if seqnr <= self.next_seqnr {
+            panic!("Attempt to set sequence number to a smaller or equal value");
         }
+
+
+        self.undo_log.record(UndoLogEntry::Rewind(seqnr));
+        self.next_seqnr = seqnr;
     }
 
     pub fn set_root_ptr(&mut self, genptr: GenPtr) {
@@ -415,15 +407,14 @@ impl DatabaseContext {
     /// Call after writing a message.
     pub fn finalize_message(&mut self) {
         self.registrar_tracker.borrow_mut().finalize_message(
-            self.current_registrar
-                .expect("A registrar must exist while writing to the db"),
+            self.next_seqnr,
         );
     }
     /// Call after a complete update, i.e, applying multiple messages
     /// Returns all messages that can now be removed.
     pub fn finalize_transaction<M: Message+Debug>(
         &mut self,
-        message_store: &IndexMap<MessageId, M>,
+        message_store: &IndexMap<MessageId, Option<M>>,
     ) -> Vec<SequenceNr> {
         self.registrar_tracker
             .borrow_mut()
@@ -432,18 +423,13 @@ impl DatabaseContext {
             .collect()
     }
 
-    pub fn set_current_registrar(&mut self, seq: SequenceNr) {
-        println!("Set current reg: {:?}", seq);
-        self.current_registrar = Some(seq);
-    }
     pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr) {
         let mut track = self.registrar_tracker.borrow_mut();
         if registrar_point.0 != 0 {
             track.decrease_use(*registrar_point);
         }
         let current_registrar = self
-            .current_registrar
-            .expect("A registrar must exist when writing to db");
+            .next_seqnr;
         track.increase_use(current_registrar);
         println!("Updated registrar: {:?}", current_registrar);
         drop(track);
@@ -457,8 +443,7 @@ impl DatabaseContext {
             return;
         }
         let observer = self
-            .current_registrar
-            .expect("A registrar must exist when writing to db");
+            .next_seqnr;
         if observer != observee {
             self.registrar_tracker
                 .borrow_mut()

@@ -9,15 +9,20 @@ use bumpalo::Bump;
 use bytemuck::{Pod, Zeroable};
 use indexmap::IndexMap;
 use std::cell::Cell;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::{transmute, transmute_copy};
 use std::ops::Deref;
 use std::slice::SliceIndex;
+use std::time::{Duration, SystemTime};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
+
 pub(crate) mod backing_store;
 
 pub(crate) mod buffer;
 pub(crate) mod undo_store;
+mod on_disk_message_store;
 
 struct MessageComponent<const ID: u32, T> {
     value: Option<T>,
@@ -26,7 +31,24 @@ struct MessageComponent<const ID: u32, T> {
 #[derive(Pod, Zeroable, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct MessageId {
-    data: [u32; 3],
+    data: [u32; 4],
+}
+
+impl Display for MessageId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let time_ms = ((self.data[0] as u64) << 16) + ((self.data[1])>>16) as u64;
+
+        let unix_timestamp = (time_ms/1000) as i64;
+        let timestamp_ms = time_ms%1000;
+
+        let time = OffsetDateTime::from_unix_timestamp(unix_timestamp).unwrap();
+
+        let time_str = time.format(&Rfc3339).unwrap(); //All values representable should be formattable here
+        write!(f, "{:?}-{:x}-{:x}-{:x}",
+            time_str,
+            self.data[1]&0xffff, self.data[2], self.data[3]
+        )
+    }
 }
 
 impl Debug for MessageId {
@@ -36,8 +58,16 @@ impl Debug for MessageId {
 }
 
 impl MessageId {
+    pub fn is_zero(&self) -> bool {
+        self.data[0] == 0 && self.data[1] == 0
+    }
+    pub fn zero() -> MessageId {
+        MessageId {
+            data: [0, 0, 0, 0],
+        }
+    }
     pub fn new_debug(nr: u32) -> Self {
-        Self { data: [nr, 0, 0] }
+        Self { data: [nr, 0, 0, 0] }
     }
 }
 
@@ -46,7 +76,24 @@ impl MessageId {
 // 0 is an invalid sequence number, used to represent 'not a number'
 pub struct SequenceNr(u32);
 
+impl Display for SequenceNr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 0 {
+            write!(f, "#INVALID")
+        } else {
+            write!(f, "#{}", self.0)
+        }
+    }
+}
+
 impl SequenceNr {
+    pub const INVALID: SequenceNr = SequenceNr(0);
+    pub fn is_invalid(self) -> bool {
+        self.0 == 0
+    }
+    pub fn successor(self) -> SequenceNr {
+        SequenceNr(self.0 + 1)
+    }
     pub fn from_index(index: usize) -> SequenceNr {
         if index >= (u32::MAX - 1) as usize {
             panic!("More than 2^32 elements created. Not supported by noatun");
@@ -59,18 +106,25 @@ impl SequenceNr {
         }
         self.0 as usize - 1
     }
+    pub fn try_index(self) -> Option<usize> {
+        if self.0 == 0 {
+            return None;
+        }
+        Some(self.0 as usize - 1)
+    }
 }
+
+
 
 pub trait Message {
     type Root: Object;
     fn id(&self) -> MessageId;
     fn parents(&self) -> impl ExactSizeIterator<Item = MessageId>;
-    fn time(&self) -> u64;
     fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root);
 }
 
 struct MessageStore<APP: Application, M: Message<Root = APP::Root>> {
-    messages: IndexMap<MessageId, M>,
+    messages: IndexMap<MessageId, Option<M>>,
     phantom_data: PhantomData<*const APP::Root>,
 }
 
@@ -81,25 +135,52 @@ impl<App: Application, M: Message<Root = App::Root>> MessageStore<App, M> where 
             phantom_data: PhantomData,
         }
     }
-    pub fn apply(&self, database: &mut Database<App>) {
-        let (root, context) = database.get_root();
-        let mut cur_time = context.time();
-        for (seq, (message_id, msg)) in self.messages.iter().enumerate().skip(context.next_seqnr())
-        {
-            let seqnr = SequenceNr::from_index(seq);
-            context.set_current_registrar(seqnr);
-            let msg_time = msg.time();
-            if msg_time < cur_time {
-                panic!("A later message had an earlier timestamp");
-            } else if msg_time != cur_time {
-                context.set_time(msg_time);
-            }
-            msg.apply(context, root);
-            context.finalize_message();
-        }
-        context.set_next_seqnr(self.messages.len());
-        let must_remove = context.finalize_transaction(&self.messages);
+    fn push_message(&mut self, context: &mut DatabaseContext, message: M) {
+        let new_time = message.id();
+        let Err(insert_point) = self.messages.binary_search_by_key(&new_time, |msg_id,_|*msg_id) else {
+            // Binary search returns Ok when it finds the element exactly.
+            // If it does, the message was already in the store, in which case we just successfully
+            // do nothing.
+            return;
+        };
+        self.rewind(context, insert_point);
     }
+    fn rewind(&mut self, context: &mut DatabaseContext, point: usize) {
+        context.rewind(SequenceNr::from_index(point));
+        let mut index = 0;
+        // TODO: This is inefficient
+        self.messages.retain(|_, value| {
+            if index < point {
+                index += 1;
+                return true;
+            }
+            !value.is_none()
+        });
+    }
+    fn apply_single_message(context: &mut DatabaseContext, root: &mut App::Root, msg: &M, seqnr: SequenceNr)
+    {
+        context.set_next_seqnr(seqnr); //TODO: Don't record a snapshot for _every_ message.
+        msg.apply(context, root);//TODO: Handle panics in apply gracefully
+        context.finalize_message();
+    }
+    fn apply_missing_messages(&mut self, database: &mut Database<App>) {
+        let (root, context) = database.get_root();
+        for (seq, (message_id, msg)) in self.messages.iter().enumerate().skip(context.next_seqnr().try_index().unwrap_or(0))
+        {
+            let Some(msg) = msg else {continue;};
+            let seqnr = SequenceNr::from_index(seq);
+            Self::apply_single_message(context, root,  &msg,seqnr);
+        }
+        context.set_next_seqnr(SequenceNr::from_index(self.messages.len()));
+        let must_remove = context.finalize_transaction(&self.messages);
+        for index in must_remove {
+            println!("Removing message {:?}", index);
+            *self.messages.get_index_mut(index.index()).unwrap()
+                .1 = None;
+        }
+    }
+
+
 }
 
 pub enum GenPtr {
@@ -475,13 +556,9 @@ impl<APP: Application> Database<APP> {
         let root = APP::initialize_root(&mut ctx);
         let root_ptr = <APP::Root as Object>::Ptr::create(root, start_ptr);
         ctx.set_root_ptr(root_ptr.as_generic());
-        ctx.set_time(0);
         Database { context: ctx, app }
     }
 
-    pub fn rewind(&mut self, time: u64) {
-        self.context.rewind(time as u64);
-    }
 }
 impl<APP> Drop for Database<APP> {
     fn drop(&mut self) {
@@ -559,6 +636,7 @@ mod tests {
         let context = &db.context;
 
         let (counter, context) = db.get_root();
+        context.set_next_seqnr(SequenceNr::from_index(0));
         assert_eq!(counter.counter.get(context), 0);
         counter.counter.set(context, 42);
         counter.counter2.set(context, 43);
@@ -587,9 +665,6 @@ mod tests {
             self.parent.into_iter()
         }
 
-        fn time(&self) -> u64 {
-            self.time
-        }
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut CounterObject) {
             if self.inc1 != 0 {
@@ -609,33 +684,33 @@ mod tests {
         let mut messages = MessageStore::new();
         messages
             .messages
-            .insert(MessageId::new_debug(0x100), CounterMessage {
+            .insert(MessageId::new_debug(0x100), Some(CounterMessage {
                 parent: None,
                 id: MessageId::new_debug(0x100),
                 time: 1,
                 inc1: 2,
                 set1: 0,
-            });
+            }));
         messages
             .messages
-            .insert(MessageId::new_debug(0x101), CounterMessage {
+            .insert(MessageId::new_debug(0x101), Some(CounterMessage {
                 parent: Some(MessageId::new_debug(0x100)),
                 id: MessageId::new_debug(0x101),
                 time: 1,
                 inc1: 0,
                 set1: 42,
-            });
+            }));
         messages
             .messages
-            .insert(MessageId::new_debug(0x102), CounterMessage {
+            .insert(MessageId::new_debug(0x102), Some(CounterMessage {
                 parent: Some(MessageId::new_debug(0x101)),
                 id: MessageId::new_debug(0x102),
                 time: 1,
                 inc1: 0,
                 set1: 43,
-            });
+            }));
 
-        messages.apply(&mut db);
+        messages.apply_missing_messages(&mut db);
 
         let (counter, context) = db.get_root();
         assert_eq!(counter.counter.get(context), 43);
@@ -691,6 +766,7 @@ mod tests {
 
         let mut db: Database<CounterVecApplication> = Database::create(CounterVecApplication);
         let (counter_vec, context) = db.get_root();
+        context.set_next_seqnr(SequenceNr::from_index(0));
         assert_eq!(counter_vec.len(context), 0);
 
         println!("1");
@@ -745,28 +821,28 @@ mod tests {
 
         {
             let (counter_vec, context) = db.get_root();
-            context.set_time(1);
+            context.set_next_seqnr(SequenceNr::from_index(1));
             assert_eq!(counter_vec.len(context), 0);
             println!("Pre-push");
             let new_element = counter_vec.push_new(context);
             new_element.counter.set(context, 47);
             new_element.counter2.set(context, 48);
             println!("Pre-set-time");
-            context.set_time(2);
+            context.set_next_seqnr(SequenceNr::from_index(2));
             assert_eq!(counter_vec.len(context), 1);
-            context.set_time(3);
+            context.set_next_seqnr(SequenceNr::from_index(3));
         }
 
         {
             let (counter_vec, context) = db.get_root();
             let counter = counter_vec.get_mut(context, 0);
             counter.counter.set(context, 50);
-            context.rewind(2);
+            context.rewind(SequenceNr::from_index(2));
             assert_eq!(counter.counter.get(context), 47);
         }
 
         println!("Rewind!");
-        db.rewind(1);
+        db.context.rewind(SequenceNr::from_index(1));
 
         {
             let (counter_vec, context) = db.get_root();

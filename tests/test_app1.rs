@@ -1,7 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use noatun::{
-    Application, Database, DatabaseCell, DatabaseContext, FixedSizeObject, Object, ThinPtr,
-};
+use noatun::{Application, Database, DatabaseCell, DatabaseContext, FixedSizeObject, Object, SequenceNr, ThinPtr};
 
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
@@ -53,9 +51,9 @@ impl Application for CounterApplication {
 #[test]
 fn test_counter_object() {
     let mut db: Database<CounterApplication> = Database::create(CounterApplication);
-
     let (counter, context) = db.get_root();
-    assert_eq!(counter.counter.get(), 0);
+    context.set_next_seqnr(SequenceNr::from_index(1));
+    assert_eq!(counter.counter.get(context), 0);
     counter.counter.set(context, 42);
     counter.counter2.set(context, 43);
     counter.counter.set(context, 44);
@@ -66,10 +64,11 @@ fn test_counter_object() {
 fn test_counter_mayhem() {
     let mut db1: Database<CounterApplication> = Database::create(CounterApplication);
     let (counter1, context1) = db1.get_root();
+    context1.set_next_seqnr(SequenceNr::from_index(1));
     drop(db1);
     let mut db2: Database<CounterApplication> = Database::create(CounterApplication);
 
     let (counter2, context2) = db2.get_root();
-
+    context2.set_next_seqnr(SequenceNr::from_index(1));
     counter2.counter.set(context2, 42);
 }

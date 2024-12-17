@@ -2,6 +2,7 @@ use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
 use std::io::Write;
+use crate::{MessageId, SequenceNr};
 
 #[derive(Debug)]
 pub enum UndoLogEntry<'a> {
@@ -17,7 +18,7 @@ pub enum UndoLogEntry<'a> {
         start: usize,
         data: &'a [u8],
     },
-    Rewind(u64),
+    Rewind(SequenceNr),
 }
 
 pub struct UndoLog {
@@ -26,8 +27,7 @@ pub struct UndoLog {
 
 pub enum HowToProceed {
     PopAndStop,
-    PutBackAndStop,
-    Proceed,
+    PopAndContinue,
     Error,
 }
 
@@ -49,10 +49,7 @@ impl UndoLog {
                     self.store.truncate(new_len);
                     return true;
                 }
-                HowToProceed::PutBackAndStop => {
-                    return true;
-                }
-                HowToProceed::Proceed => {
+                HowToProceed::PopAndContinue => {
                     self.store.truncate(new_len);
                 }
             }
@@ -93,9 +90,9 @@ impl UndoLog {
                 return Some((offset, UndoLogEntry::Restore { start, data: buf }));
             }
             4 => {
-                assert!(offset >= 8);
-                offset -= 8;
-                let time = LittleEndian::read_u64(&data[offset..offset + 8]);
+                assert!(offset >= 4);
+                offset -= 4;
+                let time : SequenceNr = bytemuck::pod_read_unaligned(&data[offset..offset + 4]);
                 return Some((offset, UndoLogEntry::Rewind(time)));
             }
             _ => panic!("Corrupt undo-store"),
@@ -143,7 +140,7 @@ impl UndoLog {
             }
             UndoLogEntry::Rewind(time) => {
                 store
-                    .write_u64::<LittleEndian>(time)
+                    .write_all(bytemuck::bytes_of(&time))
                     .expect("Failed to write to undo store");
                 store.write_u8(4).expect("Failed to write to undo store");
             }
