@@ -1,8 +1,5 @@
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{
-    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, SequenceNr,
-    ThinPtr,
-};
+use crate::{Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, SequenceNr, Target, ThinPtr};
 use bumpalo::Bump;
 use bytemuck::{Pod, bytes_of, from_bytes, from_bytes_mut};
 use indexmap::{IndexMap, IndexSet};
@@ -14,11 +11,14 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem::transmute_copy;
 use std::ops::Range;
+use std::path::Path;
 use std::slice;
 use std::slice::SliceIndex;
+use crate::buffer::message_dependency_tracker::{MessageDependencyTracker, MmapMessageDependencyTracker};
+use anyhow::Result;
 
-#[derive(Default, Debug)]
-struct RegistrarTracker {
+#[derive(Debug)]
+struct RegistrarTracker<T:MessageDependencyTracker> {
     uses: Vec<u32>,
     /// Messages are added to this list when their
     /// last registrar_point is overwritten
@@ -28,222 +28,23 @@ struct RegistrarTracker {
 
     /// Mapping from message-id to other messages that have read output
     /// from said message
-    message_dependencies: IndexMap<SequenceNr, Vec<SequenceNr>>,
+    message_dependencies: T,
 }
 
-mod message_dependency_tracker {
-    use std::fs::{File, OpenOptions};
-    use std::iter;
-    use memmap2::{Mmap, MmapMut};
-    use anyhow::Result;
-    use bytemuck::{Pod, Zeroable};
-    use crate::SequenceNr;
-
-    // Mapping from observee to observers.
-    struct MessageDependencyTracker {
-        /// the sequencenr that has been observed
-        keys: MmapMut,
-        key_capacity: usize,
-        /// the sequence nr that have observed each key. I.e, the messages that
-        /// are dependent upon the key.
-        vals: MmapMut,
-        value_capacity: usize,
-        key_file: File,
-        value_file: File,
+impl<T:MessageDependencyTracker> RegistrarTracker<T> {
+    fn new (path: &Target) -> Result<RegistrarTracker<T>> {
+        Ok(RegistrarTracker {
+            uses: vec![],
+            unused_messages: vec![],
+            message_dependencies: T::new(path)?,
+        })
     }
-
-    #[derive(Debug,Clone,Copy,Pod,Zeroable)]
-    #[repr(C)]
-    struct LinkedListEntry {
-        next_lsb: u32,
-        next_msb: u32,
-        seq: SequenceNr,
-    }
-
-    impl LinkedListEntry {
-        fn set_next(&mut self, next: u64) {
-            self.next_lsb = next as u32;
-            self.next_msb = (next >>32) as u32;
-        }
-        fn get_next(&self) -> u64 {
-            self.next_lsb as u64 | ((self.next_msb as u64) << 32)
-        }
-    }
-
-    impl MessageDependencyTracker {
-
-        #[inline]
-        fn get_count(mmap: &MmapMut) -> usize {
-            *bytemuck::from_bytes::<u64>(&mmap[0..size_of::<u64>()]) as usize
-        }
-        #[inline]
-        fn access<T:Pod>(mmap: &mut MmapMut) -> (&mut u64, &mut [T]) {
-            let slice_bytes:&mut [u8] = mmap;
-            //println!("Mmap size: {}, item size: {}", slice_bytes.len(), size_of::<T>());
-            let (slice_a, slice_b) = slice_bytes.split_at_mut(std::mem::size_of::<u64>());
-            let count: &mut u64 = bytemuck::from_bytes_mut(slice_a);
-            let slice: &mut [T] = bytemuck::cast_slice_mut(slice_b);
-            //println!("Couint: {}, cap: {}", count, slice.len());
-            (count, slice)
-        }
-
-
-        // Record mapping from observee to observer
-        pub fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr ) {
-            assert!(observer.is_valid());
-            assert!(observee.is_valid());
-
-            //println!("Observee index {}, cap: {}", observee.index(), self.key_capacity);
-            if observee.index() >= self.key_capacity {
-                //println!("REALLOC!");
-                self.reallocate_keys((observee.index()+1)*2);
-            }
-
-            //dbg!(Self::get_count(&self.vals) + 1, self.value_capacity);
-            if Self::get_count(&self.vals) + 1 >= self.value_capacity {
-                //println!("REALLOC!");
-                self.reallocate_values((self.value_capacity+1)*2);
-            }
-
-            let (val_len, vals) : (_ , &mut [LinkedListEntry]) = Self::access(&mut self.vals);
-            let (key_len, keys) : (_, &mut [u64])= Self::access(&mut self.keys);
-            debug_assert_eq!(keys.len(), self.key_capacity as usize);
-            debug_assert_eq!(vals.len(), self.value_capacity as usize);
-
-            let prev = keys[observee.index()];
-
-            let new_entry: &mut LinkedListEntry = &mut vals[*val_len as usize];
-            new_entry.seq = observer;
-            new_entry.set_next(prev);
-            keys[observee.index()] = *val_len + 1;
-
-            *val_len += 1;
-            /*println!("Final state:\n{:?} keys: {:?}\n{:?} values: {:?}",
-                key_len, keys,
-                val_len, vals,
-            )*/
-        }
-        pub fn read_dependency(&mut self, observee: SequenceNr) -> impl Iterator<Item=SequenceNr> {
-            let (key_len, keys) : (_, &mut [u64])= Self::access(&mut self.keys);
-            let (val_len, vals) : (_ , &mut [LinkedListEntry])= Self::access(&mut self.vals);
-            debug_assert_eq!(keys.len(), self.key_capacity as usize);
-            debug_assert_eq!(vals.len(), self.value_capacity as usize);
-
-            let mut cur: u64 = keys[observee.index()];
-
-            iter::from_fn(move||{
-                if cur == 0 {
-                    return None;
-                }
-                let entry = &vals[cur as usize - 1];
-                cur = entry.get_next();
-                return Some(entry.seq);
-
-            })
-        }
-
-        fn calc_needed_bytes_keys(count: usize) -> usize {
-            (std::mem::size_of::<u64>()) * count +std::mem::size_of::<u64>()
-        }
-        fn calc_needed_bytes_vals(count: usize) -> usize {
-            (std::mem::size_of::<u64>() + size_of::<SequenceNr>()) * count +std::mem::size_of::<u64>()
-        }
-
-        fn reallocate_keys(&mut self, new_count: usize) -> Result<()> {
-            //println!("Reallocating keys to {}", new_count);
-            Self::reallocate(&mut self.keys, &mut self.key_file, Self::calc_needed_bytes_keys(new_count))?;
-            self.key_capacity = new_count;
-            Ok(())
-        }
-        fn reallocate_values(&mut self, new_count: usize) -> Result<()>  {
-            //println!("Reallocating values to {}", new_count);
-            Self::reallocate(&mut self.vals, &mut self.value_file, Self::calc_needed_bytes_vals(new_count))?;
-            self.value_capacity = new_count;
-            Ok(())
-        }
-
-        fn reallocate(mmap: &mut MmapMut, file: &File, new_bytes: usize) -> Result<()> {
-            file.set_len(new_bytes as u64)?;
-            let new_mmap = unsafe { MmapMut::map_mut(file)? };
-            *mmap = new_mmap;
-            Ok(())
-        }
-
-        pub fn new(path: impl AsRef<std::path::Path>) -> Result<Self> {
-            std::fs::create_dir_all(path.as_ref());
-            let key_path = path.as_ref().join("dep_keys.bin");
-            let value_path = path.as_ref().join("dep_values.bin");
-            let key_file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&key_path)?;
-            let value_file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&value_path)?;
-
-            const DEFAULT_KEY_CAPACITY: usize = 3;
-            const DEFAULT_VALUE_CAPACITY: usize = 3;
-
-            let key_size_bytes = Self::calc_needed_bytes_keys(DEFAULT_KEY_CAPACITY);
-            let value_size_bytes = Self::calc_needed_bytes_vals(DEFAULT_VALUE_CAPACITY);
-
-
-            //println!("Setting lens: {} {}", key_size_bytes, value_size_bytes);
-            key_file.set_len(key_size_bytes as u64)?;
-            value_file.set_len(value_size_bytes as u64)?;
-
-            let key_mmap = unsafe { MmapMut::map_mut(&key_file)? };
-            let value_mmap = unsafe { MmapMut::map_mut(&value_file)? };
-
-            Ok(MessageDependencyTracker {
-                key_file,
-                value_file,
-                key_capacity:DEFAULT_KEY_CAPACITY,
-                keys: key_mmap,
-                value_capacity: DEFAULT_VALUE_CAPACITY,
-                vals: value_mmap
-            })
-        }
-    }
-    #[cfg(test)]
-    mod tests {
-        use std::time::Instant;
-        use crate::buffer::message_dependency_tracker::MessageDependencyTracker;
-        use crate::SequenceNr;
-
-        #[test]
-        fn smoke_deptrack() {
-            std::fs::remove_dir_all("test_smoke_deptrack");
-            let mut tracker = MessageDependencyTracker::new("test_smoke_deptrack").unwrap();
-            tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
-
-            let result: Vec<_> = tracker.read_dependency(SequenceNr::from_index(1)).collect();
-            assert_eq!(result, vec![SequenceNr::from_index(2)]);
-        }
-
-        #[test]
-        fn smoke_deptrack_many() {
-            std::fs::remove_dir_all("test_smoke_deptrack");
-            let mut tracker = MessageDependencyTracker::new("test_smoke_deptrack").unwrap();
-            let t = Instant::now();
-            for i in 0..1000000 {
-                tracker.record_dependency(SequenceNr::from_index(i/2), SequenceNr::from_index(i));
-            }
-            println!("Time: {:?}", t.elapsed());
-
-            let result: Vec<_> = tracker.read_dependency(SequenceNr::from_index(0)).map(|x|x.index()).collect();
-            assert_eq!(result, vec![1,0]);
-            let result: Vec<_> = tracker.read_dependency(SequenceNr::from_index(4)).map(|x|x.index()).collect();
-            assert_eq!(result, vec![9,8]);
-        }
-    }
-
 }
 
-impl RegistrarTracker {
+
+mod message_dependency_tracker;
+
+impl<T:MessageDependencyTracker> RegistrarTracker<T> {
     fn finalize_message(&mut self, message_id: SequenceNr) {
         debug_assert_ne!(message_id.0, 0);
         if self.uses.len() <= message_id.index() as usize || self.uses[message_id.index()] == 0 {
@@ -261,19 +62,19 @@ impl RegistrarTracker {
         let mut parent_lists = Bump::new();
 
         'outer: for msg in self.unused_messages.iter().rev() {
-            if let Some(observers) = self.message_dependencies.get(msg) {
-                for observer in observers {
-                    if !deleted.contains(observer) {
-                        // 'msg' can't be deleted, because it's observed by
-                        // 'observer' - i.e a later message that has not been deleted.
-                        println!(
-                            "Can't delete {:?} because it's observed by {:?}",
-                            msg, observer
-                        );
-                        continue 'outer;
-                    }
+
+            for observer in self.message_dependencies.read_dependency(*msg) {
+                if !deleted.contains(&observer) {
+                    // 'msg' can't be deleted, because it's observed 7by
+                    // 'observer' - i.e a later message that has not been deleted.
+                    println!(
+                        "Can't delete {:?} because it's observed by {:?}",
+                        msg, observer
+                    );
+                    continue 'outer;
                 }
             }
+
             deleted.insert(*msg);
         }
         // 'deleted' ends up in reverse seqnr-order
@@ -301,10 +102,11 @@ impl RegistrarTracker {
         deleted
     }
     fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
-        self.message_dependencies
+        /*self.message_dependencies
             .entry(observee)
             .or_default()
-            .push(observer);
+            .push(observer);*/
+        self.message_dependencies.record_dependency(observee, observer);
     }
     fn increase_use(&mut self, registrar: SequenceNr) {
         if self.uses.len() <= registrar.index() {
@@ -324,11 +126,40 @@ impl RegistrarTracker {
     }
 }
 
-
-
-pub struct DatabaseContext {
+pub trait MainStore {
+    fn new(name: &Target) -> Result<Self> where Self: Sized;
+    fn data(&self) -> *mut u8;
+    fn len(&self) -> usize;
+}
+pub struct InMemoryMainStore {
     data: *mut u8,
     data_len: usize,
+
+}
+impl MainStore for InMemoryMainStore {
+    fn new(name: &Target) -> Result<Self> {
+        let layout = Layout::from_size_align(10000, 256).unwrap();
+        let data = unsafe { std::alloc::alloc_zeroed(layout) };
+        Ok(InMemoryMainStore {
+            data,
+            data_len: 10000,
+        })
+    }
+
+    fn data(&self) -> *mut u8 {
+        self.data
+    }
+
+    fn len(&self) -> usize {
+        self.data_len
+    }
+}
+
+
+pub struct DatabaseContext<M = InMemoryMainStore, D  = MmapMessageDependencyTracker>
+    where M: MainStore, D: MessageDependencyTracker
+{
+    main_store: M,
     pointer: Cell<usize>,
     root_index: Option<GenPtr>,
     undo_log: UndoLog,
@@ -336,37 +167,20 @@ pub struct DatabaseContext {
     phantom: PhantomData<*mut ()>,
 
     // The current message being written (or None if not open for writing)
-    registrar_tracker: RefCell<RegistrarTracker>,
+    registrar_tracker: RefCell<RegistrarTracker<D>>,
 
     /// The next message expected to be applied.
     /// Starts at 0. When a message is being applied, this field
     /// will have the seqnr of the message being applied, not the next one.
     next_seqnr: SequenceNr,
 }
-impl Default for DatabaseContext {
-    fn default() -> Self {
-        let layout = Layout::from_size_align(10000, 256).unwrap();
-
-        let data = unsafe { std::alloc::alloc_zeroed(layout) };
-        Self {
-            data,
-            data_len: 10000,
-            pointer: 0.into(),
-            root_index: None,
-            undo_log: UndoLog::new(),
-            phantom: Default::default(),
-            registrar_tracker: Default::default(),
-            next_seqnr: SequenceNr::INVALID,
-        }
-    }
-}
-impl Drop for DatabaseContext {
+impl<S:MainStore, T:MessageDependencyTracker> Drop for DatabaseContext<S,T> {
     fn drop(&mut self) {
         /*let r = unsafe { slice::from_raw_parts_mut(self.data, self.data_len) };
         let p = r as *mut _;*/
         //let _: Box<[u8]> = unsafe { Box::from_raw(self.data_orig) };
         let layout = Layout::from_size_align(10000, 256).unwrap();
-        unsafe { std::alloc::dealloc(self.data, layout) }
+        unsafe { std::alloc::dealloc(self.main_store.data(), layout) }
     }
 }
 
@@ -398,10 +212,22 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
     }
 }
 
-impl DatabaseContext {
+impl<M:MainStore, D: MessageDependencyTracker> DatabaseContext<M,D> {
     pub fn next_seqnr(&self) -> SequenceNr {
         self.next_seqnr
     }
+    pub fn new(name: &Target) -> Result<Self> {
+        Ok(Self {
+            main_store: M::new(name)?,
+            pointer: Cell::new(0),
+            root_index: None,
+            undo_log: UndoLog::new(),
+            phantom: Default::default(),
+            registrar_tracker: RefCell::new(RegistrarTracker::new(name)?),
+            next_seqnr: SequenceNr::INVALID,
+        })
+    }
+
 
     /// Note: Must not be public, since while output of [`crate::Database::get_root`] is still
     /// live, time travel _must not_ occur, since it would lead to unsoundness (potentially
@@ -421,17 +247,17 @@ impl DatabaseContext {
                 UndoLogEntry::SetPointer(new_pointer) => {
                     let cur = self.pointer.get();
                     debug_assert!(new_pointer <= cur);
-                    unsafe { Self::mut_slice(self.data, new_pointer..cur).fill(0) };
+                    unsafe { Self::mut_slice(self.main_store.data(), new_pointer..cur).fill(0) };
                     self.pointer.set(new_pointer);
                     HowToProceed::PopAndContinue
                 }
                 UndoLogEntry::ZeroOut { start, len } => {
-                    unsafe { Self::mut_slice(self.data, start..start + len).fill(0) };
+                    unsafe { Self::mut_slice(self.main_store.data(), start..start + len).fill(0) };
                     HowToProceed::PopAndContinue
                 }
                 UndoLogEntry::Restore { start, data } => {
                     unsafe {
-                        Self::mut_slice(self.data, start..start + data.len()).copy_from_slice(data)
+                        Self::mut_slice(self.main_store.data(), start..start + data.len()).copy_from_slice(data)
                     };
                     HowToProceed::PopAndContinue
                 }
@@ -460,7 +286,7 @@ impl DatabaseContext {
     }
 
     pub fn start_ptr(&self) -> *const u8 {
-        self.data
+        self.main_store.data()
     }
 
     pub fn set_next_seqnr(&mut self, seqnr: SequenceNr) {
@@ -540,10 +366,10 @@ impl DatabaseContext {
             .record(UndoLogEntry::SetPointer(self.pointer.get()));
         self.pointer
             .set(alignment_adjustment.checked_add(size).unwrap());
-        if self.pointer.get() > self.data_len {
+        if self.pointer.get() > self.main_store.len() {
             panic!("Out of memory");
         }
-        unsafe { self.data.wrapping_add(self.pointer.get() - size) }
+        unsafe { self.main_store.data().wrapping_add(self.pointer.get() - size) }
     }
     pub fn allocate_array<const N: usize, const ALIGN: usize>(&mut self) -> &mut [u8; N] {
         self.allocate_slice(N, ALIGN).try_into().unwrap()
@@ -553,10 +379,10 @@ impl DatabaseContext {
         unsafe { std::slice::from_raw_parts_mut(start, size) }
     }
     pub unsafe fn access<'a>(&self, range: FatPtr) -> &'a [u8] {
-        unsafe { std::slice::from_raw_parts(self.data.wrapping_add(range.start), range.len) }
+        unsafe { std::slice::from_raw_parts(self.main_store.data().wrapping_add(range.start), range.len) }
     }
     pub unsafe fn access_mut<'a>(&mut self, range: FatPtr) -> &'a mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.data.wrapping_add(range.start), range.len) }
+        unsafe { std::slice::from_raw_parts_mut(self.main_store.data().wrapping_add(range.start), range.len) }
     }
     pub unsafe fn mut_slice<'a>(data: *mut u8, range: Range<usize>) -> &'a mut [u8] {
         unsafe {
@@ -566,7 +392,7 @@ impl DatabaseContext {
     pub unsafe fn access_pod<'a, T: Pod>(&self, index: usize) -> &'a T {
         unsafe {
             from_bytes(std::slice::from_raw_parts(
-                self.data.wrapping_add(index),
+                self.main_store.data().wrapping_add(index),
                 size_of::<T>(),
             ))
         }
@@ -574,14 +400,14 @@ impl DatabaseContext {
     pub unsafe fn access_pod_mut<'a, T: Pod>(&self, index: ThinPtr) -> &'a mut T {
         unsafe {
             from_bytes_mut(std::slice::from_raw_parts_mut(
-                self.data.wrapping_add(index.0),
+                self.main_store.data().wrapping_add(index.0),
                 size_of::<T>(),
             ))
         }
     }
 
     pub fn write(&mut self, index: usize, data: &[u8]) {
-        debug_assert!(index + data.len() <= self.data_len);
+        debug_assert!(index + data.len() <= self.main_store.len());
         let fat = FatPtr {
             start: index,
             len: data.len(),
@@ -599,13 +425,13 @@ impl DatabaseContext {
         *dest = src;
     }
     pub fn index_of_sized<T: Sized>(&self, t: &T) -> ThinPtr {
-        ThinPtr::create(t, self.data as *const u8)
+        ThinPtr::create(t, self.main_store.data() as *const u8)
     }
     pub fn index_of<T: Object>(&self, t: &T) -> T::Ptr {
-        T::Ptr::create(t, self.data)
+        T::Ptr::create(t, self.main_store.data())
     }
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {
-        ThinPtr((t as *const u8 as usize) - (self.data as usize))
+        ThinPtr((t as *const u8 as usize) - (self.main_store.data() as usize))
     }
 
     /// Call after writing a message.
@@ -616,9 +442,9 @@ impl DatabaseContext {
     }
     /// Call after a complete update, i.e, applying multiple messages
     /// Returns all messages that can now be removed.
-    pub fn finalize_transaction<M: Message+Debug>(
+    pub fn finalize_transaction<MSG: Message+Debug>(
         &mut self,
-        message_store: &IndexMap<MessageId, Option<M>>,
+        message_store: &IndexMap<MessageId, Option<MSG>>,
     ) -> Vec<SequenceNr> {
         self.registrar_tracker
             .borrow_mut()

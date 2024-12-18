@@ -1,5 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use noatun::{Application, Database, DatabaseCell, DatabaseContext, FixedSizeObject, Object, SequenceNr, ThinPtr};
+use noatun::{Application, Database, DatabaseCell, DatabaseContext, Object, SequenceNr, ThinPtr};
 
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
@@ -50,7 +50,7 @@ impl Application for CounterApplication {
 
 #[test]
 fn test_counter_object() {
-    let mut db: Database<CounterApplication> = Database::create(CounterApplication);
+    let mut db: Database<CounterApplication> = Database::create_new("test/integration/test_counter_object.bin",CounterApplication).unwrap();
     let (counter, context) = db.get_root();
     context.set_next_seqnr(SequenceNr::from_index(1));
     assert_eq!(counter.counter.get(context), 0);
@@ -62,11 +62,11 @@ fn test_counter_object() {
 }
 #[test]
 fn test_counter_mayhem() {
-    let mut db1: Database<CounterApplication> = Database::create(CounterApplication);
-    let (counter1, context1) = db1.get_root();
+    let mut db1: Database<CounterApplication> = Database::create_new("test/integration/test_counter_mayhem.bin", CounterApplication).unwrap();
+    let (_counter1, context1) = db1.get_root();
     context1.set_next_seqnr(SequenceNr::from_index(1));
     drop(db1);
-    let mut db2: Database<CounterApplication> = Database::create(CounterApplication);
+    let mut db2: Database<CounterApplication> = Database::create_new("test/integration/test_counter_mayhem2.bin", CounterApplication).unwrap();
 
     let (counter2, context2) = db2.get_root();
     context2.set_next_seqnr(SequenceNr::from_index(1));

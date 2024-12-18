@@ -13,10 +13,13 @@ use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::{transmute, transmute_copy};
 use std::ops::Deref;
+use std::path::{Path, PathBuf};
 use std::slice::SliceIndex;
 use std::time::{Duration, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use crate::buffer::InMemoryMainStore;
+use anyhow::Result;
 
 pub(crate) mod backing_store;
 
@@ -545,13 +548,32 @@ thread_local! {
     static MULTI_INSTANCE_BLOCKER: Cell<bool> = Cell::new(false);
 }
 
+pub struct Target {
+    path: PathBuf,
+    overwrite: bool
+}
+impl Target {
+    pub fn overwrite(path: impl AsRef<Path>) -> Self {
+        Self {
+            path: path.as_ref().to_path_buf(),
+            overwrite: true,
+        }
+    }
+}
 impl<APP: Application> Database<APP> {
     pub fn get_root<'a>(&'a mut self) -> (&'a mut APP::Root, &'a mut DatabaseContext) {
         let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
         let root = APP::get_root(&mut self.app, &mut self.context, root_ptr);
         (root, &mut self.context)
     }
-    pub fn create(app: APP) -> Database<APP> {
+
+    pub fn create_new(path: impl AsRef<Path>, app: APP) -> Result<Database<APP>> {
+        Self::create(path, app, true)
+    }
+    pub fn open(path: impl AsRef<Path>, app: APP) -> Result<Database<APP>> {
+        Self::create(path, app, false)
+    }
+    pub fn create(path: impl AsRef<Path>, app: APP, overwrite: bool) -> Result<Database<APP>> {
         if MULTI_INSTANCE_BLOCKER.get() {
             if !std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_ok() {
                 panic!(
@@ -563,13 +585,16 @@ impl<APP: Application> Database<APP> {
             }
         }
         MULTI_INSTANCE_BLOCKER.set(true);
-
-        let mut ctx = DatabaseContext::default();
+        let target = Target {
+            path: PathBuf::from(path.as_ref()),
+            overwrite,
+        };
+        let mut ctx = DatabaseContext::new(&target)?;
         let start_ptr = ctx.start_ptr();
         let root = APP::initialize_root(&mut ctx);
         let root_ptr = <APP::Root as Object>::Ptr::create(root, start_ptr);
         ctx.set_root_ptr(root_ptr.as_generic());
-        Database { context: ctx, app }
+        Ok(Database { context: ctx, app })
     }
 
 }
@@ -644,7 +669,7 @@ mod tests {
 
     #[test]
     fn test1() {
-        let mut db: Database<CounterApplication> = Database::create(CounterApplication);
+        let mut db: Database<CounterApplication> = Database::create_new("test/test1.bin",CounterApplication).unwrap();
 
         let context = &db.context;
 
@@ -692,7 +717,7 @@ mod tests {
 
     #[test]
     fn test_msg_store() {
-        let mut db: Database<CounterApplication> = Database::create(CounterApplication);
+        let mut db: Database<CounterApplication> = Database::create_new("test/msg_store.bin", CounterApplication).unwrap();
         let mut messages = MessageStore::new();
         messages
             .messages
@@ -745,7 +770,7 @@ mod tests {
             }
         }
 
-        let mut db: Database<HandleApplication> = Database::create(HandleApplication);
+        let mut db: Database<HandleApplication> = Database::create_new("test/test_handle.bin", HandleApplication).unwrap();
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
@@ -773,7 +798,7 @@ mod tests {
             }
         }
 
-        let mut db: Database<CounterVecApplication> = Database::create(CounterVecApplication);
+        let mut db: Database<CounterVecApplication> = Database::create_new("test/test_vec0", CounterVecApplication).unwrap();
         let (counter_vec, context) = db.get_root();
         context.set_next_seqnr(SequenceNr::from_index(0));
         assert_eq!(counter_vec.len(context), 0);
@@ -826,7 +851,7 @@ mod tests {
             }
         }
 
-        let mut db: Database<CounterVecApplication> = Database::create(CounterVecApplication);
+        let mut db: Database<CounterVecApplication> = Database::create_new("test/vec_undo",CounterVecApplication).unwrap();
 
         {
             let (counter_vec, context) = db.get_root();
