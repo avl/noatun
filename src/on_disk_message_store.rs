@@ -1,15 +1,155 @@
+use std::cmp::Ordering;
+use std::fs::{File, OpenOptions};
+use std::path::Path;
+use memmap2::{Mmap, MmapMut};
+use crate::MessageId;
+use anyhow::{Context, Result};
+use bytemuck::{Pod, Zeroable};
 
-
-#[derive(Debug)]
-struct OnDiskMessage {
-    id: u64,
-    seq: u64,
-    data: Vec<u8>,
+#[repr(C)]
+#[derive(Debug,Clone,Copy,Pod,Zeroable)]
+struct MainHeader {
+    message: MessageId,
+    file_offset: u64, //MSB 16 bits are file number
 }
 
+const DEFAULT_MAX_COUNT: usize = 1000;
+const DEFAULT_MAX_SIZE_BYTES: usize = DEFAULT_MAX_COUNT * std::mem::size_of::<MainHeader>();
+
+impl PartialEq for MainHeader {
+    fn eq(&self, other: &Self) -> bool {
+        self.message == other.message
+    }
+}
+impl Eq for MainHeader {}
+impl PartialOrd for MainHeader {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.partial_cmp(other)
+    }
+}
+impl Ord for MainHeader {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.message.cmp(&other.message)
+    }
+}
+
+struct DataFileEntry {
+    /// The size of this file.
+    ///
+    nominal_size:u64,
+    /// The number of bytes actually used.
+    /// If this becomes small, compaction may be in order
+    bytes_used: u64,
+}
+
+struct DataFileInfo {
+    /// Where in the db data stream this file starts
+    /// Note: Adding data is always possible at the end of the last file.
+    /// Moving stuff to files higher in the chain is easy, just update
+    /// the [`DataFileEntry::size`] field.
+    /// When compacting, the main index needs to be rewritten.
+    offset: u64,
+    /// The length of this file.
+    length: u64,
+    file_number: u8,
+
+}
+
+#[repr(C,u8)]
+enum WriteLogKind {
+    CompactFile(u32),
+}
+
+
+struct WriteLogEntry {
+    kind: WriteLogKind,
+    checksum: u64,
+}
+
+#[repr(u32)]
+enum Status {
+    Clean,
+    Dirty
+}
+
+#[repr(C)]
+struct StoreHeader {
+    dirty_status: Status,
+    pad1: u32,
+    data_files: [DataFileEntry; 16],
+}
+
+
 struct OnDiskMessageStore {
+    mmap: MmapMut,
+    status_file: File,
+}
+
+impl OnDiskMessageStore {
 
 
+    /// Add the given messages.
+    /// Marks the db as dirty.
+    /// Then writes to the active data file.
+    ///
+    /// This will determine the position they need to be added to, and will then
+    /// merge with the index.
+    /// Marks the db clean.
+    fn append_many<M>(&mut self, message: &mut [M]) {
+        todo!("add message")
+    }
+
+    /// Marks the db as dirty
+    /// Find all the given messages, and mark their entries in their data files as unused.
+    /// Use heuristics to determine if files should be compacted.
+    /// Compact files (moving to higher file if suitable).
+    /// Delete from the index.
+    /// Mark the db as clean.
+    fn delete_many(&mut self, messages: &mut [MessageId]) {
+
+    }
+
+    /// Compact all files with file_number and above.
+    fn compact<M>(&mut self, file_number: u8, message: M) {
+        todo!("add message")
+    }
+
+    pub fn new(path: impl AsRef<Path>) -> Result<OnDiskMessageStore> {
+
+        std::fs::create_dir_all(path.as_ref()).context("create database directory")?;
+
+        let status_file_path = path.as_ref().join("status.bin");
+        let index_file_path = path.as_ref().join("index.bin");
+
+        let status_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&status_file_path)?;
+
+        let index_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&index_file_path)?;
+
+        let len = index_file.metadata().context("reading input file")?.len();
+
+        let min_size_bytes = (size_of::<StoreHeader>() + DEFAULT_MAX_SIZE_BYTES) as u64;
+        if len < min_size_bytes {
+            index_file.set_len(min_size_bytes);
+        }
+
+        let mmap = unsafe { Mmap::map(&index_file)?  };
+
+        let mut this = Self {
+            mmap: (),
+            mmap: (),
+        };
+
+
+        Ok(this)
+    }
 }
 
 
@@ -19,7 +159,13 @@ mod tests {
     use std::path::Path;
     use std::time::Instant;
     use rusqlite::Connection;
-    use crate::on_disk_message_store::OnDiskMessage;
+
+    #[derive(Debug)]
+    struct OnDiskMessage {
+        id: u64,
+        seq: u64,
+        data: Vec<u8>,
+    }
 
     #[test]
     fn test_create_disk_store() {

@@ -11,3 +11,5 @@ indexmap = "2.7"
 bumpalo = "3.16"
 time = { version = "0.3", features = ["formatting"] }
 rusqlite = {version = "0.32", features = ["bundled"] }
+memmap2 = {version ="0.9"}
+anyhow = "1.0"
