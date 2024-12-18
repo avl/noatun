@@ -71,7 +71,7 @@ impl MessageId {
     }
 }
 
-#[derive(Pod, Zeroable, Copy, Default, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Pod, Zeroable, Copy, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 // 0 is an invalid sequence number, used to represent 'not a number'
 pub struct SequenceNr(u32);
@@ -81,15 +81,28 @@ impl Display for SequenceNr {
         if self.0 == 0 {
             write!(f, "#INVALID")
         } else {
-            write!(f, "#{}", self.0)
+            write!(f, "#{}", self.0-1)
         }
     }
 }
+impl Debug for SequenceNr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 0 {
+            write!(f, "#INVALID")
+        } else {
+            write!(f, "#{}", self.0-1)
+        }
+    }
+}
+
 
 impl SequenceNr {
     pub const INVALID: SequenceNr = SequenceNr(0);
     pub fn is_invalid(self) -> bool {
         self.0 == 0
+    }
+    pub fn is_valid(self) -> bool {
+        self.0 != 0
     }
     pub fn successor(self) -> SequenceNr {
         SequenceNr(self.0 + 1)
@@ -178,6 +191,7 @@ impl<App: Application, M: Message<Root = App::Root>> MessageStore<App, M> where 
             *self.messages.get_index_mut(index.index()).unwrap()
                 .1 = None;
         }
+        context.set_next_seqnr(SequenceNr::INVALID);
     }
 
 
@@ -355,7 +369,6 @@ impl<T: Pod> DatabaseCell<T> {
         let index = context.index_of(self);
         //context.write(index, bytes_of(&new_value));
         context.write_pod(new_value, &mut self.value);
-        println!("Cell-write, updating registrar {:?}", self.registrar);
         context.update_registrar(&mut self.registrar);
     }
 }
@@ -651,7 +664,6 @@ mod tests {
     struct CounterMessage {
         id: MessageId,
         parent: Option<MessageId>,
-        time: u64,
         inc1: i32,
         set1: u32,
     }
@@ -687,7 +699,6 @@ mod tests {
             .insert(MessageId::new_debug(0x100), Some(CounterMessage {
                 parent: None,
                 id: MessageId::new_debug(0x100),
-                time: 1,
                 inc1: 2,
                 set1: 0,
             }));
@@ -696,7 +707,6 @@ mod tests {
             .insert(MessageId::new_debug(0x101), Some(CounterMessage {
                 parent: Some(MessageId::new_debug(0x100)),
                 id: MessageId::new_debug(0x101),
-                time: 1,
                 inc1: 0,
                 set1: 42,
             }));
@@ -705,9 +715,8 @@ mod tests {
             .insert(MessageId::new_debug(0x102), Some(CounterMessage {
                 parent: Some(MessageId::new_debug(0x101)),
                 id: MessageId::new_debug(0x102),
-                time: 1,
-                inc1: 0,
-                set1: 43,
+                inc1: 1,
+                set1: 0,
             }));
 
         messages.apply_missing_messages(&mut db);

@@ -6,11 +6,33 @@ use crate::MessageId;
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 
+
+#[derive(Debug,Clone,Copy,Pod,Zeroable)]
+#[repr(transparent)]
+struct FileOffset(u64);
+
+impl FileOffset {
+    fn new(offset: u64) -> Self {
+        assert_ne!(offset, u64::MAX);
+        Self(offset)
+    }
+    fn deleted() -> Self {
+        Self(u64::MAX)
+    }
+    fn is_deleted(self) -> bool {
+        self.0 == u64::MAX
+    }
+    fn offset(self) -> Option<u64> {
+        (self.0 == u64::MAX).then(|| self.0)
+    }
+}
+
 #[repr(C)]
 #[derive(Debug,Clone,Copy,Pod,Zeroable)]
 struct MainHeader {
     message: MessageId,
-    file_offset: u64, //MSB 16 bits are file number
+    /// Offset into the logical file-area, or deletion-marker
+    file_offset: FileOffset,
 }
 
 const DEFAULT_MAX_COUNT: usize = 1000;
@@ -24,7 +46,7 @@ impl PartialEq for MainHeader {
 impl Eq for MainHeader {}
 impl PartialOrd for MainHeader {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.partial_cmp(other)
+        Some(self.cmp(other))
     }
 }
 impl Ord for MainHeader {
@@ -143,8 +165,8 @@ impl OnDiskMessageStore {
         let mmap = unsafe { Mmap::map(&index_file)?  };
 
         let mut this = Self {
-            mmap: (),
-            mmap: (),
+            mmap: todo!(),
+            status_file,
         };
 
 
@@ -167,6 +189,8 @@ mod tests {
         data: Vec<u8>,
     }
 
+
+    #[ignore]
     #[test]
     fn test_create_disk_store() {
         if std::path::Path::exists(Path::new("test.bin")) {

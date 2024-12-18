@@ -31,11 +31,222 @@ struct RegistrarTracker {
     message_dependencies: IndexMap<SequenceNr, Vec<SequenceNr>>,
 }
 
+mod message_dependency_tracker {
+    use std::fs::{File, OpenOptions};
+    use std::iter;
+    use memmap2::{Mmap, MmapMut};
+    use anyhow::Result;
+    use bytemuck::{Pod, Zeroable};
+    use crate::SequenceNr;
+
+    // Mapping from observee to observers.
+    struct MessageDependencyTracker {
+        /// the sequencenr that has been observed
+        keys: MmapMut,
+        key_capacity: usize,
+        /// the sequence nr that have observed each key. I.e, the messages that
+        /// are dependent upon the key.
+        vals: MmapMut,
+        value_capacity: usize,
+        key_file: File,
+        value_file: File,
+    }
+
+    #[derive(Debug,Clone,Copy,Pod,Zeroable)]
+    #[repr(C)]
+    struct LinkedListEntry {
+        next_lsb: u32,
+        next_msb: u32,
+        seq: SequenceNr,
+    }
+
+    impl LinkedListEntry {
+        fn set_next(&mut self, next: u64) {
+            self.next_lsb = next as u32;
+            self.next_msb = (next >>32) as u32;
+        }
+        fn get_next(&self) -> u64 {
+            self.next_lsb as u64 | ((self.next_msb as u64) << 32)
+        }
+    }
+
+    impl MessageDependencyTracker {
+
+        #[inline]
+        fn get_count(mmap: &MmapMut) -> usize {
+            *bytemuck::from_bytes::<u64>(&mmap[0..size_of::<u64>()]) as usize
+        }
+        #[inline]
+        fn access<T:Pod>(mmap: &mut MmapMut) -> (&mut u64, &mut [T]) {
+            let slice_bytes:&mut [u8] = mmap;
+            //println!("Mmap size: {}, item size: {}", slice_bytes.len(), size_of::<T>());
+            let (slice_a, slice_b) = slice_bytes.split_at_mut(std::mem::size_of::<u64>());
+            let count: &mut u64 = bytemuck::from_bytes_mut(slice_a);
+            let slice: &mut [T] = bytemuck::cast_slice_mut(slice_b);
+            //println!("Couint: {}, cap: {}", count, slice.len());
+            (count, slice)
+        }
+
+
+        // Record mapping from observee to observer
+        pub fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr ) {
+            assert!(observer.is_valid());
+            assert!(observee.is_valid());
+
+            //println!("Observee index {}, cap: {}", observee.index(), self.key_capacity);
+            if observee.index() >= self.key_capacity {
+                //println!("REALLOC!");
+                self.reallocate_keys((observee.index()+1)*2);
+            }
+
+            //dbg!(Self::get_count(&self.vals) + 1, self.value_capacity);
+            if Self::get_count(&self.vals) + 1 >= self.value_capacity {
+                //println!("REALLOC!");
+                self.reallocate_values((self.value_capacity+1)*2);
+            }
+
+            let (val_len, vals) : (_ , &mut [LinkedListEntry]) = Self::access(&mut self.vals);
+            let (key_len, keys) : (_, &mut [u64])= Self::access(&mut self.keys);
+            debug_assert_eq!(keys.len(), self.key_capacity as usize);
+            debug_assert_eq!(vals.len(), self.value_capacity as usize);
+
+            let prev = keys[observee.index()];
+
+            let new_entry: &mut LinkedListEntry = &mut vals[*val_len as usize];
+            new_entry.seq = observer;
+            new_entry.set_next(prev);
+            keys[observee.index()] = *val_len + 1;
+
+            *val_len += 1;
+            /*println!("Final state:\n{:?} keys: {:?}\n{:?} values: {:?}",
+                key_len, keys,
+                val_len, vals,
+            )*/
+        }
+        pub fn read_dependency(&mut self, observee: SequenceNr) -> impl Iterator<Item=SequenceNr> {
+            let (key_len, keys) : (_, &mut [u64])= Self::access(&mut self.keys);
+            let (val_len, vals) : (_ , &mut [LinkedListEntry])= Self::access(&mut self.vals);
+            debug_assert_eq!(keys.len(), self.key_capacity as usize);
+            debug_assert_eq!(vals.len(), self.value_capacity as usize);
+
+            let mut cur: u64 = keys[observee.index()];
+
+            iter::from_fn(move||{
+                if cur == 0 {
+                    return None;
+                }
+                let entry = &vals[cur as usize - 1];
+                cur = entry.get_next();
+                return Some(entry.seq);
+
+            })
+        }
+
+        fn calc_needed_bytes_keys(count: usize) -> usize {
+            (std::mem::size_of::<u64>()) * count +std::mem::size_of::<u64>()
+        }
+        fn calc_needed_bytes_vals(count: usize) -> usize {
+            (std::mem::size_of::<u64>() + size_of::<SequenceNr>()) * count +std::mem::size_of::<u64>()
+        }
+
+        fn reallocate_keys(&mut self, new_count: usize) -> Result<()> {
+            //println!("Reallocating keys to {}", new_count);
+            Self::reallocate(&mut self.keys, &mut self.key_file, Self::calc_needed_bytes_keys(new_count))?;
+            self.key_capacity = new_count;
+            Ok(())
+        }
+        fn reallocate_values(&mut self, new_count: usize) -> Result<()>  {
+            //println!("Reallocating values to {}", new_count);
+            Self::reallocate(&mut self.vals, &mut self.value_file, Self::calc_needed_bytes_vals(new_count))?;
+            self.value_capacity = new_count;
+            Ok(())
+        }
+
+        fn reallocate(mmap: &mut MmapMut, file: &File, new_bytes: usize) -> Result<()> {
+            file.set_len(new_bytes as u64)?;
+            let new_mmap = unsafe { MmapMut::map_mut(file)? };
+            *mmap = new_mmap;
+            Ok(())
+        }
+
+        pub fn new(path: impl AsRef<std::path::Path>) -> Result<Self> {
+            std::fs::create_dir_all(path.as_ref());
+            let key_path = path.as_ref().join("dep_keys.bin");
+            let value_path = path.as_ref().join("dep_values.bin");
+            let key_file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&key_path)?;
+            let value_file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&value_path)?;
+
+            const DEFAULT_KEY_CAPACITY: usize = 3;
+            const DEFAULT_VALUE_CAPACITY: usize = 3;
+
+            let key_size_bytes = Self::calc_needed_bytes_keys(DEFAULT_KEY_CAPACITY);
+            let value_size_bytes = Self::calc_needed_bytes_vals(DEFAULT_VALUE_CAPACITY);
+
+
+            //println!("Setting lens: {} {}", key_size_bytes, value_size_bytes);
+            key_file.set_len(key_size_bytes as u64)?;
+            value_file.set_len(value_size_bytes as u64)?;
+
+            let key_mmap = unsafe { MmapMut::map_mut(&key_file)? };
+            let value_mmap = unsafe { MmapMut::map_mut(&value_file)? };
+
+            Ok(MessageDependencyTracker {
+                key_file,
+                value_file,
+                key_capacity:DEFAULT_KEY_CAPACITY,
+                keys: key_mmap,
+                value_capacity: DEFAULT_VALUE_CAPACITY,
+                vals: value_mmap
+            })
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use std::time::Instant;
+        use crate::buffer::message_dependency_tracker::MessageDependencyTracker;
+        use crate::SequenceNr;
+
+        #[test]
+        fn smoke_deptrack() {
+            std::fs::remove_dir_all("test_smoke_deptrack");
+            let mut tracker = MessageDependencyTracker::new("test_smoke_deptrack").unwrap();
+            tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
+
+            let result: Vec<_> = tracker.read_dependency(SequenceNr::from_index(1)).collect();
+            assert_eq!(result, vec![SequenceNr::from_index(2)]);
+        }
+
+        #[test]
+        fn smoke_deptrack_many() {
+            std::fs::remove_dir_all("test_smoke_deptrack");
+            let mut tracker = MessageDependencyTracker::new("test_smoke_deptrack").unwrap();
+            let t = Instant::now();
+            for i in 0..1000000 {
+                tracker.record_dependency(SequenceNr::from_index(i/2), SequenceNr::from_index(i));
+            }
+            println!("Time: {:?}", t.elapsed());
+
+            let result: Vec<_> = tracker.read_dependency(SequenceNr::from_index(0)).map(|x|x.index()).collect();
+            assert_eq!(result, vec![1,0]);
+            let result: Vec<_> = tracker.read_dependency(SequenceNr::from_index(4)).map(|x|x.index()).collect();
+            assert_eq!(result, vec![9,8]);
+        }
+    }
+
+}
+
 impl RegistrarTracker {
     fn finalize_message(&mut self, message_id: SequenceNr) {
         debug_assert_ne!(message_id.0, 0);
         if self.uses.len() <= message_id.index() as usize || self.uses[message_id.index()] == 0 {
-            println!("No uses even directly: {:?}", message_id);
             self.unused_messages.push(message_id);
         }
     }
@@ -45,7 +256,6 @@ impl RegistrarTracker {
         messages: &IndexMap<MessageId, Option<M>>,
     ) -> IndexSet<SequenceNr> {
         //println!("Messages: {:#?}", messages);
-        println!("Uses: {:?}", self.uses);
         self.unused_messages.sort(); //Sort in seq-nr order
         let mut deleted = IndexSet::new();
         let mut parent_lists = Bump::new();
@@ -55,7 +265,7 @@ impl RegistrarTracker {
                 for observer in observers {
                     if !deleted.contains(observer) {
                         // 'msg' can't be deleted, because it's observed by
-                        // 'observer' that is a later message that has not been deleted.
+                        // 'observer' - i.e a later message that has not been deleted.
                         println!(
                             "Can't delete {:?} because it's observed by {:?}",
                             msg, observer
@@ -64,7 +274,6 @@ impl RegistrarTracker {
                     }
                 }
             }
-            println!("Deleted: {:?}", msg);
             deleted.insert(*msg);
         }
         // 'deleted' ends up in reverse seqnr-order
@@ -78,7 +287,6 @@ impl RegistrarTracker {
             for parent in msg.parents() {
                 let parent_index = SequenceNr::from_index(messages.get_index_of(&parent)
                     .expect("Parent unknown. This is not supported like this - it needs to be cleansed before msg added to store.").try_into().unwrap());
-                println!("Parent of {:?}: {:?}", deleted, parent_index);
                 if let Some(remapping) = parent_remap.get(&parent_index) {
                     parent_list.extend(remapping);
                 } else {
@@ -90,7 +298,6 @@ impl RegistrarTracker {
             parent_list.dedup();
             parent_remap.insert(*deleted, parent_list);
         }
-        println!("Parent remap: {:#?}", parent_remap);
         deleted
     }
     fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
@@ -104,7 +311,6 @@ impl RegistrarTracker {
             self.uses.resize(registrar.index()+1, 0);
         }
         self.uses[registrar.index()] += 1;
-        println!("Increased use {:?} for {:?}", self.uses, registrar);
     }
     fn decrease_use(&mut self, registrar: SequenceNr) {
         let cur = &mut self.uses[registrar.index()];
@@ -113,9 +319,7 @@ impl RegistrarTracker {
         }
         *cur -= 1;
         if *cur == 0 {
-            println!("Uses: {:?}, unusing {:?}", self.uses, registrar);
             self.unused_messages.push(registrar);
-            println!("Unused mesg: {:?}", self.unused_messages);
         }
     }
 }
@@ -213,7 +417,6 @@ impl DatabaseContext {
         }
 
         let result = self.undo_log.rewind(|entry| {
-            println!("Parsed entry: {:?}", entry);
             match entry {
                 UndoLogEntry::SetPointer(new_pointer) => {
                     let cur = self.pointer.get();
@@ -262,7 +465,8 @@ impl DatabaseContext {
 
     pub fn set_next_seqnr(&mut self, seqnr: SequenceNr) {
         if seqnr.is_invalid() {
-            panic!("Attempt to set sequence number to an invalid value");
+            self.next_seqnr = seqnr;
+            return;
         }
         if seqnr <= self.next_seqnr {
             panic!("Attempt to set sequence number to a smaller or equal value");
@@ -303,7 +507,7 @@ impl DatabaseContext {
 
     pub fn copy(&mut self, source: FatPtr, dest_index: usize) {
         unsafe {
-            dbg!(&source, &dest_index);
+            //dbg!(&source, &dest_index);
 
             self.undo_log.record(UndoLogEntry::Restore {
                 start: dest_index,
@@ -431,7 +635,6 @@ impl DatabaseContext {
         let current_registrar = self
             .next_seqnr;
         track.increase_use(current_registrar);
-        println!("Updated registrar: {:?}", current_registrar);
         drop(track);
         self.write_pod(current_registrar, registrar_point)
     }
@@ -439,12 +642,16 @@ impl DatabaseContext {
     /// Signify that the current message has observed data previously written
     /// by 'registrar'.
     pub fn observe_registrar(&self, observee: SequenceNr) {
-        if observee.0 == 0 {
+        if self.next_seqnr.is_invalid() {
+            return;
+        }
+        if observee.is_invalid() {
             return;
         }
         let observer = self
             .next_seqnr;
         if observer != observee {
+            println!("Tracking that {} observed {}", observer, observee);
             self.registrar_tracker
                 .borrow_mut()
                 .report_observed(observer, observee);
