@@ -2,11 +2,11 @@ use crate::{Message, MessageId, Target, sha2};
 use anyhow::{Context, Result, anyhow};
 use buf_read_write::BufStream;
 use bytemuck::{Pod, Zeroable};
-use byteorder::{LittleEndian, WriteBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use memmap2::{Mmap, MmapMut};
 use std::cmp::Ordering;
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::offset_of;
 use std::path::Path;
@@ -24,7 +24,7 @@ struct U1(u8);
 impl U1 {
     const ONE: U1 = U1(1);
     const ZERO: U1 = U1(0);
-    fn index(self) -> u64 {
+    fn index(self) -> usize {
         if self.0==1 {
             1
         } else {
@@ -44,7 +44,7 @@ impl FileOffset {
 
     fn new(offset: u64, file: U1) -> Self {
         assert!(offset < u64::MAX/2); //Note, must <, not <=, to avoid magic value u64::MAX
-        Self((offset<<1) | file.index())
+        Self((offset<<1) | file.index() as u64)
     }
     fn deleted() -> Self {
         Self(u64::MAX)
@@ -53,10 +53,22 @@ impl FileOffset {
         self.0 == u64::MAX
     }
     fn offset(self) -> Option<u64> {
-        (self.0 == u64::MAX).then(|| self.0>>1)
+        (self.0 != u64::MAX).then(|| self.0>>1)
+    }
+    fn file_and_offset(self) -> Option<(U1,u64)> {
+        (self.0 != u64::MAX).then(||
+                                      (
+                                          if self.0 &1 == 1 {
+                                              U1::ONE
+                                          } else {
+                                              U1::ZERO
+                                          },
+                                          self.0>>1
+                                          )
+        )
     }
     fn file(self) -> Option<U1> {
-        (self.0 == u64::MAX).then(||
+        (self.0 != u64::MAX).then(||
             if self.0 &1 == 1 {
                 U1::ONE
             } else {
@@ -72,6 +84,7 @@ struct MessageEntry {
     message: MessageId,
     /// Offset into the logical file-area, or deletion-marker
     file_offset: FileOffset,
+    file_size: u64,
 }
 
 const DEFAULT_MAX_COUNT: usize = 1024;
@@ -176,6 +189,7 @@ impl<M> OnDiskMessageStore<M> {
             let data_file = OpenOptions::new()
                 .read(true)
                 .write(true)
+                .create(true)
                 .truncate(target.overwrite)
                 .open(&data_file_path).context("Opening data-file")?;
 
@@ -283,6 +297,7 @@ impl<M> OnDiskMessageStore<M> {
 
     fn with_transaction(&mut self, mut f: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
         self.update_status(STATUS_NOK)?;
+        //TODO: Make sure we actually inspect the status when reading db!
         let ret = f(self);
         self.update_status(STATUS_OK)
             .expect("failed to mark db as OK after transaction complete");
@@ -322,7 +337,26 @@ impl<M> OnDiskMessageStore<M> {
         match message_index.binary_search_by_key(&id, |x|x.message) {
             Ok(index) => {
                 let entry = &message_index[index];
-                todo!()
+                println!("Entry: {:?}", entry);
+                let Some((file, offset)) = entry.file_offset.file_and_offset() else {
+                    return Err(anyhow!("Message not found in store"));
+                };
+                let mut file = &mut self.data_files[file.index()].file;
+                file.seek(SeekFrom::Start(offset + 8)).context("Seeking to message data")?;
+                let size = file.read_u64::<LittleEndian>().context("reading size")?;
+
+                let mut nominal_sha2_bytes = [0u8;16];
+                file.read_exact(&mut nominal_sha2_bytes)?;
+
+                let msg = file.with_bytes(size as usize, |bytes|{
+                    println!("Message bytes: {:?}, sha2: {:?}", bytes, sha2(bytes));
+                    if sha2(bytes) != nominal_sha2_bytes {
+                        return Err(anyhow!("Message has been corrupted on disk"));
+                    }
+                    M::deserialize(bytes)
+                })??;
+
+                Ok(Some(msg))
             }
             Err(index) => {
                 Ok(None)
@@ -338,6 +372,45 @@ impl<M> OnDiskMessageStore<M> {
     /// merge with the index. Marks the db clean.
     pub fn append_many(&mut self, messages: impl ExactSizeIterator<Item=M>) -> Result<()> where M:Message{
         self.with_transaction(|tself| tself.do_append_many(messages))
+    }
+
+    /// Marks the db as dirty
+    /// Find all the given messages, and mark their entries in their data files as unused.
+    /// Use heuristics to determine if files should be compacted.
+    /// Compact files (moving to higher file if suitable).
+    /// Delete from the index.
+    /// Mark the db as clean.
+    /// Messages that are not found are simply ignored. The operation does not stop or fail.
+    pub fn delete_many(&mut self, messages: impl Iterator<Item=MessageId>) -> Result<()> {
+        self.with_transaction(|tself|
+            tself.do_delete_many(messages)
+        )
+    }
+
+    fn do_delete_many(&mut self, messages: impl Iterator<Item=MessageId>) -> Result<()> {
+        let (header, message_index) = Self::header_and_index_mut(&mut self.index_mmap, &self.index_file)
+            .context("Reading index file")?;
+
+        for message in messages {
+
+            let Ok(index) = message_index.binary_search_by_key(&message, |x|x.message) else {
+                continue;
+            };
+            let message_entry = &mut message_index[index];
+
+            if let Some((file, offset)) = message_entry.file_offset.file_and_offset() {
+                let store_file_entry = &mut self.data_files[file.index()];
+                message_entry.file_offset = FileOffset::deleted();
+                let index_entry = &mut header.data_files[file.index()];
+
+                store_file_entry.file.seek(SeekFrom::Start(offset+8)).context("seeking file")?;
+                let size = store_file_entry.file.read_u64::<LittleEndian>()?;
+                store_file_entry.file.write_zeroes(16)?;
+                store_file_entry.file.flush()?;
+                index_entry.bytes_used -= message_entry.file_size;
+            }
+        }
+        Ok(())
     }
 
     /// Make sure the given number of slots are available.
@@ -358,28 +431,37 @@ impl<M> OnDiskMessageStore<M> {
 
         for msg in messages {
             let start_pos = entry.file.stream_position()?;
-            entry.file.write_zeroes(32)?;
+
+            const FILE_HEADER_SIZE : usize = 32;
+
+            entry.file.write_zeroes(FILE_HEADER_SIZE)?;
             msg.serialize(&mut entry.file);
 
             let end_pos = entry.file.stream_position()?;
-            let msg_size = end_pos - start_pos;
-            entry.file.seek(SeekFrom::Start(start_pos))?;
+            println!("start pos: {} End-pos: {}", start_pos, end_pos);
+            let msg_size = end_pos - start_pos - FILE_HEADER_SIZE as u64;
+            entry.file.seek(SeekFrom::Start(start_pos+FILE_HEADER_SIZE as u64))?;
 
             let sha2 = entry
                 .file
-                .with_bytes(msg_size as usize, |bytes|
-                    sha2(bytes)
+                .with_bytes(msg_size as usize, |bytes| {
+                    let temp = sha2(bytes);
+                    println!("Sha2: {:?}", temp);
+                    temp
+                }
+
                 )?;
 
             let (cur_message_entry, rest) = index_entries.split_at_mut(1);
             cur_message_entry[0] = MessageEntry {
                 message: msg.id(),
                 file_offset: FileOffset::new(start_pos, entry.file_number),
+                file_size: msg_size,
             };
             index_entries = rest;
 
             entry.file.seek(SeekFrom::Start(start_pos))?;
-            entry.file.write_u64::<LittleEndian>(start_pos)?;
+            entry.file.write_u64::<LittleEndian>(end_pos)?;
             entry.file.write_u64::<LittleEndian>(msg_size)?;
             assert_eq!(sha2.len(), 16);
             entry.file.write_all(&sha2)?;
@@ -397,13 +479,6 @@ impl<M> OnDiskMessageStore<M> {
         Ok(())
     }
 
-    /// Marks the db as dirty
-    /// Find all the given messages, and mark their entries in their data files as unused.
-    /// Use heuristics to determine if files should be compacted.
-    /// Compact files (moving to higher file if suitable).
-    /// Delete from the index.
-    /// Mark the db as clean.
-    fn delete_many(&mut self, messages: &mut [MessageId]) {}
 
     /// Compact all files with file_number and above.
     fn compact(&mut self, file_number: u8, message: M) {
@@ -505,6 +580,54 @@ mod tests {
             writer.write_all(&self.data)?;
             Ok(())
         }
+    }
+
+
+    #[test]
+    fn add_and_read_messages() {
+        let mut store = OnDiskMessageStore::new(&Target {
+            path: "test_disk_store.bin".into(),
+            overwrite: true,
+        }).unwrap();
+
+        const COUNT: usize = 5; //1_000_000usize;
+
+        let init = Instant::now();
+        let msgs = (0..COUNT).map(|i| OnDiskMessage {
+            id: i as u64,
+            seq: i as u64,
+            data: vec![42u8; 4],
+        });
+
+        store.append_many(msgs.into_iter()).unwrap();
+
+        let msg = store.read_message(MessageId::new_debug(2)).unwrap().unwrap();
+        assert_eq!(msg.id, 2);
+    }
+
+    #[test]
+    fn add_and_delete_messages() {
+        let mut store = OnDiskMessageStore::new(&Target {
+            path: "test_disk_store.bin".into(),
+            overwrite: true,
+        }).unwrap();
+
+        const COUNT: usize = 3;
+
+        let init = Instant::now();
+        let msgs = (0..COUNT).map(|i| OnDiskMessage {
+            id: i as u64,
+            seq: i as u64,
+            data: vec![42u8; 4],
+        });
+
+        store.append_many(msgs.into_iter()).unwrap();
+
+        let msg = store.delete_many([
+            MessageId::new_debug(0),
+            MessageId::new_debug(1),
+            MessageId::new_debug(2),
+        ].into_iter());
     }
 
 
