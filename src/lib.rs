@@ -4,31 +4,43 @@
 
 extern crate test;
 
+use crate::buffer::InMemoryMainStore;
+use anyhow::Result;
 pub use buffer::DatabaseContext;
 use bumpalo::Bump;
 use bytemuck::{Pod, Zeroable};
 use indexmap::IndexMap;
+use sha2::digest::FixedOutput;
+use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::fmt::{Debug, Display, Formatter};
+use std::io::Write;
 use std::marker::PhantomData;
 use std::mem::{transmute, transmute_copy};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::slice::SliceIndex;
 use std::time::{Duration, SystemTime};
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use crate::buffer::InMemoryMainStore;
-use anyhow::Result;
+use time::format_description::well_known::Rfc3339;
 
 pub(crate) mod backing_store;
 
 pub(crate) mod buffer;
-pub(crate) mod undo_store;
 mod on_disk_message_store;
+pub(crate) mod undo_store;
 
 struct MessageComponent<const ID: u32, T> {
     value: Option<T>,
+}
+
+fn sha2(bytes: &[u8]) -> [u8; 16] {
+    let mut hasher = Sha256::new();
+    // write input message
+    hasher.update(bytes);
+
+    // read hash digest and consume hasher
+    hasher.finalize_fixed()[0..16].try_into().unwrap()
 }
 
 #[derive(Pod, Zeroable, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -39,24 +51,32 @@ pub struct MessageId {
 
 impl Display for MessageId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let time_ms = ((self.data[0] as u64) << 16) + ((self.data[1])>>16) as u64;
+        let time_ms = ((self.data[0] as u64) << 16) + ((self.data[1]) >> 16) as u64;
 
-        let unix_timestamp = (time_ms/1000) as i64;
-        let timestamp_ms = time_ms%1000;
+        let unix_timestamp = (time_ms / 1000) as i64;
+        let timestamp_ms = time_ms % 1000;
 
         let time = OffsetDateTime::from_unix_timestamp(unix_timestamp).unwrap();
 
         let time_str = time.format(&Rfc3339).unwrap(); //All values representable should be formattable here
-        write!(f, "{:?}-{:x}-{:x}-{:x}",
+        write!(
+            f,
+            "{:?}-{:x}-{:x}-{:x}",
             time_str,
-            self.data[1]&0xffff, self.data[2], self.data[3]
+            self.data[1] & 0xffff,
+            self.data[2],
+            self.data[3]
         )
     }
 }
 
 impl Debug for MessageId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "#{:x}_{:x}_{:x}", self.data[0], self.data[1], self.data[2])
+        write!(
+            f,
+            "#{:x}_{:x}_{:x}",
+            self.data[0], self.data[1], self.data[2]
+        )
     }
 }
 
@@ -65,12 +85,12 @@ impl MessageId {
         self.data[0] == 0 && self.data[1] == 0
     }
     pub fn zero() -> MessageId {
-        MessageId {
-            data: [0, 0, 0, 0],
-        }
+        MessageId { data: [0, 0, 0, 0] }
     }
     pub fn new_debug(nr: u32) -> Self {
-        Self { data: [nr, 0, 0, 0] }
+        Self {
+            data: [nr, 0, 0, 0],
+        }
     }
 }
 
@@ -84,7 +104,7 @@ impl Display for SequenceNr {
         if self.0 == 0 {
             write!(f, "#INVALID")
         } else {
-            write!(f, "#{}", self.0-1)
+            write!(f, "#{}", self.0 - 1)
         }
     }
 }
@@ -93,11 +113,10 @@ impl Debug for SequenceNr {
         if self.0 == 0 {
             write!(f, "#INVALID")
         } else {
-            write!(f, "#{}", self.0-1)
+            write!(f, "#{}", self.0 - 1)
         }
     }
 }
-
 
 impl SequenceNr {
     pub const INVALID: SequenceNr = SequenceNr(0);
@@ -130,21 +149,45 @@ impl SequenceNr {
     }
 }
 
-
-
 pub trait Message {
     type Root: Object;
     fn id(&self) -> MessageId;
     fn parents(&self) -> impl ExactSizeIterator<Item = MessageId>;
     fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root);
+
+    fn deserialize(buf: &[u8]) -> Result<Self>
+    where
+        Self: Sized;
+    fn serialize<W: Write>(&self, writer: W) -> Result<()>;
 }
+
+/// A state-less object, mostly useful for testing
+pub struct DummyUnitObject;
+
+impl Object for DummyUnitObject {
+    type Ptr = ThinPtr;
+
+    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
+        &DummyUnitObject
+    }
+
+    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
+        // # SAFETY
+        // Any dangling pointer is a valid pointer to a zero-sized type
+        unsafe { &mut * (std::ptr::dangling_mut() as *mut Self) }
+    }
+}
+
 
 struct MessageStore<APP: Application, M: Message<Root = APP::Root>> {
     messages: IndexMap<MessageId, Option<M>>,
     phantom_data: PhantomData<*const APP::Root>,
 }
 
-impl<App: Application, M: Message<Root = App::Root>> MessageStore<App, M> where M:Debug{
+impl<App: Application, M: Message<Root = App::Root>> MessageStore<App, M>
+where
+    M: Debug,
+{
     pub fn new() -> MessageStore<App, M> {
         MessageStore {
             messages: IndexMap::new(),
@@ -153,7 +196,10 @@ impl<App: Application, M: Message<Root = App::Root>> MessageStore<App, M> where 
     }
     fn push_message(&mut self, context: &mut DatabaseContext, message: M) {
         let new_time = message.id();
-        let Err(insert_point) = self.messages.binary_search_by_key(&new_time, |msg_id,_|*msg_id) else {
+        let Err(insert_point) = self
+            .messages
+            .binary_search_by_key(&new_time, |msg_id, _| *msg_id)
+        else {
             // Binary search returns Ok when it finds the element exactly.
             // If it does, the message was already in the store, in which case we just successfully
             // do nothing.
@@ -173,31 +219,38 @@ impl<App: Application, M: Message<Root = App::Root>> MessageStore<App, M> where 
             !value.is_none()
         });
     }
-    fn apply_single_message(context: &mut DatabaseContext, root: &mut App::Root, msg: &M, seqnr: SequenceNr)
-    {
+    fn apply_single_message(
+        context: &mut DatabaseContext,
+        root: &mut App::Root,
+        msg: &M,
+        seqnr: SequenceNr,
+    ) {
         context.set_next_seqnr(seqnr); //TODO: Don't record a snapshot for _every_ message.
-        msg.apply(context, root);//TODO: Handle panics in apply gracefully
+        msg.apply(context, root); //TODO: Handle panics in apply gracefully
         context.finalize_message();
     }
     fn apply_missing_messages(&mut self, database: &mut Database<App>) {
         let (root, context) = database.get_root();
-        for (seq, (message_id, msg)) in self.messages.iter().enumerate().skip(context.next_seqnr().try_index().unwrap_or(0))
+        for (seq, (message_id, msg)) in self
+            .messages
+            .iter()
+            .enumerate()
+            .skip(context.next_seqnr().try_index().unwrap_or(0))
         {
-            let Some(msg) = msg else {continue;};
+            let Some(msg) = msg else {
+                continue;
+            };
             let seqnr = SequenceNr::from_index(seq);
-            Self::apply_single_message(context, root,  &msg,seqnr);
+            Self::apply_single_message(context, root, &msg, seqnr);
         }
         context.set_next_seqnr(SequenceNr::from_index(self.messages.len()));
         let must_remove = context.finalize_transaction(&self.messages);
         for index in must_remove {
             println!("Removing message {:?}", index);
-            *self.messages.get_index_mut(index.index()).unwrap()
-                .1 = None;
+            *self.messages.get_index_mut(index.index()).unwrap().1 = None;
         }
         context.set_next_seqnr(SequenceNr::INVALID);
     }
-
-
 }
 
 pub enum GenPtr {
@@ -212,6 +265,8 @@ pub trait Pointer: Copy + Debug + 'static {
 }
 
 pub trait Object {
+    /// This is meant to be either ThinPtr for sized objects, or
+    /// FatPtr for dynamically sized objects. Other types are likely to not make sense.
     type Ptr: Pointer;
     unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self;
     unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self;
@@ -548,9 +603,11 @@ thread_local! {
     static MULTI_INSTANCE_BLOCKER: Cell<bool> = Cell::new(false);
 }
 
+#[derive(Clone)]
 pub struct Target {
     path: PathBuf,
-    overwrite: bool
+    /// True if the destination should be truncated and overwritten, if it exists
+    overwrite: bool,
 }
 impl Target {
     pub fn overwrite(path: impl AsRef<Path>) -> Self {
@@ -596,7 +653,6 @@ impl<APP: Application> Database<APP> {
         ctx.set_root_ptr(root_ptr.as_generic());
         Ok(Database { context: ctx, app })
     }
-
 }
 impl<APP> Drop for Database<APP> {
     fn drop(&mut self) {
@@ -669,7 +725,8 @@ mod tests {
 
     #[test]
     fn test1() {
-        let mut db: Database<CounterApplication> = Database::create_new("test/test1.bin",CounterApplication).unwrap();
+        let mut db: Database<CounterApplication> =
+            Database::create_new("test/test1.bin", CounterApplication).unwrap();
 
         let context = &db.context;
 
@@ -702,7 +759,6 @@ mod tests {
             self.parent.into_iter()
         }
 
-
         fn apply(&self, context: &mut DatabaseContext, root: &mut CounterObject) {
             if self.inc1 != 0 {
                 root.counter.set(
@@ -713,36 +769,51 @@ mod tests {
                 root.counter.set(context, self.set1);
             }
         }
+
+        fn deserialize(buf: &[u8]) -> Result<Self>
+        where
+            Self: Sized,
+        {
+            todo!()
+        }
+
+        fn serialize<W: Write>(&self, writer: W) -> Result<()> {
+            todo!()
+        }
     }
 
     #[test]
     fn test_msg_store() {
-        let mut db: Database<CounterApplication> = Database::create_new("test/msg_store.bin", CounterApplication).unwrap();
+        let mut db: Database<CounterApplication> =
+            Database::create_new("test/msg_store.bin", CounterApplication).unwrap();
         let mut messages = MessageStore::new();
-        messages
-            .messages
-            .insert(MessageId::new_debug(0x100), Some(CounterMessage {
+        messages.messages.insert(
+            MessageId::new_debug(0x100),
+            Some(CounterMessage {
                 parent: None,
                 id: MessageId::new_debug(0x100),
                 inc1: 2,
                 set1: 0,
-            }));
-        messages
-            .messages
-            .insert(MessageId::new_debug(0x101), Some(CounterMessage {
+            }),
+        );
+        messages.messages.insert(
+            MessageId::new_debug(0x101),
+            Some(CounterMessage {
                 parent: Some(MessageId::new_debug(0x100)),
                 id: MessageId::new_debug(0x101),
                 inc1: 0,
                 set1: 42,
-            }));
-        messages
-            .messages
-            .insert(MessageId::new_debug(0x102), Some(CounterMessage {
+            }),
+        );
+        messages.messages.insert(
+            MessageId::new_debug(0x102),
+            Some(CounterMessage {
                 parent: Some(MessageId::new_debug(0x101)),
                 id: MessageId::new_debug(0x102),
                 inc1: 1,
                 set1: 0,
-            }));
+            }),
+        );
 
         messages.apply_missing_messages(&mut db);
 
@@ -770,7 +841,8 @@ mod tests {
             }
         }
 
-        let mut db: Database<HandleApplication> = Database::create_new("test/test_handle.bin", HandleApplication).unwrap();
+        let mut db: Database<HandleApplication> =
+            Database::create_new("test/test_handle.bin", HandleApplication).unwrap();
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
@@ -798,7 +870,8 @@ mod tests {
             }
         }
 
-        let mut db: Database<CounterVecApplication> = Database::create_new("test/test_vec0", CounterVecApplication).unwrap();
+        let mut db: Database<CounterVecApplication> =
+            Database::create_new("test/test_vec0", CounterVecApplication).unwrap();
         let (counter_vec, context) = db.get_root();
         context.set_next_seqnr(SequenceNr::from_index(0));
         assert_eq!(counter_vec.len(context), 0);
@@ -851,7 +924,8 @@ mod tests {
             }
         }
 
-        let mut db: Database<CounterVecApplication> = Database::create_new("test/vec_undo",CounterVecApplication).unwrap();
+        let mut db: Database<CounterVecApplication> =
+            Database::create_new("test/vec_undo", CounterVecApplication).unwrap();
 
         {
             let (counter_vec, context) = db.get_root();

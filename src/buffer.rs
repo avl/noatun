@@ -1,5 +1,13 @@
+use crate::buffer::disk_main_store::DiskMainStore;
+use crate::buffer::message_dependency_tracker::{
+    MessageDependencyTracker, MmapMessageDependencyTracker,
+};
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, SequenceNr, Target, ThinPtr};
+use crate::{
+    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, SequenceNr,
+    Target, ThinPtr,
+};
+use anyhow::Result;
 use bumpalo::Bump;
 use bytemuck::{Pod, bytes_of, from_bytes, from_bytes_mut};
 use indexmap::{IndexMap, IndexSet};
@@ -14,12 +22,9 @@ use std::ops::Range;
 use std::path::Path;
 use std::slice;
 use std::slice::SliceIndex;
-use crate::buffer::message_dependency_tracker::{MessageDependencyTracker, MmapMessageDependencyTracker};
-use anyhow::Result;
-use crate::buffer::disk_main_store::DiskMainStore;
 
 #[derive(Debug)]
-struct RegistrarTracker<T:MessageDependencyTracker> {
+struct RegistrarTracker<T: MessageDependencyTracker> {
     uses: Vec<u32>,
     /// Messages are added to this list when their
     /// last registrar_point is overwritten
@@ -32,8 +37,8 @@ struct RegistrarTracker<T:MessageDependencyTracker> {
     message_dependencies: T,
 }
 
-impl<T:MessageDependencyTracker> RegistrarTracker<T> {
-    fn new (path: &Target) -> Result<RegistrarTracker<T>> {
+impl<T: MessageDependencyTracker> RegistrarTracker<T> {
+    fn new(path: &Target) -> Result<RegistrarTracker<T>> {
         Ok(RegistrarTracker {
             uses: vec![],
             unused_messages: vec![],
@@ -42,10 +47,9 @@ impl<T:MessageDependencyTracker> RegistrarTracker<T> {
     }
 }
 
-
 mod message_dependency_tracker;
 
-impl<T:MessageDependencyTracker> RegistrarTracker<T> {
+impl<T: MessageDependencyTracker> RegistrarTracker<T> {
     fn finalize_message(&mut self, message_id: SequenceNr) {
         debug_assert_ne!(message_id.0, 0);
         if self.uses.len() <= message_id.index() as usize || self.uses[message_id.index()] == 0 {
@@ -53,7 +57,7 @@ impl<T:MessageDependencyTracker> RegistrarTracker<T> {
         }
     }
 
-    fn finalize_transaction<M: Message+Debug>(
+    fn finalize_transaction<M: Message + Debug>(
         &mut self,
         messages: &IndexMap<MessageId, Option<M>>,
     ) -> IndexSet<SequenceNr> {
@@ -63,7 +67,6 @@ impl<T:MessageDependencyTracker> RegistrarTracker<T> {
         let mut parent_lists = Bump::new();
 
         'outer: for msg in self.unused_messages.iter().rev() {
-
             for observer in self.message_dependencies.read_dependency(*msg) {
                 if !deleted.contains(&observer) {
                     // 'msg' can't be deleted, because it's observed 7by
@@ -104,14 +107,15 @@ impl<T:MessageDependencyTracker> RegistrarTracker<T> {
     }
     fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
         /*self.message_dependencies
-            .entry(observee)
-            .or_default()
-            .push(observer);*/
-        self.message_dependencies.record_dependency(observee, observer);
+        .entry(observee)
+        .or_default()
+        .push(observer);*/
+        self.message_dependencies
+            .record_dependency(observee, observer);
     }
     fn increase_use(&mut self, registrar: SequenceNr) {
         if self.uses.len() <= registrar.index() {
-            self.uses.resize(registrar.index()+1, 0);
+            self.uses.resize(registrar.index() + 1, 0);
         }
         self.uses[registrar.index()] += 1;
     }
@@ -128,7 +132,9 @@ impl<T:MessageDependencyTracker> RegistrarTracker<T> {
 }
 
 pub trait MainStore {
-    fn new(name: &Target) -> Result<Self> where Self: Sized;
+    fn new(name: &Target) -> Result<Self>
+    where
+        Self: Sized;
     fn data(&self) -> *const u8;
     fn mut_data(&mut self) -> *mut u8;
     fn len(&self) -> usize;
@@ -136,7 +142,6 @@ pub trait MainStore {
 pub struct InMemoryMainStore {
     data: *mut u8,
     data_len: usize,
-
 }
 impl Drop for InMemoryMainStore {
     fn drop(&mut self) {
@@ -168,10 +173,10 @@ impl MainStore for InMemoryMainStore {
 }
 
 mod disk_main_store {
-    use std::fs::OpenOptions;
-    use memmap2::MmapMut;
-    use crate::buffer::MainStore;
     use crate::Target;
+    use crate::buffer::MainStore;
+    use memmap2::MmapMut;
+    use std::fs::OpenOptions;
 
     pub struct DiskMainStore {
         data: MmapMut,
@@ -179,7 +184,7 @@ mod disk_main_store {
     impl MainStore for DiskMainStore {
         fn new(name: &Target) -> anyhow::Result<Self>
         where
-            Self: Sized
+            Self: Sized,
         {
             std::fs::create_dir_all(&name.path);
             let main_path = name.path.join("main_store.bin");
@@ -193,9 +198,7 @@ mod disk_main_store {
             main_file.set_len(10000)?;
             let data_mmap = unsafe { MmapMut::map_mut(&main_file)? };
 
-            Ok(DiskMainStore {
-                data: data_mmap,
-            })
+            Ok(DiskMainStore { data: data_mmap })
         }
 
         fn data(&self) -> *const u8 {
@@ -212,9 +215,10 @@ mod disk_main_store {
     }
 }
 
-compile_error!("add on-disk store for the actual messages!");
-pub struct DatabaseContext<M = DiskMainStore, D  = MmapMessageDependencyTracker>
-    where M: MainStore, D: MessageDependencyTracker
+pub struct DatabaseContext<M = DiskMainStore, D = MmapMessageDependencyTracker>
+where
+    M: MainStore,
+    D: MessageDependencyTracker,
 {
     main_store: M,
     pointer: Cell<usize>,
@@ -260,7 +264,7 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
     }
 }
 
-impl<M:MainStore, D: MessageDependencyTracker> DatabaseContext<M,D> {
+impl<M: MainStore, D: MessageDependencyTracker> DatabaseContext<M, D> {
     pub fn next_seqnr(&self) -> SequenceNr {
         self.next_seqnr
     }
@@ -276,7 +280,6 @@ impl<M:MainStore, D: MessageDependencyTracker> DatabaseContext<M,D> {
         })
     }
 
-
     /// Note: Must not be public, since while output of [`crate::Database::get_root`] is still
     /// live, time travel _must not_ occur, since it would lead to unsoundness (potentially
     /// changing objects while they were used).
@@ -290,37 +293,36 @@ impl<M:MainStore, D: MessageDependencyTracker> DatabaseContext<M,D> {
             )
         }
 
-        let result = self.undo_log.rewind(|entry| {
-            match entry {
-                UndoLogEntry::SetPointer(new_pointer) => {
-                    let cur = self.pointer.get();
-                    debug_assert!(new_pointer <= cur);
-                    unsafe { Self::mut_slice(self.main_store.mut_data(), new_pointer..cur).fill(0) };
-                    self.pointer.set(new_pointer);
+        let result = self.undo_log.rewind(|entry| match entry {
+            UndoLogEntry::SetPointer(new_pointer) => {
+                let cur = self.pointer.get();
+                debug_assert!(new_pointer <= cur);
+                unsafe { Self::mut_slice(self.main_store.mut_data(), new_pointer..cur).fill(0) };
+                self.pointer.set(new_pointer);
+                HowToProceed::PopAndContinue
+            }
+            UndoLogEntry::ZeroOut { start, len } => {
+                unsafe { Self::mut_slice(self.main_store.mut_data(), start..start + len).fill(0) };
+                HowToProceed::PopAndContinue
+            }
+            UndoLogEntry::Restore { start, data } => {
+                unsafe {
+                    Self::mut_slice(self.main_store.mut_data(), start..start + data.len())
+                        .copy_from_slice(data)
+                };
+                HowToProceed::PopAndContinue
+            }
+            UndoLogEntry::Rewind(time) => {
+                if time == new_time {
+                    self.next_seqnr = new_time;
+                    HowToProceed::PopAndStop
+                } else if time > new_time {
                     HowToProceed::PopAndContinue
-                }
-                UndoLogEntry::ZeroOut { start, len } => {
-                    unsafe { Self::mut_slice(self.main_store.mut_data(), start..start + len).fill(0) };
-                    HowToProceed::PopAndContinue
-                }
-                UndoLogEntry::Restore { start, data } => {
-                    unsafe {
-                        Self::mut_slice(self.main_store.mut_data(), start..start + data.len()).copy_from_slice(data)
-                    };
-                    HowToProceed::PopAndContinue
-                }
-                UndoLogEntry::Rewind(time) => {
-                    if time == new_time {
-                        self.next_seqnr = new_time;
-                        HowToProceed::PopAndStop
-                    } else if time > new_time {
-                        HowToProceed::PopAndContinue
-                    } else {
-                        panic!(
-                            "Couldn't rewind time to {}, ended up back at {}",
-                            new_time, time
-                        );
-                    }
+                } else {
+                    panic!(
+                        "Couldn't rewind time to {}, ended up back at {}",
+                        new_time, time
+                    );
                 }
             }
         });
@@ -345,7 +347,6 @@ impl<M:MainStore, D: MessageDependencyTracker> DatabaseContext<M,D> {
         if seqnr <= self.next_seqnr {
             panic!("Attempt to set sequence number to a smaller or equal value");
         }
-
 
         self.undo_log.record(UndoLogEntry::Rewind(seqnr));
         self.next_seqnr = seqnr;
@@ -417,7 +418,11 @@ impl<M:MainStore, D: MessageDependencyTracker> DatabaseContext<M,D> {
         if self.pointer.get() > self.main_store.len() {
             panic!("Out of memory");
         }
-        unsafe { self.main_store.mut_data().wrapping_add(self.pointer.get() - size) }
+        unsafe {
+            self.main_store
+                .mut_data()
+                .wrapping_add(self.pointer.get() - size)
+        }
     }
     pub fn allocate_array<const N: usize, const ALIGN: usize>(&mut self) -> &mut [u8; N] {
         self.allocate_slice(N, ALIGN).try_into().unwrap()
@@ -427,10 +432,17 @@ impl<M:MainStore, D: MessageDependencyTracker> DatabaseContext<M,D> {
         unsafe { std::slice::from_raw_parts_mut(start, size) }
     }
     pub unsafe fn access<'a>(&self, range: FatPtr) -> &'a [u8] {
-        unsafe { std::slice::from_raw_parts(self.main_store.data().wrapping_add(range.start), range.len) }
+        unsafe {
+            std::slice::from_raw_parts(self.main_store.data().wrapping_add(range.start), range.len)
+        }
     }
     pub unsafe fn access_mut<'a>(&mut self, range: FatPtr) -> &'a mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.main_store.mut_data().wrapping_add(range.start), range.len) }
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.main_store.mut_data().wrapping_add(range.start),
+                range.len,
+            )
+        }
     }
     pub unsafe fn mut_slice<'a>(data: *mut u8, range: Range<usize>) -> &'a mut [u8] {
         unsafe {
@@ -484,13 +496,13 @@ impl<M:MainStore, D: MessageDependencyTracker> DatabaseContext<M,D> {
 
     /// Call after writing a message.
     pub fn finalize_message(&mut self) {
-        self.registrar_tracker.borrow_mut().finalize_message(
-            self.next_seqnr,
-        );
+        self.registrar_tracker
+            .borrow_mut()
+            .finalize_message(self.next_seqnr);
     }
     /// Call after a complete update, i.e, applying multiple messages
     /// Returns all messages that can now be removed.
-    pub fn finalize_transaction<MSG: Message+Debug>(
+    pub fn finalize_transaction<MSG: Message + Debug>(
         &mut self,
         message_store: &IndexMap<MessageId, Option<MSG>>,
     ) -> Vec<SequenceNr> {
@@ -506,8 +518,7 @@ impl<M:MainStore, D: MessageDependencyTracker> DatabaseContext<M,D> {
         if registrar_point.0 != 0 {
             track.decrease_use(*registrar_point);
         }
-        let current_registrar = self
-            .next_seqnr;
+        let current_registrar = self.next_seqnr;
         track.increase_use(current_registrar);
         drop(track);
         self.write_pod(current_registrar, registrar_point)
@@ -522,8 +533,7 @@ impl<M:MainStore, D: MessageDependencyTracker> DatabaseContext<M,D> {
         if observee.is_invalid() {
             return;
         }
-        let observer = self
-            .next_seqnr;
+        let observer = self.next_seqnr;
         if observer != observee {
             println!("Tracking that {} observed {}", observer, observee);
             self.registrar_tracker

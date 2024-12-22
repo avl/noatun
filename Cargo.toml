@@ -3,6 +3,14 @@ name = "noatun"
 version = "0.1.0"
 edition = "2024"
 
+# The `foo` package will use the -Copt-level=3 flag.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.bytemuck]
+opt-level = 3
+[profile.dev.package.byteorder]
+opt-level = 3
+
 [dependencies]
 byteorder = "1.5"
 bytemuck = { version = "1.20", features = ["derive"] }
@@ -13,3 +21,4 @@ time = { version = "0.3", features = ["formatting"] }
 rusqlite = {version = "0.32", features = ["bundled"] }
 memmap2 = {version ="0.9"}
 anyhow = "1.0"
+buf_read_write = { path = "../buf_read_write", features = ["instrument"] }

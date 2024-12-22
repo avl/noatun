@@ -1,8 +1,8 @@
+use crate::{MessageId, SequenceNr};
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
 use std::io::Write;
-use crate::{MessageId, SequenceNr};
 
 #[derive(Debug)]
 pub enum UndoLogEntry<'a> {
@@ -92,7 +92,7 @@ impl UndoLog {
             4 => {
                 assert!(offset >= 4);
                 offset -= 4;
-                let time : SequenceNr = bytemuck::pod_read_unaligned(&data[offset..offset + 4]);
+                let time: SequenceNr = bytemuck::pod_read_unaligned(&data[offset..offset + 4]);
                 return Some((offset, UndoLogEntry::Rewind(time)));
             }
             _ => panic!("Corrupt undo-store"),
