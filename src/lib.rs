@@ -81,6 +81,13 @@ impl Debug for MessageId {
 }
 
 impl MessageId {
+    pub fn min(self, other: MessageId) -> MessageId {
+        if self < other {
+            self
+        } else {
+            other
+        }
+    }
     pub fn is_zero(&self) -> bool {
         self.data[0] == 0 && self.data[1] == 0
     }
@@ -604,17 +611,21 @@ thread_local! {
 }
 
 #[derive(Clone)]
-pub struct Target {
-    path: PathBuf,
-    /// True if the destination should be truncated and overwritten, if it exists
-    overwrite: bool,
+pub enum Target {
+    OpenExisting(PathBuf),
+    CreateNewOrOverwrite(PathBuf),
+    CreateNew(PathBuf)
 }
 impl Target {
-    pub fn overwrite(path: impl AsRef<Path>) -> Self {
-        Self {
-            path: path.as_ref().to_path_buf(),
-            overwrite: true,
-        }
+    pub fn path(&self) -> &Path {
+        let (Target::CreateNew(x)|Target::CreateNewOrOverwrite(x)|Target::OpenExisting(x)) = self;
+        &*x
+    }
+    pub fn create(&self) -> bool {
+        matches!(self,  Target::CreateNewOrOverwrite(_)|Target::CreateNew(_))
+    }
+    pub fn overwrite(&self) -> bool {
+        matches!(self, Target::CreateNewOrOverwrite(_))
     }
 }
 impl<APP: Application> Database<APP> {
@@ -624,13 +635,21 @@ impl<APP: Application> Database<APP> {
         (root, &mut self.context)
     }
 
-    pub fn create_new(path: impl AsRef<Path>, app: APP) -> Result<Database<APP>> {
-        Self::create(path, app, true)
+    pub fn create_new(path: impl AsRef<Path>, app: APP, overwrite_existing:bool) -> Result<Database<APP>> {
+        Self::create(app,
+                     if overwrite_existing
+                        {Target::CreateNewOrOverwrite(path.as_ref().to_path_buf()) }
+                     else
+                     {
+                        Target::CreateNew(path.as_ref().to_path_buf())
+                     }
+        )
     }
     pub fn open(path: impl AsRef<Path>, app: APP) -> Result<Database<APP>> {
-        Self::create(path, app, false)
+        Self::create(app, Target::OpenExisting(path.as_ref().to_path_buf())
+                     )
     }
-    pub fn create(path: impl AsRef<Path>, app: APP, overwrite: bool) -> Result<Database<APP>> {
+    fn create(app: APP, target: Target) -> Result<Database<APP>> {
         if MULTI_INSTANCE_BLOCKER.get() {
             if !std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_ok() {
                 panic!(
@@ -642,10 +661,7 @@ impl<APP: Application> Database<APP> {
             }
         }
         MULTI_INSTANCE_BLOCKER.set(true);
-        let target = Target {
-            path: PathBuf::from(path.as_ref()),
-            overwrite,
-        };
+
         let mut ctx = DatabaseContext::new(&target)?;
         let start_ptr = ctx.start_ptr();
         let root = APP::initialize_root(&mut ctx);
@@ -726,7 +742,7 @@ mod tests {
     #[test]
     fn test1() {
         let mut db: Database<CounterApplication> =
-            Database::create_new("test/test1.bin", CounterApplication).unwrap();
+            Database::create_new("test/test1.bin", CounterApplication, true).unwrap();
 
         let context = &db.context;
 
@@ -785,7 +801,7 @@ mod tests {
     #[test]
     fn test_msg_store() {
         let mut db: Database<CounterApplication> =
-            Database::create_new("test/msg_store.bin", CounterApplication).unwrap();
+            Database::create_new("test/msg_store.bin", CounterApplication, true).unwrap();
         let mut messages = MessageStore::new();
         messages.messages.insert(
             MessageId::new_debug(0x100),
@@ -842,7 +858,7 @@ mod tests {
         }
 
         let mut db: Database<HandleApplication> =
-            Database::create_new("test/test_handle.bin", HandleApplication).unwrap();
+            Database::create_new("test/test_handle.bin", HandleApplication, true).unwrap();
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
@@ -871,7 +887,7 @@ mod tests {
         }
 
         let mut db: Database<CounterVecApplication> =
-            Database::create_new("test/test_vec0", CounterVecApplication).unwrap();
+            Database::create_new("test/test_vec0", CounterVecApplication, true).unwrap();
         let (counter_vec, context) = db.get_root();
         context.set_next_seqnr(SequenceNr::from_index(0));
         assert_eq!(counter_vec.len(context), 0);
@@ -925,7 +941,7 @@ mod tests {
         }
 
         let mut db: Database<CounterVecApplication> =
-            Database::create_new("test/vec_undo", CounterVecApplication).unwrap();
+            Database::create_new("test/vec_undo", CounterVecApplication, true).unwrap();
 
         {
             let (counter_vec, context) = db.get_root();

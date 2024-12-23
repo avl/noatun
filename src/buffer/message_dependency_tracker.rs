@@ -64,20 +64,20 @@ impl LinkedListEntry {
 
 impl MessageDependencyTracker for MmapMessageDependencyTracker {
     fn new(path: &Target) -> Result<Self> {
-        std::fs::create_dir_all(&path.path);
-        let key_path = path.path.join("dep_keys.bin");
-        let value_path = path.path.join("dep_values.bin");
+        std::fs::create_dir_all(&path.path());
+        let key_path = path.path().join("dep_keys.bin");
+        let value_path = path.path().join("dep_values.bin");
         let key_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .truncate(path.overwrite)
+            .truncate(path.overwrite())
             .open(&key_path)?;
         let value_file = OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
-            .truncate(path.overwrite)
+            .create(path.create())
+            .truncate(path.overwrite())
             .open(&value_path)?;
 
         const DEFAULT_KEY_CAPACITY: usize = 3;
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn smoke_deptrack() {
         let mut tracker =
-            MmapMessageDependencyTracker::new(&Target::overwrite("test_smoke_deptrack.bin"))
+            MmapMessageDependencyTracker::new(&Target::CreateNewOrOverwrite("test_smoke_deptrack.bin".into()))
                 .unwrap();
         tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
 
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn smoke_deptrack_many() {
         let mut tracker =
-            MmapMessageDependencyTracker::new(&Target::overwrite("test_smoke_deptrack_many.bin"))
+            MmapMessageDependencyTracker::new(&Target::CreateNewOrOverwrite("test_smoke_deptrack_many.bin".into()))
                 .unwrap();
         let t = Instant::now();
         for i in 0..100_usize {

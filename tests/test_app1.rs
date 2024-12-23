@@ -53,6 +53,7 @@ fn test_counter_object() {
     let mut db: Database<CounterApplication> = Database::create_new(
         "test/integration/test_counter_object.bin",
         CounterApplication,
+        true
     )
     .unwrap();
     let (counter, context) = db.get_root();
@@ -69,6 +70,7 @@ fn test_counter_mayhem() {
     let mut db1: Database<CounterApplication> = Database::create_new(
         "test/integration/test_counter_mayhem.bin",
         CounterApplication,
+        true
     )
     .unwrap();
     let (_counter1, context1) = db1.get_root();
@@ -77,6 +79,7 @@ fn test_counter_mayhem() {
     let mut db2: Database<CounterApplication> = Database::create_new(
         "test/integration/test_counter_mayhem2.bin",
         CounterApplication,
+        true
     )
     .unwrap();
 

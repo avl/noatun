@@ -186,13 +186,13 @@ mod disk_main_store {
         where
             Self: Sized,
         {
-            std::fs::create_dir_all(&name.path);
-            let main_path = name.path.join("main_store.bin");
+            std::fs::create_dir_all(&name.path());
+            let main_path = name.path().join("main_store.bin");
             let main_file = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
-                .truncate(name.overwrite)
+                .truncate(name.overwrite())
                 .open(&main_path)?;
 
             main_file.set_len(10000)?;

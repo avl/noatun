@@ -22,3 +22,4 @@ rusqlite = {version = "0.32", features = ["bundled"] }
 memmap2 = {version ="0.9"}
 anyhow = "1.0"
 buf_read_write = { path = "../buf_read_write", features = ["instrument"] }
+fs2 = "0.4"
