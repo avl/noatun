@@ -14,13 +14,16 @@ use sha2::digest::FixedOutput;
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::fmt::{Debug, Display, Formatter};
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::marker::PhantomData;
 use std::mem::{transmute, transmute_copy};
-use std::ops::Deref;
+use std::ops::{Deref, Range};
 use std::path::{Path, PathBuf};
 use std::slice::SliceIndex;
 use std::time::{Duration, SystemTime};
+use fs2::FileExt;
+use memmap2::MmapMut;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -29,6 +32,7 @@ pub(crate) mod backing_store;
 pub(crate) mod buffer;
 mod on_disk_message_store;
 pub(crate) mod undo_store;
+mod disk_abstraction;
 
 struct MessageComponent<const ID: u32, T> {
     value: Option<T>,

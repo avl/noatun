@@ -143,19 +143,22 @@ pub struct InMemoryMainStore {
     data: *mut u8,
     data_len: usize,
 }
+
+const DEFAULT_SIZE: usize = 10000;
+
 impl Drop for InMemoryMainStore {
     fn drop(&mut self) {
-        let layout = Layout::from_size_align(10000, 256).unwrap();
+        let layout = Layout::from_size_align(DEFAULT_SIZE, 256).unwrap();
         unsafe { std::alloc::dealloc(self.data, layout) }
     }
 }
 impl MainStore for InMemoryMainStore {
     fn new(name: &Target) -> Result<Self> {
-        let layout = Layout::from_size_align(10000, 256).unwrap();
+        let layout = Layout::from_size_align(DEFAULT_SIZE, 256).unwrap();
         let data = unsafe { std::alloc::alloc_zeroed(layout) };
         Ok(InMemoryMainStore {
             data,
-            data_len: 10000,
+            data_len: DEFAULT_SIZE,
         })
     }
 
@@ -174,7 +177,7 @@ impl MainStore for InMemoryMainStore {
 
 mod disk_main_store {
     use crate::Target;
-    use crate::buffer::MainStore;
+    use crate::buffer::{MainStore, DEFAULT_SIZE};
     use memmap2::MmapMut;
     use std::fs::OpenOptions;
 
@@ -195,7 +198,7 @@ mod disk_main_store {
                 .truncate(name.overwrite())
                 .open(&main_path)?;
 
-            main_file.set_len(10000)?;
+            main_file.set_len(DEFAULT_SIZE as u64)?;
             let data_mmap = unsafe { MmapMut::map_mut(&main_file)? };
 
             Ok(DiskMainStore { data: data_mmap })

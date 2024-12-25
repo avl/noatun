@@ -3,7 +3,6 @@ use anyhow::{Context, Result, anyhow, bail};
 use buf_read_write::BufStream;
 use bytemuck::{Pod, Zeroable};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use memmap2::{Mmap, MmapMut};
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fmt::{Debug, Display, Formatter};
@@ -13,6 +12,9 @@ use std::marker::PhantomData;
 use std::mem::{offset_of, MaybeUninit};
 use std::path::{Path};
 use fs2::FileExt;
+use crate::disk_abstraction::Disk;
+use crate::disk_abstraction::DiskMmap;
+use crate::disk_abstraction::DiskFile;
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 #[repr(transparent)]
@@ -177,8 +179,8 @@ struct DataFileEntry {
 }
 
 #[derive(Debug)]
-struct DataFileInfo {
-    file: BufStream<File>,
+struct DataFileInfo<F:Seek+Write+Read> {
+    file: BufStream<F>,
     file_number: U1,
 }
 
@@ -205,28 +207,34 @@ struct StoreHeader {
     data_files: [DataFileEntry; 2],
 }
 
-struct OnDiskMessageStore<M> {
+
+
+
+
+struct OnDiskMessageStore<M, D:Disk> {
     target: Target,
-    index_file: File,
-    index_mmap: Option<MmapMut>,
-    data_files: [DataFileInfo;2],
+    index_file: D::File,
+    index_mmap: Option<D::Mmap>,
+    data_files: [DataFileInfo<D::File>;2],
     active_file: U1,
     phantom: PhantomData<M>,
+    d: D,
 }
 
-impl DataFileInfo {}
+impl<D:DiskFile> DataFileInfo<D> {}
 
-impl<M> OnDiskMessageStore<M> {
+impl<M, D:Disk> OnDiskMessageStore<M, D> {
 
     fn provide_index_map<'a>(
-        map: &'a mut Option<MmapMut>,
-        file: &File,
+        d: &mut D,
+        map: &'a mut Option<D::Mmap>,
+        file: &mut D::File,
         extra: usize,
-    ) -> Result<&'a mut MmapMut> {
+    ) -> Result<&'a mut D::Mmap> {
         let cur_available = map.as_mut().map(|x| {
             let xlen = x.len();
-            let slice: &mut [u8] = x;
-            let header: &StoreHeader = bytemuck::from_bytes_mut(&mut slice[0..size_of::<StoreHeader>()]);
+            let slice: &mut [u8] = x.map_mut();
+            let header: &StoreHeader = bytemuck::from_bytes(&slice[0..size_of::<StoreHeader>()]);
             let file_capacity =
                 (xlen.saturating_sub(size_of::<StoreHeader>())) / size_of::<IndexEntry>();
             let used = header.entries;
@@ -258,9 +266,12 @@ impl<M> OnDiskMessageStore<M> {
                 // Make sure to sync metadata.
                 file.sync_all().with_context(||format!("syncing index file to {}", new_file_size))?;
 
-                let mmap = unsafe { MmapMut::map_mut(file)? };
-                let slice = &mmap[..];
-                assert!((slice.as_ptr() as usize) % 256 == 0);
+                let mut mmap = unsafe { d.mmap(file)? };
+                let slice = mmap.map_mut();
+                let header: &mut StoreHeader = bytemuck::from_bytes_mut(&mut slice[0..size_of::<StoreHeader>()]);
+                // We're currently updating, so status should be 'NOK'. But we haven't failed,
+                // so as soon as the transaction is complete, this will be set to OK again.
+                header.dirty_status = STATUS_NOK;
 
                 Ok(map.insert(mmap))
             }
@@ -268,10 +279,10 @@ impl<M> OnDiskMessageStore<M> {
     }
 
     #[inline]
-    fn header<'a>(map: &'a mut Option<MmapMut>, file: &File) -> Result<&'a mut StoreHeader> {
-        let mmap = Self::provide_index_map(map, file, 0)?;
+    fn header<'a>(d: &mut D, map: &'a mut Option<D::Mmap>, file: &mut D::File) -> Result<&'a mut StoreHeader> {
+        let mmap = Self::provide_index_map(d, map, file, 0)?;
 
-        let slice: &mut [u8] = mmap;
+        let slice: &mut [u8] = mmap.map_mut();
         let header: &mut StoreHeader = bytemuck::from_bytes_mut(&mut slice[0..size_of::<StoreHeader>()]);
         Ok(header)
     }
@@ -279,12 +290,13 @@ impl<M> OnDiskMessageStore<M> {
     /// NOTE! This returns also unallocated message-entries, for writing
     #[inline]
     fn header_and_index_mut_uninit<'a>(
-        map: &'a mut Option<MmapMut>,
-        file: &File,
+        d: &mut D,
+        map: &'a mut Option<D::Mmap>,
+        file: &mut D::File,
         extra: usize
     ) -> Result<(&'a mut StoreHeader, &'a mut [IndexEntry])> {
-        let mmap = Self::provide_index_map(map, file, extra)?;
-        let slice: &mut [u8] = &mut *mmap;
+        let mmap = Self::provide_index_map(d, map, file, extra)?;
+        let slice: &mut [u8] = mmap.map_mut();
         let (store_header_bytes, index_bytes) = slice.split_at_mut(size_of::<StoreHeader>());
         let header: &mut StoreHeader = bytemuck::from_bytes_mut(store_header_bytes);
         let rest = bytemuck::cast_slice_mut(index_bytes);
@@ -292,10 +304,11 @@ impl<M> OnDiskMessageStore<M> {
     }
     #[inline]
     fn header_and_index_mut<'a>(
-        map: &'a mut Option<MmapMut>,
-        file: &File,
+        d: &mut D,
+        map: &'a mut Option<D::Mmap>,
+        file: &mut D::File,
     ) -> Result<(&'a mut StoreHeader, &'a mut [IndexEntry])> {
-        let (store,index) = Self::header_and_index_mut_uninit(map, file, 0)?;
+        let (store,index) = Self::header_and_index_mut_uninit(d, map, file, 0)?;
 
         let entries = store.entries as usize;
         Ok((store, &mut index[..entries]))
@@ -309,7 +322,7 @@ impl<M> OnDiskMessageStore<M> {
         let Some(mmap) = &self.index_mmap else {
             return Err(anyhow!("index is corrupt/not found"));
         };
-        let slice: &[u8] = mmap;
+        let slice: &[u8] = mmap.map();
         let (store_header_bytes, index_bytes) = slice.split_at(size_of::<StoreHeader>());
         let header: &StoreHeader = bytemuck::from_bytes(store_header_bytes);
         let rest = bytemuck::cast_slice(index_bytes);
@@ -353,7 +366,7 @@ impl<M> OnDiskMessageStore<M> {
             }
         }
 
-        let (index_header, index) = Self::header_and_index_mut_uninit(&mut self.index_mmap, &self.index_file, max_count_messages)?;
+        let (index_header, index) = Self::header_and_index_mut_uninit(&mut self.d, &mut self.index_mmap, &mut self.index_file, max_count_messages)?;
         assert_eq!(index_header.entries, 0);
         let mut index_ptr = 0usize;
         for (file_info, file_entry) in self.data_files.iter_mut().zip(index_header.data_files.iter_mut()) {
@@ -405,7 +418,7 @@ impl<M> OnDiskMessageStore<M> {
 
 
     fn update_status(&mut self, status: u32) -> Result<u32> {
-        let header = Self::header(&mut self.index_mmap, &self.index_file)?;
+        let header = Self::header(&mut self.d, &mut self.index_mmap, &mut self.index_file)?;
         let prev = header.dirty_status;
         if prev != status {
             header.dirty_status = status;
@@ -480,7 +493,7 @@ impl<M> OnDiskMessageStore<M> {
     }
 
     fn do_delete_many(&mut self, messages: impl Iterator<Item=MessageId>) -> Result<()> {
-        let (header, message_index) = Self::header_and_index_mut(&mut self.index_mmap, &self.index_file)
+        let (header, message_index) = Self::header_and_index_mut(&mut self.d, &mut self.index_mmap, &mut self.index_file)
             .context("Reading index file")?;
 
         for message in messages {
@@ -508,7 +521,7 @@ impl<M> OnDiskMessageStore<M> {
 
     /// Make sure the given number of slots are available.
     fn provide_index_map_for(&mut self, count: usize) -> Result<()> {
-        Self::provide_index_map(&mut self.index_mmap, &self.index_file, count);
+        Self::provide_index_map(&mut self.d, &mut self.index_mmap, &mut self.index_file, count);
         Ok(())
     }
 
@@ -520,7 +533,7 @@ impl<M> OnDiskMessageStore<M> {
         }
         let info = &mut self.data_files[self.active_file.index()];
 
-        let (index_header, index) = Self::header_and_index_mut_uninit(&mut self.index_mmap, &self.index_file, len)?;
+        let (index_header, index) = Self::header_and_index_mut_uninit(&mut self.d, &mut self.index_mmap, &mut self.index_file, len)?;
 
 
 
@@ -540,7 +553,7 @@ impl<M> OnDiskMessageStore<M> {
             if minne.is_empty() && cur_input_message.is_none() {
                 break;
             }
-            dbg!(&cur_input_message, &minne);
+            //dbg!(&cur_input_message, &minne);
             let cur_index_entry = &mut index[cur_index];
             let present_id = if cur_index < index_header.entries as usize {Some(cur_index_entry.message)} else {None};
 
@@ -578,6 +591,8 @@ impl<M> OnDiskMessageStore<M> {
                     }
                     last_msg_id = Some(msg.id());
 
+
+                    // Serialize the message and write to data store
                     info.file.write_zeroes(MSG_HEADER_SIZE)?;
                     msg.serialize(&mut info.file);
 
@@ -592,21 +607,7 @@ impl<M> OnDiskMessageStore<M> {
                             let temp = sha2(bytes);
                             temp
                         })?;
-
-
-
-                    println!("Assigning new item from input to pos {}", cur_index);
-                    if cur_index < index_header.entries as usize {
-                        minne.push_back(*cur_index_entry);
-                    }
-                    *cur_index_entry = IndexEntry {
-                        message: msg.id(),
-                        file_offset: FileOffset::new(start_pos, self.active_file),
-                        file_size: msg_size,
-                    };
-                    cur_index += 1;
-                    let full_msg_size = msg_size + MSG_HEADER_SIZE as u64;
-
+                    // Write data store header
                     info.file.seek(SeekFrom::Start(start_pos))?;
                     info.file.write_all(
                         bytemuck::bytes_of(
@@ -618,6 +619,21 @@ impl<M> OnDiskMessageStore<M> {
                         )
                     )?;
                     info.file.seek(SeekFrom::Start(end_pos))?;
+
+
+
+                    // Append to the index (compacting while doing so)
+                    if cur_index < index_header.entries as usize {
+                        minne.push_back(*cur_index_entry);
+                    }
+                    *cur_index_entry = IndexEntry {
+                        message: msg.id(),
+                        file_offset: FileOffset::new(start_pos, self.active_file),
+                        file_size: msg_size,
+                    };
+                    cur_index += 1;
+                    let full_msg_size = msg_size + MSG_HEADER_SIZE as u64;
+
                     index_header.data_files[self.active_file.index()].bytes_used += full_msg_size;
                     index_header.data_files[self.active_file.index()].nominal_size += full_msg_size;
 
@@ -636,7 +652,7 @@ impl<M> OnDiskMessageStore<M> {
                 }
             }
         }
-        info.file.sync_all()?;
+        info.file.inner_unchecked_mut().sync_all()?;
         let data_file = &mut index_header.data_files[self.active_file.index()];
         data_file.bytes_used += size_delta as u64;
         index_header.entries += len as u32;
@@ -687,7 +703,7 @@ impl<M> OnDiskMessageStore<M> {
     }
     /// Returns true if 'active' has been swapped
     fn do_compact_impl(&mut self, mut done: impl FnMut(/*wasted bytes:*/u64, /*total bytes:*/u64) -> bool) -> Result<bool> {
-        let (header, index) = Self::header_and_index_mut(&mut self.index_mmap, &self.index_file)?;
+        let (header, index) = Self::header_and_index_mut(&mut self.d, &mut self.index_mmap, &mut self.index_file)?;
 
         let active_file = self.active_file;
         let (src_file_info, dst_file_info) = Self::get_src_dst(&mut self.data_files, active_file);
@@ -705,11 +721,12 @@ impl<M> OnDiskMessageStore<M> {
 
             let src_position = src_file_entry.compaction_pointer;
             if src_file_entry.compaction_pointer >= src_file_entry.nominal_size {
-                dst_file_info.file.sync_all()?;
+                dst_file_info.file.inner_unchecked_mut().sync_all()?;
                 src_file_entry.nominal_size=0;
                 src_file_entry.bytes_used=0;
                 src_file_entry.compaction_pointer=0;
-                src_file_info.file.set_len(0);
+                src_file_info.file.flush()?;
+                src_file_info.file.inner_unchecked_mut().set_len(0)?;
 
                 // Don't actually swap if current active isn't even fragmented at all,
                 // or if target is reached
@@ -754,7 +771,7 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
-    pub fn new(target: Target) -> Result<OnDiskMessageStore<M>> {
+    pub fn new(mut d: D, target: Target) -> Result<OnDiskMessageStore<M, D>> {
         const {
             if size_of::<usize>() < size_of::<u32>() {
                 panic!(
@@ -764,19 +781,20 @@ impl<M> OnDiskMessageStore<M> {
         }
 
 
-        std::fs::create_dir_all(&target.path()).context("create database directory")?;
 
-        let data_files: [Result<DataFileInfo>;2] = [0,1].map(|file_number|{
+        let data_files: [Result<DataFileInfo<D::File>>;2] = [0,1].map(|file_number|{
             let data_file_path = target
                 .path()
                 .join(format!("data{}.bin", file_number));
 
-            let data_file = OpenOptions::new()
+            compile_error!("USe disk-abstraction!");
+            let mut data_file = d.open_file( &data_file_path, target.create(), target.overwrite()).context("Opening data-file")?;
+            /*OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(target.create())
-                .truncate(target.overwrite())
-                .open(&data_file_path).context("Opening data-file")?;
+                .truncate(target.overwrite())*/
+                //.open(&data_file_path).context("Opening data-file")?;
 
 
             data_file.try_lock_exclusive().context("While obtaining file lock on data file")?;
@@ -788,31 +806,29 @@ impl<M> OnDiskMessageStore<M> {
         });
 
         //TODO: Use array `try_map` once stabilized
-        let data_files: [DataFileInfo;2] = data_files.into_iter().collect::<Result<Vec<DataFileInfo>>>()?.try_into().unwrap();
+        let data_files: [DataFileInfo<D::File>;2] = data_files.into_iter().collect::<Result<Vec<DataFileInfo<D::File>>>>()?.try_into().unwrap_or_else(|_|unreachable!());
 
 
         let index_file_path = target.path().join("index.bin");
         let mut overwrite = target.overwrite();
-        if !std::fs::metadata(&index_file_path).is_ok() {
-            overwrite = true;
-        }
 
-        let index_file = OpenOptions::new()
+        let mut index_file = d.open_file(&index_file_path, target.create(), overwrite).context("Opening index-file")?;
+        /*let index_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(target.create())
             .truncate(overwrite)
             .open(&index_file_path)
             .context("Opening index-file")
-            ?;
+            ?;*/
 
         index_file.try_lock_exclusive().context("While obtaining lock on index-file")?;
 
 
-        let len = index_file.metadata().context("reading input file")?.len();
+        let len = index_file.len().context("reading index file length");
 
         let mut index_mmap = None;
-        let index = Self::header(&mut index_mmap, &index_file)?;
+        let index = Self::header(&mut d, &mut index_mmap, &mut index_file)?;
         if overwrite {
             // We've overwritten (truncated) the existing file, so it's definitely not corrupt
             index.dirty_status = STATUS_OK;
@@ -825,6 +841,7 @@ impl<M> OnDiskMessageStore<M> {
         }).unwrap().0;
 
         let mut this = Self {
+            d,
             target: target.clone(),
             index_file,
             index_mmap,
@@ -840,12 +857,12 @@ impl<M> OnDiskMessageStore<M> {
 #[cfg(test)]
 mod tests {
     use std::io::{Cursor, Read, Write};
-    use rusqlite::Connection;
     use std::path::Path;
     use std::time::Instant;
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use crate::on_disk_message_store::{FileOffset, OnDiskMessageStore, STATUS_NOK, STATUS_OK, U1};
     use crate::{DatabaseContext, DummyUnitObject, Message, MessageId, Target};
+    use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 
     #[derive(Debug)]
     struct OnDiskMessage {
@@ -899,7 +916,9 @@ mod tests {
 
     #[test]
     fn add_and_recover_messages() {
-        let mut store = OnDiskMessageStore::new(Target::CreateNewOrOverwrite("add_and_recover_messages.bin".into())).unwrap();
+        let mut store = OnDiskMessageStore::new(
+            StandardDisk,
+            Target::CreateNewOrOverwrite("add_and_recover_messages.bin".into())).unwrap();
 
         const COUNT: usize = 5; //1_000_000usize;
 
@@ -913,7 +932,7 @@ mod tests {
         store.append_many_sorted(msgs.into_iter()).unwrap();
 
         {
-            let header = OnDiskMessageStore::<OnDiskMessage>::header(&mut store.index_mmap, &store.index_file).unwrap();
+            let header = OnDiskMessageStore::<OnDiskMessage, StandardDisk>::header(&mut store.d, &mut store.index_mmap, &mut store.index_file).unwrap();
             header.dirty_status = STATUS_NOK;
         }
         store.recover().unwrap();
@@ -926,7 +945,8 @@ mod tests {
 
     #[test]
     fn add_and_read_messages() {
-        let mut store = OnDiskMessageStore::new(Target::CreateNewOrOverwrite("add_and_read_messages.bin".into())).unwrap();
+        let mut store = OnDiskMessageStore::new(
+            StandardDisk,Target::CreateNewOrOverwrite("add_and_read_messages.bin".into())).unwrap();
 
         const COUNT: usize = 5; //1_000_000usize;
 
@@ -945,7 +965,8 @@ mod tests {
     }
     #[test]
     fn add_and_read_messages_twice() {
-        let mut store = OnDiskMessageStore::new(Target::CreateNewOrOverwrite("add_and_read_messages.bin".into())).unwrap();
+        let mut store = OnDiskMessageStore::new(
+            StandardDisk,Target::CreateNewOrOverwrite("add_and_read_messages_twice.bin".into())).unwrap();
 
         const COUNT: usize = 5; //1_000_000usize;
 
@@ -971,7 +992,8 @@ mod tests {
     }
     #[test]
     fn add_and_delete_messages() {
-        let mut store = OnDiskMessageStore::new(Target::CreateNewOrOverwrite("add_and_delete_messages.bin".into())).unwrap();
+        let mut store = OnDiskMessageStore::new(
+            StandardDisk,Target::CreateNewOrOverwrite("add_and_delete_messages.bin".into())).unwrap();
 
         const COUNT: usize = 3;
 
@@ -1003,9 +1025,40 @@ mod tests {
     #[test]
     fn test_create_disk_store() {
 
-        let mut store = OnDiskMessageStore::new(Target::CreateNewOrOverwrite("test_create_disk_store.bin".into())).unwrap();
+        let mut store = OnDiskMessageStore::new(
+            StandardDisk,Target::CreateNewOrOverwrite("test_create_disk_store.bin".into())).unwrap();
 
-        const COUNT:usize = 1_000_000;//1_000_000usize;
+        const COUNT:usize = 1_000;//1_000_000usize;
+
+        let init = Instant::now();
+        let msgs = (0..COUNT).map(|i|OnDiskMessage {
+            id: (1000_000 + i) as u64,
+            seq: i as u64,
+            data: vec![42u8; 1024],
+        });
+
+        store.append_many_sorted(msgs.into_iter()).unwrap();
+
+        println!("Init: {:?}", init.elapsed());
+        let mut count = 0;
+        let mut sum = 0;
+        let start = Instant::now();
+        for msg in store.query(MessageId::new_debug(1999_900)).unwrap() {
+            sum += msg.message.data[0] as u64;
+            count += 1;
+        }
+        println!("Instrumentation: {:?}", store.data_files[0].file.instrumentation());
+        println!("Time to iterate: {:?}", start.elapsed());
+        println!("Count: {} (sum: {})", count, sum);
+
+    }
+    #[test]
+    fn test_create_disk_store_in_memory() {
+
+        let mut store = OnDiskMessageStore::new(
+            InMemoryDisk::default(),Target::CreateNewOrOverwrite("test_create_disk_store.bin".into())).unwrap();
+
+        const COUNT:usize = 1_000;//1_000_000usize;
 
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i|OnDiskMessage {
@@ -1049,7 +1102,7 @@ mod tests {
     }
 
 
-
+/*
     #[test]
     fn test_create_sqlite_disk_store() {
         if std::path::Path::exists(Path::new("test.bin")) {
@@ -1120,4 +1173,5 @@ mod tests {
         }
         println!("Query {:?} (ids: {})", bef_query.elapsed(), idsum);
     }
+ */
 }
