@@ -17,10 +17,12 @@ pub trait Disk {
     type File: DiskFile;
     type Mmap: DiskMmap;
     fn open_file(&mut self, path: &Path, create: bool, overwrite: bool) -> Result<Self::File>;
-    fn mmap(&mut self, file: &Self::File) -> Result<Self::Mmap>;
 }
 pub trait DiskFile : Seek+ Write + Read {
     fn set_len(&mut self, len: u64) -> Result<()>;
+
+    fn mmap(&mut self) -> Result<DiskMmapHandle>;
+    fn remap(&mut self, mmap: &mut DiskMmapHandle, new_size: u64) -> Result<()>;
     fn sync_all(&mut self) -> Result<()>;
     fn try_lock_exclusive(&mut self) -> Result<()>;
     fn len(&self) -> Result<usize>;
@@ -31,6 +33,27 @@ pub trait DiskMmap {
     fn len(&self) -> usize;
     fn flush_range(&mut self, offset: usize, len: usize) -> Result<()>;
 }
+
+pub struct DiskMmapHandle {
+    boxed: Box<dyn DiskMmap>,
+    ptr: *mut u8,
+    len: usize,
+}
+impl DiskMmapHandle {
+    pub fn map(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+    pub fn map_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn flush_range(&mut self, offset: usize, len: usize) -> Result<()> {
+        self.boxed.flush_range(offset, len)
+    }
+}
+
 pub struct StandardDisk;
 
 
@@ -174,14 +197,6 @@ impl Disk for InMemoryDisk {
         }))))
     }
 
-    fn mmap(&mut self, file: &Self::File) -> Result<Self::Mmap> {
-        let size = file.0.borrow().data_size;
-
-        Ok(InMemoryMmap{
-            file: file.clone(),
-            size_of_map: size,
-        })
-    }
 }
 impl Drop for InMemoryFile {
     fn drop(&mut self) {
@@ -192,6 +207,24 @@ impl Drop for InMemoryFile {
     }
 }
 impl DiskFile for InMemoryFileRef {
+
+    fn mmap(&mut self) -> Result<DiskMmapHandle> {
+        let size = self.0.borrow().data_size;
+        let boxed = Box::new(InMemoryMmap{
+            file: self.clone(),
+            size_of_map: size,
+        });
+
+        let tfile = self.0.borrow();
+        let ptr = tfile.data;
+        let len = tfile.data_size;
+        Ok(DiskMmapHandle {
+            boxed,
+            ptr,
+            len,
+        })
+    }
+
     fn set_len(&mut self, len: u64) -> Result<()> {
         let new_layout = Layout::from_size_align(len as usize, 256).unwrap();
         let new_data = unsafe { std::alloc::alloc_zeroed(new_layout) };
@@ -208,6 +241,9 @@ impl DiskFile for InMemoryFileRef {
         tself.data_size = len as usize;
         tself.data = new_data;
         Ok(())
+    }
+
+    fn remap(&mut self, mmap: &mut DiskMmapHandle, new_size: u64) -> Result<()> {
     }
 
     fn sync_all(&mut self) -> Result<()> {
@@ -244,14 +280,31 @@ impl Disk for StandardDisk {
             .open(path)?)
     }
 
-    fn mmap(&mut self, file: &Self::File) -> Result<Self::Mmap> {
-        Ok(unsafe { MmapMut::map_mut(file)? })
-    }
 }
 #[deny(unconditional_recursion)]
 impl DiskFile for File {
     fn set_len(&mut self, len: u64) -> Result<()> {
         Ok(File::set_len(self, len)?)
+    }
+
+
+    fn mmap(&mut self) -> Result<DiskMmapHandle> {
+        let mut boxed = Box::new(unsafe { MmapMut::map_mut(self)?} );
+
+        let len = boxed.len();
+        let ptr = boxed.as_mut_ptr();
+
+
+        Ok(DiskMmapHandle {
+            boxed,
+            ptr,
+            len,
+        })
+    }
+
+    fn remap(&mut self, mmap: &mut DiskMmapHandle, new_size: u64) -> Result<()> {
+        let diskmmap: &mut MmapMut = mmap.boxed.downcast_mut();
+
     }
 
     fn sync_all(&mut self) -> Result<()> {

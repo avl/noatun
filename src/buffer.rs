@@ -1,4 +1,4 @@
-use crate::buffer::disk_main_store::DiskMainStore;
+
 use crate::buffer::message_dependency_tracker::{
     MessageDependencyTracker, MmapMessageDependencyTracker,
 };
@@ -22,6 +22,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::slice;
 use std::slice::SliceIndex;
+use crate::disk_abstraction::{Disk, DiskFile, DiskMmapHandle, StandardDisk};
 
 #[derive(Debug)]
 struct RegistrarTracker<T: MessageDependencyTracker> {
@@ -38,11 +39,11 @@ struct RegistrarTracker<T: MessageDependencyTracker> {
 }
 
 impl<T: MessageDependencyTracker> RegistrarTracker<T> {
-    fn new(path: &Target) -> Result<RegistrarTracker<T>> {
+    fn new<S:Disk>(disk: &mut S, path: &Target) -> Result<RegistrarTracker<T>> {
         Ok(RegistrarTracker {
             uses: vec![],
             unused_messages: vec![],
-            message_dependencies: T::new(path)?,
+            message_dependencies: T::new(disk, path)?,
         })
     }
 }
@@ -131,99 +132,16 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
     }
 }
 
-pub trait MainStore {
-    fn new(name: &Target) -> Result<Self>
-    where
-        Self: Sized;
-    fn data(&self) -> *const u8;
-    fn mut_data(&mut self) -> *mut u8;
-    fn len(&self) -> usize;
-}
-pub struct InMemoryMainStore {
-    data: *mut u8,
-    data_len: usize,
-}
+
 
 const DEFAULT_SIZE: usize = 10000;
 
-impl Drop for InMemoryMainStore {
-    fn drop(&mut self) {
-        let layout = Layout::from_size_align(DEFAULT_SIZE, 256).unwrap();
-        unsafe { std::alloc::dealloc(self.data, layout) }
-    }
-}
-impl MainStore for InMemoryMainStore {
-    fn new(name: &Target) -> Result<Self> {
-        let layout = Layout::from_size_align(DEFAULT_SIZE, 256).unwrap();
-        let data = unsafe { std::alloc::alloc_zeroed(layout) };
-        Ok(InMemoryMainStore {
-            data,
-            data_len: DEFAULT_SIZE,
-        })
-    }
 
-    fn data(&self) -> *const u8 {
-        self.data
-    }
 
-    fn mut_data(&mut self) -> *mut u8 {
-        self.data
-    }
-
-    fn len(&self) -> usize {
-        self.data_len
-    }
-}
-
-mod disk_main_store {
-    use crate::Target;
-    use crate::buffer::{MainStore, DEFAULT_SIZE};
-    use memmap2::MmapMut;
-    use std::fs::OpenOptions;
-
-    pub struct DiskMainStore {
-        data: MmapMut,
-    }
-    impl MainStore for DiskMainStore {
-        fn new(name: &Target) -> anyhow::Result<Self>
-        where
-            Self: Sized,
-        {
-            std::fs::create_dir_all(&name.path());
-            let main_path = name.path().join("main_store.bin");
-            let main_file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(name.overwrite())
-                .open(&main_path)?;
-
-            main_file.set_len(DEFAULT_SIZE as u64)?;
-            let data_mmap = unsafe { MmapMut::map_mut(&main_file)? };
-
-            Ok(DiskMainStore { data: data_mmap })
-        }
-
-        fn data(&self) -> *const u8 {
-            unsafe { self.data.as_ptr() }
-        }
-
-        fn mut_data(&mut self) -> *mut u8 {
-            unsafe { self.data.as_mut_ptr() }
-        }
-
-        fn len(&self) -> usize {
-            self.data.len()
-        }
-    }
-}
-
-pub struct DatabaseContext<M = DiskMainStore, D = MmapMessageDependencyTracker>
-where
-    M: MainStore,
-    D: MessageDependencyTracker,
+pub struct DatabaseContext
 {
-    main_store: M,
+    main_store_mmap: DiskMmapHandle,
+    main_store_file: Box<dyn DiskFile>,
     pointer: Cell<usize>,
     root_index: Option<GenPtr>,
     undo_log: UndoLog,
@@ -231,7 +149,7 @@ where
     phantom: PhantomData<*mut ()>,
 
     // The current message being written (or None if not open for writing)
-    registrar_tracker: RefCell<RegistrarTracker<D>>,
+    registrar_tracker: RefCell<RegistrarTracker<MmapMessageDependencyTracker>>,
 
     /// The next message expected to be applied.
     /// Starts at 0. When a message is being applied, this field
@@ -267,13 +185,17 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
     }
 }
 
-impl<M: MainStore, D: MessageDependencyTracker> DatabaseContext<M, D> {
+impl DatabaseContext {
     pub fn next_seqnr(&self) -> SequenceNr {
         self.next_seqnr
     }
-    pub fn new(name: &Target) -> Result<Self> {
+    pub fn new<S:Disk>(s: &mut S, name: &Target) -> Result<Self> {
+        let main_store_file = s.open_file(name.path(), name.create(), name.overwrite())?;
+
+        let main_store_file = Box::new(main_store_file);
         Ok(Self {
-            main_store: M::new(name)?,
+            main_store_mmap: main_store_file.mmap(),
+            main_store_file,
             pointer: Cell::new(0),
             root_index: None,
             undo_log: UndoLog::new(),
@@ -300,17 +222,17 @@ impl<M: MainStore, D: MessageDependencyTracker> DatabaseContext<M, D> {
             UndoLogEntry::SetPointer(new_pointer) => {
                 let cur = self.pointer.get();
                 debug_assert!(new_pointer <= cur);
-                unsafe { Self::mut_slice(self.main_store.mut_data(), new_pointer..cur).fill(0) };
+                unsafe { Self::mut_slice(self.main_store_mmap.mut_data(), new_pointer..cur).fill(0) };
                 self.pointer.set(new_pointer);
                 HowToProceed::PopAndContinue
             }
             UndoLogEntry::ZeroOut { start, len } => {
-                unsafe { Self::mut_slice(self.main_store.mut_data(), start..start + len).fill(0) };
+                unsafe { Self::mut_slice(self.main_store_mmap.mut_data(), start..start + len).fill(0) };
                 HowToProceed::PopAndContinue
             }
             UndoLogEntry::Restore { start, data } => {
                 unsafe {
-                    Self::mut_slice(self.main_store.mut_data(), start..start + data.len())
+                    Self::mut_slice(self.main_store_mmap.mut_data(), start..start + data.len())
                         .copy_from_slice(data)
                 };
                 HowToProceed::PopAndContinue
@@ -339,7 +261,7 @@ impl<M: MainStore, D: MessageDependencyTracker> DatabaseContext<M, D> {
     }
 
     pub fn start_ptr(&self) -> *const u8 {
-        self.main_store.data()
+        self.main_store_mmap.data()
     }
 
     pub fn set_next_seqnr(&mut self, seqnr: SequenceNr) {
@@ -418,11 +340,11 @@ impl<M: MainStore, D: MessageDependencyTracker> DatabaseContext<M, D> {
             .record(UndoLogEntry::SetPointer(self.pointer.get()));
         self.pointer
             .set(alignment_adjustment.checked_add(size).unwrap());
-        if self.pointer.get() > self.main_store.len() {
+        if self.pointer.get() > self.main_store_mmap.len() {
             panic!("Out of memory");
         }
         unsafe {
-            self.main_store
+            self.main_store_mmap
                 .mut_data()
                 .wrapping_add(self.pointer.get() - size)
         }
@@ -436,13 +358,13 @@ impl<M: MainStore, D: MessageDependencyTracker> DatabaseContext<M, D> {
     }
     pub unsafe fn access<'a>(&self, range: FatPtr) -> &'a [u8] {
         unsafe {
-            std::slice::from_raw_parts(self.main_store.data().wrapping_add(range.start), range.len)
+            std::slice::from_raw_parts(self.main_store_mmap.data().wrapping_add(range.start), range.len)
         }
     }
     pub unsafe fn access_mut<'a>(&mut self, range: FatPtr) -> &'a mut [u8] {
         unsafe {
             std::slice::from_raw_parts_mut(
-                self.main_store.mut_data().wrapping_add(range.start),
+                self.main_store_mmap.mut_data().wrapping_add(range.start),
                 range.len,
             )
         }
@@ -455,7 +377,7 @@ impl<M: MainStore, D: MessageDependencyTracker> DatabaseContext<M, D> {
     pub unsafe fn access_pod<'a, T: Pod>(&self, index: usize) -> &'a T {
         unsafe {
             from_bytes(std::slice::from_raw_parts(
-                self.main_store.data().wrapping_add(index),
+                self.main_store_mmap.data().wrapping_add(index),
                 size_of::<T>(),
             ))
         }
@@ -463,14 +385,14 @@ impl<M: MainStore, D: MessageDependencyTracker> DatabaseContext<M, D> {
     pub unsafe fn access_pod_mut<'a, T: Pod>(&mut self, index: ThinPtr) -> &'a mut T {
         unsafe {
             from_bytes_mut(std::slice::from_raw_parts_mut(
-                self.main_store.mut_data().wrapping_add(index.0),
+                self.main_store_mmap.mut_data().wrapping_add(index.0),
                 size_of::<T>(),
             ))
         }
     }
 
     pub fn write(&mut self, index: usize, data: &[u8]) {
-        debug_assert!(index + data.len() <= self.main_store.len());
+        debug_assert!(index + data.len() <= self.main_store_mmap.len());
         let fat = FatPtr {
             start: index,
             len: data.len(),
@@ -488,13 +410,13 @@ impl<M: MainStore, D: MessageDependencyTracker> DatabaseContext<M, D> {
         *dest = src;
     }
     pub fn index_of_sized<T: Sized>(&self, t: &T) -> ThinPtr {
-        ThinPtr::create(t, self.main_store.data() as *const u8)
+        ThinPtr::create(t, self.main_store_mmap.data() as *const u8)
     }
     pub fn index_of<T: Object>(&self, t: &T) -> T::Ptr {
-        T::Ptr::create(t, self.main_store.data())
+        T::Ptr::create(t, self.main_store_mmap.data())
     }
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {
-        ThinPtr((t as *const u8 as usize) - (self.main_store.data() as usize))
+        ThinPtr((t as *const u8 as usize) - (self.main_store_mmap.data() as usize))
     }
 
     /// Call after writing a message.

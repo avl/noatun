@@ -4,7 +4,6 @@
 
 extern crate test;
 
-use crate::buffer::InMemoryMainStore;
 use anyhow::Result;
 pub use buffer::DatabaseContext;
 use bumpalo::Bump;
@@ -26,6 +25,8 @@ use fs2::FileExt;
 use memmap2::MmapMut;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use crate::disk_abstraction::Disk;
+use crate::on_disk_message_store::OnDiskMessageStore;
 
 pub(crate) mod backing_store;
 
@@ -189,21 +190,19 @@ impl Object for DummyUnitObject {
     }
 }
 
-
+/*
 struct MessageStore<APP: Application, M: Message<Root = APP::Root>> {
     messages: IndexMap<MessageId, Option<M>>,
     phantom_data: PhantomData<*const APP::Root>,
 }
 
-impl<App: Application, M: Message<Root = App::Root>> MessageStore<App, M>
+
+impl<App: Application, M: Message<Root = App::Root>, S:Disk> MessageStore<M, S>
 where
     M: Debug,
 {
-    pub fn new() -> MessageStore<App, M> {
-        MessageStore {
-            messages: IndexMap::new(),
-            phantom_data: PhantomData,
-        }
+    pub fn new(s:&mut S, target: &Target) -> OnDiskMessageStore<M, S> {
+        OnDiskMessageStore::new(s, target)
     }
     fn push_message(&mut self, context: &mut DatabaseContext, message: M) {
         let new_time = message.id();
@@ -263,7 +262,7 @@ where
         context.set_next_seqnr(SequenceNr::INVALID);
     }
 }
-
+*/
 pub enum GenPtr {
     Thin(ThinPtr),
     Fat(FatPtr),

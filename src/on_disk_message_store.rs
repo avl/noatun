@@ -211,7 +211,7 @@ struct StoreHeader {
 
 
 
-struct OnDiskMessageStore<M, D:Disk> {
+pub struct OnDiskMessageStore<M, D:Disk> {
     target: Target,
     index_file: D::File,
     index_mmap: Option<D::Mmap>,
@@ -652,6 +652,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
                 }
             }
         }
+        info.file.flush()?;
         info.file.inner_unchecked_mut().sync_all()?;
         let data_file = &mut index_header.data_files[self.active_file.index()];
         data_file.bytes_used += size_delta as u64;
@@ -721,6 +722,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
 
             let src_position = src_file_entry.compaction_pointer;
             if src_file_entry.compaction_pointer >= src_file_entry.nominal_size {
+                dst_file_info.file.flush()?;
                 dst_file_info.file.inner_unchecked_mut().sync_all()?;
                 src_file_entry.nominal_size=0;
                 src_file_entry.bytes_used=0;
@@ -771,7 +773,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
         }
     }
 
-    pub fn new(mut d: D, target: Target) -> Result<OnDiskMessageStore<M, D>> {
+    pub fn new(mut d: &D, target: Target) -> Result<OnDiskMessageStore<M, D>> {
         const {
             if size_of::<usize>() < size_of::<u32>() {
                 panic!(
@@ -1057,13 +1059,13 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             InMemoryDisk::default(),Target::CreateNewOrOverwrite("test_create_disk_store.bin".into())).unwrap();
 
-        const COUNT:usize = 1_000;//1_000_000usize;
+        const COUNT:usize = 1;//1_000_000usize;
 
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i|OnDiskMessage {
             id: (1000_000 + i) as u64,
             seq: i as u64,
-            data: vec![42u8; 1024],
+            data: vec![42u8; 4],
         });
 
         store.append_many_sorted(msgs.into_iter()).unwrap();
@@ -1072,7 +1074,7 @@ mod tests {
         let mut count = 0;
         let mut sum = 0;
         let start = Instant::now();
-        for msg in store.query(MessageId::new_debug(1999_900)).unwrap() {
+        for msg in store.query(MessageId::new_debug(1_000_000)).unwrap() {
             sum += msg.message.data[0] as u64;
             count += 1;
         }

@@ -6,9 +6,10 @@ use memmap2::{Mmap, MmapMut};
 use std::fs::{File, OpenOptions};
 use std::iter;
 use std::path::Path;
+use crate::disk_abstraction::{Disk, DiskFile, DiskMmapHandle};
 
 pub trait MessageDependencyTracker {
-    fn new(path: &Target) -> Result<Self>
+    fn new<S:Disk>(s: &mut S, path: &Target) -> Result<Self>
     where
         Self: Sized;
     fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr);
@@ -16,7 +17,7 @@ pub trait MessageDependencyTracker {
 }
 
 impl MessageDependencyTracker for IndexMap<SequenceNr, Vec<SequenceNr>> {
-    fn new(name: &Target) -> Result<Self> {
+    fn new<S:Disk>(s: &mut S, name: &Target) -> Result<Self> {
         Ok(IndexMap::new())
     }
 
@@ -34,14 +35,14 @@ impl MessageDependencyTracker for IndexMap<SequenceNr, Vec<SequenceNr>> {
 // Mapping from observee to observers.
 pub struct MmapMessageDependencyTracker {
     /// the sequencenr that has been observed
-    keys: MmapMut,
+    keys: DiskMmapHandle,
     key_capacity: usize,
     /// the sequence nr that have observed each key. I.e, the messages that
     /// are dependent upon the key.
-    vals: MmapMut,
+    vals: DiskMmapHandle,
     value_capacity: usize,
-    key_file: File,
-    value_file: File,
+    key_file: Box<dyn DiskFile>,
+    value_file: Box<dyn DiskFile>,
 }
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -63,11 +64,11 @@ impl LinkedListEntry {
 }
 
 impl MessageDependencyTracker for MmapMessageDependencyTracker {
-    fn new(path: &Target) -> Result<Self> {
+    fn new<S:Disk>(disk: &mut S, path: &Target) -> Result<Self> {
         std::fs::create_dir_all(&path.path());
         let key_path = path.path().join("dep_keys.bin");
         let value_path = path.path().join("dep_values.bin");
-        let key_file = OpenOptions::new()
+        /*let key_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
@@ -79,6 +80,10 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
             .create(path.create())
             .truncate(path.overwrite())
             .open(&value_path)?;
+        */
+
+        let mut key_file = disk.open_file(&key_path, true, path.overwrite())?;
+        let mut value_file = disk.open_file(&value_path, true, path.overwrite())?;
 
         const DEFAULT_KEY_CAPACITY: usize = 3;
         const DEFAULT_VALUE_CAPACITY: usize = 3;
@@ -90,12 +95,14 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
         key_file.set_len(key_size_bytes as u64)?;
         value_file.set_len(value_size_bytes as u64)?;
 
-        let key_mmap = unsafe { MmapMut::map_mut(&key_file)? };
-        let value_mmap = unsafe { MmapMut::map_mut(&value_file)? };
+        //let key_mmap = unsafe { MmapMut::map_mut(&key_file)? };
+        //let value_mmap = unsafe { MmapMut::map_mut(&value_file)? };
+        let key_mmap = key_file.mmap()?;
+        let value_mmap = value_file.mmap()?;
 
         Ok(MmapMessageDependencyTracker {
-            key_file,
-            value_file,
+            key_file: Box::new(key_file),
+            value_file: Box::new(value_file),
             key_capacity: DEFAULT_KEY_CAPACITY,
             keys: key_mmap,
             value_capacity: DEFAULT_VALUE_CAPACITY,
@@ -159,14 +166,14 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
         })
     }
 }
-impl MmapMessageDependencyTracker {
+impl  MmapMessageDependencyTracker {
     #[inline]
-    fn get_count(mmap: &MmapMut) -> usize {
-        *bytemuck::from_bytes::<u64>(&mmap[0..size_of::<u64>()]) as usize
+    fn get_count(mmap: &DiskMmapHandle) -> usize {
+        *bytemuck::from_bytes::<u64>(&mmap.map()[0..size_of::<u64>()]) as usize
     }
     #[inline]
-    fn access<T: Pod>(mmap: &mut MmapMut) -> (&mut u64, &mut [T]) {
-        let slice_bytes: &mut [u8] = mmap;
+    fn access<T: Pod>(mmap: &mut DiskMmapHandle) -> (&mut u64, &mut [T]) {
+        let slice_bytes: &mut [u8] = mmap.map_mut();
         //println!("Mmap size: {}, item size: {}", slice_bytes.len(), size_of::<T>());
         let (slice_a, slice_b) = slice_bytes.split_at_mut(std::mem::size_of::<u64>());
         let count: &mut u64 = bytemuck::from_bytes_mut(slice_a);
@@ -188,7 +195,7 @@ impl MmapMessageDependencyTracker {
         //println!("Reallocating keys to {}", new_count);
         Self::reallocate(
             &mut self.keys,
-            &mut self.key_file,
+            &mut *self.key_file,
             Self::calc_needed_bytes_keys(new_count),
         )?;
         self.key_capacity = new_count;
@@ -198,17 +205,16 @@ impl MmapMessageDependencyTracker {
         //println!("Reallocating values to {}", new_count);
         Self::reallocate(
             &mut self.vals,
-            &mut self.value_file,
+            &mut *self.value_file,
             Self::calc_needed_bytes_vals(new_count),
         )?;
         self.value_capacity = new_count;
         Ok(())
     }
 
-    fn reallocate(mmap: &mut MmapMut, file: &File, new_bytes: usize) -> Result<()> {
+    fn reallocate(mmap: &mut DiskMmapHandle, file: &mut dyn DiskFile, new_bytes: usize) -> Result<()> {
         file.set_len(new_bytes as u64)?;
-        let new_mmap = unsafe { MmapMut::map_mut(file)? };
-        *mmap = new_mmap;
+        file.remap(mmap, new_bytes as u64)?;
         Ok(())
     }
 }
@@ -219,11 +225,12 @@ mod tests {
     use crate::{SequenceNr, Target};
     use std::path::Path;
     use std::time::Instant;
+    use crate::disk_abstraction::StandardDisk;
 
     #[test]
     fn smoke_deptrack() {
         let mut tracker =
-            MmapMessageDependencyTracker::new(&Target::CreateNewOrOverwrite("test_smoke_deptrack.bin".into()))
+            MmapMessageDependencyTracker::new(&mut StandardDisk, &Target::CreateNewOrOverwrite("test_smoke_deptrack.bin".into()))
                 .unwrap();
         tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
 
@@ -234,7 +241,7 @@ mod tests {
     #[test]
     fn smoke_deptrack_many() {
         let mut tracker =
-            MmapMessageDependencyTracker::new(&Target::CreateNewOrOverwrite("test_smoke_deptrack_many.bin".into()))
+            MmapMessageDependencyTracker::new(&mut StandardDisk, &Target::CreateNewOrOverwrite("test_smoke_deptrack_many.bin".into()))
                 .unwrap();
         let t = Instant::now();
         for i in 0..100_usize {
