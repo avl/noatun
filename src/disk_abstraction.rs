@@ -149,9 +149,6 @@ impl Disk for InMemoryDisk {
 
     fn open_file(&mut self, path: &Path, create: bool, mut overwrite: bool) -> anyhow::Result<Self::File> {
 
-        if !std::fs::metadata(path).is_ok() {
-            overwrite = true;
-        }
 
         //std::fs::create_dir_all(&path).context("create database directory")?;
         if !create {
@@ -235,7 +232,10 @@ impl Disk for StandardDisk {
     type File = std::fs::File;
     type Mmap = MmapMut;
 
-    fn open_file(&mut self, path: &Path, create: bool, overwrite: bool) -> Result<Self::File> {
+    fn open_file(&mut self, path: &Path, create: bool, mut overwrite: bool) -> Result<Self::File> {
+        if !std::fs::metadata(path).is_ok() {
+            overwrite = true;
+        }
         Ok(OpenOptions::new()
             .read(true)
             .write(true)

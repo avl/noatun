@@ -787,7 +787,6 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
                 .path()
                 .join(format!("data{}.bin", file_number));
 
-            compile_error!("USe disk-abstraction!");
             let mut data_file = d.open_file( &data_file_path, target.create(), target.overwrite()).context("Opening data-file")?;
             /*OpenOptions::new()
                 .read(true)
