@@ -37,20 +37,32 @@ impl FileHeaderEntry {
     pub fn is_deleted(&self) -> bool {
         self. sha2 == [0u8; 16]
     }
+    pub fn set_deleted(&mut self) {
+        self.sha2 = [0u8; 16];
+    }
 }
 
 pub trait ReadPod {
-    const N:usize;
     fn read_pod<T:Pod>(&mut self) -> Result<T>;
+}
+pub trait WritePod {
+    fn write_pod<T:Pod>(&mut self, pod : &T) -> Result<()>;
 }
 
 impl<R:Read> ReadPod for R {
-    const N:usize = size_of::<R>();
     fn read_pod<T: Pod>(&mut self) -> Result<T> {
         let mut zeroed = T::zeroed();
         let bytes = bytemuck::bytes_of_mut(&mut zeroed);
         self.read_exact(bytes)?;
         Ok(zeroed)
+    }
+}
+
+impl<W:Write> WritePod for W {
+    fn write_pod<T: Pod>(&mut self, pod: &T) -> Result<()> {
+        let bytes = bytemuck::bytes_of(pod);
+        self.write_all(bytes)?;
+        Ok(())
     }
 }
 
@@ -98,6 +110,9 @@ impl FileOffset {
     fn new(offset: u64, file: U1) -> Self {
         assert!(offset < u64::MAX/2); //Note, must <, not <=, to avoid magic value u64::MAX
         Self((offset<<1) | file.index() as u64)
+    }
+    fn set_deleted(&mut self) {
+        self.0 = u64::MAX;
     }
     fn deleted() -> Self {
         Self(u64::MAX)
@@ -286,6 +301,17 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
         Ok(header)
     }
 
+    pub fn contains_index(&self, index: usize) -> Result<bool> {
+        let (header, index_entries) = self.header_and_index()?;
+
+        match index_entries.get(index) {
+            Some(found) => {
+                Ok(!found.file_offset.is_deleted())
+            }
+            None => {Ok(false)}
+        }
+    }
+
     /// NOTE! This returns also unallocated message-entries, for writing
     #[inline]
     fn header_and_index_mut_uninit<'a>(
@@ -328,7 +354,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
         Ok((header, &rest[0..header.entries as usize]))
     }
 
-    fn with_transaction(&mut self, mut f: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> where M:Message {
+    fn with_transaction<R>(&mut self, mut f: impl FnOnce(&mut Self) -> Result<R>) -> Result<R> where M:Message {
 
         if self.update_status(STATUS_NOK)? != STATUS_OK {
             // Recovery needed
@@ -429,6 +455,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
         Ok(prev)
     }
 
+    /// Get all messages with id start or greater
     pub fn query(&self, start: MessageId) -> Result<impl Iterator<Item=&IndexEntry>> {
         let (header, message_index) = self.header_and_index().context("opening index file")?;
 
@@ -437,32 +464,143 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
         Ok(message_index[index..].iter().filter(|x|!x.file_offset.is_deleted()))
     }
 
+    pub fn next_index(&self) -> Result<usize> {
+        let (header, message_index) = self.header_and_index().context("opening index file")?;
+        Ok(header.entries as usize)
+
+    }
+
+    /// Get all messages with index `index` or greater
+    pub fn query_by_index(&mut self, index: usize) -> Result<impl Iterator<Item=(usize/*seqnr*/, M)>> where M:Message {
+        let (header, message_index) = Self::header_and_index_mut(&mut self.d, &mut self.index_mmap, &mut self.index_file).context("opening index file")?;
+
+        let mut data_files = &mut self.data_files;
+        Ok(message_index[index..].iter().enumerate().filter(|(index,x)|!x.file_offset.is_deleted())
+            .map(|(index,x)|{
+                (index,Self::read_msg(x, data_files))
+            }).filter_map(|(index,x)|{
+                match x {
+                    Ok(x) => Some((index,x)),
+                    Err(x) => {
+                        //TODO: Log
+                        None
+                    }
+                }
+        })
+        )
+    }
+
+
+    /// Return the position where a message with the given ID could be inserted, or None if the message already exists.
+    pub fn get_insert_point(&self, msg: MessageId) -> Result<Option<usize>> {
+        let (header, message_index) = self.header_and_index().context("opening index file")?;
+
+        if let (Err(index)) = message_index.binary_search_by_key(&msg, |x|x.message) {
+            Ok(Some(index))
+        } else {
+            // Already exists
+            Ok(None)
+        }
+    }
+
+    fn read_msg(entry: &IndexEntry, data_files: &mut [DataFileInfo<D::File>;2]) -> Result<M> where M: Message {
+        let Some((file, offset)) = entry.file_offset.file_and_offset() else {
+            return Err(anyhow!("Message not found in store"));
+        };
+        let mut file = &mut data_files[file.index()].file;
+        file.seek(SeekFrom::Start(offset)).context("Seeking to message data")?;
+        let header: FileHeaderEntry = file.read_pod()?;
+
+        let msg = file.with_bytes(header.msg_size as usize, |bytes|{
+            if sha2(bytes) != header.sha2 {
+                return Err(anyhow!("Message has been corrupted on disk"));
+            }
+            M::deserialize(bytes)
+        })??;
+        Ok(msg)
+    }
+
+    fn delete_msg(entry: &IndexEntry, data_files: &mut [DataFileInfo<D::File>;2]) -> Result<()> {
+        let Some((file, offset)) = entry.file_offset.file_and_offset() else {
+            return Err(anyhow!("Message not found in store"));
+        };
+        let mut file = &mut data_files[file.index()].file;
+        file.seek(SeekFrom::Start(offset)).context("Seeking to message data")?;
+        let mut header: FileHeaderEntry = file.read_pod()?;
+        header.set_deleted();
+        file.seek(SeekFrom::Start(offset)).context("Seeking to message data")?;
+        file.write_pod(&header)?;
+
+
+        Ok(())
+    }
 
     /// Return the given message, or None if it does not exist.
     /// If the call itself fails, returns Err.
     pub fn read_message(&mut self, id: MessageId) -> Result<Option<M>> where M: Message {
+        let (header, message_index) = Self::header_and_index_mut(&mut self.d, &mut self.index_mmap, &mut self.index_file)
+            .context("Reading index file")?;
+
+        let data_files = &mut self.data_files;
+        match message_index.binary_search_by_key(&id, |x|x.message) {
+            Ok(index) => {
+                let entry = &message_index[index];
+                let msg = Self::read_msg(entry, data_files)?;
+                Ok(Some(msg))
+            }
+            Err(index) => {
+                Ok(None)
+            }
+        }
+    }
+
+    /// Return the index of the given message, if it exists, otherwise None.
+    /// If the call itself fails, returns Err.
+    pub fn get_index_of(&mut self, id: MessageId) -> Result<Option<usize>> {
         let (header, message_index) = self.header_and_index().context("opening index file")?;
 
         match message_index.binary_search_by_key(&id, |x|x.message) {
             Ok(index) => {
-                let entry = &message_index[index];
-                let Some((file, offset)) = entry.file_offset.file_and_offset() else {
-                    return Err(anyhow!("Message not found in store"));
-                };
-                let mut file = &mut self.data_files[file.index()].file;
-                file.seek(SeekFrom::Start(offset)).context("Seeking to message data")?;
-                let header: FileHeaderEntry = file.read_pod()?;
-
-                let msg = file.with_bytes(header.msg_size as usize, |bytes|{
-                    if sha2(bytes) != header.sha2 {
-                        return Err(anyhow!("Message has been corrupted on disk"));
-                    }
-                    M::deserialize(bytes)
-                })??;
-
-                Ok(Some(msg))
+                Ok(Some(index))
             }
             Err(index) => {
+                Ok(None)
+            }
+        }
+    }
+
+
+    /// Delete any message with the given index. Idempotent, does nothing if index is already
+    /// deleted or does not exist.
+    /// If the call itself fails, returns Err.
+    pub fn mark_deleted_by_index(&mut self, delete_index: usize) -> Result<()> {
+        let (header, message_index) = Self::header_and_index_mut(&mut self.d, &mut self.index_mmap, &mut self.index_file)
+            .context("Reading index file")?;
+        let Some(entry) = message_index.get(delete_index) else {
+            //TODO: Trace log
+            return Ok(()); //Idempotency,
+        };
+
+        let msg = Self::delete_msg(entry, &mut self.data_files)?;
+        message_index[delete_index].file_offset.set_deleted();
+        Ok(())
+    }
+
+
+
+    /// Return the given message, or None if it does not exist.
+    /// If the call itself fails, returns Err.
+    pub fn read_message_by_index(&mut self, index: usize) -> Result<Option<M>> where M: Message {
+        let (header, message_index) = Self::header_and_index_mut(&mut self.d, &mut self.index_mmap, &mut self.index_file)
+            .context("Reading index file")?;
+
+        let data_files = &mut self.data_files;
+        match message_index.get(index) {
+            Some(entry) => {
+                let msg = Self::read_msg(entry, data_files)?;
+                Ok(Some(msg))
+            }
+            None => {
                 Ok(None)
             }
         }
@@ -474,9 +612,19 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
     ///
     /// This will determine the position they need to be added to, and will then
     /// merge with the index. Marks the db clean.
-    pub fn append_many_sorted(&mut self, messages: impl ExactSizeIterator<Item=M>) -> Result<()> where M:Message+Debug{
+    ///
+    /// Returns the index of the first insertion point.
+    // TODO: Make sure this method detects if message to be inserted already exists!
+    pub fn append_many_sorted(&mut self, messages: impl ExactSizeIterator<Item=M>) -> Result<Option<usize>> where M:Message+Debug{
         self.with_transaction(|tself| tself.do_append_many_sorted(messages))
     }
+
+    /// If the message was inserted, returns the insertion index.
+    /// Otherwise, if the message already existed, return None
+    pub fn append_single(&mut self, message: M) -> Result<Option<usize>> where M:Message+Debug {
+        self.append_many_sorted([message].into_iter())
+    }
+
 
     /// Marks the db as dirty
     /// Find all the given messages, and mark their entries in their data files as unused.
@@ -524,11 +672,11 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
         Ok(())
     }
 
-    fn do_append_many_sorted(&mut self, mut messages: impl ExactSizeIterator<Item=M>) -> Result<()> where M: Message+Debug{
+    fn do_append_many_sorted(&mut self, mut messages: impl ExactSizeIterator<Item=M>) -> Result<Option<usize>> where M: Message+Debug{
         let len = messages.len();
 
         if len == 0 {
-            return Ok(());
+            return Ok(None);
         }
         let info = &mut self.data_files[self.active_file.index()];
 
@@ -542,6 +690,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
         let mut input_stream_pos = 0;
 
         let first_input_message: M = (messages.next().unwrap());
+        // TODO: Make sure this method detects if message to be inserted already exists!
         let (Ok(first_index)|Err(first_index)) = index[0..index_header.entries as usize].binary_search_by_key(&first_input_message.id(), |x|x.message);
         let mut cur_index = first_index;
 
@@ -658,7 +807,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
         index_header.entries += len as u32;
 
 
-        Ok(())
+        Ok(Some(first_index))
     }
 
 
@@ -772,7 +921,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
         }
     }
 
-    pub fn new(mut d: D, target: Target) -> Result<OnDiskMessageStore<M, D>> {
+    pub fn new(mut d: D, target: &Target) -> Result<OnDiskMessageStore<M, D>> {
         const {
             if size_of::<usize>() < size_of::<u32>() {
                 panic!(
@@ -918,7 +1067,7 @@ mod tests {
     fn add_and_recover_messages() {
         let mut store = OnDiskMessageStore::new(
             StandardDisk,
-            Target::CreateNewOrOverwrite("add_and_recover_messages.bin".into())).unwrap();
+            &Target::CreateNewOrOverwrite("add_and_recover_messages.bin".into())).unwrap();
 
         const COUNT: usize = 5; //1_000_000usize;
 
@@ -946,7 +1095,7 @@ mod tests {
     #[test]
     fn add_and_read_messages() {
         let mut store = OnDiskMessageStore::new(
-            StandardDisk,Target::CreateNewOrOverwrite("add_and_read_messages.bin".into())).unwrap();
+            StandardDisk,&Target::CreateNewOrOverwrite("add_and_read_messages.bin".into())).unwrap();
 
         const COUNT: usize = 5; //1_000_000usize;
 
@@ -966,7 +1115,7 @@ mod tests {
     #[test]
     fn add_and_read_messages_twice() {
         let mut store = OnDiskMessageStore::new(
-            StandardDisk,Target::CreateNewOrOverwrite("add_and_read_messages_twice.bin".into())).unwrap();
+            StandardDisk,&Target::CreateNewOrOverwrite("add_and_read_messages_twice.bin".into())).unwrap();
 
         const COUNT: usize = 5; //1_000_000usize;
 
@@ -993,7 +1142,7 @@ mod tests {
     #[test]
     fn add_and_delete_messages() {
         let mut store = OnDiskMessageStore::new(
-            StandardDisk,Target::CreateNewOrOverwrite("add_and_delete_messages.bin".into())).unwrap();
+            StandardDisk,&Target::CreateNewOrOverwrite("add_and_delete_messages.bin".into())).unwrap();
 
         const COUNT: usize = 3;
 
@@ -1026,7 +1175,7 @@ mod tests {
     fn test_create_disk_store() {
 
         let mut store = OnDiskMessageStore::new(
-            StandardDisk,Target::CreateNewOrOverwrite("test_create_disk_store.bin".into())).unwrap();
+            StandardDisk,&Target::CreateNewOrOverwrite("test_create_disk_store.bin".into())).unwrap();
 
         const COUNT:usize = 1_000;//1_000_000usize;
 
@@ -1056,7 +1205,7 @@ mod tests {
     fn test_create_disk_store_in_memory() {
 
         let mut store = OnDiskMessageStore::new(
-            InMemoryDisk::default(),Target::CreateNewOrOverwrite("test_create_disk_store.bin".into())).unwrap();
+            InMemoryDisk::default(),&Target::CreateNewOrOverwrite("test_create_disk_store.bin".into())).unwrap();
 
         const COUNT:usize = 1;//1_000_000usize;
 

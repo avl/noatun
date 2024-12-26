@@ -23,6 +23,7 @@ use std::path::Path;
 use std::slice;
 use std::slice::SliceIndex;
 use crate::disk_abstraction::{Disk, DiskFile, DiskMmapHandle, StandardDisk};
+use crate::on_disk_message_store::OnDiskMessageStore;
 
 #[derive(Debug)]
 struct RegistrarTracker<T: MessageDependencyTracker> {
@@ -58,10 +59,10 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
         }
     }
 
-    fn finalize_transaction<M: Message + Debug>(
+    fn finalize_transaction<M: Message + Debug, D: Disk>(
         &mut self,
-        messages: &IndexMap<MessageId, Option<M>>,
-    ) -> IndexSet<SequenceNr> {
+        messages: &mut OnDiskMessageStore<M, D>,
+    ) -> Result<IndexSet<SequenceNr>> {
         //println!("Messages: {:#?}", messages);
         self.unused_messages.sort(); //Sort in seq-nr order
         let mut deleted = IndexSet::new();
@@ -87,11 +88,13 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
         let mut parent_remap: IndexMap<SequenceNr, Vec<SequenceNr>> = IndexMap::new();
         for deleted in deleted.iter().rev() {
             let mut parent_list = vec![];
-            let Some(msg) = &messages[deleted.index()] else {
+
+
+            let Some(msg) = messages.read_message_by_index(deleted.index())? else {
                 panic!("Attempt to delete already-deleted message.");
             };
             for parent in msg.parents() {
-                let parent_index = SequenceNr::from_index(messages.get_index_of(&parent)
+                let parent_index = SequenceNr::from_index(messages.get_index_of(parent)?
                     .expect("Parent unknown. This is not supported like this - it needs to be cleansed before msg added to store.").try_into().unwrap());
                 if let Some(remapping) = parent_remap.get(&parent_index) {
                     parent_list.extend(remapping);
@@ -104,7 +107,7 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
             parent_list.dedup();
             parent_remap.insert(*deleted, parent_list);
         }
-        deleted
+        Ok(deleted)
     }
     fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
         /*self.message_dependencies
@@ -427,15 +430,15 @@ impl DatabaseContext {
     }
     /// Call after a complete update, i.e, applying multiple messages
     /// Returns all messages that can now be removed.
-    pub fn finalize_transaction<MSG: Message + Debug>(
+    pub fn finalize_transaction<MSG: Message + Debug, D: Disk>(
         &mut self,
-        message_store: &IndexMap<MessageId, Option<MSG>>,
-    ) -> Vec<SequenceNr> {
-        self.registrar_tracker
+        message_store: &mut OnDiskMessageStore<MSG, D>,
+    ) -> Result<Vec<SequenceNr>> {
+        Ok(self.registrar_tracker
             .borrow_mut()
-            .finalize_transaction(message_store)
+            .finalize_transaction(message_store)?
             .into_iter()
-            .collect()
+            .collect())
     }
 
     pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr) {

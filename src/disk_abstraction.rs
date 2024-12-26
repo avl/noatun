@@ -12,12 +12,43 @@ use anyhow::{anyhow, bail, Context, Result};
 use fs2::FileExt;
 use memmap2::MmapMut;
 
+
+compile_error!("Before the vacation
+
+you just got it compiling again after introducing a memory-only backend, that should be
+compatible with miri.
+
+You also changed the main implementation of the message store to the file-based (mmap) one.
+
+Todo:
+
+1: Verify the new backend (on_disk_message_store.rs)
+
+2: Verify the actual main orchestration logic
+
+3: Run in miri
+
+4: Add more tests, hammer it with chaos!
+
+5: Add a HashMap-data type (probably be inspired by, or lend code from, HashBrown. Does it support
+custom allocators?)
+
+6: Try building simple apps. Does it appear convenient?
+
+7: Can we do something to the chain-of-dependent updates problem? Main snapshots?
+
+8: Can we trim messages once certain parts of them turn out unused?
+
+9: Check if we can publish this, or if employer wants it?
+
+")
+
 /// Use to abstract away the concrete mmap and disk io implementations.
 /// This can be used to easily change implementations of these, but more
 /// importantly, it allows us to run under miri
 pub trait Disk {
-    type File: DiskFile;
-    type Mmap: DiskMmap;
+    type File: DiskFile+'static;
+    type Mmap: DiskMmap+'static;
     fn open_file(&mut self, path: &Path, create: bool, overwrite: bool) -> Result<Self::File>;
 }
 pub trait DiskFile : Seek+ Write + Read {
@@ -43,20 +74,25 @@ pub struct DiskMmapHandle {
     len: usize,
 }
 impl DiskMmapHandle {
+    #[inline(always)]
     pub fn map(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
+    #[inline(always)]
     pub fn map_mut(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
+    #[inline(always)]
     pub fn map_mut_ptr(&mut self) -> *mut u8 {
         self.ptr
 
     }
+    #[inline(always)]
     pub fn map_const_ptr(&self) -> *const u8 {
         self.ptr
 
     }
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
     }

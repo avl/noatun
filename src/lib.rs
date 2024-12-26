@@ -190,48 +190,40 @@ impl Object for DummyUnitObject {
     }
 }
 
-/*
-struct MessageStore<APP: Application, M: Message<Root = APP::Root>> {
-    messages: IndexMap<MessageId, Option<M>>,
-    phantom_data: PhantomData<*const APP::Root>,
+
+struct MessageStore<APP: Application, D:Disk, M: Message<Root = APP::Root>> {
+    messages: OnDiskMessageStore<M, D>,
+    phantom_data: PhantomData<(*const APP::Root,M)>,
 }
 
 
-impl<App: Application, M: Message<Root = App::Root>, S:Disk> MessageStore<M, S>
+impl<APP: Application, D: Disk, M: Message<Root = APP::Root>> MessageStore<APP, D, M>
 where
     M: Debug,
 {
-    pub fn new(s:&mut S, target: &Target) -> OnDiskMessageStore<M, S> {
-        OnDiskMessageStore::new(s, target)
+    pub fn new(s:D, target: &Target) -> Result<MessageStore<APP, D, M>> {
+        Ok(MessageStore {
+            messages: OnDiskMessageStore::new(s, target)?,
+            phantom_data: PhantomData,
+        })
     }
-    fn push_message(&mut self, context: &mut DatabaseContext, message: M) {
-        let new_time = message.id();
-        let Err(insert_point) = self
-            .messages
-            .binary_search_by_key(&new_time, |msg_id, _| *msg_id)
-        else {
-            // Binary search returns Ok when it finds the element exactly.
-            // If it does, the message was already in the store, in which case we just successfully
-            // do nothing.
-            return;
-        };
-        self.rewind(context, insert_point);
+    /// Returns true if the message did not exist and was inserted
+    fn push_message(&mut self, context: &mut DatabaseContext, message: M) -> Result<bool> {
+
+        if let Some(insert_point) = self.messages.append_single(message)? {
+            self.rewind(context, insert_point)?;;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
-    fn rewind(&mut self, context: &mut DatabaseContext, point: usize) {
+    fn rewind(&mut self, context: &mut DatabaseContext, point: usize) -> Result<()> {
         context.rewind(SequenceNr::from_index(point));
-        let mut index = 0;
-        // TODO: This is inefficient
-        self.messages.retain(|_, value| {
-            if index < point {
-                index += 1;
-                return true;
-            }
-            !value.is_none()
-        });
+        Ok(())
     }
     fn apply_single_message(
         context: &mut DatabaseContext,
-        root: &mut App::Root,
+        root: &mut APP::Root,
         msg: &M,
         seqnr: SequenceNr,
     ) {
@@ -239,30 +231,27 @@ where
         msg.apply(context, root); //TODO: Handle panics in apply gracefully
         context.finalize_message();
     }
-    fn apply_missing_messages(&mut self, database: &mut Database<App>) {
+    fn apply_missing_messages(&mut self, database: &mut Database<APP>) -> Result<()> {
         let (root, context) = database.get_root();
-        for (seq, (message_id, msg)) in self
-            .messages
-            .iter()
-            .enumerate()
-            .skip(context.next_seqnr().try_index().unwrap_or(0))
+        for (seq, msg) in self
+            .messages.query_by_index(context.next_seqnr().try_index().unwrap())?
         {
-            let Some(msg) = msg else {
-                continue;
-            };
             let seqnr = SequenceNr::from_index(seq);
             Self::apply_single_message(context, root, &msg, seqnr);
         }
-        context.set_next_seqnr(SequenceNr::from_index(self.messages.len()));
-        let must_remove = context.finalize_transaction(&self.messages);
+        let next_index = self.messages.next_index()?;
+        context.set_next_seqnr(SequenceNr::from_index(next_index));
+        let must_remove = context.finalize_transaction(&mut self.messages)?;
         for index in must_remove {
             println!("Removing message {:?}", index);
-            *self.messages.get_index_mut(index.index()).unwrap().1 = None;
+            self.messages.mark_deleted_by_index(index.index());
+            //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
         }
         context.set_next_seqnr(SequenceNr::INVALID);
+        Ok(())
     }
 }
-*/
+
 pub enum GenPtr {
     Thin(ThinPtr),
     Fat(FatPtr),
@@ -805,36 +794,34 @@ mod tests {
     fn test_msg_store() {
         let mut db: Database<CounterApplication> =
             Database::create_new("test/msg_store.bin", CounterApplication, true).unwrap();
-        let mut messages = MessageStore::new();
-        messages.messages.insert(
-            MessageId::new_debug(0x100),
-            Some(CounterMessage {
+        let mut messages = OnDiskMessageStore::new(StandardDisk, &Target::CreateNewOrOverwrite("test/msg_store.bin".into())).unwrap();
+        messages.append_single(
+            CounterMessage {
                 parent: None,
                 id: MessageId::new_debug(0x100),
                 inc1: 2,
                 set1: 0,
-            }),
+            }
         );
-        messages.messages.insert(
-            MessageId::new_debug(0x101),
-            Some(CounterMessage {
+        messages.append_single(
+            CounterMessage {
                 parent: Some(MessageId::new_debug(0x100)),
                 id: MessageId::new_debug(0x101),
                 inc1: 0,
                 set1: 42,
-            }),
+            },
         );
-        messages.messages.insert(
-            MessageId::new_debug(0x102),
-            Some(CounterMessage {
+        messages.append_single(
+            CounterMessage {
                 parent: Some(MessageId::new_debug(0x101)),
                 id: MessageId::new_debug(0x102),
                 inc1: 1,
                 set1: 0,
-            }),
+            },
         );
 
-        messages.apply_missing_messages(&mut db);
+        todo!();
+        // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
 
         let (counter, context) = db.get_root();
         assert_eq!(counter.counter.get(context), 43);
