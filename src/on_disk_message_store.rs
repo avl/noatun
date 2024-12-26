@@ -12,8 +12,7 @@ use std::marker::PhantomData;
 use std::mem::{offset_of, MaybeUninit};
 use std::path::{Path};
 use fs2::FileExt;
-use crate::disk_abstraction::Disk;
-use crate::disk_abstraction::DiskMmap;
+use crate::disk_abstraction::{Disk, DiskMmapHandle};
 use crate::disk_abstraction::DiskFile;
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
@@ -214,7 +213,7 @@ struct StoreHeader {
 pub struct OnDiskMessageStore<M, D:Disk> {
     target: Target,
     index_file: D::File,
-    index_mmap: Option<D::Mmap>,
+    index_mmap: Option<DiskMmapHandle>,
     data_files: [DataFileInfo<D::File>;2],
     active_file: U1,
     phantom: PhantomData<M>,
@@ -227,10 +226,10 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
 
     fn provide_index_map<'a>(
         d: &mut D,
-        map: &'a mut Option<D::Mmap>,
+        map: &'a mut Option<DiskMmapHandle>,
         file: &mut D::File,
         extra: usize,
-    ) -> Result<&'a mut D::Mmap> {
+    ) -> Result<&'a mut DiskMmapHandle> {
         let cur_available = map.as_mut().map(|x| {
             let xlen = x.len();
             let slice: &mut [u8] = x.map_mut();
@@ -266,7 +265,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
                 // Make sure to sync metadata.
                 file.sync_all().with_context(||format!("syncing index file to {}", new_file_size))?;
 
-                let mut mmap = unsafe { d.mmap(file)? };
+                let mut mmap = unsafe { file.mmap()? };
                 let slice = mmap.map_mut();
                 let header: &mut StoreHeader = bytemuck::from_bytes_mut(&mut slice[0..size_of::<StoreHeader>()]);
                 // We're currently updating, so status should be 'NOK'. But we haven't failed,
@@ -279,7 +278,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
     }
 
     #[inline]
-    fn header<'a>(d: &mut D, map: &'a mut Option<D::Mmap>, file: &mut D::File) -> Result<&'a mut StoreHeader> {
+    fn header<'a>(d: &mut D, map: &'a mut Option<DiskMmapHandle>, file: &mut D::File) -> Result<&'a mut StoreHeader> {
         let mmap = Self::provide_index_map(d, map, file, 0)?;
 
         let slice: &mut [u8] = mmap.map_mut();
@@ -291,7 +290,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
     #[inline]
     fn header_and_index_mut_uninit<'a>(
         d: &mut D,
-        map: &'a mut Option<D::Mmap>,
+        map: &'a mut Option<DiskMmapHandle>,
         file: &mut D::File,
         extra: usize
     ) -> Result<(&'a mut StoreHeader, &'a mut [IndexEntry])> {
@@ -305,7 +304,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
     #[inline]
     fn header_and_index_mut<'a>(
         d: &mut D,
-        map: &'a mut Option<D::Mmap>,
+        map: &'a mut Option<DiskMmapHandle>,
         file: &mut D::File,
     ) -> Result<(&'a mut StoreHeader, &'a mut [IndexEntry])> {
         let (store,index) = Self::header_and_index_mut_uninit(d, map, file, 0)?;
@@ -773,7 +772,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
         }
     }
 
-    pub fn new(mut d: &D, target: Target) -> Result<OnDiskMessageStore<M, D>> {
+    pub fn new(mut d: D, target: Target) -> Result<OnDiskMessageStore<M, D>> {
         const {
             if size_of::<usize>() < size_of::<u32>() {
                 panic!(

@@ -1,8 +1,10 @@
 use std::alloc::Layout;
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::rc::Rc;
@@ -27,9 +29,10 @@ pub trait DiskFile : Seek+ Write + Read {
     fn try_lock_exclusive(&mut self) -> Result<()>;
     fn len(&self) -> Result<usize>;
 }
-pub trait DiskMmap {
+trait DiskMmap : std::any::Any {
     fn map(&self) -> &[u8];
     fn map_mut(&mut self) -> &mut [u8];
+    fn as_any(&mut self) -> &mut dyn Any;
     fn len(&self) -> usize;
     fn flush_range(&mut self, offset: usize, len: usize) -> Result<()>;
 }
@@ -45,6 +48,14 @@ impl DiskMmapHandle {
     }
     pub fn map_mut(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+    pub fn map_mut_ptr(&mut self) -> *mut u8 {
+        self.ptr
+
+    }
+    pub fn map_const_ptr(&self) -> *const u8 {
+        self.ptr
+
     }
     pub fn len(&self) -> usize {
         self.len
@@ -158,6 +169,10 @@ impl DiskMmap for InMemoryMmap {
         unsafe { std::slice::from_raw_parts_mut(data_p, self.size_of_map) }
     }
 
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
+    }
+
     fn len(&self) -> usize {
         self.size_of_map
     }
@@ -244,6 +259,7 @@ impl DiskFile for InMemoryFileRef {
     }
 
     fn remap(&mut self, mmap: &mut DiskMmapHandle, new_size: u64) -> Result<()> {
+        todo!()
     }
 
     fn sync_all(&mut self) -> Result<()> {
@@ -289,7 +305,7 @@ impl DiskFile for File {
 
 
     fn mmap(&mut self) -> Result<DiskMmapHandle> {
-        let mut boxed = Box::new(unsafe { MmapMut::map_mut(self)?} );
+        let mut boxed = Box::new(unsafe { MmapMut::map_mut(&self.as_fd())?} );
 
         let len = boxed.len();
         let ptr = boxed.as_mut_ptr();
@@ -303,8 +319,11 @@ impl DiskFile for File {
     }
 
     fn remap(&mut self, mmap: &mut DiskMmapHandle, new_size: u64) -> Result<()> {
-        let diskmmap: &mut MmapMut = mmap.boxed.downcast_mut();
+        let inner = mmap.boxed.as_mut();
+        let diskmmap: Option<&mut MmapMut> = inner.as_any().downcast_mut::<MmapMut>();
 
+
+        todo!()
     }
 
     fn sync_all(&mut self) -> Result<()> {
@@ -326,6 +345,10 @@ impl DiskMmap for MmapMut {
     }
 
     fn map_mut(&mut self) -> &mut [u8] {
+        self
+    }
+
+    fn as_any(&mut self) -> &mut dyn Any {
         self
     }
 

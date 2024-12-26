@@ -192,15 +192,15 @@ impl DatabaseContext {
     pub fn new<S:Disk>(s: &mut S, name: &Target) -> Result<Self> {
         let main_store_file = s.open_file(name.path(), name.create(), name.overwrite())?;
 
-        let main_store_file = Box::new(main_store_file);
+        let mut main_store_file = Box::new(main_store_file);
         Ok(Self {
-            main_store_mmap: main_store_file.mmap(),
+            main_store_mmap: main_store_file.mmap()?,
             main_store_file,
             pointer: Cell::new(0),
             root_index: None,
             undo_log: UndoLog::new(),
             phantom: Default::default(),
-            registrar_tracker: RefCell::new(RegistrarTracker::new(name)?),
+            registrar_tracker: RefCell::new(RegistrarTracker::new(s, name)?),
             next_seqnr: SequenceNr::INVALID,
         })
     }
@@ -222,17 +222,17 @@ impl DatabaseContext {
             UndoLogEntry::SetPointer(new_pointer) => {
                 let cur = self.pointer.get();
                 debug_assert!(new_pointer <= cur);
-                unsafe { Self::mut_slice(self.main_store_mmap.mut_data(), new_pointer..cur).fill(0) };
+                unsafe { Self::mut_slice(self.main_store_mmap.map_mut_ptr(), new_pointer..cur).fill(0) };
                 self.pointer.set(new_pointer);
                 HowToProceed::PopAndContinue
             }
             UndoLogEntry::ZeroOut { start, len } => {
-                unsafe { Self::mut_slice(self.main_store_mmap.mut_data(), start..start + len).fill(0) };
+                unsafe { Self::mut_slice(self.main_store_mmap.map_mut_ptr(), start..start + len).fill(0) };
                 HowToProceed::PopAndContinue
             }
             UndoLogEntry::Restore { start, data } => {
                 unsafe {
-                    Self::mut_slice(self.main_store_mmap.mut_data(), start..start + data.len())
+                    Self::mut_slice(self.main_store_mmap.map_mut_ptr(), start..start + data.len())
                         .copy_from_slice(data)
                 };
                 HowToProceed::PopAndContinue
@@ -261,7 +261,7 @@ impl DatabaseContext {
     }
 
     pub fn start_ptr(&self) -> *const u8 {
-        self.main_store_mmap.data()
+        self.main_store_mmap.map_const_ptr()
     }
 
     pub fn set_next_seqnr(&mut self, seqnr: SequenceNr) {
@@ -345,7 +345,7 @@ impl DatabaseContext {
         }
         unsafe {
             self.main_store_mmap
-                .mut_data()
+                .map_mut_ptr()
                 .wrapping_add(self.pointer.get() - size)
         }
     }
@@ -358,13 +358,13 @@ impl DatabaseContext {
     }
     pub unsafe fn access<'a>(&self, range: FatPtr) -> &'a [u8] {
         unsafe {
-            std::slice::from_raw_parts(self.main_store_mmap.data().wrapping_add(range.start), range.len)
+            std::slice::from_raw_parts(self.main_store_mmap.map_const_ptr().wrapping_add(range.start), range.len)
         }
     }
     pub unsafe fn access_mut<'a>(&mut self, range: FatPtr) -> &'a mut [u8] {
         unsafe {
             std::slice::from_raw_parts_mut(
-                self.main_store_mmap.mut_data().wrapping_add(range.start),
+                self.main_store_mmap.map_mut_ptr().wrapping_add(range.start),
                 range.len,
             )
         }
@@ -377,7 +377,7 @@ impl DatabaseContext {
     pub unsafe fn access_pod<'a, T: Pod>(&self, index: usize) -> &'a T {
         unsafe {
             from_bytes(std::slice::from_raw_parts(
-                self.main_store_mmap.data().wrapping_add(index),
+                self.main_store_mmap.map_const_ptr().wrapping_add(index),
                 size_of::<T>(),
             ))
         }
@@ -385,7 +385,7 @@ impl DatabaseContext {
     pub unsafe fn access_pod_mut<'a, T: Pod>(&mut self, index: ThinPtr) -> &'a mut T {
         unsafe {
             from_bytes_mut(std::slice::from_raw_parts_mut(
-                self.main_store_mmap.mut_data().wrapping_add(index.0),
+                self.main_store_mmap.map_mut_ptr().wrapping_add(index.0),
                 size_of::<T>(),
             ))
         }
@@ -410,13 +410,13 @@ impl DatabaseContext {
         *dest = src;
     }
     pub fn index_of_sized<T: Sized>(&self, t: &T) -> ThinPtr {
-        ThinPtr::create(t, self.main_store_mmap.data() as *const u8)
+        ThinPtr::create(t, self.main_store_mmap.map_const_ptr())
     }
     pub fn index_of<T: Object>(&self, t: &T) -> T::Ptr {
-        T::Ptr::create(t, self.main_store_mmap.data())
+        T::Ptr::create(t, self.main_store_mmap.map_const_ptr())
     }
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {
-        ThinPtr((t as *const u8 as usize) - (self.main_store_mmap.data() as usize))
+        ThinPtr((t as *const u8 as usize) - (self.main_store_mmap.map_const_ptr() as usize))
     }
 
     /// Call after writing a message.

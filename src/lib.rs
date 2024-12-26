@@ -25,7 +25,7 @@ use fs2::FileExt;
 use memmap2::MmapMut;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
-use crate::disk_abstraction::Disk;
+use crate::disk_abstraction::{Disk, StandardDisk};
 use crate::on_disk_message_store::OnDiskMessageStore;
 
 pub(crate) mod backing_store;
@@ -665,7 +665,7 @@ impl<APP: Application> Database<APP> {
         }
         MULTI_INSTANCE_BLOCKER.set(true);
 
-        let mut ctx = DatabaseContext::new(&target)?;
+        let mut ctx = DatabaseContext::new(&mut StandardDisk, &target)?;
         let start_ptr = ctx.start_ptr();
         let root = APP::initialize_root(&mut ctx);
         let root_ptr = <APP::Root as Object>::Ptr::create(root, start_ptr);
