@@ -221,6 +221,7 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
 
 impl DatabaseContext {
 
+
     #[inline(always)]
     pub fn next_seqnr(&self) -> SequenceNr {
         let header : &MainDbHeader = unsafe {&*(self.main_db_mmap.map_const_ptr() as *const MainDbHeader)};
@@ -275,6 +276,12 @@ impl DatabaseContext {
 
         Ok(())
     }
+
+    pub fn is_dirty(&self) -> bool {
+        let header : &MainDbHeader = unsafe {&*(self.main_db_mmap.map_mut_ptr() as *const MainDbHeader)};
+
+        header.status.0 != MAIN_DB_STATUS_CLEAN
+    }
     pub fn clear(&mut self) -> Result<()> {
 
         self.main_db_file.clear();
@@ -297,6 +304,9 @@ impl DatabaseContext {
         }
 
         let mut main_db_file = Box::new(db_store_file);
+
+
+
         Ok(Self {
             main_db_mmap: main_db_file.mmap()?,
             main_db_file,

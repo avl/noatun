@@ -658,13 +658,14 @@ impl<APP: Application> Database<APP> {
         (root, &self.context)
     }
     pub fn with_root_mut<R>(&mut self, f: impl FnOnce(&mut APP::Root, &mut DatabaseContext, &mut MessageStore<APP, StandardDisk>) -> R ) -> Result<R>  {
-        let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
-        let root = APP::get_root_mut(&mut self.app, &mut self.context, root_ptr);
 
         if !self.context.mark_dirty()? {
             // Recovery needed
-            Self::recover(root, &mut self.context, &mut self.message_store)?;
+            Self::recover(&mut self.app, &mut self.context, &mut self.message_store)?;
         }
+
+        let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
+        let root = APP::get_root_mut(&mut self.app, &mut self.context, root_ptr);
 
         let t = f(root, &mut self.context, &mut self.message_store);
 
@@ -672,9 +673,13 @@ impl<APP: Application> Database<APP> {
         Ok(t)
     }
 
-    fn recover(root: &mut APP::Root, context: &mut DatabaseContext, message_store: &mut MessageStore<APP, StandardDisk>) -> Result<()> {
+    fn recover(app: &mut APP, context: &mut DatabaseContext, message_store: &mut MessageStore<APP, StandardDisk>) -> Result<()> {
         context.clear()?;
 
+        let root_ptr = APP::initialize_root(context);
+        context.set_root_ptr(root_ptr.as_generic());
+
+        let root = APP::get_root_mut(app, context, root_ptr);
         message_store.apply_missing_messages(root, context)?;
 
         Ok(())
@@ -682,8 +687,9 @@ impl<APP: Application> Database<APP> {
 
     pub fn create_new(path: impl AsRef<Path>, app: APP, overwrite_existing:bool) -> Result<Database<APP>> {
         Self::create(app,
-                     if overwrite_existing
-                        {Target::CreateNewOrOverwrite(path.as_ref().to_path_buf()) }
+                     if overwrite_existing {
+                         Target::CreateNewOrOverwrite(path.as_ref().to_path_buf())
+                     }
                      else
                      {
                         Target::CreateNew(path.as_ref().to_path_buf())
@@ -708,7 +714,7 @@ impl<APP: Application> Database<APP> {
         })?
     }
 
-    fn create(app: APP, target: Target) -> Result<Database<APP>> {
+    fn create(mut app: APP, target: Target) -> Result<Database<APP>> {
         if MULTI_INSTANCE_BLOCKER.get() {
             if !std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_ok() {
                 panic!(
@@ -722,11 +728,13 @@ impl<APP: Application> Database<APP> {
         MULTI_INSTANCE_BLOCKER.set(true);
 
         let mut ctx = DatabaseContext::new(&mut StandardDisk, &target).context("opening database")?;
-        let start_ptr = ctx.start_ptr();
-        let root = APP::initialize_root(&mut ctx);
-        //let root_ptr = <APP::Root as Object>::Ptr::create(root, start_ptr);
-        ctx.set_root_ptr(root.as_generic());
-        let message_store = MessageStore::new(StandardDisk, &target)?;
+
+        let is_dirty = ctx.is_dirty();
+
+        let mut message_store = MessageStore::new(StandardDisk, &target)?;
+        if is_dirty {
+            Self::recover(&mut app, &mut ctx, &mut message_store)?;
+        }
         Ok(Database { context: ctx, app, message_store })
     }
 }
