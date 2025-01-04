@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::rc::Rc;
 use anyhow::{anyhow, bail, Context, Result};
+use buf_read_write::BufStream;
 use fs2::FileExt;
 use memmap2::MmapMut;
 
@@ -55,6 +56,8 @@ pub trait Disk {
 pub trait DiskFile : Seek+ Write + Read {
     fn set_len(&mut self, len: u64) -> Result<()>;
 
+    /// Write all zeroes to the entire file, without changing its size
+    fn clear(&mut self) -> Result<()>;
     fn mmap(&mut self) -> Result<DiskMmapHandle>;
     fn remap(&mut self, mmap: &mut DiskMmapHandle, new_size: u64) -> Result<()>;
     fn sync_all(&mut self) -> Result<()>;
@@ -70,9 +73,9 @@ pub trait DiskMmap : std::any::Any {
 }
 
 pub struct DiskMmapHandle {
-    boxed: Box<dyn DiskMmap>,
     ptr: *mut u8,
     len: usize,
+    boxed: Box<dyn DiskMmap>,
 }
 impl DiskMmapHandle {
     #[inline(always)]
@@ -315,6 +318,11 @@ impl DiskFile for InMemoryFileRef {
     fn len(&self) -> Result<usize> {
         Ok(self.0.borrow().data_size)
     }
+
+    fn clear(&mut self) -> Result<()> {
+        // Zero all mem!
+        todo!()
+    }
 }
 
 impl Disk for StandardDisk {
@@ -340,6 +348,15 @@ impl Disk for StandardDisk {
 impl DiskFile for File {
     fn set_len(&mut self, len: u64) -> Result<()> {
         Ok(File::set_len(self, len)?)
+    }
+
+    fn clear(&mut self) -> Result<()> {
+        let len = self.len()?;
+        let mut stream = BufStream::new(self)?;
+        stream.seek(SeekFrom::Start(0))?;
+        stream.write_zeroes(len)?;
+        stream.flush()?;
+        Ok(())
     }
 
 

@@ -14,6 +14,8 @@ pub trait MessageDependencyTracker {
         Self: Sized;
     fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr);
     fn read_dependency(&mut self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr>;
+
+    fn clear(&mut self);
 }
 
 impl MessageDependencyTracker for IndexMap<SequenceNr, Vec<SequenceNr>> {
@@ -29,6 +31,10 @@ impl MessageDependencyTracker for IndexMap<SequenceNr, Vec<SequenceNr>> {
         self.get(&observee)
             .into_iter()
             .flat_map(|x| x.iter().copied())
+    }
+
+    fn clear(&mut self) {
+        todo!()
     }
 }
 
@@ -164,6 +170,10 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
             cur = entry.get_next();
             return Some(entry.seq);
         })
+    }
+
+    fn clear(&mut self) {
+        todo!()
     }
 }
 impl  MmapMessageDependencyTracker {

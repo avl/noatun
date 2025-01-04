@@ -3,13 +3,10 @@ use crate::buffer::message_dependency_tracker::{
     MessageDependencyTracker, MmapMessageDependencyTracker,
 };
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{
-    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, SequenceNr,
-    Target, ThinPtr,
-};
+use crate::{Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, MessageStore, Object, Pointer, SequenceNr, Target, ThinPtr};
 use anyhow::{Context, Result};
 use bumpalo::Bump;
-use bytemuck::{Pod, bytes_of, from_bytes, from_bytes_mut};
+use bytemuck::{Pod, bytes_of, from_bytes, from_bytes_mut, Zeroable};
 use indexmap::{IndexMap, IndexSet};
 use std::alloc::Layout;
 use std::any::{Any, TypeId};
@@ -40,6 +37,7 @@ struct RegistrarTracker<T: MessageDependencyTracker> {
     /// from said message
     message_dependencies: T,
 }
+mod message_dependency_tracker;
 
 impl<T: MessageDependencyTracker> RegistrarTracker<T> {
     fn new<S:Disk>(disk: &mut S, path: &Target) -> Result<RegistrarTracker<T>> {
@@ -49,11 +47,13 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
             message_dependencies: T::new(disk, path)?,
         })
     }
-}
 
-mod message_dependency_tracker;
+    fn clear(&mut self) {
+        self.uses.clear();
+        self.unused_messages.clear();
+        self.message_dependencies.clear();
+    }
 
-impl<T: MessageDependencyTracker> RegistrarTracker<T> {
     fn finalize_message(&mut self, message_id: SequenceNr) {
         debug_assert_ne!(message_id.0, 0);
         if self.uses.len() <= message_id.index() as usize || self.uses[message_id.index()] == 0 {
@@ -142,12 +142,41 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
 const DEFAULT_SIZE: usize = 10000;
 
 
+const MAIN_DB_STATUS_CLEAN:u32 = 1;
+const MAIN_DB_STATUS_DIRTY:u32 = 0;
+
+#[derive(Debug,Clone,Copy,Pod,Zeroable)]
+#[repr(transparent)]
+pub struct MainDbStatus(u32);
+
+/// The header of the main database
+#[derive(Debug,Clone,Copy,Pod,Zeroable)]
+#[repr(C)]
+pub struct MainDbHeader {
+    /// The place for the next write. This is the seek-position in the backing file/map.
+    pointer: u64,
+    /// The sequence number of the next message that will be applied.
+    /// For an empty database, this starts at 0. 0 is considered an 'invalid' sequence number,
+    /// representing the state before the root message has been initially created.
+    next_seqnr: SequenceNr,
+    /// Dummy padding, otherwise bytemuck derive fails (presumably because size of
+    /// struct isn't sum of size of fields).
+    status: MainDbStatus,
+
+    /// SHA2-checksum of output of `who -b`.
+    /// This is used to detect if there's been a reboot (because of power outage, for example)
+    /// since the last access. This only affects recovery after the db has been left in a
+    /// dirty state.
+    last_boot: [u8;16],
+
+
+}
 
 pub struct DatabaseContext
 {
     main_db_mmap: DiskMmapHandle,
     main_db_file: Box<dyn DiskFile>,
-    pointer: Cell<usize>,
+    //pointer: Cell<usize>,
     root_index: Option<GenPtr>,
     undo_log: UndoLog,
     // Make sure neither Send nor Sync
@@ -156,10 +185,10 @@ pub struct DatabaseContext
     // The current message being written (or None if not open for writing)
     registrar_tracker: RefCell<RegistrarTracker<MmapMessageDependencyTracker>>,
 
-    /// The next message expected to be applied.
-    /// Starts at 0. When a message is being applied, this field
-    /// will have the seqnr of the message being applied, not the next one.
-    next_seqnr: SequenceNr,
+    // The next message expected to be applied.
+    // Starts at 0. When a message is being applied, this field
+    // will have the seqnr of the message being applied, not the next one.
+    //next_seqnr: SequenceNr,
 }
 
 // This has been shamelessly lifted from the rust std
@@ -191,9 +220,73 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
 }
 
 impl DatabaseContext {
+
+    #[inline(always)]
     pub fn next_seqnr(&self) -> SequenceNr {
-        self.next_seqnr
+        let header : &MainDbHeader = unsafe {&*(self.main_db_mmap.map_const_ptr() as *const MainDbHeader)};
+        header.next_seqnr
     }
+    #[inline(always)]
+    fn pointer(&self) -> usize {
+        let header : &MainDbHeader = unsafe {&*(self.main_db_mmap.map_const_ptr() as *const MainDbHeader)};
+        header.pointer as usize
+    }
+    #[inline(always)]
+    fn set_pointer(&self, new_value: usize) {
+        let header : &mut MainDbHeader = unsafe {&mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader)};
+        header.pointer = new_value as u64;
+    }
+    #[inline(always)]
+    fn raw_set_next_seqnr(&self, new_value: SequenceNr) {
+        let header : &mut MainDbHeader = unsafe {&mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader)};
+        header.next_seqnr = new_value;
+    }
+    #[inline(always)]
+    fn set_pointer_of(main_db_mmap: &DiskMmapHandle, new_value: usize) {
+        let header : &mut MainDbHeader = unsafe {&mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader)};
+        header.pointer = new_value as u64;
+    }
+    #[inline(always)]
+    fn pointer_of(main_db_mmap: &DiskMmapHandle) -> usize {
+        let header : &MainDbHeader = unsafe {&*(main_db_mmap.map_const_ptr() as *const MainDbHeader)};
+        header.pointer as usize
+    }
+    #[inline(always)]
+    fn raw_set_next_seqnr_of(main_db_mmap: &DiskMmapHandle, new_value: SequenceNr) {
+        let header : &mut MainDbHeader = unsafe {&mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader)};
+        header.next_seqnr = new_value;
+    }
+
+    /// Returns true if database was previously clean
+    pub fn mark_dirty(&mut self) -> Result<bool> {
+        let header : &mut MainDbHeader = unsafe {&mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader)};
+
+        let was_clean = header.status.0 == MAIN_DB_STATUS_CLEAN;
+        header.status = MainDbStatus(MAIN_DB_STATUS_DIRTY);
+
+        self.main_db_mmap.flush_range(0, std::mem::size_of::<MainDbHeader>())?;
+
+        Ok(was_clean)
+    }
+    pub fn mark_clean(&mut self) -> Result<()> {
+        let header : &mut MainDbHeader = unsafe {&mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader)};
+
+        header.status = MainDbStatus(MAIN_DB_STATUS_CLEAN);
+
+        Ok(())
+    }
+    pub fn clear(&mut self) -> Result<()> {
+
+        self.main_db_file.clear();
+        if self.main_db_file.len()? < INITIAL_SIZE_BYTES {
+            self.main_db_file.set_len(INITIAL_SIZE_BYTES as u64)?;
+        }
+        self.undo_log.clear();
+        self.registrar_tracker.borrow_mut().clear();
+
+        Ok(())
+    }
+
     pub fn new<S:Disk>(s: &mut S, name: &Target) -> Result<Self> {
         let full_path = name.path().join("db.bin");
         let mut db_store_file = s.open_file(&full_path, name.create(), name.overwrite())
@@ -207,14 +300,14 @@ impl DatabaseContext {
         Ok(Self {
             main_db_mmap: main_db_file.mmap()?,
             main_db_file,
-            pointer: Cell::new(0),
             root_index: None,
             undo_log: UndoLog::new(),
             phantom: Default::default(),
             registrar_tracker: RefCell::new(RegistrarTracker::new(s, name)?),
-            next_seqnr: SequenceNr::INVALID,
         })
     }
+
+
 
     /// Note: Must not be public, since while output of [`crate::Database::get_root`] is still
     /// live, time travel _must not_ occur, since it would lead to unsoundness (potentially
@@ -231,10 +324,10 @@ impl DatabaseContext {
 
         let result = self.undo_log.rewind(|entry| match entry {
             UndoLogEntry::SetPointer(new_pointer) => {
-                let cur = self.pointer.get();
+                let cur = Self::pointer_of(&self.main_db_mmap);
                 debug_assert!(new_pointer <= cur);
                 unsafe { Self::mut_slice(self.main_db_mmap.map_mut_ptr(), new_pointer..cur).fill(0) };
-                self.pointer.set(new_pointer);
+                Self::set_pointer_of(&self.main_db_mmap, new_pointer);
                 HowToProceed::PopAndContinue
             }
             UndoLogEntry::ZeroOut { start, len } => {
@@ -250,7 +343,7 @@ impl DatabaseContext {
             }
             UndoLogEntry::Rewind(time) => {
                 if time == new_time {
-                    self.next_seqnr = new_time;
+                    Self::raw_set_next_seqnr_of(&self.main_db_mmap, new_time);
                     HowToProceed::PopAndStop
                 } else if time > new_time {
                     HowToProceed::PopAndContinue
@@ -267,9 +360,6 @@ impl DatabaseContext {
         }
     }
 
-    pub fn pointer(&self) -> usize {
-        self.pointer.get()
-    }
 
     pub fn start_ptr(&self) -> *const u8 {
         self.main_db_mmap.map_const_ptr()
@@ -277,15 +367,15 @@ impl DatabaseContext {
 
     pub fn set_next_seqnr(&mut self, seqnr: SequenceNr) {
         if seqnr.is_invalid() {
-            self.next_seqnr = seqnr;
+            self.set_next_seqnr(seqnr);
             return;
         }
-        if seqnr <= self.next_seqnr {
+        if seqnr <= self.next_seqnr() {
             panic!("Attempt to set sequence number to a smaller or equal value");
         }
 
         self.undo_log.record(UndoLogEntry::Rewind(seqnr));
-        self.next_seqnr = seqnr;
+        self.set_next_seqnr(seqnr);
     }
 
     pub fn set_root_ptr(&mut self, genptr: GenPtr) {
@@ -353,19 +443,18 @@ impl DatabaseContext {
         }
 
         let alignment_adjustment =
-            index_rounded_up_to_custom_align(self.pointer.get(), align).unwrap();
+            index_rounded_up_to_custom_align(self.pointer(), align).unwrap();
         self.undo_log
-            .record(UndoLogEntry::SetPointer(self.pointer.get()));
+            .record(UndoLogEntry::SetPointer(self.pointer()));
         let new_pointer = alignment_adjustment.checked_add(size).unwrap();
         if new_pointer > self.main_db_mmap.len() {
             self.reallocate(2*new_pointer);
         }
-        self.pointer
-            .set(new_pointer);
+        self.set_pointer(new_pointer);
         unsafe {
             self.main_db_mmap
                 .map_mut_ptr()
-                .wrapping_add(self.pointer.get() - size)
+                .wrapping_add(self.pointer() - size)
         }
     }
     pub fn allocate_array<const N: usize, const ALIGN: usize>(&mut self) -> &mut [u8; N] {
@@ -442,7 +531,7 @@ impl DatabaseContext {
     pub fn finalize_message(&mut self) {
         self.registrar_tracker
             .borrow_mut()
-            .finalize_message(self.next_seqnr);
+            .finalize_message(self.next_seqnr());
     }
     /// Call after a complete update, i.e, applying multiple messages
     /// Returns all messages that can now be removed.
@@ -462,7 +551,7 @@ impl DatabaseContext {
         if registrar_point.0 != 0 {
             track.decrease_use(*registrar_point);
         }
-        let current_registrar = self.next_seqnr;
+        let current_registrar = self.next_seqnr();
         track.increase_use(current_registrar);
         drop(track);
         self.write_pod(current_registrar, registrar_point)
@@ -471,13 +560,13 @@ impl DatabaseContext {
     /// Signify that the current message has observed data previously written
     /// by 'registrar'.
     pub fn observe_registrar(&self, observee: SequenceNr) {
-        if self.next_seqnr.is_invalid() {
+        if self.next_seqnr().is_invalid() {
             return;
         }
         if observee.is_invalid() {
             return;
         }
-        let observer = self.next_seqnr;
+        let observer = self.next_seqnr();
         if observer != observee {
             println!("Tracking that {} observed {}", observer, observee);
             self.registrar_tracker

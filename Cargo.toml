@@ -2,6 +2,7 @@
 name = "noatun"
 version = "0.1.0"
 edition = "2024"
+resolver = "2"
 
 # The `foo` package will use the -Copt-level=3 flag.
 [profile.dev.package.sha2]
@@ -10,6 +11,9 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.byteorder]
 opt-level = 3
+
+[features]
+savefile = ["dep:savefile",  "savefile-derive"]
 
 [dependencies]
 byteorder = "1.5"
@@ -22,3 +26,13 @@ memmap2 = {version ="0.9"}
 anyhow = "1.0"
 buf_read_write = { path = "../buf_read_write", features = ["instrument"] }
 fs2 = "0.4"
+savefile = {  version = "0.18", optional = true }
+savefile-derive = { version = "0.18", optional = true }
+serde_derive = "1.0"
+serde = "1.0"
+
+
+[dev-dependencies]
+savefile="0.18"
+savefile-derive = "0.18"
+noatun = { path = ".", features = ["savefile"] }

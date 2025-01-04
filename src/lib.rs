@@ -23,6 +23,9 @@ use std::slice::SliceIndex;
 use std::time::{Duration, SystemTime};
 use fs2::FileExt;
 use memmap2::MmapMut;
+use savefile_derive::Savefile;
+use serde::{Serialize, Deserialize};
+use serde_derive::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use crate::disk_abstraction::{Disk, StandardDisk};
@@ -48,7 +51,7 @@ fn sha2(bytes: &[u8]) -> [u8; 16] {
     hasher.finalize_fixed()[0..16].try_into().unwrap()
 }
 
-#[derive(Pod, Zeroable, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Pod, Zeroable, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Savefile, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct MessageId {
     data: [u32; 4],
@@ -161,7 +164,7 @@ impl SequenceNr {
     }
 }
 
-pub trait Message {
+pub trait Message : Debug {
     type Root: Object;
     fn id(&self) -> MessageId;
     fn parents(&self) -> impl ExactSizeIterator<Item = MessageId>;
@@ -172,6 +175,7 @@ pub trait Message {
         Self: Sized;
     fn serialize<W: Write>(&self, writer: W) -> Result<()>;
 }
+
 
 /// A state-less object, mostly useful for testing
 pub struct DummyUnitObject;
@@ -191,48 +195,67 @@ impl Object for DummyUnitObject {
 }
 
 
-struct MessageStore<APP: Application, D:Disk, M: Message<Root = APP::Root>> {
-    messages: OnDiskMessageStore<M, D>,
-    phantom_data: PhantomData<(*const APP::Root,M)>,
+pub struct MessageStore<APP: Application, D:Disk> {
+    messages: OnDiskMessageStore<APP::Message, D>,
+    phantom_data: PhantomData<(*const APP::Root, APP::Message)>,
 }
 
 
-impl<APP: Application, D: Disk, M: Message<Root = APP::Root>> MessageStore<APP, D, M>
-where
-    M: Debug,
+impl<APP: Application, D: Disk> MessageStore<APP, D>
+
 {
-    pub fn new(s:D, target: &Target) -> Result<MessageStore<APP, D, M>> {
+    pub fn new(s:D, target: &Target) -> Result<MessageStore<APP, D>> {
         Ok(MessageStore {
             messages: OnDiskMessageStore::new(s, target)?,
             phantom_data: PhantomData,
         })
     }
     /// Returns true if the message did not exist and was inserted
-    fn push_message(&mut self, context: &mut DatabaseContext, message: M) -> Result<bool> {
+    fn push_message(&mut self, context: &mut DatabaseContext, message: APP::Message) -> Result<bool> {
 
         if let Some(insert_point) = self.messages.append_single(message)? {
-            self.rewind(context, insert_point)?;;
+            self.rewind(context, insert_point)?;
             Ok(true)
         } else {
             Ok(false)
         }
     }
+
+    /// Returns true if any of the messages were not previously present
+    fn push_messages(&mut self, context: &mut DatabaseContext, message: impl Iterator<Item=APP::Message>) -> Result<bool> {
+
+        let mut messages: Vec<APP::Message> = message.collect();
+        messages.sort_unstable_by_key(|x|x.id());
+
+        if let Some(insert_point) = self.messages.append_many_sorted(messages.into_iter())? {
+            self.rewind(context, insert_point)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+
+
     fn rewind(&mut self, context: &mut DatabaseContext, point: usize) -> Result<()> {
         context.rewind(SequenceNr::from_index(point));
         Ok(())
     }
+
+
+
     fn apply_single_message(
         context: &mut DatabaseContext,
         root: &mut APP::Root,
-        msg: &M,
+        msg: &APP::Message,
         seqnr: SequenceNr,
     ) {
         context.set_next_seqnr(seqnr); //TODO: Don't record a snapshot for _every_ message.
         msg.apply(context, root); //TODO: Handle panics in apply gracefully
         context.finalize_message();
     }
-    fn apply_missing_messages(&mut self, database: &mut Database<APP>) -> Result<()> {
-        let (root, context) = database.get_root();
+
+    fn apply_missing_messages(&mut self, root: &mut APP::Root, context: &mut DatabaseContext) -> Result<()> {
         for (seq, msg) in self
             .messages.query_by_index(context.next_seqnr().try_index().unwrap())?
         {
@@ -317,16 +340,24 @@ impl Object for u8 {
 }
 pub trait Application {
     type Root: Object;
+    type Message: Message<Root = Self::Root>;
+
     fn initialize_root(ctx: &mut DatabaseContext) -> <Self::Root as Object>::Ptr;
     fn get_root<'a>(
+        &'a self,
+        ctx: &DatabaseContext,
+        root_ptr: <Self::Root as Object>::Ptr,
+    ) -> &'a Self::Root;
+    fn get_root_mut<'a>(
         &'a mut self,
         ctx: &mut DatabaseContext,
         root_ptr: <Self::Root as Object>::Ptr,
     ) -> &'a mut Self::Root;
 }
 
-pub struct Database<Base> {
+pub struct Database<Base:Application> {
     context: DatabaseContext,
+    message_store: MessageStore<Base, StandardDisk>,
     app: Base,
 }
 
@@ -621,10 +652,32 @@ impl Target {
     }
 }
 impl<APP: Application> Database<APP> {
-    pub fn get_root<'a>(&'a mut self) -> (&'a mut APP::Root, &'a mut DatabaseContext) {
+    pub fn get_root(&self) -> (&APP::Root, &DatabaseContext) {
         let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
-        let root = APP::get_root(&mut self.app, &mut self.context, root_ptr);
-        (root, &mut self.context)
+        let root = APP::get_root(&self.app, &self.context, root_ptr);
+        (root, &self.context)
+    }
+    pub fn with_root_mut<R>(&mut self, f: impl FnOnce(&mut APP::Root, &mut DatabaseContext, &mut MessageStore<APP, StandardDisk>) -> R ) -> Result<R>  {
+        let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
+        let root = APP::get_root_mut(&mut self.app, &mut self.context, root_ptr);
+
+        if !self.context.mark_dirty()? {
+            // Recovery needed
+            Self::recover(root, &mut self.context, &mut self.message_store)?;
+        }
+
+        let t = f(root, &mut self.context, &mut self.message_store);
+
+        self.context.mark_clean();
+        Ok(t)
+    }
+
+    fn recover(root: &mut APP::Root, context: &mut DatabaseContext, message_store: &mut MessageStore<APP, StandardDisk>) -> Result<()> {
+        context.clear()?;
+
+        message_store.apply_missing_messages(root, context)?;
+
+        Ok(())
     }
 
     pub fn create_new(path: impl AsRef<Path>, app: APP, overwrite_existing:bool) -> Result<Database<APP>> {
@@ -641,6 +694,20 @@ impl<APP: Application> Database<APP> {
         Self::create(app, Target::OpenExisting(path.as_ref().to_path_buf())
                      )
     }
+
+    pub fn append_single(&mut self, message: APP::Message) -> Result<()> {
+        self.append_many(std::iter::once(message))
+    }
+
+    pub fn append_many(&mut self, messages: impl Iterator<Item=APP::Message>) -> Result<()> {
+        self.with_root_mut(|root, context, message_store|{
+
+            message_store.push_messages(context, messages)?;
+
+            Ok(())
+        })?
+    }
+
     fn create(app: APP, target: Target) -> Result<Database<APP>> {
         if MULTI_INSTANCE_BLOCKER.get() {
             if !std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_ok() {
@@ -659,10 +726,11 @@ impl<APP: Application> Database<APP> {
         let root = APP::initialize_root(&mut ctx);
         //let root_ptr = <APP::Root as Object>::Ptr::create(root, start_ptr);
         ctx.set_root_ptr(root.as_generic());
-        Ok(Database { context: ctx, app })
+        let message_store = MessageStore::new(StandardDisk, &target)?;
+        Ok(Database { context: ctx, app, message_store })
     }
 }
-impl<APP> Drop for Database<APP> {
+impl<APP:Application> Drop for Database<APP> {
     fn drop(&mut self) {
         MULTI_INSTANCE_BLOCKER.set(false);
     }
@@ -670,9 +738,50 @@ impl<APP> Drop for Database<APP> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
     use super::*;
     use sha2::{Digest, Sha256};
     use test::Bencher;
+    use savefile::{load_noschema, save_noschema};
+    use savefile_derive::Savefile;
+
+
+    struct DummyMessage<T> {
+        phantom_data: PhantomData<T>
+    }
+    impl<T> Debug for DummyMessage<T> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "DummyMessage")
+        }
+    }
+
+    impl<T:Object> Message for DummyMessage<T> {
+        type Root = T;
+
+        fn id(&self) -> MessageId {
+            todo!()
+        }
+
+        fn parents(&self) -> impl ExactSizeIterator<Item=MessageId> {
+            std::iter::empty()
+        }
+
+        fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
+            todo!()
+        }
+
+        fn deserialize(buf: &[u8]) -> Result<Self>
+        where
+            Self: Sized
+        {
+            todo!()
+        }
+
+        fn serialize<W: Write>(&self, writer: W) -> Result<()> {
+            todo!()
+        }
+    }
+
 
     #[derive(Clone, Copy, Zeroable, Pod)]
     #[repr(C)]
@@ -680,6 +789,7 @@ mod tests {
         counter: DatabaseCell<u32>,
         counter2: DatabaseCell<u32>,
     }
+
 
     impl Object for CounterObject {
         type Ptr = ThinPtr;
@@ -711,6 +821,7 @@ mod tests {
 
     impl Application for CounterApplication {
         type Root = CounterObject;
+        type Message = CounterMessage;
 
         fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
             let new_obj = CounterObject::new(&mut ctx);
@@ -720,6 +831,13 @@ mod tests {
         }
 
         fn get_root<'a>(
+            &'a self,
+            ctx: &DatabaseContext,
+            ptr: <CounterObject as Object>::Ptr,
+        ) -> &'a Self::Root {
+            unsafe { CounterObject::access(ctx, ptr) }
+        }
+        fn get_root_mut<'a>(
             &'a mut self,
             ctx: &mut DatabaseContext,
             ptr: <CounterObject as Object>::Ptr,
@@ -728,8 +846,37 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
     struct IncrementMessage {
         increment_by: u32,
+    }
+
+
+    impl Message for IncrementMessage {
+        type Root = CounterObject;
+
+        fn id(&self) -> MessageId {
+            MessageId::new_debug(self.increment_by)
+        }
+
+        fn parents(&self) -> impl ExactSizeIterator<Item=MessageId> {
+            std::iter::empty()
+        }
+
+        fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
+            todo!()
+        }
+
+        fn deserialize(buf: &[u8]) -> Result<Self>
+        where
+            Self: Sized
+        {
+            todo!()
+        }
+
+        fn serialize<W: Write>(&self, writer: W) -> Result<()> {
+            todo!()
+        }
     }
 
     #[test]
@@ -739,19 +886,22 @@ mod tests {
 
         let context = &db.context;
 
-        let (counter, context) = db.get_root();
-        context.set_next_seqnr(SequenceNr::from_index(0));
-        assert_eq!(counter.counter.get(context), 0);
-        counter.counter.set(context, 42);
-        counter.counter2.set(context, 43);
-        counter.counter.set(context, 44);
+        db.with_root_mut(
+            |counter, context, _message_store|{
+                context.set_next_seqnr(SequenceNr::from_index(0));
+                assert_eq!(counter.counter.get(context), 0);
+                counter.counter.set(context, 42);
+                counter.counter2.set(context, 43);
+                counter.counter.set(context, 44);
 
-        assert_eq!(*counter.counter, 44);
-        assert_eq!(counter.counter.get(context), 44);
-        assert_eq!(counter.counter2.get(context), 43);
+                assert_eq!(*counter.counter, 44);
+                assert_eq!(counter.counter.get(context), 44);
+                assert_eq!(counter.counter2.get(context), 43);
+            }
+        );
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Savefile)]
     struct CounterMessage {
         id: MessageId,
         parent: Option<MessageId>,
@@ -783,20 +933,24 @@ mod tests {
         where
             Self: Sized,
         {
-            todo!()
+            Ok(load_noschema(&mut Cursor::new(buf), 1)?)
         }
 
-        fn serialize<W: Write>(&self, writer: W) -> Result<()> {
-            todo!()
+        fn serialize<W: Write>(&self, mut writer: W) -> Result<()> {
+            Ok(save_noschema(&mut writer, 1, self)?)
         }
     }
 
     #[test]
     fn test_msg_store() {
+
         let mut db: Database<CounterApplication> =
             Database::create_new("test/msg_store.bin", CounterApplication, true).unwrap();
-        let mut messages = OnDiskMessageStore::new(StandardDisk, &Target::CreateNewOrOverwrite("test/msg_store.bin".into())).unwrap();
-        messages.append_single(
+//        let mut messages = MessageStore::new(StandardDisk, &Target::CreateNewOrOverwrite("test/msg_store.bin".into())).unwrap();
+
+
+
+        db.append_single(
             CounterMessage {
                 parent: None,
                 id: MessageId::new_debug(0x100),
@@ -804,7 +958,7 @@ mod tests {
                 set1: 0,
             }
         );
-        messages.append_single(
+        db.append_single(
             CounterMessage {
                 parent: Some(MessageId::new_debug(0x100)),
                 id: MessageId::new_debug(0x101),
@@ -812,7 +966,7 @@ mod tests {
                 set1: 42,
             },
         );
-        messages.append_single(
+        db.append_single(
             CounterMessage {
                 parent: Some(MessageId::new_debug(0x101)),
                 id: MessageId::new_debug(0x102),
@@ -821,11 +975,12 @@ mod tests {
             },
         );
 
-        todo!();
         // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
 
-        let (counter, context) = db.get_root();
-        assert_eq!(counter.counter.get(context), 43);
+
+        db.with_root_mut(|root,context,_|{
+            assert_eq!(root.counter.get(context), 43);
+        });
     }
 
     #[test]
@@ -834,6 +989,7 @@ mod tests {
 
         impl Application for HandleApplication {
             type Root = DatabaseObjectHandle<u32>;
+            type Message = DummyMessage<DatabaseObjectHandle<u32>>;
 
             fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
                 let obj = DatabaseObjectHandle::new(&ctx, 43u32);
@@ -841,13 +997,21 @@ mod tests {
                 ctx.index_of(obj)
             }
 
-            fn get_root<'a>(
+            fn get_root_mut<'a>(
                 &'a mut self,
                 ctx: &mut DatabaseContext,
                 ptr: <DatabaseObjectHandle<u32> as Object>::Ptr,
             ) -> &'a mut Self::Root {
                 unsafe { DatabaseObjectHandle::access_mut(ctx, ptr) }
             }
+            fn get_root<'a>(
+                &'a self,
+                ctx: & DatabaseContext,
+                ptr: <DatabaseObjectHandle<u32> as Object>::Ptr,
+            ) -> &'a Self::Root {
+                unsafe { DatabaseObjectHandle::access(ctx, ptr) }
+            }
+
         }
 
         let mut db: Database<HandleApplication> =
@@ -870,46 +1034,58 @@ mod tests {
                 ctx.index_of(obj)
             }
 
-            fn get_root<'a>(
+            fn get_root_mut<'a>(
                 &'a mut self,
                 ctx: &mut DatabaseContext,
                 ptr: <DatabaseVec<CounterObject> as Object>::Ptr,
             ) -> &'a mut Self::Root {
                 unsafe { DatabaseVec::access_mut(ctx, ThinPtr(0)) }
             }
+            fn get_root<'a>(
+                &'a self,
+                ctx: & DatabaseContext,
+                ptr: <DatabaseVec<CounterObject> as Object>::Ptr,
+            ) -> &'a Self::Root {
+                unsafe { DatabaseVec::access(ctx, ThinPtr(0)) }
+            }
+
+            type Message = DummyMessage<DatabaseVec<CounterObject>>;
         }
 
         let mut db: Database<CounterVecApplication> =
             Database::create_new("test/test_vec0", CounterVecApplication, true).unwrap();
-        let (counter_vec, context) = db.get_root();
-        context.set_next_seqnr(SequenceNr::from_index(0));
-        assert_eq!(counter_vec.len(context), 0);
+        db.with_root_mut(
+            |counter_vec, context,_|{
+                context.set_next_seqnr(SequenceNr::from_index(0));
+                assert_eq!(counter_vec.len(context), 0);
 
-        println!("1");
-        let new_element = counter_vec.push_new(context);
-        let new_element = counter_vec.get_mut(context, 0);
-        println!("2");
+                println!("1");
+                let new_element = counter_vec.push_new(context);
+                let new_element = counter_vec.get_mut(context, 0);
+                println!("2");
 
-        new_element.counter.set(context, 47);
-        let new_element = counter_vec.push_new(context);
-        new_element.counter.set(context, 48);
-        println!("3");
+                new_element.counter.set(context, 47);
+                let new_element = counter_vec.push_new(context);
+                new_element.counter.set(context, 48);
+                println!("3");
 
-        assert_eq!(counter_vec.len(context), 2);
+                assert_eq!(counter_vec.len(context), 2);
 
-        let item = counter_vec.get_mut(context, 1);
-        assert_eq!(*item.counter, 48);
+                let item = counter_vec.get_mut(context, 1);
+                assert_eq!(*item.counter, 48);
 
-        println!("4");
+                println!("4");
 
-        for _ in 0..10 {
-            let new_element = counter_vec.push_new(context);
-            println!("5");
-        }
-        println!("6");
+                for _ in 0..10 {
+                    let new_element = counter_vec.push_new(context);
+                    println!("5");
+                }
+                println!("6");
 
-        let item = counter_vec.get_mut(context, 1);
-        assert_eq!(*item.counter, 48);
+                let item = counter_vec.get_mut(context, 1);
+                assert_eq!(*item.counter, 48);
+            }
+        );
     }
 
     #[test]
@@ -924,46 +1100,63 @@ mod tests {
                 ctx.index_of(obj)
             }
 
-            fn get_root<'a>(
+            fn get_root_mut<'a>(
                 &'a mut self,
                 ctx: &mut DatabaseContext,
                 ptr: <DatabaseVec<CounterObject> as Object>::Ptr,
             ) -> &'a mut Self::Root {
                 unsafe { DatabaseVec::access_mut(ctx, ThinPtr(0)) }
             }
+
+            fn get_root<'a>(
+                &'a self,
+                ctx: &DatabaseContext,
+                ptr: <DatabaseVec<CounterObject> as Object>::Ptr,
+            ) -> &'a Self::Root {
+                unsafe { DatabaseVec::access(ctx, ThinPtr(0)) }
+            }
+
+            type Message = DummyMessage<DatabaseVec<CounterObject>>;
         }
 
         let mut db: Database<CounterVecApplication> =
             Database::create_new("test/vec_undo", CounterVecApplication, true).unwrap();
 
         {
-            let (counter_vec, context) = db.get_root();
-            context.set_next_seqnr(SequenceNr::from_index(1));
-            assert_eq!(counter_vec.len(context), 0);
-            println!("Pre-push");
-            let new_element = counter_vec.push_new(context);
-            new_element.counter.set(context, 47);
-            new_element.counter2.set(context, 48);
-            println!("Pre-set-time");
-            context.set_next_seqnr(SequenceNr::from_index(2));
-            assert_eq!(counter_vec.len(context), 1);
-            context.set_next_seqnr(SequenceNr::from_index(3));
+            db.with_root_mut(
+                |counter_vec, context,_|{
+                    context.set_next_seqnr(SequenceNr::from_index(1));
+                    assert_eq!(counter_vec.len(context), 0);
+                    println!("Pre-push");
+                    let new_element = counter_vec.push_new(context);
+                    new_element.counter.set(context, 47);
+                    new_element.counter2.set(context, 48);
+                    println!("Pre-set-time");
+                    context.set_next_seqnr(SequenceNr::from_index(2));
+                    assert_eq!(counter_vec.len(context), 1);
+                    context.set_next_seqnr(SequenceNr::from_index(3));
+                }
+            );
         }
 
         {
-            let (counter_vec, context) = db.get_root();
-            let counter = counter_vec.get_mut(context, 0);
-            counter.counter.set(context, 50);
-            context.rewind(SequenceNr::from_index(2));
-            assert_eq!(counter.counter.get(context), 47);
+            db.with_root_mut(
+                |counter_vec, context,_| {
+                    let counter = counter_vec.get_mut(context, 0);
+                    counter.counter.set(context, 50);
+                    context.rewind(SequenceNr::from_index(2));
+                    assert_eq!(counter.counter.get(context), 47);
+                });
         }
 
         println!("Rewind!");
         db.context.rewind(SequenceNr::from_index(1));
 
         {
-            let (counter_vec, context) = db.get_root();
-            assert_eq!(counter_vec.len(context), 0);
+            db.with_root_mut(
+                |counter_vec, context,_| {
+                    assert_eq!(counter_vec.len(context), 0);
+                });
         }
     }
 

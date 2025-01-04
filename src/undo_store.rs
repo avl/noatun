@@ -25,6 +25,12 @@ pub struct UndoLog {
     store: RefCell<Vec<u8>>,
 }
 
+impl UndoLog {
+    pub(crate) fn clear(&self) {
+        self.store.borrow_mut().clear();
+    }
+}
+
 pub enum HowToProceed {
     PopAndStop,
     PopAndContinue,

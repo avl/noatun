@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use crate::{Message, MessageId, Target, sha2};
 use anyhow::{Context, Result, anyhow, bail};
 use buf_read_write::BufStream;
@@ -613,7 +614,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
     /// This will determine the position they need to be added to, and will then
     /// merge with the index. Marks the db clean.
     ///
-    /// Returns the index of the first insertion point.
+    /// Returns the index of the first insertion point, or None if all messages already existed.
     // TODO: Make sure this method detects if message to be inserted already exists!
     pub fn append_many_sorted(&mut self, messages: impl ExactSizeIterator<Item=M>) -> Result<Option<usize>> where M:Message+Debug{
         self.with_transaction(|tself| tself.do_append_many_sorted(messages))
@@ -694,7 +695,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
         let (Ok(first_index)|Err(first_index)) = index[0..index_header.entries as usize].binary_search_by_key(&first_input_message.id(), |x|x.message);
         let mut cur_index = first_index;
 
-        let mut cur_input_message = Some(first_input_message);
+        let mut cur_input_message  = Some(first_input_message);
 
         loop {
 
