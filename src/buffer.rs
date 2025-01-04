@@ -7,7 +7,7 @@ use crate::{
     Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, SequenceNr,
     Target, ThinPtr,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bumpalo::Bump;
 use bytemuck::{Pod, bytes_of, from_bytes, from_bytes_mut};
 use indexmap::{IndexMap, IndexSet};
@@ -24,6 +24,8 @@ use std::slice;
 use std::slice::SliceIndex;
 use crate::disk_abstraction::{Disk, DiskFile, DiskMmapHandle, StandardDisk};
 use crate::on_disk_message_store::OnDiskMessageStore;
+
+const INITIAL_SIZE_BYTES: usize = 1024*1024;
 
 #[derive(Debug)]
 struct RegistrarTracker<T: MessageDependencyTracker> {
@@ -143,8 +145,8 @@ const DEFAULT_SIZE: usize = 10000;
 
 pub struct DatabaseContext
 {
-    main_store_mmap: DiskMmapHandle,
-    main_store_file: Box<dyn DiskFile>,
+    main_db_mmap: DiskMmapHandle,
+    main_db_file: Box<dyn DiskFile>,
     pointer: Cell<usize>,
     root_index: Option<GenPtr>,
     undo_log: UndoLog,
@@ -193,12 +195,18 @@ impl DatabaseContext {
         self.next_seqnr
     }
     pub fn new<S:Disk>(s: &mut S, name: &Target) -> Result<Self> {
-        let main_store_file = s.open_file(name.path(), name.create(), name.overwrite())?;
+        let full_path = name.path().join("db.bin");
+        let mut db_store_file = s.open_file(&full_path, name.create(), name.overwrite())
+            .context("opening main store file")?;
 
-        let mut main_store_file = Box::new(main_store_file);
+        if db_store_file.len()? < INITIAL_SIZE_BYTES {
+            db_store_file.set_len(INITIAL_SIZE_BYTES as u64)?;
+        }
+
+        let mut main_db_file = Box::new(db_store_file);
         Ok(Self {
-            main_store_mmap: main_store_file.mmap()?,
-            main_store_file,
+            main_db_mmap: main_db_file.mmap()?,
+            main_db_file,
             pointer: Cell::new(0),
             root_index: None,
             undo_log: UndoLog::new(),
@@ -225,17 +233,17 @@ impl DatabaseContext {
             UndoLogEntry::SetPointer(new_pointer) => {
                 let cur = self.pointer.get();
                 debug_assert!(new_pointer <= cur);
-                unsafe { Self::mut_slice(self.main_store_mmap.map_mut_ptr(), new_pointer..cur).fill(0) };
+                unsafe { Self::mut_slice(self.main_db_mmap.map_mut_ptr(), new_pointer..cur).fill(0) };
                 self.pointer.set(new_pointer);
                 HowToProceed::PopAndContinue
             }
             UndoLogEntry::ZeroOut { start, len } => {
-                unsafe { Self::mut_slice(self.main_store_mmap.map_mut_ptr(), start..start + len).fill(0) };
+                unsafe { Self::mut_slice(self.main_db_mmap.map_mut_ptr(), start..start + len).fill(0) };
                 HowToProceed::PopAndContinue
             }
             UndoLogEntry::Restore { start, data } => {
                 unsafe {
-                    Self::mut_slice(self.main_store_mmap.map_mut_ptr(), start..start + data.len())
+                    Self::mut_slice(self.main_db_mmap.map_mut_ptr(), start..start + data.len())
                         .copy_from_slice(data)
                 };
                 HowToProceed::PopAndContinue
@@ -264,7 +272,7 @@ impl DatabaseContext {
     }
 
     pub fn start_ptr(&self) -> *const u8 {
-        self.main_store_mmap.map_const_ptr()
+        self.main_db_mmap.map_const_ptr()
     }
 
     pub fn set_next_seqnr(&mut self, seqnr: SequenceNr) {
@@ -328,11 +336,18 @@ impl DatabaseContext {
         }
     }
 
-    pub unsafe fn allocate_pod<'a, T: Pod>(&mut self) -> &'a mut T {
+    pub fn allocate_pod<T: Pod>(&self) -> &mut T {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { &mut *(bytes as *mut T) }
     }
-    pub fn allocate_raw(&mut self, size: usize, align: usize) -> *mut u8 {
+
+    fn reallocate(&self, new_size: usize) {
+        todo!()
+        /*self.main_db_file.set_len(new_size as u64).expect("Failed to expand db disk file - out of disk space?");
+        self.main_db_mmap = self.main_db_file.mmap().expect("Failed to mmap disk file");*/
+    }
+
+    pub fn allocate_raw(&self, size: usize, align: usize) -> *mut u8 {
         if align > 256 {
             panic!("Noatun arbitrarily does not support types with alignment > 256");
         }
@@ -341,13 +356,14 @@ impl DatabaseContext {
             index_rounded_up_to_custom_align(self.pointer.get(), align).unwrap();
         self.undo_log
             .record(UndoLogEntry::SetPointer(self.pointer.get()));
-        self.pointer
-            .set(alignment_adjustment.checked_add(size).unwrap());
-        if self.pointer.get() > self.main_store_mmap.len() {
-            panic!("Out of memory");
+        let new_pointer = alignment_adjustment.checked_add(size).unwrap();
+        if new_pointer > self.main_db_mmap.len() {
+            self.reallocate(2*new_pointer);
         }
+        self.pointer
+            .set(new_pointer);
         unsafe {
-            self.main_store_mmap
+            self.main_db_mmap
                 .map_mut_ptr()
                 .wrapping_add(self.pointer.get() - size)
         }
@@ -361,13 +377,13 @@ impl DatabaseContext {
     }
     pub unsafe fn access<'a>(&self, range: FatPtr) -> &'a [u8] {
         unsafe {
-            std::slice::from_raw_parts(self.main_store_mmap.map_const_ptr().wrapping_add(range.start), range.len)
+            std::slice::from_raw_parts(self.main_db_mmap.map_const_ptr().wrapping_add(range.start), range.len)
         }
     }
     pub unsafe fn access_mut<'a>(&mut self, range: FatPtr) -> &'a mut [u8] {
         unsafe {
             std::slice::from_raw_parts_mut(
-                self.main_store_mmap.map_mut_ptr().wrapping_add(range.start),
+                self.main_db_mmap.map_mut_ptr().wrapping_add(range.start),
                 range.len,
             )
         }
@@ -380,7 +396,7 @@ impl DatabaseContext {
     pub unsafe fn access_pod<'a, T: Pod>(&self, index: usize) -> &'a T {
         unsafe {
             from_bytes(std::slice::from_raw_parts(
-                self.main_store_mmap.map_const_ptr().wrapping_add(index),
+                self.main_db_mmap.map_const_ptr().wrapping_add(index),
                 size_of::<T>(),
             ))
         }
@@ -388,14 +404,14 @@ impl DatabaseContext {
     pub unsafe fn access_pod_mut<'a, T: Pod>(&mut self, index: ThinPtr) -> &'a mut T {
         unsafe {
             from_bytes_mut(std::slice::from_raw_parts_mut(
-                self.main_store_mmap.map_mut_ptr().wrapping_add(index.0),
+                self.main_db_mmap.map_mut_ptr().wrapping_add(index.0),
                 size_of::<T>(),
             ))
         }
     }
 
     pub fn write(&mut self, index: usize, data: &[u8]) {
-        debug_assert!(index + data.len() <= self.main_store_mmap.len());
+        debug_assert!(index + data.len() <= self.main_db_mmap.len());
         let fat = FatPtr {
             start: index,
             len: data.len(),
@@ -413,13 +429,13 @@ impl DatabaseContext {
         *dest = src;
     }
     pub fn index_of_sized<T: Sized>(&self, t: &T) -> ThinPtr {
-        ThinPtr::create(t, self.main_store_mmap.map_const_ptr())
+        ThinPtr::create(t, self.main_db_mmap.map_const_ptr())
     }
     pub fn index_of<T: Object>(&self, t: &T) -> T::Ptr {
-        T::Ptr::create(t, self.main_store_mmap.map_const_ptr())
+        T::Ptr::create(t, self.main_db_mmap.map_const_ptr())
     }
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {
-        ThinPtr((t as *const u8 as usize) - (self.main_store_mmap.map_const_ptr() as usize))
+        ThinPtr((t as *const u8 as usize) - (self.main_db_mmap.map_const_ptr() as usize))
     }
 
     /// Call after writing a message.

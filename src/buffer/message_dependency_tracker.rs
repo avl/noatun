@@ -122,7 +122,7 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
 
         //dbg!(Self::get_count(&self.vals) + 1, self.value_capacity);
         if Self::get_count(&self.vals) + 1 >= self.value_capacity {
-            //println!("REALLOC!");
+            println!("REALLOC! to {}",(self.value_capacity + 1) * 2);
             self.reallocate_values((self.value_capacity + 1) * 2);
         }
 
@@ -174,11 +174,12 @@ impl  MmapMessageDependencyTracker {
     #[inline]
     fn access<T: Pod>(mmap: &mut DiskMmapHandle) -> (&mut u64, &mut [T]) {
         let slice_bytes: &mut [u8] = mmap.map_mut();
-        //println!("Mmap size: {}, item size: {}", slice_bytes.len(), size_of::<T>());
+
+        println!("Mmap size: {}, item size: {}", slice_bytes.len(), size_of::<T>());
         let (slice_a, slice_b) = slice_bytes.split_at_mut(std::mem::size_of::<u64>());
         let count: &mut u64 = bytemuck::from_bytes_mut(slice_a);
         let slice: &mut [T] = bytemuck::cast_slice_mut(slice_b);
-        //println!("Couint: {}, cap: {}", count, slice.len());
+        println!("Count: {}, cap: {}", count, slice.len());
         (count, slice)
     }
 
@@ -215,6 +216,7 @@ impl  MmapMessageDependencyTracker {
     fn reallocate(mmap: &mut DiskMmapHandle, file: &mut dyn DiskFile, new_bytes: usize) -> Result<()> {
         file.set_len(new_bytes as u64)?;
         file.remap(mmap, new_bytes as u64)?;
+        println!("file remap to {} {}", new_bytes, mmap.len());
         Ok(())
     }
 }

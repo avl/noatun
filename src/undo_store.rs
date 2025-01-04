@@ -22,7 +22,7 @@ pub enum UndoLogEntry<'a> {
 }
 
 pub struct UndoLog {
-    store: Vec<u8>,
+    store: RefCell<Vec<u8>>,
 }
 
 pub enum HowToProceed {
@@ -33,24 +33,26 @@ pub enum HowToProceed {
 
 impl UndoLog {
     pub fn new() -> UndoLog {
-        UndoLog { store: vec![] }
+        UndoLog { store: RefCell::new(vec![]) }
     }
 
     /// Calls the callback with the most recent entry in the undo-log, repeatedly.
     /// If no entry, return false. If closure returns 'Error', return false.
     /// Otherwise return true;
     pub fn rewind(&mut self, mut cb: impl FnMut(UndoLogEntry) -> HowToProceed) -> bool {
-        while let Some((new_len, item)) = Self::parse1(&self.store) {
+        let mut store_ref = self.store.borrow_mut();
+        let store = &mut *store_ref;
+        while let Some((new_len, item)) = Self::parse1(store) {
             match cb(item) {
                 HowToProceed::Error => {
                     return false;
                 }
                 HowToProceed::PopAndStop => {
-                    self.store.truncate(new_len);
+                    store.truncate(new_len);
                     return true;
                 }
                 HowToProceed::PopAndContinue => {
-                    self.store.truncate(new_len);
+                    store.truncate(new_len);
                 }
             }
         }
@@ -98,8 +100,9 @@ impl UndoLog {
             _ => panic!("Corrupt undo-store"),
         }
     }
-    pub fn record(&mut self, entry: UndoLogEntry) {
-        let store = &mut self.store;
+    pub fn record(&self, entry: UndoLogEntry) {
+        let mut store_ref = self.store.borrow_mut();
+        let store = &mut *store_ref;
         match entry {
             UndoLogEntry::SetPointer(size) => {
                 store

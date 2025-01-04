@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use fs2::FileExt;
 use memmap2::MmapMut;
 
-
+/* TODO
 compile_error!("Before the vacation
 
 you just got it compiling again after introducing a memory-only backend, that should be
@@ -42,6 +42,7 @@ custom allocators?)
 9: Check if we can publish this, or if employer wants it?
 
 ")
+*/
 
 /// Use to abstract away the concrete mmap and disk io implementations.
 /// This can be used to easily change implementations of these, but more
@@ -60,7 +61,7 @@ pub trait DiskFile : Seek+ Write + Read {
     fn try_lock_exclusive(&mut self) -> Result<()>;
     fn len(&self) -> Result<usize>;
 }
-trait DiskMmap : std::any::Any {
+pub trait DiskMmap : std::any::Any {
     fn map(&self) -> &[u8];
     fn map_mut(&mut self) -> &mut [u8];
     fn as_any(&mut self) -> &mut dyn Any;
@@ -83,7 +84,7 @@ impl DiskMmapHandle {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
     #[inline(always)]
-    pub fn map_mut_ptr(&mut self) -> *mut u8 {
+    pub fn map_mut_ptr(&self) -> *mut u8 {
         self.ptr
 
     }
@@ -329,7 +330,9 @@ impl Disk for StandardDisk {
             .write(true)
             .create(create)
             .truncate(overwrite)
-            .open(path)?)
+            .open(path)
+            .with_context(||format!("opening file {:?}", path))
+            ?)
     }
 
 }
@@ -355,11 +358,18 @@ impl DiskFile for File {
     }
 
     fn remap(&mut self, mmap: &mut DiskMmapHandle, new_size: u64) -> Result<()> {
+        self.set_len(new_size)?;
         let inner = mmap.boxed.as_mut();
-        let diskmmap: Option<&mut MmapMut> = inner.as_any().downcast_mut::<MmapMut>();
+        let diskmmap: &mut MmapMut = inner.as_any().downcast_mut::<MmapMut>()
+            .expect("MmapMut::downcast should always succeed");
 
-
-        todo!()
+        *diskmmap = unsafe { MmapMut::map_mut(&self.as_fd())?};
+        assert_eq!(diskmmap.len(), new_size as usize);
+        assert_eq!(diskmmap.map().len(), new_size as usize);
+        mmap.len = new_size as usize;
+        mmap.ptr = diskmmap.as_mut_ptr();
+        println!("REmapped size {} {}", diskmmap.map().len(), diskmmap.len());
+        Ok(())
     }
 
     fn sync_all(&mut self) -> Result<()> {

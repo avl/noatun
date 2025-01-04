@@ -4,7 +4,7 @@
 
 extern crate test;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 pub use buffer::DatabaseContext;
 use bumpalo::Bump;
 use bytemuck::{Pod, Zeroable};
@@ -317,7 +317,7 @@ impl Object for u8 {
 }
 pub trait Application {
     type Root: Object;
-    fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self::Root;
+    fn initialize_root(ctx: &mut DatabaseContext) -> <Self::Root as Object>::Ptr;
     fn get_root<'a>(
         &'a mut self,
         ctx: &mut DatabaseContext,
@@ -455,7 +455,7 @@ impl<T> DatabaseVec<T>
 where
     T: FixedSizeObject + 'static,
 {
-    pub fn new<'a>(ctx: &mut DatabaseContext) -> &'a mut DatabaseVec<T> {
+    pub fn new(ctx: &DatabaseContext) -> &mut DatabaseVec<T> {
         unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
     }
     pub fn len(&self, ctx: &mut DatabaseContext) -> usize {
@@ -567,7 +567,7 @@ impl<T: Object> DatabaseObjectHandle<T> {
     pub fn get_mut<'a>(&'a self, context: &mut DatabaseContext) -> &'a mut T {
         unsafe { T::access_mut(context, self.object_index) }
     }
-    pub fn new<'a>(context: &mut DatabaseContext, value: T) -> &'a mut Self
+    pub fn new(context: &DatabaseContext, value: T) -> &mut Self
     where
         T: Object<Ptr = ThinPtr>,
         T: Pod,
@@ -575,13 +575,13 @@ impl<T: Object> DatabaseObjectHandle<T> {
         let this = unsafe { context.allocate_pod::<DatabaseObjectHandle<T>>() };
         let target = unsafe { context.allocate_pod::<T>() };
         *target = value;
-        this.object_index = context.index_of_ptr(target as *const _);
+        this.object_index = context.index_of(target);
         this
     }
 }
 
 impl<T: Pod + Object> DatabaseCell<T> {
-    pub fn new<'a>(context: &mut DatabaseContext) -> &'a mut Self {
+    pub fn new(context: &DatabaseContext) -> &mut Self {
         let memory = unsafe { context.allocate_pod::<T>() };
         unsafe { &mut *(memory as *mut _ as *mut DatabaseCell<T>) }
     }
@@ -646,7 +646,7 @@ impl<APP: Application> Database<APP> {
             if !std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_ok() {
                 panic!(
                     "Noatun: Multiple active DB-roots in the same thread are not allowed.\
-                        You can disable this warning by setting env-var NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE.\
+                        You can disable this diagnostic by setting env-var NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE.\
                         Note, unsoundness can occur if DatabaseContext from one instance is used by data \
                         for other."
                 );
@@ -654,11 +654,11 @@ impl<APP: Application> Database<APP> {
         }
         MULTI_INSTANCE_BLOCKER.set(true);
 
-        let mut ctx = DatabaseContext::new(&mut StandardDisk, &target)?;
+        let mut ctx = DatabaseContext::new(&mut StandardDisk, &target).context("opening database")?;
         let start_ptr = ctx.start_ptr();
         let root = APP::initialize_root(&mut ctx);
-        let root_ptr = <APP::Root as Object>::Ptr::create(root, start_ptr);
-        ctx.set_root_ptr(root_ptr.as_generic());
+        //let root_ptr = <APP::Root as Object>::Ptr::create(root, start_ptr);
+        ctx.set_root_ptr(root.as_generic());
         Ok(Database { context: ctx, app })
     }
 }
@@ -698,7 +698,7 @@ mod tests {
             self.counter.set(ctx, value1);
             self.counter2.set(ctx, value2);
         }
-        fn new<'a, 'b: 'a>(ctx: &'b mut DatabaseContext) -> &'a mut CounterObject {
+        fn new<'a>(ctx: &mut &'a mut DatabaseContext) -> &'a mut CounterObject {
             let counter: &mut DatabaseCell<u32> = DatabaseCell::new(ctx);
             assert_eq!(ctx.index_of(counter).0, 0);
             let counter2: &mut DatabaseCell<u32> = DatabaseCell::new(ctx);
@@ -712,10 +712,11 @@ mod tests {
     impl Application for CounterApplication {
         type Root = CounterObject;
 
-        fn initialize_root(ctx: &mut DatabaseContext) -> &mut CounterObject {
-            let new_obj = CounterObject::new(ctx);
+        fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
+            let new_obj = CounterObject::new(&mut ctx);
             //assert_eq!(ctx.index_of(&new_obj.counter), 0);
-            new_obj
+            ctx.index_of(new_obj)
+            //new_obj
         }
 
         fn get_root<'a>(
@@ -834,8 +835,10 @@ mod tests {
         impl Application for HandleApplication {
             type Root = DatabaseObjectHandle<u32>;
 
-            fn initialize_root(ctx: &mut DatabaseContext) -> &mut DatabaseObjectHandle<u32> {
-                DatabaseObjectHandle::new(ctx, 43u32)
+            fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
+                let obj = DatabaseObjectHandle::new(&ctx, 43u32);
+
+                ctx.index_of(obj)
             }
 
             fn get_root<'a>(
@@ -862,9 +865,9 @@ mod tests {
         impl Application for CounterVecApplication {
             type Root = DatabaseVec<CounterObject>;
 
-            fn initialize_root(ctx: &mut DatabaseContext) -> &mut DatabaseVec<CounterObject> {
+            fn initialize_root(ctx: &mut DatabaseContext) -> ThinPtr {
                 let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new(ctx);
-                obj
+                ctx.index_of(obj)
             }
 
             fn get_root<'a>(
@@ -916,9 +919,9 @@ mod tests {
         impl Application for CounterVecApplication {
             type Root = DatabaseVec<CounterObject>;
 
-            fn initialize_root(ctx: &mut DatabaseContext) -> &mut DatabaseVec<CounterObject> {
+            fn initialize_root(ctx: &mut DatabaseContext) -> ThinPtr {
                 let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new(ctx);
-                obj
+                ctx.index_of(obj)
             }
 
             fn get_root<'a>(

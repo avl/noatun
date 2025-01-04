@@ -39,8 +39,9 @@ impl<'a> CounterObject {
 impl Application for CounterApplication {
     type Root = CounterObject;
 
-    fn initialize_root(ctx: &mut DatabaseContext) -> &mut CounterObject {
-        unsafe { ctx.allocate_pod::<CounterObject>() }
+    fn initialize_root(ctx: &mut DatabaseContext) -> ThinPtr {
+        let ctr = ctx.allocate_pod::<CounterObject>();
+        ctx.index_of(ctr)
     }
 
     fn get_root<'a>(&'a mut self, ctx: &mut DatabaseContext, ptr: ThinPtr) -> &'a mut Self::Root {

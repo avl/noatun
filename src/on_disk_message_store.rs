@@ -456,7 +456,7 @@ impl<M, D:Disk> OnDiskMessageStore<M, D> {
     }
 
     /// Get all messages with id start or greater
-    pub fn query(&self, start: MessageId) -> Result<impl Iterator<Item=&IndexEntry>> {
+    fn query(&self, start: MessageId) -> Result<impl Iterator<Item=&IndexEntry>> {
         let (header, message_index) = self.header_and_index().context("opening index file")?;
 
         let (Ok(index)|Err(index)) = message_index.binary_search_by_key(&start, |x|x.message);
