@@ -1,3 +1,7 @@
+use anyhow::{Context, Result, anyhow, bail};
+use buf_read_write::BufStream;
+use fs2::FileExt;
+use memmap2::MmapMut;
 use std::alloc::Layout;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -8,11 +12,7 @@ use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::rc::Rc;
-use anyhow::{anyhow, bail, Context, Result};
-use buf_read_write::BufStream;
-use fs2::FileExt;
-use memmap2::MmapMut;
-
+use crate::Target;
 /* TODO
 compile_error!("Before the vacation
 
@@ -49,11 +49,11 @@ custom allocators?)
 /// This can be used to easily change implementations of these, but more
 /// importantly, it allows us to run under miri
 pub trait Disk {
-    type File: DiskFile+'static;
-    type Mmap: DiskMmap+'static;
-    fn open_file(&mut self, path: &Path, create: bool, overwrite: bool) -> Result<Self::File>;
+    type File: DiskFile + 'static;
+    type Mmap: DiskMmap + 'static;
+    fn open_file(&mut self, target: &Target, file: &str) -> Result<Self::File>;
 }
-pub trait DiskFile : Seek+ Write + Read {
+pub trait DiskFile: Seek + Write + Read {
     fn set_len(&mut self, len: u64) -> Result<()>;
 
     /// Write all zeroes to the entire file, without changing its size
@@ -64,7 +64,7 @@ pub trait DiskFile : Seek+ Write + Read {
     fn try_lock_exclusive(&mut self) -> Result<()>;
     fn len(&self) -> Result<usize>;
 }
-pub trait DiskMmap : std::any::Any {
+pub trait DiskMmap: std::any::Any {
     fn map(&self) -> &[u8];
     fn map_mut(&mut self) -> &mut [u8];
     fn as_any(&mut self) -> &mut dyn Any;
@@ -77,10 +77,15 @@ pub struct DiskMmapHandle {
     len: usize,
     boxed: Box<dyn DiskMmap>,
 }
+
+
 impl DiskMmapHandle {
     #[inline(always)]
     pub fn map(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+    pub fn clear(&mut self) {
+        self.map_mut().fill(0);
     }
     #[inline(always)]
     pub fn map_mut(&mut self) -> &mut [u8] {
@@ -89,12 +94,10 @@ impl DiskMmapHandle {
     #[inline(always)]
     pub fn map_mut_ptr(&self) -> *mut u8 {
         self.ptr
-
     }
     #[inline(always)]
     pub fn map_const_ptr(&self) -> *const u8 {
         self.ptr
-
     }
     #[inline(always)]
     pub fn len(&self) -> usize {
@@ -107,14 +110,12 @@ impl DiskMmapHandle {
 
 pub struct StandardDisk;
 
-
 struct InMemoryFile {
     data: *mut u8,
     data_size: usize,
     position: usize,
     locked: bool,
     mmaped: bool,
-
 }
 
 #[derive(Clone)]
@@ -125,7 +126,7 @@ pub struct InMemoryDisk {
 }
 pub struct InMemoryMmap {
     file: InMemoryFileRef,
-    size_of_map: usize
+    size_of_map: usize,
 }
 
 impl Read for InMemoryFileRef {
@@ -134,7 +135,11 @@ impl Read for InMemoryFileRef {
 
         assert!(tself.position + buf.len() <= tself.data_size);
         unsafe {
-            std::ptr::copy(tself.data.wrapping_add(tself.position), buf.as_mut_ptr(), buf.len());
+            std::ptr::copy(
+                tself.data.wrapping_add(tself.position),
+                buf.as_mut_ptr(),
+                buf.len(),
+            );
         }
         tself.position += buf.len();
         Ok(buf.len())
@@ -148,14 +153,18 @@ impl Write for InMemoryFileRef {
         // write that exceeds size. On the other hand, BufStream protects us from
         // the worst amount of reallocs
         if tself.position + buf.len() > tself.data_size {
-            let newlen = tself.position+ buf.len();
+            let newlen = tself.position + buf.len();
             drop(tself);
-            self.set_len( (newlen) as u64).unwrap();
+            self.set_len((newlen) as u64).unwrap();
         }
         let mut tself = self.0.borrow_mut();
 
         unsafe {
-            std::ptr::copy(buf.as_ptr(), tself.data.wrapping_add(tself.position),buf.len());
+            std::ptr::copy(
+                buf.as_ptr(),
+                tself.data.wrapping_add(tself.position),
+                buf.len(),
+            );
         }
         tself.position += buf.len();
         Ok(buf.len())
@@ -170,8 +179,11 @@ impl Seek for InMemoryFileRef {
         let mut tself = self.0.borrow_mut();
         match pos {
             SeekFrom::Start(p) => {
-                if p as usize >= tself.data_size  {
-                    return Err(std::io::Error::new(ErrorKind::Other, "SeekFrom::Start - Can't seek after end (not supported by this test routine)"));
+                if p as usize >= tself.data_size {
+                    return Err(std::io::Error::new(
+                        ErrorKind::Other,
+                        "SeekFrom::Start - Can't seek after end (not supported by this test routine)",
+                    ));
                 }
                 tself.position = p as usize;
             }
@@ -179,15 +191,17 @@ impl Seek for InMemoryFileRef {
                 tself.position = tself.data_size;
             }
             SeekFrom::Current(d) => {
-                if d== 0 {
+                if d == 0 {
                     return Ok(tself.position as u64);
                 }
                 let new_pos = tself.position.checked_add_signed(d as isize).unwrap();
                 if new_pos >= tself.data_size {
-                    return Err(std::io::Error::new(ErrorKind::Other, "SeekFrom::Current - Can't seek after end (not supported by this test routine)"));
+                    return Err(std::io::Error::new(
+                        ErrorKind::Other,
+                        "SeekFrom::Current - Can't seek after end (not supported by this test routine)",
+                    ));
                 }
                 tself.position = new_pos;
-
             }
         }
         Ok(tself.position as u64)
@@ -225,23 +239,25 @@ impl Disk for InMemoryDisk {
     type File = InMemoryFileRef;
     type Mmap = InMemoryMmap;
 
-    fn open_file(&mut self, path: &Path, create: bool, mut overwrite: bool) -> anyhow::Result<Self::File> {
-
-
+    fn open_file(
+        &mut self,
+        target: &Target,
+        file: &str
+    ) -> anyhow::Result<Self::File> {
         //std::fs::create_dir_all(&path).context("create database directory")?;
+        let create = target.create();
+        let overwrite = target.overwrite();
+        let path = target.path().join(file);
         if !create {
-            let t = (*self.files.get(path).unwrap()).clone();
-            return Ok (t);
+            let t = (*self.files.get(&path).unwrap()).clone();
+            return Ok(t);
         } else {
             if !overwrite {
-                if self.files.contains_key(path) {
+                if self.files.contains_key(&path) {
                     bail!("file already exists");
                 }
             }
-
         }
-
-
 
         Ok(InMemoryFileRef(Rc::new(RefCell::new(InMemoryFile {
             data: null_mut(),
@@ -251,7 +267,6 @@ impl Disk for InMemoryDisk {
             mmaped: false,
         }))))
     }
-
 }
 impl Drop for InMemoryFile {
     fn drop(&mut self) {
@@ -262,10 +277,9 @@ impl Drop for InMemoryFile {
     }
 }
 impl DiskFile for InMemoryFileRef {
-
     fn mmap(&mut self) -> Result<DiskMmapHandle> {
         let size = self.0.borrow().data_size;
-        let boxed = Box::new(InMemoryMmap{
+        let boxed = Box::new(InMemoryMmap {
             file: self.clone(),
             size_of_map: size,
         });
@@ -273,11 +287,7 @@ impl DiskFile for InMemoryFileRef {
         let tfile = self.0.borrow();
         let ptr = tfile.data;
         let len = tfile.data_size;
-        Ok(DiskMmapHandle {
-            boxed,
-            ptr,
-            len,
-        })
+        Ok(DiskMmapHandle { boxed, ptr, len })
     }
 
     fn set_len(&mut self, len: u64) -> Result<()> {
@@ -329,8 +339,13 @@ impl Disk for StandardDisk {
     type File = std::fs::File;
     type Mmap = MmapMut;
 
-    fn open_file(&mut self, path: &Path, create: bool, mut overwrite: bool) -> Result<Self::File> {
-        if !std::fs::metadata(path).is_ok() {
+    fn open_file(&mut self, target: &Target, file: &str) -> Result<Self::File> {
+
+        let path = target.path().join(format!("{}.bin",file));
+        let mut overwrite = target.overwrite();
+        let mut create = target.create();
+
+        if !std::fs::metadata(&path).is_ok() {
             overwrite = true;
         }
         Ok(OpenOptions::new()
@@ -338,11 +353,9 @@ impl Disk for StandardDisk {
             .write(true)
             .create(create)
             .truncate(overwrite)
-            .open(path)
-            .with_context(||format!("opening file {:?}", path))
-            ?)
+            .open(&path)
+            .with_context(|| format!("opening file {:?}", path))?)
     }
-
 }
 #[deny(unconditional_recursion)]
 impl DiskFile for File {
@@ -359,28 +372,24 @@ impl DiskFile for File {
         Ok(())
     }
 
-
     fn mmap(&mut self) -> Result<DiskMmapHandle> {
-        let mut boxed = Box::new(unsafe { MmapMut::map_mut(&self.as_fd())?} );
+        let mut boxed = Box::new(unsafe { MmapMut::map_mut(&self.as_fd())? });
 
         let len = boxed.len();
         let ptr = boxed.as_mut_ptr();
 
-
-        Ok(DiskMmapHandle {
-            boxed,
-            ptr,
-            len,
-        })
+        Ok(DiskMmapHandle { boxed, ptr, len })
     }
 
     fn remap(&mut self, mmap: &mut DiskMmapHandle, new_size: u64) -> Result<()> {
         self.set_len(new_size)?;
         let inner = mmap.boxed.as_mut();
-        let diskmmap: &mut MmapMut = inner.as_any().downcast_mut::<MmapMut>()
+        let diskmmap: &mut MmapMut = inner
+            .as_any()
+            .downcast_mut::<MmapMut>()
             .expect("MmapMut::downcast should always succeed");
 
-        *diskmmap = unsafe { MmapMut::map_mut(&self.as_fd())?};
+        *diskmmap = unsafe { MmapMut::map_mut(&self.as_fd())? };
         assert_eq!(diskmmap.len(), new_size as usize);
         assert_eq!(diskmmap.map().len(), new_size as usize);
         mmap.len = new_size as usize;
@@ -423,4 +432,3 @@ impl DiskMmap for MmapMut {
         Ok(MmapMut::flush_range(self, offset, len)?)
     }
 }
-

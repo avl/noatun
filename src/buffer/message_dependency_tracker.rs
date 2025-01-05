@@ -1,3 +1,4 @@
+use crate::disk_abstraction::{Disk, DiskFile, DiskMmapHandle};
 use crate::{SequenceNr, Target};
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
@@ -6,10 +7,9 @@ use memmap2::{Mmap, MmapMut};
 use std::fs::{File, OpenOptions};
 use std::iter;
 use std::path::Path;
-use crate::disk_abstraction::{Disk, DiskFile, DiskMmapHandle};
 
 pub trait MessageDependencyTracker {
-    fn new<S:Disk>(s: &mut S, path: &Target) -> Result<Self>
+    fn new<S: Disk>(s: &mut S, path: &Target) -> Result<Self>
     where
         Self: Sized;
     fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr);
@@ -19,7 +19,7 @@ pub trait MessageDependencyTracker {
 }
 
 impl MessageDependencyTracker for IndexMap<SequenceNr, Vec<SequenceNr>> {
-    fn new<S:Disk>(s: &mut S, name: &Target) -> Result<Self> {
+    fn new<S: Disk>(s: &mut S, name: &Target) -> Result<Self> {
         Ok(IndexMap::new())
     }
 
@@ -70,7 +70,13 @@ impl LinkedListEntry {
 }
 
 impl MessageDependencyTracker for MmapMessageDependencyTracker {
-    fn new<S:Disk>(disk: &mut S, path: &Target) -> Result<Self> {
+    fn clear(&mut self) {
+        let (key_len, keys): (_, &mut [u64]) = Self::access(&mut self.keys);
+        *key_len = 0;
+        let (val_len, vals): (_, &mut [LinkedListEntry]) = Self::access(&mut self.vals);
+        *val_len = 0;
+    }
+    fn new<S: Disk>(disk: &mut S, path: &Target) -> Result<Self> {
         std::fs::create_dir_all(&path.path());
         let key_path = path.path().join("dep_keys.bin");
         let value_path = path.path().join("dep_values.bin");
@@ -88,8 +94,8 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
             .open(&value_path)?;
         */
 
-        let mut key_file = disk.open_file(&key_path, true, path.overwrite())?;
-        let mut value_file = disk.open_file(&value_path, true, path.overwrite())?;
+        let mut key_file = disk.open_file(path, "dep_keys")?;
+        let mut value_file = disk.open_file(path, "dep_values")?;
 
         const DEFAULT_KEY_CAPACITY: usize = 3;
         const DEFAULT_VALUE_CAPACITY: usize = 3;
@@ -128,7 +134,7 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
 
         //dbg!(Self::get_count(&self.vals) + 1, self.value_capacity);
         if Self::get_count(&self.vals) + 1 >= self.value_capacity {
-            println!("REALLOC! to {}",(self.value_capacity + 1) * 2);
+            println!("REALLOC! to {}", (self.value_capacity + 1) * 2);
             self.reallocate_values((self.value_capacity + 1) * 2);
         }
 
@@ -171,12 +177,8 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
             return Some(entry.seq);
         })
     }
-
-    fn clear(&mut self) {
-        todo!()
-    }
 }
-impl  MmapMessageDependencyTracker {
+impl MmapMessageDependencyTracker {
     #[inline]
     fn get_count(mmap: &DiskMmapHandle) -> usize {
         *bytemuck::from_bytes::<u64>(&mmap.map()[0..size_of::<u64>()]) as usize
@@ -185,7 +187,11 @@ impl  MmapMessageDependencyTracker {
     fn access<T: Pod>(mmap: &mut DiskMmapHandle) -> (&mut u64, &mut [T]) {
         let slice_bytes: &mut [u8] = mmap.map_mut();
 
-        println!("Mmap size: {}, item size: {}", slice_bytes.len(), size_of::<T>());
+        println!(
+            "Mmap size: {}, item size: {}",
+            slice_bytes.len(),
+            size_of::<T>()
+        );
         let (slice_a, slice_b) = slice_bytes.split_at_mut(std::mem::size_of::<u64>());
         let count: &mut u64 = bytemuck::from_bytes_mut(slice_a);
         let slice: &mut [T] = bytemuck::cast_slice_mut(slice_b);
@@ -223,7 +229,11 @@ impl  MmapMessageDependencyTracker {
         Ok(())
     }
 
-    fn reallocate(mmap: &mut DiskMmapHandle, file: &mut dyn DiskFile, new_bytes: usize) -> Result<()> {
+    fn reallocate(
+        mmap: &mut DiskMmapHandle,
+        file: &mut dyn DiskFile,
+        new_bytes: usize,
+    ) -> Result<()> {
         file.set_len(new_bytes as u64)?;
         file.remap(mmap, new_bytes as u64)?;
         println!("file remap to {} {}", new_bytes, mmap.len());
@@ -234,16 +244,18 @@ impl  MmapMessageDependencyTracker {
 mod tests {
     use crate::buffer::message_dependency_tracker::MessageDependencyTracker;
     use crate::buffer::message_dependency_tracker::MmapMessageDependencyTracker;
+    use crate::disk_abstraction::StandardDisk;
     use crate::{SequenceNr, Target};
     use std::path::Path;
     use std::time::Instant;
-    use crate::disk_abstraction::StandardDisk;
 
     #[test]
     fn smoke_deptrack() {
-        let mut tracker =
-            MmapMessageDependencyTracker::new(&mut StandardDisk, &Target::CreateNewOrOverwrite("test_smoke_deptrack.bin".into()))
-                .unwrap();
+        let mut tracker = MmapMessageDependencyTracker::new(
+            &mut StandardDisk,
+            &Target::CreateNewOrOverwrite("test_smoke_deptrack.bin".into()),
+        )
+        .unwrap();
         tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
 
         let result: Vec<_> = tracker.read_dependency(SequenceNr::from_index(1)).collect();
@@ -252,9 +264,11 @@ mod tests {
 
     #[test]
     fn smoke_deptrack_many() {
-        let mut tracker =
-            MmapMessageDependencyTracker::new(&mut StandardDisk, &Target::CreateNewOrOverwrite("test_smoke_deptrack_many.bin".into()))
-                .unwrap();
+        let mut tracker = MmapMessageDependencyTracker::new(
+            &mut StandardDisk,
+            &Target::CreateNewOrOverwrite("test_smoke_deptrack_many.bin".into()),
+        )
+        .unwrap();
         let t = Instant::now();
         for i in 0..100_usize {
             tracker.record_dependency(SequenceNr::from_index(i.isqrt()), SequenceNr::from_index(i));
