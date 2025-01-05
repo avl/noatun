@@ -1,4 +1,5 @@
-use crate::disk_abstraction::{Disk, DiskFile, DiskMmapHandle};
+use crate::disk_abstraction::Disk;
+use crate::growable_file_mapping::DiskMmapHandleNew;
 use crate::{SequenceNr, Target};
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
@@ -41,14 +42,12 @@ impl MessageDependencyTracker for IndexMap<SequenceNr, Vec<SequenceNr>> {
 // Mapping from observee to observers.
 pub struct MmapMessageDependencyTracker {
     /// the sequencenr that has been observed
-    keys: DiskMmapHandle,
+    keys: DiskMmapHandleNew,
     key_capacity: usize,
     /// the sequence nr that have observed each key. I.e, the messages that
     /// are dependent upon the key.
-    vals: DiskMmapHandle,
+    vals: DiskMmapHandleNew,
     value_capacity: usize,
-    key_file: Box<dyn DiskFile>,
-    value_file: Box<dyn DiskFile>,
 }
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -78,8 +77,8 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
     }
     fn new<S: Disk>(disk: &mut S, path: &Target) -> Result<Self> {
         std::fs::create_dir_all(&path.path());
-        let key_path = path.path().join("dep_keys.bin");
-        let value_path = path.path().join("dep_values.bin");
+        //let key_path = path.path().join("dep_keys.bin");
+        //let value_path = path.path().join("dep_values.bin");
         /*let key_file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -104,21 +103,21 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
         let value_size_bytes = Self::calc_needed_bytes_vals(DEFAULT_VALUE_CAPACITY);
 
         //println!("Setting lens: {} {}", key_size_bytes, value_size_bytes);
-        key_file.set_len(key_size_bytes as u64)?;
-        value_file.set_len(value_size_bytes as u64)?;
+        key_file.grow(key_size_bytes)?;
+        value_file.grow(value_size_bytes)?;
 
         //let key_mmap = unsafe { MmapMut::map_mut(&key_file)? };
         //let value_mmap = unsafe { MmapMut::map_mut(&value_file)? };
-        let key_mmap = key_file.mmap()?;
-        let value_mmap = value_file.mmap()?;
+        //let key_mmap = key_file.mmap()?;
+        //let value_mmap = value_file.mmap()?;
 
         Ok(MmapMessageDependencyTracker {
-            key_file: Box::new(key_file),
-            value_file: Box::new(value_file),
+            //key_file: Box::new(key_file),
+            //value_file: Box::new(value_file),
             key_capacity: DEFAULT_KEY_CAPACITY,
-            keys: key_mmap,
+            keys: key_file,
             value_capacity: DEFAULT_VALUE_CAPACITY,
-            vals: value_mmap,
+            vals: value_file,
         })
     }
 
@@ -180,11 +179,11 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
 }
 impl MmapMessageDependencyTracker {
     #[inline]
-    fn get_count(mmap: &DiskMmapHandle) -> usize {
+    fn get_count(mmap: &DiskMmapHandleNew) -> usize {
         *bytemuck::from_bytes::<u64>(&mmap.map()[0..size_of::<u64>()]) as usize
     }
     #[inline]
-    fn access<T: Pod>(mmap: &mut DiskMmapHandle) -> (&mut u64, &mut [T]) {
+    fn access<T: Pod>(mmap: &mut DiskMmapHandleNew) -> (&mut u64, &mut [T]) {
         let slice_bytes: &mut [u8] = mmap.map_mut();
 
         println!(
@@ -210,35 +209,33 @@ impl MmapMessageDependencyTracker {
 
     fn reallocate_keys(&mut self, new_count: usize) -> Result<()> {
         //println!("Reallocating keys to {}", new_count);
-        Self::reallocate(
-            &mut self.keys,
-            &mut *self.key_file,
-            Self::calc_needed_bytes_keys(new_count),
-        )?;
+        self.keys.grow(Self::calc_needed_bytes_keys(new_count));
         self.key_capacity = new_count;
         Ok(())
     }
     fn reallocate_values(&mut self, new_count: usize) -> Result<()> {
         //println!("Reallocating values to {}", new_count);
-        Self::reallocate(
+        /*Self::reallocate(
             &mut self.vals,
             &mut *self.value_file,
             Self::calc_needed_bytes_vals(new_count),
-        )?;
+        )?;*/
+        self.vals.grow(Self::calc_needed_bytes_vals(new_count));
+
         self.value_capacity = new_count;
         Ok(())
     }
 
-    fn reallocate(
+    /*fn reallocate(
         mmap: &mut DiskMmapHandle,
-        file: &mut dyn DiskFile,
         new_bytes: usize,
     ) -> Result<()> {
-        file.set_len(new_bytes as u64)?;
-        file.remap(mmap, new_bytes as u64)?;
+        //file.set_len(new_bytes as u64)?;
+        //file.remap(mmap, new_bytes as u64)?;
+        mmap.remap(new_bytes)?;
         println!("file remap to {} {}", new_bytes, mmap.len());
         Ok(())
-    }
+    }*/
 }
 #[cfg(test)]
 mod tests {

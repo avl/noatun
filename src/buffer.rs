@@ -1,7 +1,8 @@
 use crate::buffer::message_dependency_tracker::{
     MessageDependencyTracker, MmapMessageDependencyTracker,
 };
-use crate::disk_abstraction::{Disk, DiskFile, DiskMmapHandle, StandardDisk};
+use crate::disk_abstraction::{Disk, StandardDisk};
+use crate::growable_file_mapping::DiskMmapHandleNew;
 use crate::on_disk_message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
@@ -156,8 +157,9 @@ pub struct MainDbStatus(u32);
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct MainDbHeader {
-    /// The place for the next write. This is the seek-position in the backing file/map.
-    pointer: u64,
+    // The place for the next write. This is the seek-position in the backing file/map.
+    // TODO: This is handled by the layer below now. Remove this comment and commtented out field
+    //pointer: u64,
     /// The sequence number of the next message that will be applied.
     /// For an empty database, this starts at 0. 0 is considered an 'invalid' sequence number,
     /// representing the state before the root message has been initially created.
@@ -175,8 +177,7 @@ pub struct MainDbHeader {
 }
 
 pub struct DatabaseContext {
-    main_db_mmap: DiskMmapHandle,
-    main_db_file: Box<dyn DiskFile>,
+    main_db_mmap: DiskMmapHandleNew,
     //pointer: Cell<usize>,
     root_index: Option<GenPtr>,
     undo_log: UndoLog,
@@ -226,17 +227,18 @@ impl DatabaseContext {
             unsafe { &*(self.main_db_mmap.map_const_ptr() as *const MainDbHeader) };
         header.next_seqnr
     }
+
+    // TODO: Fix naming. We call this 'pointer' here, but 'used_space' in mmap
     #[inline(always)]
     fn pointer(&self) -> usize {
-        let header: &MainDbHeader =
-            unsafe { &*(self.main_db_mmap.map_const_ptr() as *const MainDbHeader) };
-        header.pointer as usize
+        self.main_db_mmap.used_space()
     }
     #[inline(always)]
     fn set_pointer(&self, new_value: usize) {
-        let header: &mut MainDbHeader =
+        self.main_db_mmap.set_used_space(new_value);
+        /*let header: &mut MainDbHeader =
             unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
-        header.pointer = new_value as u64;
+        header.set_pointer = new_value as u64;*/
     }
     #[inline(always)]
     fn raw_set_next_seqnr(&self, new_value: SequenceNr) {
@@ -245,19 +247,18 @@ impl DatabaseContext {
         header.next_seqnr = new_value;
     }
     #[inline(always)]
-    fn set_pointer_of(main_db_mmap: &DiskMmapHandle, new_value: usize) {
-        let header: &mut MainDbHeader =
+    fn set_pointer_of(main_db_mmap: &DiskMmapHandleNew, new_value: usize) {
+        /*let header: &mut MainDbHeader =
             unsafe { &mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
-        header.pointer = new_value as u64;
+        header.pointer = new_value as u64;*/
+        main_db_mmap.set_used_space(new_value);
     }
     #[inline(always)]
-    fn pointer_of(main_db_mmap: &DiskMmapHandle) -> usize {
-        let header: &MainDbHeader =
-            unsafe { &*(main_db_mmap.map_const_ptr() as *const MainDbHeader) };
-        header.pointer as usize
+    fn pointer_of(main_db_mmap: &DiskMmapHandleNew) -> usize {
+        main_db_mmap.used_space()
     }
     #[inline(always)]
-    fn raw_set_next_seqnr_of(main_db_mmap: &DiskMmapHandle, new_value: SequenceNr) {
+    fn raw_set_next_seqnr_of(main_db_mmap: &DiskMmapHandleNew, new_value: SequenceNr) {
         let header: &mut MainDbHeader =
             unsafe { &mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
         header.next_seqnr = new_value;
@@ -292,48 +293,43 @@ impl DatabaseContext {
         header.status.0 != MAIN_DB_STATUS_CLEAN
     }
     pub fn clear(&mut self) -> Result<()> {
-        self.main_db_file.clear();
+        self.main_db_mmap.truncate(0);
+        self.main_db_mmap.grow(INITIAL_SIZE_BYTES)?;
         Self::write_initial_header(&mut self.main_db_mmap);
-        if self.main_db_file.len()? < INITIAL_SIZE_BYTES {
-            self.main_db_file.set_len(INITIAL_SIZE_BYTES as u64)?;
-        }
         self.undo_log.clear();
         self.registrar_tracker.borrow_mut().clear();
 
         Ok(())
     }
 
-    fn write_initial_header(mmap: &mut DiskMmapHandle) {
+    fn write_initial_header(mmap: &mut DiskMmapHandleNew) {
         let header: &mut MainDbHeader =
             bytemuck::from_bytes_mut(&mut mmap.map_mut()[0..size_of::<MainDbHeader>()]);
         header.next_seqnr = SequenceNr::INVALID;
-        header.pointer = size_of::<MainDbHeader>() as u64;
+
         header.status = MainDbStatus(MAIN_DB_STATUS_DIRTY);
 
         header.last_boot = get_boot_checksum();
+        mmap.set_used_space(size_of::<MainDbHeader>());
     }
 
-    pub fn new<S: Disk>(s: &mut S, name: &Target) -> Result<Self> {
-        let mut db_store_file = s
+    pub(crate) fn new<S: Disk>(s: &mut S, name: &Target) -> Result<Self> {
+        let mut main_db_file = s
             .open_file(name, "maindb")
             .context("opening main store file")?;
 
         let mut is_new = false;
-        if db_store_file.len()? < INITIAL_SIZE_BYTES {
-            db_store_file.set_len(INITIAL_SIZE_BYTES as u64)?;
+        if main_db_file.used_space() < INITIAL_SIZE_BYTES {
+            main_db_file.grow(INITIAL_SIZE_BYTES)?;
             is_new = true;
         }
 
-        let mut main_db_file = Box::new(db_store_file);
-
-        let mut main_db_mmap = main_db_file.mmap()?;
         if is_new {
-            Self::write_initial_header(&mut main_db_mmap);
+            Self::write_initial_header(&mut main_db_file);
         }
 
         Ok(Self {
-            main_db_mmap,
-            main_db_file,
+            main_db_mmap: main_db_file,
             root_index: None,
             undo_log: UndoLog::new(s, name)?,
             phantom: Default::default(),
@@ -488,15 +484,15 @@ impl DatabaseContext {
         let alignment_adjustment = index_rounded_up_to_custom_align(self.pointer(), align).unwrap();
         self.undo_log
             .record(UndoLogEntry::SetPointer(self.pointer()));
+
         let new_pointer = alignment_adjustment.checked_add(size).unwrap();
-        if new_pointer > self.main_db_mmap.len() {
-            self.reallocate(2 * new_pointer);
-        }
-        self.set_pointer(new_pointer);
+        self.main_db_mmap
+            .grow(new_pointer)
+            .expect("Failed to allocate memory");
         unsafe {
             self.main_db_mmap
                 .map_mut_ptr()
-                .wrapping_add(self.pointer() - size)
+                .wrapping_add(new_pointer - size)
         }
     }
     pub fn allocate_array<const N: usize, const ALIGN: usize>(&mut self) -> &mut [u8; N] {
@@ -532,7 +528,7 @@ impl DatabaseContext {
             .0
             .checked_add(size_of::<T>())
             .expect("invalid address for pointer")
-            > self.main_db_mmap.len()
+            > self.main_db_mmap.used_space()
         {
             panic!("invalid pointer value");
         }
@@ -548,7 +544,7 @@ impl DatabaseContext {
             .0
             .checked_add(size_of::<T>())
             .expect("invalid address for pointer")
-            > self.main_db_mmap.len()
+            > self.main_db_mmap.used_space()
         {
             panic!("invalid pointer value");
         }
@@ -561,7 +557,7 @@ impl DatabaseContext {
     }
 
     pub fn write(&mut self, index: usize, data: &[u8]) {
-        debug_assert!(index + data.len() <= self.main_db_mmap.len());
+        debug_assert!(index + data.len() <= self.main_db_mmap.used_space());
         let fat = FatPtr {
             start: index,
             len: data.len(),
@@ -590,13 +586,11 @@ impl DatabaseContext {
 
     /// Call after writing a message.
     pub fn finalize_message(&mut self, seqnr: SequenceNr) {
-        self.registrar_tracker
-            .borrow_mut()
-            .finalize_message(seqnr);
+        self.registrar_tracker.borrow_mut().finalize_message(seqnr);
     }
     /// Call after a complete update, i.e, applying multiple messages
     /// Returns all messages that can now be removed.
-    pub fn finalize_transaction<MSG: Message + Debug, D: Disk>(
+    pub(crate) fn finalize_transaction<MSG: Message + Debug, D: Disk>(
         &mut self,
         message_store: &mut OnDiskMessageStore<MSG, D>,
     ) -> Result<Vec<SequenceNr>> {

@@ -66,10 +66,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "buf_read_write"
-version = "0.5.0"
-
-[[package]]
 name = "bumpalo"
 version = "3.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -232,7 +228,6 @@ name = "noatun"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "buf_read_write",
  "bumpalo",
  "bytemuck",
  "byteorder",

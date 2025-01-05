@@ -24,7 +24,6 @@ bumpalo = "3.16"
 time = { version = "0.3", features = ["formatting"] }
 memmap2 = {version ="0.9"}
 anyhow = "1.0"
-buf_read_write = { path = "../buf_read_write", features = ["instrument"] }
 fs2 = "0.4"
 savefile = {  version = "0.18", optional = true }
 savefile-derive = { version = "0.18", optional = true }
