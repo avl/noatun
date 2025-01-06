@@ -106,7 +106,7 @@ fn test_counter_object() {
     .unwrap();
 
     db.append_single(CounterMessage {
-        id: 1,
+        id: 2,
         counter: 0,
         delta: 42,
     }).unwrap();
@@ -115,7 +115,7 @@ fn test_counter_object() {
     assert_eq!(root.counter.get(context), 42);
 
     db.append_single(CounterMessage {
-        id: 2,
+        id: 1,
         counter: 1,
         delta: 43,
     }).unwrap();
