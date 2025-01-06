@@ -10,7 +10,7 @@ use std::iter;
 use std::path::Path;
 
 pub trait MessageDependencyTracker {
-    fn new<S: Disk>(s: &mut S, path: &Target) -> Result<Self>
+    fn new<S: Disk>(s: &mut S, path: &Target, max_size: usize) -> Result<Self>
     where
         Self: Sized;
     fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr);
@@ -20,7 +20,7 @@ pub trait MessageDependencyTracker {
 }
 
 impl MessageDependencyTracker for IndexMap<SequenceNr, Vec<SequenceNr>> {
-    fn new<S: Disk>(s: &mut S, name: &Target) -> Result<Self> {
+    fn new<S: Disk>(s: &mut S, name: &Target, _max_size: usize) -> Result<Self> {
         Ok(IndexMap::new())
     }
 
@@ -75,7 +75,7 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
         let (val_len, vals): (_, &mut [LinkedListEntry]) = Self::access(&mut self.vals);
         *val_len = 0;
     }
-    fn new<S: Disk>(disk: &mut S, path: &Target) -> Result<Self> {
+    fn new<S: Disk>(disk: &mut S, path: &Target, max_size: usize) -> Result<Self> {
         std::fs::create_dir_all(&path.path());
         //let key_path = path.path().join("dep_keys.bin");
         //let value_path = path.path().join("dep_values.bin");
@@ -93,8 +93,8 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
             .open(&value_path)?;
         */
 
-        let mut key_file = disk.open_file(path, "dep_keys", 0)?;
-        let mut value_file = disk.open_file(path, "dep_values", 0)?;
+        let mut key_file = disk.open_file(path, "dep_keys", 0, max_size)?;
+        let mut value_file = disk.open_file(path, "dep_values", 0, max_size)?;
 
         const DEFAULT_KEY_CAPACITY: usize = 3;
         const DEFAULT_VALUE_CAPACITY: usize = 3;
@@ -251,6 +251,7 @@ mod tests {
         let mut tracker = MmapMessageDependencyTracker::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test_smoke_deptrack.bin".into()),
+            10000
         )
         .unwrap();
         tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
@@ -264,6 +265,7 @@ mod tests {
         let mut tracker = MmapMessageDependencyTracker::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test_smoke_deptrack_many.bin".into()),
+            10000
         )
         .unwrap();
         let t = Instant::now();

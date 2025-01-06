@@ -19,7 +19,6 @@ use std::path::Path;
 #[repr(transparent)]
 struct FileOffset(u64);
 
-const BUFSTREAM_CAPACITY: usize = 1024 * 256;
 
 /// Size of header for each individual message in store
 const MSG_HEADER_SIZE: usize = size_of::<FileHeaderEntry>();
@@ -728,7 +727,6 @@ impl<M> OnDiskMessageStore<M> {
                 .min_by_key(|x| x.1)
                 .expect("There must always be some case present");
 
-            println!("now case: {:?}, id: {:?}", now_case, now_message_id);
 
             match now_case {
                 Cases::NextFromCurrent => {
@@ -788,7 +786,7 @@ impl<M> OnDiskMessageStore<M> {
                 }
                 Cases::NextFromMinne => {
                     *cur_index_entry = minne.pop_front().unwrap();
-                    println!("Assigning new item from input to pos {}", cur_index);
+                    //println!("Assigning new item from input to pos {}", cur_index);
                     cur_index += 1;
                 }
             }
@@ -931,7 +929,7 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
-    pub fn new<D: Disk>(mut d: &mut D, target: &Target) -> Result<OnDiskMessageStore<M>> {
+    pub fn new<D: Disk>(mut d: &mut D, target: &Target, max_file_size: usize) -> Result<OnDiskMessageStore<M>> {
         const {
             if size_of::<usize>() < size_of::<u32>() {
                 panic!(
@@ -944,7 +942,7 @@ impl<M> OnDiskMessageStore<M> {
             //let data_file_path = target.path().join(format!("data{}.bin", file_number));
 
             let mut data_file = d
-                .open_file(target, &format!("data{}", file_number), 0)
+                .open_file(target, &format!("data{}", file_number), 0, max_file_size)
                 .context("Opening data-file")?;
             /*OpenOptions::new()
             .read(true)
@@ -974,7 +972,7 @@ impl<M> OnDiskMessageStore<M> {
         let mut overwrite = target.overwrite();
 
         let mut index_file = d
-            .open_file(target, "index", size_of::<StoreHeader>())
+            .open_file(target, "index", size_of::<StoreHeader>(), max_file_size)
             .context("Opening index-file")?;
         /*let index_file = OpenOptions::new()
         .read(true)
@@ -1084,6 +1082,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("add_and_recover_messages.bin".into()),
+            10000
         )
         .unwrap();
 
@@ -1117,10 +1116,14 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("add_and_read_messages.bin".into()),
+            5000_000_000
         )
         .unwrap();
 
-        const COUNT: usize = 5; //1_000_000usize;
+        #[cfg(debug_assertions)]
+        const COUNT: usize = 10usize;
+        #[cfg(not(debug_assertions))]
+        const COUNT: usize = 1000usize;
 
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i| OnDiskMessage {
@@ -1129,12 +1132,16 @@ mod tests {
             data: vec![42u8; 4],
         });
 
+        let prev = Instant::now();
         store.append_many_sorted(msgs.into_iter()).unwrap();
+        println!("Add time: {:?}", prev.elapsed());
 
+        let prev = Instant::now();
         let msg = store
             .read_message(MessageId::new_debug(2))
             .unwrap()
             .unwrap();
+        println!("Read time: {:?}", prev.elapsed());
         assert_eq!(msg.id, 2);
         assert_eq!(msg.data, [42, 42, 42, 42]);
     }
@@ -1143,6 +1150,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("add_and_read_messages_twice.bin".into()),
+            10000,
         )
         .unwrap();
 
@@ -1176,6 +1184,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("add_and_delete_messages.bin".into()),
+            10000
         )
         .unwrap();
 
@@ -1211,6 +1220,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test_create_disk_store.bin".into()),
+            10000
         )
         .unwrap();
 
@@ -1241,6 +1251,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut InMemoryDisk::default(),
             &Target::CreateNewOrOverwrite("test_create_disk_store.bin".into()),
+            10000
         )
         .unwrap();
 

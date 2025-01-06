@@ -60,6 +60,7 @@ pub trait Disk {
         target: &Target,
         file: &str,
         min_size: usize,
+        max_size: usize,
     ) -> Result<DiskMmapHandleNew>;
 }
 /*pub trait DiskFile: Seek + Write + Read {
@@ -435,6 +436,7 @@ impl Disk for InMemoryDisk {
         target: &Target,
         file: &str,
         min_size: usize,
+        max_size: usize,
     ) -> anyhow::Result<DiskMmapHandleNew> {
         //std::fs::create_dir_all(&path).context("create database directory")?;
         let create = target.create();
@@ -449,7 +451,7 @@ impl Disk for InMemoryDisk {
                     bail!("file already exists");
                 }
             }
-            let data_len = 1024 * 1024;
+            let data_len = max_size;
             let new_layout = Layout::from_size_align(data_len as usize, 256).unwrap();
             let data_ptr = unsafe { std::alloc::alloc_zeroed(new_layout) };
 
@@ -584,6 +586,7 @@ impl Disk for StandardDisk {
         target: &Target,
         file: &str,
         min_size: usize,
+        max_size: usize,
     ) -> Result<DiskMmapHandleNew> {
         let path = target.path().join(format!("{}.bin", file));
         let mut overwrite = target.overwrite();
@@ -602,7 +605,7 @@ impl Disk for StandardDisk {
         .with_context(|| format!("opening file {:?}", path))?)*/
 
         //TODO: Make max-size configurable!
-        let mapping = DiskMmapHandleNew::new(target, file, min_size, 1024 * 1024 * 10)?;
+        let mapping = DiskMmapHandleNew::new(target, file, min_size, max_size)?;
 
         Ok(mapping)
     }

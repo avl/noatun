@@ -10,7 +10,7 @@ use crate::{
     Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, MessageStore, Object,
     Pointer, SequenceNr, Target, ThinPtr, get_boot_checksum, sha2,
 };
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use bumpalo::Bump;
 use bytemuck::{Pod, Zeroable, bytes_of, from_bytes, from_bytes_mut};
 use indexmap::{IndexMap, IndexSet};
@@ -26,7 +26,6 @@ use std::path::Path;
 use std::slice;
 use std::slice::SliceIndex;
 
-//const INITIAL_SIZE_BYTES: usize = 512 * 1024 + size_of::<MainDbHeader>();
 
 #[derive(Debug)]
 struct RegistrarTracker<T: MessageDependencyTracker> {
@@ -44,11 +43,11 @@ struct RegistrarTracker<T: MessageDependencyTracker> {
 mod message_dependency_tracker;
 
 impl<T: MessageDependencyTracker> RegistrarTracker<T> {
-    fn new<S: Disk>(disk: &mut S, path: &Target) -> Result<RegistrarTracker<T>> {
+    fn new<S: Disk>(disk: &mut S, path: &Target, max_size: usize) -> Result<RegistrarTracker<T>> {
         Ok(RegistrarTracker {
             uses: vec![],
             unused_messages: vec![],
-            message_dependencies: T::new(disk, path)?,
+            message_dependencies: T::new(disk, path, max_size)?,
         })
     }
 
@@ -146,20 +145,17 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
 
 const DEFAULT_SIZE: usize = 10000;
 
-const MAIN_DB_STATUS_CLEAN: u32 = 1;
-const MAIN_DB_STATUS_DIRTY: u32 = 0;
+const MAIN_DB_STATUS_CLEAN: u8 = 1;
+const MAIN_DB_STATUS_DIRTY: u8 = 0;
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(transparent)]
-pub struct MainDbStatus(u32);
+pub struct MainDbStatus(u8);
 
 /// The header of the main database
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct MainDbHeader {
-    // The place for the next write. This is the seek-position in the backing file/map.
-    // TODO: This is handled by the layer below now. Remove this comment and commtented out field
-    //pointer: u64,
     /// The sequence number of the next message that will be applied.
     /// For an empty database, this starts at 0. 0 is considered an 'invalid' sequence number,
     /// representing the state before the root message has been initially created.
@@ -167,6 +163,9 @@ pub struct MainDbHeader {
     /// Dummy padding, otherwise bytemuck derive fails (presumably because size of
     /// struct isn't sum of size of fields).
     status: MainDbStatus,
+    usize_size: u8,
+    padding1: u8,
+    padding2: u8,
 
     /// SHA2-checksum of output of `who -b`.
     /// This is used to detect if there's been a reboot (because of power outage, for example)
@@ -308,14 +307,15 @@ impl DatabaseContext {
         header.next_seqnr = SequenceNr::INVALID;
 
         header.status = MainDbStatus(MAIN_DB_STATUS_DIRTY);
+        header.usize_size = size_of::<usize>().try_into().expect("The size of an 'usize' must be less than 256 bytes");
 
         header.last_boot = get_boot_checksum();
         mmap.set_used_space(size_of::<MainDbHeader>());
     }
 
-    pub(crate) fn new<S: Disk>(s: &mut S, name: &Target) -> Result<Self> {
+    pub(crate) fn new<S: Disk>(s: &mut S, name: &Target, max_size: usize) -> Result<Self> {
         let mut main_db_file = s
-            .open_file(name, "maindb", 0)
+            .open_file(name, "maindb", 0, max_size)
             .context("opening main store file")?;
 
         let mut is_new = false;
@@ -331,12 +331,21 @@ impl DatabaseContext {
             Self::write_initial_header(&mut main_db_file);
         }
 
+        let header: &MainDbHeader =
+            unsafe { &*(main_db_file.map_const_ptr() as *const MainDbHeader) };
+        if <u8 as Into<usize>>::into(header.usize_size) != size_of::<usize>() {
+            bail!("The file on disk was created on a machine with usize = {} bytes, but this machine has usize = {} bytes",
+                header.usize_size, size_of::<usize>()
+            );
+        }
+
+
         Ok(Self {
             main_db_mmap: main_db_file,
             root_index: None,
-            undo_log: UndoLog::new(s, name)?,
+            undo_log: UndoLog::new(s, name, max_size)?,
             phantom: Default::default(),
-            registrar_tracker: RefCell::new(RegistrarTracker::new(s, name)?),
+            registrar_tracker: RefCell::new(RegistrarTracker::new(s, name, max_size)?),
         })
     }
 

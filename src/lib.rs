@@ -136,7 +136,7 @@ pub(crate) mod platform_specific {
                     libc::mmap(
                         null_mut(),
                         max_size,
-                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::PROT_NONE,
                         libc::MAP_ANONYMOUS
                             | libc::MAP_SHARED
                             | libc::MAP_NORESERVE
@@ -235,7 +235,8 @@ pub(crate) mod platform_specific {
                             | libc::MAP_ANONYMOUS
                             | libc::MAP_SHARED
                             | libc::MAP_NORESERVE
-                            | libc::MAP_HUGE_2MB,
+                            | libc::MAP_HUGE_2MB
+                            |libc::MAP_HUGETLB,
                         -1,
                         0,
                     )
@@ -282,8 +283,11 @@ pub(crate) mod platform_specific {
                 };
                 if ptr as usize == 0 || ptr as usize == usize::MAX {
                     bail!(
-                        "while remapping, mmap of file {} failed",
-                        filename_for_diagnostics
+                        "while remapping, mmap of file {} failed: {:?}",
+                        filename_for_diagnostics,
+                        std::io::Error::from_raw_os_error(
+                            std::io::Error::last_os_error().raw_os_error().unwrap()
+                        )
                     );
                 }
 
@@ -875,9 +879,9 @@ pub struct MessageStore<APP: Application> {
 }
 
 impl<APP: Application> MessageStore<APP> {
-    pub fn new<D: Disk>(s: &mut D, target: &Target) -> Result<MessageStore<APP>> {
+    pub fn new<D: Disk>(s: &mut D, target: &Target, max_size: usize) -> Result<MessageStore<APP>> {
         Ok(MessageStore {
-            messages: OnDiskMessageStore::new(s, target)?,
+            messages: OnDiskMessageStore::new(s, target, max_size)?,
             phantom_data: PhantomData,
         })
     }
@@ -1367,10 +1371,12 @@ impl<APP: Application> Database<APP> {
         Ok(())
     }
 
+    /// Note: You can set max_file_size to something very large, like 100_000_000_000
     pub fn create_new(
         path: impl AsRef<Path>,
         app: APP,
         overwrite_existing: bool,
+        max_file_size: usize,
     ) -> Result<Database<APP>> {
         Self::create(
             app,
@@ -1379,10 +1385,11 @@ impl<APP: Application> Database<APP> {
             } else {
                 Target::CreateNew(path.as_ref().to_path_buf())
             },
+            max_file_size,
         )
     }
-    pub fn open(path: impl AsRef<Path>, app: APP) -> Result<Database<APP>> {
-        Self::create(app, Target::OpenExisting(path.as_ref().to_path_buf()))
+    pub fn open(path: impl AsRef<Path>, app: APP, max_file_size: usize) -> Result<Database<APP>> {
+        Self::create(app, Target::OpenExisting(path.as_ref().to_path_buf()), max_file_size)
     }
 
     pub fn append_single(&mut self, message: APP::Message) -> Result<()> {
@@ -1400,12 +1407,12 @@ impl<APP: Application> Database<APP> {
 
     /// Create a database residing entirely in memory.
     /// This is mostly useful for tests
-    pub fn create_in_memory(mut app: APP) -> Result<Database<APP>> {
+    pub fn create_in_memory(mut app: APP, max_size: usize) -> Result<Database<APP>> {
         let mut disk = InMemoryDisk::default();
         let target = Target::CreateNew(PathBuf::default());
         let mut ctx =
-            DatabaseContext::new(&mut disk, &target).context("creating database in memory")?;
-        let mut message_store = MessageStore::new(&mut disk, &target)?;
+            DatabaseContext::new(&mut disk, &target, max_size).context("creating database in memory")?;
+        let mut message_store = MessageStore::new(&mut disk, &target, max_size)?;
         Ok(Database {
             context: ctx,
             app,
@@ -1413,7 +1420,7 @@ impl<APP: Application> Database<APP> {
         })
     }
 
-    fn create(mut app: APP, target: Target) -> Result<Database<APP>> {
+    fn create(mut app: APP, target: Target, max_file_size: usize) -> Result<Database<APP>> {
         if MULTI_INSTANCE_BLOCKER.get() {
             if !std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_ok() {
                 panic!(
@@ -1427,11 +1434,11 @@ impl<APP: Application> Database<APP> {
         MULTI_INSTANCE_BLOCKER.set(true);
 
         let mut ctx =
-            DatabaseContext::new(&mut StandardDisk, &target).context("opening database")?;
+            DatabaseContext::new(&mut StandardDisk, &target, max_file_size).context("opening database")?;
 
         let is_dirty = ctx.is_dirty();
 
-        let mut message_store = MessageStore::new(&mut StandardDisk, &target)?;
+        let mut message_store = MessageStore::new(&mut StandardDisk, &target, max_file_size)?;
         if is_dirty {
             Self::recover(&mut app, &mut ctx, &mut message_store)?;
             ctx.mark_clean()?;
@@ -1460,6 +1467,18 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::io::{Cursor, SeekFrom};
     use test::Bencher;
+
+    #[test]
+    fn test_mmap_big() {
+        let mut mmap = DiskMmapHandleNew::new(
+            &Target::CreateNewOrOverwrite("test/mmap_test_big".into()),
+            "mmap",
+            0,
+            1024 * 1024*1024,
+        );
+        //use std::io::Read;
+        //let _ =  std::io::stdin().read(&mut [0u8]).unwrap();
+    }
 
     #[test]
     fn test_mmap_helper() {
@@ -1616,7 +1635,7 @@ mod tests {
     #[test]
     fn test1() {
         let mut db: Database<CounterApplication> =
-            Database::create_new("test/test1.bin", CounterApplication, true).unwrap();
+            Database::create_new("test/test1.bin", CounterApplication, true, 1000).unwrap();
 
         let context = &db.context;
 
@@ -1676,7 +1695,7 @@ mod tests {
     #[test]
     fn test_msg_store_real() {
         let mut db: Database<CounterApplication> =
-            Database::create_new("test/msg_store.bin", CounterApplication, true).unwrap();
+            Database::create_new("test/msg_store.bin", CounterApplication, true, 10000).unwrap();
         //        let mut messages = MessageStore::new(StandardDisk, &Target::CreateNewOrOverwrite("test/msg_store.bin".into())).unwrap();
 
         db.append_single(CounterMessage {
@@ -1711,7 +1730,7 @@ mod tests {
     #[test]
     fn test_msg_store_inmem_miri() {
         let mut db: Database<CounterApplication> =
-            Database::create_in_memory(CounterApplication).unwrap();
+            Database::create_in_memory(CounterApplication, 10000).unwrap();
         //        let mut messages = MessageStore::new(StandardDisk, &Target::CreateNewOrOverwrite("test/msg_store.bin".into())).unwrap();
 
         db.append_single(CounterMessage {
@@ -1759,7 +1778,7 @@ mod tests {
         }
 
         let mut db: Database<HandleApplication> =
-            Database::create_new("test/test_handle.bin", HandleApplication, true).unwrap();
+            Database::create_new("test/test_handle.bin", HandleApplication, true, 1000).unwrap();
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
@@ -1782,7 +1801,7 @@ mod tests {
         }
 
         let mut db: Database<CounterVecApplication> =
-            Database::create_new("test/test_vec0", CounterVecApplication, true).unwrap();
+            Database::create_new("test/test_vec0", CounterVecApplication, true, 10000).unwrap();
         db.with_root_mut(|counter_vec, context, _| {
             assert_eq!(counter_vec.len(context), 0);
 
@@ -1835,7 +1854,7 @@ mod tests {
         }
 
         let mut db: Database<CounterVecApplication> =
-            Database::create_new("test/vec_undo", CounterVecApplication, true).unwrap();
+            Database::create_new("test/vec_undo", CounterVecApplication, true, 10000).unwrap();
 
         {
             db.with_root_mut(|counter_vec, context, _| {

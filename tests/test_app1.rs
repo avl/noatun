@@ -88,6 +88,7 @@ fn test_counter_object() {
         "test/integration/test_counter_object.bin",
         CounterApplication,
         true,
+        10_000
     )
     .unwrap();
     db.with_root_mut(|counter, context, _| {
@@ -107,6 +108,7 @@ fn test_counter_mayhem() {
         "test/integration/test_counter_mayhem.bin",
         CounterApplication,
         true,
+        10_000
     )
     .unwrap();
     db1.with_root_mut(|_counter1, context1, _| {
@@ -118,6 +120,7 @@ fn test_counter_mayhem() {
         "test/integration/test_counter_mayhem2.bin",
         CounterApplication,
         true,
+        10_000
     )
     .unwrap();
 
