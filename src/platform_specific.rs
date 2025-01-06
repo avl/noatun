@@ -1,0 +1,254 @@
+#[cfg(unix)]
+pub(crate) use unix::FileMapping;
+#[cfg(unix)]
+pub(crate) use unix::get_boot_time;
+
+#[cfg(unix)]
+mod unix {
+    use anyhow::{Context, Result, anyhow, bail};
+    use fs2::FileExt;
+    use std::cell::Cell;
+    use std::cmp::max;
+    use std::ffi::c_void;
+    use std::fs::File;
+    use std::os::fd::{AsRawFd, RawFd};
+    use std::process::Command;
+    use std::ptr::{null, null_mut};
+    use std::sync::OnceLock;
+    use crate::disk_access::FileMappingTrait;
+
+    #[cfg(not(miri))]
+    pub(crate) fn get_boot_time() -> String {
+        let output = Command::new("who")
+            .arg("-b")
+            .output()
+            .expect("failed to execute 'who -b' to determine boot time");
+        if !output.status.success() {
+            panic!("'who -b' command failed. This command is needed to determine boot time.");
+        }
+
+        let result = String::from_utf8_lossy(&output.stdout).to_string();
+        if result.is_empty() {
+            panic!("'who -b' command returned an empty string");
+        }
+        if !result.contains("system boot") {
+            panic!("'who -b' command output did not contain the string 'system boot'");
+        }
+        result
+    }
+    #[cfg(miri)]
+    pub(crate) fn get_boot_time() -> String {
+        "system boot miri".to_string()
+    }
+
+    pub(crate) struct FileMapping {
+        file: File,
+        base_ptr: *mut u8,
+        file_name: String,
+        committed_size: Cell<usize>,
+        total_size: usize,
+    }
+
+    impl Drop for FileMapping {
+        fn drop(&mut self) {
+            unsafe {
+                if libc::munmap(self.base_ptr as *mut _, self.total_size) != 0 {
+                    eprintln!("munmap failed");
+                }
+            }
+        }
+    }
+
+    static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
+
+    impl FileMapping {
+        pub fn page_size() -> usize {
+            (*PAGE_SIZE.get_or_init(|| unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) as usize }))
+                .max(2usize * 1024 * 1024)
+        }
+        pub(crate) fn committed_size(&self) -> usize {
+            self.committed_size.get()
+        }
+        pub fn new(
+            file: File,
+            min_initial_size: usize,
+            max_size: usize,
+            filename_for_diagnostics: &str,
+        ) -> Result<FileMapping> {
+            if max_size == 0 {
+                bail!("max_size cannot be 0");
+            }
+            let actual_page_size = Self::page_size();
+            let actual_size = max_size.next_multiple_of(actual_page_size);
+
+            assert_eq!(actual_size % actual_page_size, 0);
+
+            let ptr = unsafe {
+                libc::mmap(
+                    null_mut(),
+                    max_size,
+                    libc::PROT_NONE,
+                    libc::MAP_ANONYMOUS
+                        | libc::MAP_SHARED
+                        | libc::MAP_NORESERVE
+                        | libc::MAP_HUGE_2MB,
+                    -1,
+                    0,
+                )
+            };
+
+            if ptr as usize == 0 || ptr as usize == usize::MAX {
+                bail!(
+                    "mmap of file {} failed: {:x?}",
+                    filename_for_diagnostics,
+                    std::io::Error::from_raw_os_error(
+                        std::io::Error::last_os_error().raw_os_error().unwrap()
+                    )
+                );
+            }
+
+            let mut temp = FileMapping {
+                file: file,
+                base_ptr: ptr as *mut u8,
+                file_name: filename_for_diagnostics.to_string(),
+                committed_size: Cell::new(0),
+                total_size: actual_size,
+            };
+            temp.grow_committed_mapping(min_initial_size, filename_for_diagnostics)?;
+            Ok(temp)
+        }
+    }
+
+    impl FileMappingTrait for FileMapping {
+        fn page_size(&self) -> usize {
+            Self::page_size()
+        }
+        fn flush_all(&self) -> Result<()> {
+            self.flush_range(0, self.committed_size.get())
+        }
+        fn flush_range(&self, start: usize, len: usize) -> Result<()> {
+            unsafe {
+                let start_rounded_down = if start % Self::page_size() == 0 {
+                    start
+                } else {
+                    start.next_multiple_of(Self::page_size()) - Self::page_size()
+                };
+                let rounding_delta = start - start_rounded_down;
+                if libc::msync(
+                    self.base_ptr.wrapping_add(start_rounded_down) as *mut _,
+                    len + rounding_delta,
+                    libc::MS_SYNC,
+                ) != 0
+                {
+                    bail!(
+                        "msync {}..{} of file {} failed: {:x?}",
+                        start,
+                        start + len,
+                        self.file_name,
+                        std::io::Error::from_raw_os_error(
+                            std::io::Error::last_os_error().raw_os_error().unwrap()
+                        )
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        fn ptr(&self) -> *mut u8 {
+            assert!(!self.base_ptr.is_null());
+            self.base_ptr
+        }
+
+        /// Returns the usable size of this file mapping
+        #[inline(always)]
+        fn len(&self) -> usize {
+            self.committed_size.get()
+        }
+
+        fn maximum_size(&self) -> usize {
+            self.total_size
+        }
+
+        fn shrink_committed_mapping(&self, new_size: usize) -> Result<()> {
+            assert_eq!(new_size % self.page_size(), 0);
+            if new_size >= self.committed_size.get() {
+                return Ok(());
+            }
+            println!("Shrinking to {}", new_size);
+            let prev_size = self.committed_size.get();
+            let shrink_by = prev_size - new_size;
+            let ptr = unsafe {
+                libc::mmap(
+                    self.base_ptr.wrapping_add(new_size) as *mut _,
+                    shrink_by,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_FIXED
+                        | libc::MAP_ANONYMOUS
+                        | libc::MAP_SHARED
+                        | libc::MAP_NORESERVE
+                        | libc::MAP_HUGE_2MB
+                        |libc::MAP_HUGETLB,
+                    -1,
+                    0,
+                )
+            };
+            if ptr as usize == 0 || ptr as usize == usize::MAX {
+                bail!("while remapping, mmap failed");
+            }
+
+            self.file.set_len(new_size as u64)?;
+            self.file.sync_all().context("fsync")?;
+
+            Ok(())
+        }
+
+        fn grow_committed_mapping(
+            &self,
+            new_size: usize,
+            filename_for_diagnostics: &str,
+        ) -> Result<()> {
+            assert_eq!(new_size % self.page_size(), 0);
+            if new_size <= self.committed_size.get() {
+                return Ok(());
+            }
+            if new_size > self.total_size {
+                bail!(
+                    "Attempt to grow file mapping size beyond configured maximum size: {} (new size: {})",
+                    self.total_size,
+                    new_size
+                );
+            }
+
+            self.file.set_len(new_size as u64)?;
+            self.file.sync_all().context("fsync")?;
+
+            let ptr = unsafe {
+                libc::mmap(
+                    self.base_ptr as *mut _,
+                    new_size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_FIXED | libc::MAP_SHARED | libc::MAP_HUGE_2MB,
+                    self.file.as_raw_fd(),
+                    0,
+                )
+            };
+            if ptr as usize == 0 || ptr as usize == usize::MAX {
+                bail!(
+                    "while remapping, mmap of file {} failed: {:?}",
+                    filename_for_diagnostics,
+                    std::io::Error::from_raw_os_error(
+                        std::io::Error::last_os_error().raw_os_error().unwrap()
+                    )
+                );
+            }
+
+            self.committed_size.set(new_size);
+
+            Ok(())
+        }
+
+        fn try_lock_exclusive(&self) -> Result<()> {
+            Ok(self.file.try_lock_exclusive()?)
+        }
+    }
+}

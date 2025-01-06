@@ -1,5 +1,5 @@
 use crate::disk_abstraction::Disk;
-use crate::growable_file_mapping::DiskMmapHandleNew;
+use crate::disk_access::DiskAccessor;
 use crate::{SequenceNr, Target};
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
@@ -42,11 +42,11 @@ impl MessageDependencyTracker for IndexMap<SequenceNr, Vec<SequenceNr>> {
 // Mapping from observee to observers.
 pub struct MmapMessageDependencyTracker {
     /// the sequencenr that has been observed
-    keys: DiskMmapHandleNew,
+    keys: DiskAccessor,
     key_capacity: usize,
     /// the sequence nr that have observed each key. I.e, the messages that
     /// are dependent upon the key.
-    vals: DiskMmapHandleNew,
+    vals: DiskAccessor,
     value_capacity: usize,
 }
 
@@ -179,11 +179,11 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
 }
 impl MmapMessageDependencyTracker {
     #[inline]
-    fn get_count(mmap: &DiskMmapHandleNew) -> usize {
+    fn get_count(mmap: &DiskAccessor) -> usize {
         *bytemuck::from_bytes::<u64>(&mmap.map()[0..size_of::<u64>()]) as usize
     }
     #[inline]
-    fn access<T: Pod>(mmap: &mut DiskMmapHandleNew) -> (&mut u64, &mut [T]) {
+    fn access<T: Pod>(mmap: &mut DiskAccessor) -> (&mut u64, &mut [T]) {
         let slice_bytes: &mut [u8] = mmap.map_mut();
 
         println!(
@@ -239,8 +239,8 @@ impl MmapMessageDependencyTracker {
 }
 #[cfg(test)]
 mod tests {
-    use crate::buffer::message_dependency_tracker::MessageDependencyTracker;
-    use crate::buffer::message_dependency_tracker::MmapMessageDependencyTracker;
+    use crate::projection_store::message_dependency_tracker::MessageDependencyTracker;
+    use crate::projection_store::message_dependency_tracker::MmapMessageDependencyTracker;
     use crate::disk_abstraction::StandardDisk;
     use crate::{SequenceNr, Target};
     use std::path::Path;

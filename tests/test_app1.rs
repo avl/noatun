@@ -1,9 +1,10 @@
 use bytemuck::{Pod, Zeroable};
 use noatun::{
-    Application, Database, DatabaseCell, DatabaseContext, Message, MessageId, Object, SequenceNr,
+    Application, DatabaseCell, DatabaseContext, Message, MessageId, Object, SequenceNr,
     ThinPtr,
 };
 use std::io::Write;
+use noatun::database::Database;
 
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]

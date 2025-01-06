@@ -1,14 +1,14 @@
-use crate::buffer::message_dependency_tracker::{
+use crate::projection_store::message_dependency_tracker::{
     MessageDependencyTracker, MmapMessageDependencyTracker,
 };
 use crate::disk_abstraction::{Disk, StandardDisk};
-use crate::growable_file_mapping::DiskMmapHandleNew;
-use crate::on_disk_message_store::OnDiskMessageStore;
+use crate::disk_access::DiskAccessor;
+use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 use crate::{
-    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, MessageStore, Object,
-    Pointer, SequenceNr, Target, ThinPtr, get_boot_checksum, sha2,
+    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId,  Object,
+    Pointer, SequenceNr, Target, ThinPtr,
 };
 use anyhow::{bail, Context, Result};
 use bumpalo::Bump;
@@ -25,7 +25,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::slice;
 use std::slice::SliceIndex;
-
+use crate::boot_checksum::get_boot_checksum;
 
 #[derive(Debug)]
 struct RegistrarTracker<T: MessageDependencyTracker> {
@@ -172,11 +172,10 @@ pub struct MainDbHeader {
     /// since the last access. This only affects recovery after the db has been left in a
     /// dirty state.
     last_boot: [u8; 16],
-    //TODO: Record size of usize, so we can detect if 64-bit db is opened by 32-bit client
 }
 
 pub struct DatabaseContext {
-    main_db_mmap: DiskMmapHandleNew,
+    main_db_mmap: DiskAccessor,
     //pointer: Cell<usize>,
     root_index: Option<GenPtr>,
     undo_log: UndoLog,
@@ -227,7 +226,9 @@ impl DatabaseContext {
         header.next_seqnr
     }
 
-    // TODO: Fix naming. We call this 'pointer' here, but 'used_space' in mmap
+    // We call this 'pointer' here, but 'used_space' in mmap.
+    // This is because the write-pointer for new data in the DatabaseContext is at the
+    // end of the memory mapped file - which is equal to 'used_space'.
     #[inline(always)]
     fn pointer(&self) -> usize {
         self.main_db_mmap.used_space()
@@ -246,18 +247,18 @@ impl DatabaseContext {
         header.next_seqnr = new_value;
     }
     #[inline(always)]
-    fn set_pointer_of(main_db_mmap: &DiskMmapHandleNew, new_value: usize) {
+    fn set_pointer_of(main_db_mmap: &DiskAccessor, new_value: usize) {
         /*let header: &mut MainDbHeader =
             unsafe { &mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
         header.pointer = new_value as u64;*/
         main_db_mmap.set_used_space(new_value);
     }
     #[inline(always)]
-    fn pointer_of(main_db_mmap: &DiskMmapHandleNew) -> usize {
+    fn pointer_of(main_db_mmap: &DiskAccessor) -> usize {
         main_db_mmap.used_space()
     }
     #[inline(always)]
-    fn raw_set_next_seqnr_of(main_db_mmap: &DiskMmapHandleNew, new_value: SequenceNr) {
+    fn raw_set_next_seqnr_of(main_db_mmap: &DiskAccessor, new_value: SequenceNr) {
         let header: &mut MainDbHeader =
             unsafe { &mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
         header.next_seqnr = new_value;
@@ -301,7 +302,7 @@ impl DatabaseContext {
         Ok(())
     }
 
-    fn write_initial_header(mmap: &mut DiskMmapHandleNew) {
+    fn write_initial_header(mmap: &mut DiskAccessor) {
         let header: &mut MainDbHeader =
             bytemuck::from_bytes_mut(&mut mmap.map_mut()[0..size_of::<MainDbHeader>()]);
         header.next_seqnr = SequenceNr::INVALID;
@@ -480,12 +481,6 @@ impl DatabaseContext {
     pub fn allocate_pod<T: Pod>(&self) -> &mut T {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { &mut *(bytes as *mut T) }
-    }
-
-    fn reallocate(&self, new_size: usize) {
-        todo!()
-        /*self.main_db_file.set_len(new_size as u64).expect("Failed to expand db disk file - out of disk space?");
-        self.main_db_mmap = self.main_db_file.mmap().expect("Failed to mmap disk file");*/
     }
 
     pub fn allocate_raw(&self, size: usize, align: usize) -> *mut u8 {

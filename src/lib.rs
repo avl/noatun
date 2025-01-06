@@ -5,10 +5,10 @@
 extern crate test;
 
 use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
-use crate::on_disk_message_store::OnDiskMessageStore;
+use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::{FileMapping, get_boot_time};
 use anyhow::{Context, Result, bail};
-pub use buffer::DatabaseContext;
+pub use projection_store::DatabaseContext;
 use bumpalo::Bump;
 use bytemuck::{Pod, Zeroable};
 use fs2::FileExt;
@@ -17,8 +17,6 @@ use memmap2::MmapMut;
 use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
 use serde_derive::{Deserialize, Serialize};
-use sha2::digest::FixedOutput;
-use sha2::{Digest, Sha256};
 use std::cell::{Cell, OnceCell};
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
@@ -34,692 +32,25 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use crate::projector::Projector;
+use crate::sha2_helper::sha2;
+pub use database::Database;
 
-pub(crate) mod backing_store;
 
-pub(crate) mod buffer;
+mod projection_store;
 mod disk_abstraction;
-mod on_disk_message_store;
-pub(crate) mod undo_store;
+mod message_store;
+mod undo_store;
 
 struct MessageComponent<const ID: u32, T> {
     value: Option<T>,
 }
 
-pub(crate) mod platform_specific {
-
-    #[cfg(unix)]
-    pub(crate) use unix::FileMapping;
-    #[cfg(unix)]
-    pub(crate) use unix::get_boot_time;
-
-    #[cfg(unix)]
-    mod unix {
-        use crate::FileMappingTrait;
-        use anyhow::{Context, Result, anyhow, bail};
-        use fs2::FileExt;
-        use std::cell::Cell;
-        use std::cmp::max;
-        use std::ffi::c_void;
-        use std::fs::File;
-        use std::os::fd::{AsRawFd, RawFd};
-        use std::process::Command;
-        use std::ptr::{null, null_mut};
-        use std::sync::OnceLock;
-
-        #[cfg(not(miri))]
-        pub(crate) fn get_boot_time() -> String {
-            let output = Command::new("who")
-                .arg("-b")
-                .output()
-                .expect("failed to execute 'who -b' to determine boot time");
-            if !output.status.success() {
-                panic!("'who -b' command failed. This command is needed to determine boot time.");
-            }
-
-            let result = String::from_utf8_lossy(&output.stdout).to_string();
-            if result.is_empty() {
-                panic!("'who -b' command returned an empty string");
-            }
-            if !result.contains("system boot") {
-                panic!("'who -b' command output did not contain the string 'system boot'");
-            }
-            result
-        }
-        #[cfg(miri)]
-        pub(crate) fn get_boot_time() -> String {
-            "system boot miri".to_string()
-        }
-
-        pub(crate) struct FileMapping {
-            file: File,
-            base_ptr: *mut u8,
-            committed_size: Cell<usize>,
-            total_size: usize,
-        }
-
-        impl Drop for FileMapping {
-            fn drop(&mut self) {
-                unsafe {
-                    if libc::munmap(self.base_ptr as *mut _, self.total_size) != 0 {
-                        eprintln!("munmap failed");
-                    }
-                }
-            }
-        }
-
-        static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
-
-        impl FileMapping {
-            pub fn page_size() -> usize {
-                (*PAGE_SIZE.get_or_init(|| unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) as usize }))
-                    .max(2usize * 1024 * 1024)
-            }
-            pub(crate) fn committed_size(&self) -> usize {
-                self.committed_size.get()
-            }
-            pub fn new(
-                file: File,
-                min_initial_size: usize,
-                max_size: usize,
-                filename_for_diagnostics: &str,
-            ) -> Result<FileMapping> {
-                if max_size == 0 {
-                    bail!("max_size cannot be 0");
-                }
-                let actual_page_size = Self::page_size();
-                let actual_size = max_size.next_multiple_of(actual_page_size);
-
-                assert_eq!(actual_size % actual_page_size, 0);
-
-                let ptr = unsafe {
-                    libc::mmap(
-                        null_mut(),
-                        max_size,
-                        libc::PROT_NONE,
-                        libc::MAP_ANONYMOUS
-                            | libc::MAP_SHARED
-                            | libc::MAP_NORESERVE
-                            | libc::MAP_HUGE_2MB,
-                        -1,
-                        0,
-                    )
-                };
-
-                if ptr as usize == 0 || ptr as usize == usize::MAX {
-                    bail!(
-                        "mmap of file {} failed: {:x?}",
-                        filename_for_diagnostics,
-                        std::io::Error::from_raw_os_error(
-                            std::io::Error::last_os_error().raw_os_error().unwrap()
-                        )
-                    );
-                }
-
-                let mut temp = FileMapping {
-                    file: file,
-                    base_ptr: ptr as *mut u8,
-                    committed_size: Cell::new(0),
-                    total_size: actual_size,
-                };
-                temp.grow_committed_mapping(min_initial_size, filename_for_diagnostics)?;
-                Ok(temp)
-            }
-        }
-
-        impl FileMappingTrait for FileMapping {
-            fn page_size(&self) -> usize {
-                Self::page_size()
-            }
-            fn flush_all(&self) -> Result<()> {
-                self.flush_range(0, self.committed_size.get())
-            }
-            fn flush_range(&self, start: usize, len: usize) -> Result<()> {
-                unsafe {
-                    let start_rounded_down = if start % Self::page_size() == 0 {
-                        start
-                    } else {
-                        start.next_multiple_of(Self::page_size()) - Self::page_size()
-                    };
-                    let rounding_delta = start - start_rounded_down;
-                    if libc::msync(
-                        self.base_ptr.wrapping_add(start_rounded_down) as *mut _,
-                        len + rounding_delta,
-                        libc::MS_SYNC,
-                    ) != 0
-                    {
-                        // TODO: Provide filename here?
-                        bail!(
-                            "msync {}..{} of file {} failed: {:x?}",
-                            start,
-                            start + len,
-                            "?",
-                            std::io::Error::from_raw_os_error(
-                                std::io::Error::last_os_error().raw_os_error().unwrap()
-                            )
-                        );
-                    }
-                }
-                Ok(())
-            }
-
-            fn ptr(&self) -> *mut u8 {
-                assert!(!self.base_ptr.is_null());
-                self.base_ptr
-            }
-
-            /// Returns the usable size of this file mapping
-            #[inline(always)]
-            fn len(&self) -> usize {
-                self.committed_size.get()
-            }
-
-            fn maximum_size(&self) -> usize {
-                self.total_size
-            }
-
-            fn shrink_committed_mapping(&self, new_size: usize) -> Result<()> {
-                assert_eq!(new_size % self.page_size(), 0);
-                if new_size >= self.committed_size.get() {
-                    return Ok(());
-                }
-                println!("Shrinking to {}", new_size);
-                let prev_size = self.committed_size.get();
-                let shrink_by = prev_size - new_size;
-                let ptr = unsafe {
-                    libc::mmap(
-                        self.base_ptr.wrapping_add(new_size) as *mut _,
-                        shrink_by,
-                        libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_FIXED
-                            | libc::MAP_ANONYMOUS
-                            | libc::MAP_SHARED
-                            | libc::MAP_NORESERVE
-                            | libc::MAP_HUGE_2MB
-                            |libc::MAP_HUGETLB,
-                        -1,
-                        0,
-                    )
-                };
-                if ptr as usize == 0 || ptr as usize == usize::MAX {
-                    bail!("while remapping, mmap failed");
-                }
-
-                self.file.set_len(new_size as u64)?;
-                self.file.sync_all().context("fsync")?;
-
-                Ok(())
-            }
-
-            fn grow_committed_mapping(
-                &self,
-                new_size: usize,
-                filename_for_diagnostics: &str,
-            ) -> Result<()> {
-                assert_eq!(new_size % self.page_size(), 0);
-                if new_size <= self.committed_size.get() {
-                    return Ok(());
-                }
-                if new_size > self.total_size {
-                    bail!(
-                        "Attempt to grow file mapping size beyond configured maximum size: {} (new size: {})",
-                        self.total_size,
-                        new_size
-                    );
-                }
-
-                self.file.set_len(new_size as u64)?;
-                self.file.sync_all().context("fsync")?;
-
-                let ptr = unsafe {
-                    libc::mmap(
-                        self.base_ptr as *mut _,
-                        new_size,
-                        libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_FIXED | libc::MAP_SHARED | libc::MAP_HUGE_2MB,
-                        self.file.as_raw_fd(),
-                        0,
-                    )
-                };
-                if ptr as usize == 0 || ptr as usize == usize::MAX {
-                    bail!(
-                        "while remapping, mmap of file {} failed: {:?}",
-                        filename_for_diagnostics,
-                        std::io::Error::from_raw_os_error(
-                            std::io::Error::last_os_error().raw_os_error().unwrap()
-                        )
-                    );
-                }
-
-                self.committed_size.set(new_size);
-
-                Ok(())
-            }
-
-            fn try_lock_exclusive(&self) -> Result<()> {
-                Ok(self.file.try_lock_exclusive()?)
-            }
-        }
-    }
-}
-
-//TODO: Rename this
-pub trait FileMappingTrait {
-    fn page_size(&self) -> usize;
-    fn flush_all(&self) -> Result<()>;
-    fn flush_range(&self, start: usize, len: usize) -> Result<()>;
-
-    fn ptr(&self) -> *mut u8;
-
-    /// Returns the usable size of this file mapping.
-    /// This should be the size of the file on disk.
-    fn len(&self) -> usize;
-
-    fn maximum_size(&self) -> usize;
-
-    fn shrink_committed_mapping(&self, new_size: usize) -> Result<()>;
-
-    fn grow_committed_mapping(&self, new_size: usize, filename_for_diagnostics: &str)
-    -> Result<()>;
-
-    fn try_lock_exclusive(&self) -> Result<()>;
-}
-
-pub(crate) mod growable_file_mapping {
-    use crate::disk_abstraction::DiskMmapHandleLegacy;
-    use crate::platform_specific::FileMapping;
-    use crate::{FileMappingTrait, Target};
-    use anyhow::{Context, Result, bail};
-    use std::cell::Cell;
-    use std::fmt::{Debug, Formatter};
-    use std::fs::{File, OpenOptions, create_dir_all};
-    use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
-    use std::os::fd::AsRawFd;
-    use std::ptr::slice_from_raw_parts_mut;
-    use std::slice;
-    /*pub trait GrowableFileMapping {
-        //fn new(target: &Target, file: &str, initial_size: usize, max_size: usize) -> Result<Self> where Self:Sized;
-        fn grow(&self, new_size: usize) -> Result<()>;
-
-        fn get_ptr(&self) -> *mut u8;
-        /// Actual count of bytes that may be accessed through `get_ptr`
-        fn usable_len(&self) -> usize;
-
-
-
-        fn flush_range(&self, offset: usize, len: usize) -> Result<()>;
-        fn flush_all(&self) -> Result<()>;
-
-        /// Truncate the file to the given size.
-        /// This does nothing if the file is already this size or smaller.
-        fn truncate(&self, len: usize) -> Result<()>;
-
-    }*/
-
-    //TODO: Rename
-    // TODO: This type should probably not be public
-    pub struct DiskMmapHandleNew {
-        mapping: Box<dyn FileMappingTrait>,
-        /// This is the start of the memory-map.
-        /// I.e, this points at the header.
-        /// The actual contents start after the header.
-        ptr: *mut u8,
-        /// This is the size of the memory mapping. I.e, this value includes the size
-        /// of the header. To get the payload/client byte count, subtract HEADER_SIZE
-        committed_size: Cell<usize>,
-        seek_pos: usize,
-    }
-
-    impl Debug for DiskMmapHandleNew {
-        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            write!(f, "DiskMmapHandleNew({})", self.committed_size.get())
-        }
-    }
-
-    impl Seek for DiskMmapHandleNew {
-        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-            match pos {
-                SeekFrom::Start(s) => {
-                    self.seek_pos = s.try_into().map_err(|_| {
-                        std::io::Error::new(ErrorKind::InvalidInput, "invalid seek position")
-                    })?;
-                }
-                SeekFrom::End(e) => {
-                    if e == 0 {
-                        self.seek_pos = self.used_space();
-                    } else {
-                        self.seek_pos = self
-                            .used_space()
-                            .try_into()
-                            .ok()
-                            .and_then(|x: i64| x.checked_sub(e))
-                            .and_then(|x| x.try_into().ok())
-                            .ok_or_else(|| {
-                                std::io::Error::new(
-                                    ErrorKind::InvalidInput,
-                                    "invalid seek position",
-                                )
-                            })?;
-                    }
-                }
-                SeekFrom::Current(delta) => {
-                    self.seek_pos = self
-                        .seek_pos
-                        .try_into()
-                        .ok()
-                        .and_then(|x: i64| x.checked_add(delta))
-                        .and_then(|x| x.try_into().ok())
-                        .ok_or_else(|| {
-                            std::io::Error::new(ErrorKind::InvalidInput, "invalid seek position")
-                        })?;
-                }
-            }
-            Ok(self.seek_pos as u64)
-        }
-    }
-
-    impl Read for DiskMmapHandleNew {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            if self.seek_pos == self.used_space() {
-                return Ok(0);
-            }
-            let getnow = (self.used_space() - self.seek_pos).min(buf.len());
-            let m = self.map();
-            buf[0..getnow].copy_from_slice(&m[self.seek_pos..self.seek_pos + getnow]);
-            self.seek_pos += getnow;
-            Ok(getnow)
-        }
-    }
-    impl Write for DiskMmapHandleNew {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            if self.seek_pos + buf.len() > self.used_space() {
-                self.grow(self.seek_pos + buf.len())
-                    .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
-            }
-
-            let dest = unsafe {
-                slice::from_raw_parts_mut(
-                    self.ptr
-                        .wrapping_add(Self::HEADER_SIZE)
-                        .wrapping_add(self.seek_pos),
-                    buf.len(),
-                )
-            };
-            dest.copy_from_slice(buf);
-            self.seek_pos += buf.len();
-
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl DiskMmapHandleNew {
-        /// Use a header size that ensures start of payload is at least 16 byte aligned
-        /// 16 bytes is enough for any type used by noatun itself. Client data can be
-        /// aligned at even larger values, and this is supported, byt will waste some space.
-        const HEADER_SIZE: usize = 16;
-
-        #[inline(always)]
-        pub(crate) fn used_space(&self) -> usize {
-            unsafe { *(self.ptr as *const usize) }
-        }
-
-        /// Update the used size. Note: This must not exceed
-        /// committed_len
-        pub(crate) fn set_used_space(&self, new_value: usize) {
-            assert!(new_value <= self.committed_size.get());
-            *self.used_space_mut() = new_value;
-        }
-
-        fn used_space_mut(&self) -> &mut usize {
-            unsafe { &mut *(self.mapping.ptr() as *mut usize) }
-        }
-        #[inline(always)]
-        pub(crate) fn free_space(&self) -> usize {
-            self.committed_size.get() - Self::HEADER_SIZE - self.used_space()
-        }
-
-        pub(crate) fn map_const_ptr(&self) -> *const u8 {
-            self.ptr.wrapping_add(Self::HEADER_SIZE)
-        }
-        pub(crate) fn map_mut_ptr(&self) -> *mut u8 {
-            self.ptr.wrapping_add(Self::HEADER_SIZE)
-        }
-
-        pub(crate) fn map(&self) -> &[u8] {
-            let used = self.used_space();
-            unsafe { slice::from_raw_parts(self.ptr.wrapping_add(Self::HEADER_SIZE), used) }
-        }
-        pub(crate) fn map_mut(&mut self) -> &mut [u8] {
-            let used = self.used_space();
-            unsafe { slice::from_raw_parts_mut(self.ptr.wrapping_add(Self::HEADER_SIZE), used) }
-        }
-
-        pub(crate) fn from_mapping(mapping: impl FileMappingTrait + 'static) -> Self {
-            Self {
-                ptr: mapping.ptr(),
-                mapping: Box::new(mapping),
-                committed_size: Cell::new(0),
-                seek_pos: 0,
-            }
-        }
-
-        pub(crate) fn new(
-            target: &Target,
-            file: &str,
-            initial_size: usize,
-            max_size: usize,
-        ) -> Result<Self> {
-            if max_size == 0 {
-                bail!("max_size must not be 0");
-            }
-
-            if initial_size > max_size {
-                bail!(
-                    "initial_size ({}) must not be greater than max_size ({})",
-                    initial_size,
-                    max_size
-                );
-            }
-
-            create_dir_all(target.path()).context("creating directory for data file")?;
-
-            let path = target.path().join(format!("{}.bin", file));
-            let mut overwrite = target.overwrite();
-            let mut create = target.create();
-
-            if !std::fs::metadata(&path).is_ok() {
-                overwrite = true;
-            }
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(create)
-                .truncate(overwrite)
-                .open(&path)
-                .with_context(|| format!("opening file {:?}", path))?;
-
-            let page_size = FileMapping::page_size();
-
-            let mut len = File::metadata(&file)?.len() as usize;
-            let new_used_size = len.saturating_sub(Self::HEADER_SIZE).max(initial_size);
-            if len < initial_size + Self::HEADER_SIZE || len % page_size != 0 {
-                len = len
-                    .max(initial_size + Self::HEADER_SIZE)
-                    .next_multiple_of(page_size);
-                file.set_len((len) as u64)
-                    .with_context(|| format!("Resizing file {:?} to {} bytes", &path, len))?;
-                file.sync_all().context("fsync")?;
-            }
-
-            let filename = path.to_string_lossy();
-            let mapping = FileMapping::new(
-                file,
-                len,
-                (max_size + Self::HEADER_SIZE).next_multiple_of(page_size),
-                &filename,
-            )
-            .with_context(|| format!("failed to memory map file {}", filename))?;
-
-            let mut temp = DiskMmapHandleNew {
-                committed_size: Cell::new(mapping.committed_size()),
-                ptr: mapping.ptr(),
-                mapping: Box::new(mapping),
-                seek_pos: 0,
-            };
-            temp.set_used_space(new_used_size);
-            Ok(temp)
-        }
-    }
-
-    impl DiskMmapHandleNew {
-        pub fn try_lock_exclusive(&self) -> Result<()> {
-            self.mapping.try_lock_exclusive()
-        }
-        pub fn write_zeroes(&mut self, bytes: usize) -> Result<()> {
-            if self.seek_pos + bytes > self.used_space() {
-                self.grow(self.seek_pos + bytes);
-            }
-
-            unsafe {
-                slice::from_raw_parts_mut(
-                    self.ptr
-                        .wrapping_add(self.seek_pos as usize)
-                        .wrapping_add(Self::HEADER_SIZE),
-                    bytes,
-                )
-                .fill(0)
-            }
-            self.seek_pos += bytes;
-            Ok(())
-        }
-
-        pub fn copy_to(&mut self, bytes: usize, target: &mut DiskMmapHandleNew) -> Result<()> {
-            if self.seek_pos + bytes > self.used_space() {
-                bail!("requested number of bytes not available in file");
-            }
-            let src_buf = &self.map()[self.seek_pos..self.seek_pos + bytes];
-
-            if target.seek_pos + bytes > target.used_space() {
-                target.grow((target.seek_pos + bytes))?; //TODO: Use checked arithmetic
-            }
-            let target_seek_pos = target.seek_pos;
-            let dst_buf = &mut target.map_mut()[target_seek_pos..target_seek_pos + bytes];
-
-            dst_buf.copy_from_slice(src_buf);
-
-            self.seek_pos += bytes;
-            target.seek_pos += bytes;
-
-            Ok(())
-        }
-
-        /// Read the given number of bytes, and make them available to the closure.
-        /// This does advance the file pointer (like all other read methods)
-        pub fn with_bytes<R>(&mut self, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
-            if self.seek_pos + bytes > self.used_space() {
-                bail!("requested number of bytes not available in file");
-            }
-            let data = &self.map()[self.seek_pos..self.seek_pos + bytes];
-            let ret = f(data);
-            self.seek_pos += bytes;
-            Ok(ret)
-        }
-
-        pub(crate) fn grow(&self, new_size: usize) -> Result<()> {
-            if new_size + Self::HEADER_SIZE > self.committed_size.get() {
-                let max_size = self.mapping.maximum_size();
-                if new_size + Self::HEADER_SIZE >= max_size {
-                    bail!("maximum file size exceeded");
-                }
-
-                let new_file_size = ((self.committed_size.get() + new_size + Self::HEADER_SIZE)
-                    * 2)
-                .next_multiple_of(self.mapping.page_size())
-                .min(max_size);
-                self.mapping.grow_committed_mapping(
-                    new_file_size,
-                    "?", /*TODO: Use real name here!*/
-                )?;
-                self.committed_size.set(new_file_size);
-            }
-            *self.used_space_mut() = new_size;
-            Ok(())
-        }
-
-        // TODO: Remove, merge with 'map_mut_ptr'
-        pub(crate) fn get_ptr(&self) -> *mut u8 {
-            //TODO: Consider storing this value instead of mapping, with the HEADER_SIZE pre-added,
-            // for perf
-            self.mapping.ptr().wrapping_add(Self::HEADER_SIZE)
-        }
-
-        /// This is the actual size of the file on disk. This is not the 'logical' size
-        /// Should probably not be exposed, since that would mean we had a leaky abstraction
-        fn committed_len(&self) -> usize {
-            self.committed_size.get().saturating_sub(Self::HEADER_SIZE)
-        }
-
-        pub(crate) fn flush_range(&self, offset: usize, len: usize) -> Result<()> {
-            self.mapping.flush_range(offset + Self::HEADER_SIZE, len)?;
-            self.mapping.flush_range(0, Self::HEADER_SIZE)?; //TODO: We could detect if this range is in the same page as the preivous, and do a single flush in that case
-            Ok(())
-        }
-
-        pub(crate) fn flush_all(&self) -> Result<()> {
-            self.mapping.flush_all()?;
-            Ok(())
-        }
-
-        /// This does not require '&mut self', and is still safe. But bear in mind
-        /// that if you leave references pointed beyond the new end of file, and then
-        /// later expand again and fill that with other data, your original data will be
-        /// wrong, just not in a UB-way.
-        pub(crate) fn fast_truncate(&self, new_size: usize) {
-            if self.used_space() > new_size {
-                self.set_used_space(new_size);
-            }
-        }
-
-        /// This requires &mut self, since it will invalidate old references
-        pub(crate) fn truncate(&mut self, new_size: usize) -> Result<()> {
-            let new_alloc_size =
-                (new_size + Self::HEADER_SIZE).next_multiple_of(self.mapping.page_size());
-            if new_alloc_size < self.committed_size.get() {
-                self.mapping.shrink_committed_mapping(new_alloc_size)?;
-                self.committed_size.set(new_alloc_size);
-            }
-            *self.used_space_mut() = new_size;
-            Ok(())
-        }
-    }
-}
-
-fn sha2(bytes: &[u8]) -> [u8; 16] {
-    let mut hasher = Sha256::new();
-    // write input message
-    hasher.update(bytes);
-
-    // read hash digest and consume hasher
-    hasher.finalize_fixed()[0..16].try_into().unwrap()
-}
-
-static BOOT_CHECKSUM: OnceLock<[u8; 16]> = OnceLock::new();
-
-/// Returns a unique identifier that identifies this current boot.
-/// After a reboot of the operating system, due to power-loss or otherwise,
-/// this method will return a different value.
-///
-/// We use this to determine if unflushed memory mapped data might have been lost
-fn get_boot_checksum() -> [u8; 16] {
-    *BOOT_CHECKSUM.get_or_init(|| {
-        let boot_time = get_boot_time();
-        sha2(boot_time.as_bytes())
-    })
-}
+pub(crate) mod platform_specific;
+
+pub(crate) mod disk_access;
+mod sha2_helper;
+mod boot_checksum;
 
 #[derive(
     Pod,
@@ -872,93 +203,102 @@ impl Object for DummyUnitObject {
     }
 }
 
-// TODO: This type should probably not be public
-pub struct MessageStore<APP: Application> {
-    messages: OnDiskMessageStore<APP::Message>,
-    phantom_data: PhantomData<(*const APP::Root, APP::Message)>,
-}
+mod projector {
+    use std::marker::PhantomData;
+    use crate::{Application, DatabaseContext, Message, SequenceNr, Target};
+    use crate::disk_abstraction::Disk;
+    use crate::message_store::OnDiskMessageStore;
+    use anyhow::Result;
 
-impl<APP: Application> MessageStore<APP> {
-    pub fn new<D: Disk>(s: &mut D, target: &Target, max_size: usize) -> Result<MessageStore<APP>> {
-        Ok(MessageStore {
-            messages: OnDiskMessageStore::new(s, target, max_size)?,
-            phantom_data: PhantomData,
-        })
+    // TODO: This type should probably not be public
+    pub struct Projector<APP: Application> {
+        messages: OnDiskMessageStore<APP::Message>,
+        phantom_data: PhantomData<(*const APP::Root, APP::Message)>,
     }
-    /// Returns true if the message did not exist and was inserted
-    fn push_message(
-        &mut self,
-        context: &mut DatabaseContext,
-        message: APP::Message,
-    ) -> Result<bool> {
-        if let Some(insert_point) = self.messages.append_single(message)? {
-            self.rewind(context, insert_point)?;
-            Ok(true)
-        } else {
-            Ok(false)
+
+    impl<APP: Application> Projector<APP> {
+        pub fn new<D: Disk>(s: &mut D, target: &Target, max_size: usize) -> Result<Projector<APP>> {
+            Ok(Projector {
+                messages: OnDiskMessageStore::new(s, target, max_size)?,
+                phantom_data: PhantomData,
+            })
         }
-    }
-
-    /// Returns true if any of the messages were not previously present
-    fn push_messages(
-        &mut self,
-        context: &mut DatabaseContext,
-        message: impl Iterator<Item = APP::Message>,
-    ) -> Result<bool> {
-        let mut messages: Vec<APP::Message> = message.collect();
-        messages.sort_unstable_by_key(|x| x.id());
-
-        if let Some(insert_point) = self.messages.append_many_sorted(messages.into_iter())? {
-            if let Some(cur_main_db_next_index) = context.next_seqnr().try_index() {
-                if insert_point < cur_main_db_next_index {
-                    self.rewind(context, insert_point)?;
-                }
+        /// Returns true if the message did not exist and was inserted
+        fn push_message(
+            &mut self,
+            context: &mut DatabaseContext,
+            message: APP::Message,
+        ) -> Result<bool> {
+            if let Some(insert_point) = self.messages.append_single(message)? {
+                self.rewind(context, insert_point)?;
+                Ok(true)
+            } else {
+                Ok(false)
             }
+        }
 
-            Ok(true)
-        } else {
-            Ok(false)
+        /// Returns true if any of the messages were not previously present
+        pub(crate) fn push_messages(
+            &mut self,
+            context: &mut DatabaseContext,
+            message: impl Iterator<Item=APP::Message>,
+        ) -> Result<bool> {
+            let mut messages: Vec<APP::Message> = message.collect();
+            messages.sort_unstable_by_key(|x| x.id());
+
+            if let Some(insert_point) = self.messages.append_many_sorted(messages.into_iter())? {
+                if let Some(cur_main_db_next_index) = context.next_seqnr().try_index() {
+                    if insert_point < cur_main_db_next_index {
+                        self.rewind(context, insert_point)?;
+                    }
+                }
+
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+
+        fn rewind(&mut self, context: &mut DatabaseContext, point: usize) -> Result<()> {
+            context.rewind(SequenceNr::from_index(point));
+            Ok(())
+        }
+
+        fn apply_single_message(
+            context: &mut DatabaseContext,
+            root: &mut APP::Root,
+            msg: &APP::Message,
+            seqnr: SequenceNr,
+        ) {
+            msg.apply(context, root); //TODO: Handle panics in apply gracefully
+            context.set_next_seqnr(seqnr.successor()); //TODO: Don't record a snapshot for _every_ message.
+            context.finalize_message(seqnr);
+        }
+
+        pub(crate) fn apply_missing_messages(
+            &mut self,
+            root: &mut APP::Root,
+            context: &mut DatabaseContext,
+        ) -> Result<()> {
+            for (seq, msg) in self
+                .messages
+                .query_by_index(context.next_seqnr().try_index().unwrap())?
+            {
+                let seqnr = SequenceNr::from_index(seq);
+                Self::apply_single_message(context, root, &msg, seqnr);
+            }
+            //let next_index = self.messages.next_index()?;
+            //context.set_next_seqnr(SequenceNr::from_index(next_index));
+            let must_remove = context.finalize_transaction(&mut self.messages)?;
+            for index in must_remove {
+                println!("Removing message {:?}", index);
+                self.messages.mark_deleted_by_index(index.index());
+                //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
+            }
+            Ok(())
         }
     }
 
-    fn rewind(&mut self, context: &mut DatabaseContext, point: usize) -> Result<()> {
-        context.rewind(SequenceNr::from_index(point));
-        Ok(())
-    }
-
-    fn apply_single_message(
-        context: &mut DatabaseContext,
-        root: &mut APP::Root,
-        msg: &APP::Message,
-        seqnr: SequenceNr,
-    ) {
-        msg.apply(context, root); //TODO: Handle panics in apply gracefully
-        context.set_next_seqnr(seqnr.successor()); //TODO: Don't record a snapshot for _every_ message.
-        context.finalize_message(seqnr);
-    }
-
-    fn apply_missing_messages(
-        &mut self,
-        root: &mut APP::Root,
-        context: &mut DatabaseContext,
-    ) -> Result<()> {
-        for (seq, msg) in self
-            .messages
-            .query_by_index(context.next_seqnr().try_index().unwrap())?
-        {
-            let seqnr = SequenceNr::from_index(seq);
-            Self::apply_single_message(context, root, &msg, seqnr);
-        }
-        //let next_index = self.messages.next_index()?;
-        //context.set_next_seqnr(SequenceNr::from_index(next_index));
-        let must_remove = context.finalize_transaction(&mut self.messages)?;
-        for index in must_remove {
-            println!("Removing message {:?}", index);
-            self.messages.mark_deleted_by_index(index.index());
-            //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
-        }
-        Ok(())
-    }
 }
 
 pub enum GenPtr {
@@ -1031,11 +371,6 @@ pub trait Application {
     fn initialize_root(ctx: &mut DatabaseContext) -> <Self::Root as Object>::Ptr;
 }
 
-pub struct Database<Base: Application> {
-    context: DatabaseContext,
-    message_store: MessageStore<Base>,
-    app: Base,
-}
 
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -1328,140 +663,160 @@ impl Target {
         matches!(self, Target::CreateNewOrOverwrite(_))
     }
 }
-impl<APP: Application> Database<APP> {
-    pub fn get_root(&self) -> (&APP::Root, &DatabaseContext) {
-        let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
-        let root = unsafe { <APP::Root as Object>::access(&self.context, root_ptr) };
-        (root, &self.context)
+
+pub mod database {
+    use std::path::{Path, PathBuf};
+    use crate::{Application, DatabaseContext, Object, Pointer, SequenceNr, Target, MULTI_INSTANCE_BLOCKER};
+    use crate::projector::Projector;
+    use anyhow::{Context, Result};
+    use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
+
+    pub struct Database<Base: Application> {
+        context: DatabaseContext,
+        message_store: Projector<Base>,
+        app: Base,
     }
-    // TODO: This method should probably not be public (changes should only happen through messages)
-    pub fn with_root_mut<R>(
-        &mut self,
-        f: impl FnOnce(&mut APP::Root, &mut DatabaseContext, &mut MessageStore<APP>) -> R,
-    ) -> Result<R> {
-        if !self.context.mark_dirty()? {
-            // Recovery needed
-            Self::recover(&mut self.app, &mut self.context, &mut self.message_store)?;
+
+    impl<APP: Application> Database<APP> {
+
+        pub(crate) fn force_rewind(&mut self, index: SequenceNr) {
+            self.context.rewind(index)
         }
 
-        let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
-        let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
+        pub fn get_root(&self) -> (&APP::Root, &DatabaseContext) {
+            let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
+            let root = unsafe { <APP::Root as Object>::access(&self.context, root_ptr) };
+            (root, &self.context)
+        }
+        // TODO: This method should probably not be public (changes should only happen through messages)
+        pub fn with_root_mut<R>(
+            &mut self,
+            f: impl FnOnce(&mut APP::Root, &mut DatabaseContext, &mut Projector<APP>) -> R,
+        ) -> Result<R> {
+            if !self.context.mark_dirty()? {
+                // Recovery needed
+                Self::recover(&mut self.app, &mut self.context, &mut self.message_store)?;
+            }
 
-        let t = f(root, &mut self.context, &mut self.message_store);
+            let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
+            let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
 
-        self.context.mark_clean();
-        Ok(t)
-    }
+            let t = f(root, &mut self.context, &mut self.message_store);
 
-    fn recover(
-        app: &mut APP,
-        context: &mut DatabaseContext,
-        message_store: &mut MessageStore<APP>,
-    ) -> Result<()> {
-        context.clear()?;
+            self.context.mark_clean();
+            Ok(t)
+        }
 
-        let root_ptr = APP::initialize_root(context);
-        context.set_root_ptr(root_ptr.as_generic());
+        fn recover(
+            app: &mut APP,
+            context: &mut DatabaseContext,
+            message_store: &mut Projector<APP>,
+        ) -> Result<()> {
+            context.clear()?;
 
-        context.set_next_seqnr(SequenceNr::from_index(0));
+            let root_ptr = APP::initialize_root(context);
+            context.set_root_ptr(root_ptr.as_generic());
 
-        let root = <APP::Root as Object>::access_mut(context, root_ptr);
-        message_store.apply_missing_messages(root, context)?;
+            context.set_next_seqnr(SequenceNr::from_index(0));
 
-        Ok(())
-    }
-
-    /// Note: You can set max_file_size to something very large, like 100_000_000_000
-    pub fn create_new(
-        path: impl AsRef<Path>,
-        app: APP,
-        overwrite_existing: bool,
-        max_file_size: usize,
-    ) -> Result<Database<APP>> {
-        Self::create(
-            app,
-            if overwrite_existing {
-                Target::CreateNewOrOverwrite(path.as_ref().to_path_buf())
-            } else {
-                Target::CreateNew(path.as_ref().to_path_buf())
-            },
-            max_file_size,
-        )
-    }
-    pub fn open(path: impl AsRef<Path>, app: APP, max_file_size: usize) -> Result<Database<APP>> {
-        Self::create(app, Target::OpenExisting(path.as_ref().to_path_buf()), max_file_size)
-    }
-
-    pub fn append_single(&mut self, message: APP::Message) -> Result<()> {
-        self.append_many(std::iter::once(message))
-    }
-
-    pub fn append_many(&mut self, messages: impl Iterator<Item = APP::Message>) -> Result<()> {
-        self.with_root_mut(|root, context, message_store| {
-            message_store.push_messages(context, messages)?;
+            let root = <APP::Root as Object>::access_mut(context, root_ptr);
             message_store.apply_missing_messages(root, context)?;
 
             Ok(())
-        })?
-    }
+        }
 
-    /// Create a database residing entirely in memory.
-    /// This is mostly useful for tests
-    pub fn create_in_memory(mut app: APP, max_size: usize) -> Result<Database<APP>> {
-        let mut disk = InMemoryDisk::default();
-        let target = Target::CreateNew(PathBuf::default());
-        let mut ctx =
-            DatabaseContext::new(&mut disk, &target, max_size).context("creating database in memory")?;
-        let mut message_store = MessageStore::new(&mut disk, &target, max_size)?;
-        Ok(Database {
-            context: ctx,
-            app,
-            message_store,
-        })
-    }
+        /// Note: You can set max_file_size to something very large, like 100_000_000_000
+        pub fn create_new(
+            path: impl AsRef<Path>,
+            app: APP,
+            overwrite_existing: bool,
+            max_file_size: usize,
+        ) -> Result<Database<APP>> {
+            Self::create(
+                app,
+                if overwrite_existing {
+                    Target::CreateNewOrOverwrite(path.as_ref().to_path_buf())
+                } else {
+                    Target::CreateNew(path.as_ref().to_path_buf())
+                },
+                max_file_size,
+            )
+        }
+        pub fn open(path: impl AsRef<Path>, app: APP, max_file_size: usize) -> Result<Database<APP>> {
+            Self::create(app, Target::OpenExisting(path.as_ref().to_path_buf()), max_file_size)
+        }
 
-    fn create(mut app: APP, target: Target, max_file_size: usize) -> Result<Database<APP>> {
-        if MULTI_INSTANCE_BLOCKER.get() {
-            if !std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_ok() {
-                panic!(
-                    "Noatun: Multiple active DB-roots in the same thread are not allowed.\
+        pub fn append_single(&mut self, message: APP::Message) -> Result<()> {
+            self.append_many(std::iter::once(message))
+        }
+
+        pub fn append_many(&mut self, messages: impl Iterator<Item=APP::Message>) -> Result<()> {
+            self.with_root_mut(|root, context, message_store| {
+                message_store.push_messages(context, messages)?;
+                message_store.apply_missing_messages(root, context)?;
+
+                Ok(())
+            })?
+        }
+
+        /// Create a database residing entirely in memory.
+        /// This is mostly useful for tests
+        pub fn create_in_memory(mut app: APP, max_size: usize) -> Result<Database<APP>> {
+            let mut disk = InMemoryDisk::default();
+            let target = Target::CreateNew(PathBuf::default());
+            let mut ctx =
+                DatabaseContext::new(&mut disk, &target, max_size).context("creating database in memory")?;
+            let mut message_store = Projector::new(&mut disk, &target, max_size)?;
+            Ok(Database {
+                context: ctx,
+                app,
+                message_store,
+            })
+        }
+
+        fn create(mut app: APP, target: Target, max_file_size: usize) -> Result<Database<APP>> {
+            if MULTI_INSTANCE_BLOCKER.get() {
+                if !std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_ok() {
+                    panic!(
+                        "Noatun: Multiple active DB-roots in the same thread are not allowed.\
                         You can disable this diagnostic by setting env-var NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE.\
                         Note, unsoundness can occur if DatabaseContext from one instance is used by data \
                         for other."
-                );
+                    );
+                }
             }
+            MULTI_INSTANCE_BLOCKER.set(true);
+
+            let mut ctx =
+                DatabaseContext::new(&mut StandardDisk, &target, max_file_size).context("opening database")?;
+
+            let is_dirty = ctx.is_dirty();
+
+            let mut message_store = Projector::new(&mut StandardDisk, &target, max_file_size)?;
+            if is_dirty {
+                Self::recover(&mut app, &mut ctx, &mut message_store)?;
+                ctx.mark_clean()?;
+            }
+            Ok(Database {
+                context: ctx,
+                app,
+                message_store,
+            })
         }
-        MULTI_INSTANCE_BLOCKER.set(true);
-
-        let mut ctx =
-            DatabaseContext::new(&mut StandardDisk, &target, max_file_size).context("opening database")?;
-
-        let is_dirty = ctx.is_dirty();
-
-        let mut message_store = MessageStore::new(&mut StandardDisk, &target, max_file_size)?;
-        if is_dirty {
-            Self::recover(&mut app, &mut ctx, &mut message_store)?;
-            ctx.mark_clean()?;
+    }
+    impl<APP: Application> Drop for Database<APP> {
+        fn drop(&mut self) {
+            MULTI_INSTANCE_BLOCKER.set(false);
         }
-        Ok(Database {
-            context: ctx,
-            app,
-            message_store,
-        })
     }
 }
-impl<APP: Application> Drop for Database<APP> {
-    fn drop(&mut self) {
-        MULTI_INSTANCE_BLOCKER.set(false);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::buffer::MainDbHeader;
-    use crate::growable_file_mapping::DiskMmapHandleNew;
+    use crate::projection_store::MainDbHeader;
+    use crate::disk_access::DiskAccessor;
     use byteorder::{LittleEndian, WriteBytesExt};
+    use database::Database;
     use savefile::{load_noschema, save_noschema};
     use savefile_derive::Savefile;
     use sha2::{Digest, Sha256};
@@ -1470,7 +825,7 @@ mod tests {
 
     #[test]
     fn test_mmap_big() {
-        let mut mmap = DiskMmapHandleNew::new(
+        let mut mmap = DiskAccessor::new(
             &Target::CreateNewOrOverwrite("test/mmap_test_big".into()),
             "mmap",
             0,
@@ -1482,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_mmap_helper() {
-        let mut mmap = DiskMmapHandleNew::new(
+        let mut mmap = DiskAccessor::new(
             &Target::CreateNewOrOverwrite("test/mmap_test1".into()),
             "mmap",
             0,
@@ -1637,7 +992,6 @@ mod tests {
         let mut db: Database<CounterApplication> =
             Database::create_new("test/test1.bin", CounterApplication, true, 1000).unwrap();
 
-        let context = &db.context;
 
         db.with_root_mut(|counter, context, _message_store| {
             assert_eq!(counter.counter.get(context), 0);
@@ -1731,7 +1085,7 @@ mod tests {
     fn test_msg_store_inmem_miri() {
         let mut db: Database<CounterApplication> =
             Database::create_in_memory(CounterApplication, 10000).unwrap();
-        //        let mut messages = MessageStore::new(StandardDisk, &Target::CreateNewOrOverwrite("test/msg_store.bin".into())).unwrap();
+
 
         db.append_single(CounterMessage {
             parent: None,
@@ -1881,7 +1235,7 @@ mod tests {
         }
 
         println!("Rewind!");
-        db.context.rewind(SequenceNr::from_index(1));
+        db.force_rewind(SequenceNr::from_index(1));
 
         {
             db.with_root_mut(|counter_vec, context, _| {

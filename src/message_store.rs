@@ -1,6 +1,6 @@
-use crate::disk_abstraction::{Disk, DiskMmapHandleLegacy};
-use crate::growable_file_mapping::DiskMmapHandleNew;
-use crate::{Message, MessageId, Target, sha2};
+use crate::disk_abstraction::{Disk};
+use crate::disk_access::DiskAccessor;
+use crate::{Message, MessageId, Target};
 use anyhow::{Context, Result, anyhow, bail};
 use bytemuck::{Pod, Zeroable};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -14,6 +14,7 @@ use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::{MaybeUninit, offset_of};
 use std::path::Path;
+use crate::sha2_helper::sha2;
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 #[repr(transparent)]
@@ -176,7 +177,7 @@ struct DataFileEntry {
 
 #[derive(Debug)]
 struct DataFileInfo {
-    file: DiskMmapHandleNew,
+    file: DiskAccessor,
     file_number: U1,
 }
 
@@ -205,7 +206,7 @@ struct StoreHeader {
 
 pub(crate) struct OnDiskMessageStore<M> {
     target: Target,
-    index_mmap: DiskMmapHandleNew,
+    index_mmap: DiskAccessor,
     data_files: [DataFileInfo; 2],
     active_file: U1,
     phantom: PhantomData<M>,
@@ -213,7 +214,7 @@ pub(crate) struct OnDiskMessageStore<M> {
 
 impl<M> OnDiskMessageStore<M> {
     fn provide_index_map(
-        map: &mut DiskMmapHandleNew,
+        map: &mut DiskAccessor,
         extra: usize, //items, not bytes
     ) -> Result<()> {
         let xlen = map.used_space();
@@ -259,7 +260,7 @@ impl<M> OnDiskMessageStore<M> {
     }
 
     #[inline]
-    fn header<'a>(map: &'a mut DiskMmapHandleNew) -> Result<&'a mut StoreHeader> {
+    fn header<'a>(map: &'a mut DiskAccessor) -> Result<&'a mut StoreHeader> {
         Self::provide_index_map(map, 0)?;
 
         let slice: &mut [u8] = map.map_mut();
@@ -281,7 +282,7 @@ impl<M> OnDiskMessageStore<M> {
     /// that are initialized with data
     #[inline]
     fn header_and_index_mut_uninit<'a>(
-        map: &'a mut DiskMmapHandleNew,
+        map: &'a mut DiskAccessor,
         extra: usize,
     ) -> Result<(&'a mut StoreHeader, &'a mut [IndexEntry])> {
         // TODO: Create a fast-path for the case where we do have enough space, so we can inline
@@ -295,7 +296,7 @@ impl<M> OnDiskMessageStore<M> {
     }
     #[inline]
     fn header_and_index_mut<'a>(
-        map: &'a mut DiskMmapHandleNew,
+        map: &'a mut DiskAccessor,
     ) -> Result<(&'a mut StoreHeader, &'a mut [IndexEntry])> {
         let (store, index) = Self::header_and_index_mut_uninit(map, 0)?;
 
@@ -1024,7 +1025,7 @@ impl<M> OnDiskMessageStore<M> {
 #[cfg(test)]
 mod tests {
     use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
-    use crate::on_disk_message_store::{FileOffset, OnDiskMessageStore, STATUS_NOK, STATUS_OK, U1};
+    use crate::message_store::{FileOffset, OnDiskMessageStore, STATUS_NOK, STATUS_OK, U1};
     use crate::{DatabaseContext, DummyUnitObject, Message, MessageId, Target};
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use std::io::{Cursor, Read, Write};
@@ -1294,76 +1295,4 @@ mod tests {
         roundtrip(FileOffset::new(u64::MAX / 2 - 1, U1::ZERO));
     }
 
-    /*
-       #[test]
-       fn test_create_sqlite_disk_store() {
-           if std::path::Path::exists(Path::new("test.bin")) {
-               std::fs::remove_file("test.bin").unwrap();
-           }
-           let mut conn = Connection::open("test.bin").unwrap();
-
-           conn.execute(
-               "CREATE TABLE message (
-            id    INTEGER PRIMARY KEY,
-            seq INTEGER,
-            data  BLOB
-        );
-        ",
-               (), // empty list of parameters.
-           )
-           .unwrap();
-
-           /*
-                   conn.execute(
-                       "
-            CREATE INDEX message_idx1 ON message (id);
-            ",
-                       (), // empty list of parameters.
-                   ).unwrap();
-           */
-
-           let trans = conn.transaction().unwrap();
-           let bef_insert = Instant::now();
-           for i in 0..1000_000 {
-               let me = OnDiskMessage {
-                   id: 1000_000 + i,
-                   seq: i,
-                   data: vec![42u8; 1024],
-               };
-               trans
-                   .execute(
-                       "INSERT INTO message (id, seq, data) VALUES (?1, ?2, ?3)",
-                       (&me.id, i, me.data),
-                   )
-                   .unwrap();
-           }
-           println!("Inserting 1 million: {:?}", bef_insert.elapsed());
-           trans.commit().unwrap();
-
-           let bef_query = Instant::now();
-
-
-           let mut stmt = conn
-               .prepare(
-                   "
-                SELECT seq FROM message
-                 where id >= ?1",
-               )
-               .unwrap();
-           let person_iter = stmt
-               .query_map([1_000_000 + 999_900], |row| {
-                   let count: usize = row.get(0)?;
-
-                   Ok(())
-               })
-               .unwrap();
-
-           let mut idsum = 0;
-           for person in person_iter {
-               //println!("got: {:?}", person.unwrap());
-               idsum += 1;
-           }
-           println!("Query {:?} (ids: {})", bef_query.elapsed(), idsum);
-       }
-    */
 }

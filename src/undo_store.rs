@@ -1,5 +1,5 @@
 use crate::disk_abstraction::Disk;
-use crate::growable_file_mapping::DiskMmapHandleNew;
+use crate::disk_access::DiskAccessor;
 use crate::{MessageId, SequenceNr, Target};
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
@@ -26,7 +26,7 @@ pub enum UndoLogEntry<'a> {
 }
 
 pub struct UndoLog {
-    store_mmap: RefCell<DiskMmapHandleNew>,
+    store_mmap: RefCell<DiskAccessor>,
 }
 
 impl UndoLog {
@@ -50,11 +50,11 @@ impl UndoLog {
         })
     }
 
-    fn access<R>(&self, f: impl FnOnce(&DiskMmapHandleNew) -> R) -> R {
+    fn access<R>(&self, f: impl FnOnce(&DiskAccessor) -> R) -> R {
         let bytes = self.store_mmap.borrow();
         f(&*bytes)
     }
-    fn access_mut<R>(&mut self, f: impl FnOnce(&mut DiskMmapHandleNew) -> R) -> R {
+    fn access_mut<R>(&mut self, f: impl FnOnce(&mut DiskAccessor) -> R) -> R {
         let mut bytes = self.store_mmap.borrow_mut();
         f(&mut *bytes)
     }
