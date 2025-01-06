@@ -51,8 +51,11 @@ custom allocators?)
 /// Use to abstract away the concrete mmap and disk io implementations.
 /// This can be used to easily change implementations of these, but more
 /// importantly, it allows us to run under miri
-pub(crate) trait Disk {
-    fn open_file(&mut self, target: &Target, file: &str) -> Result<DiskMmapHandleNew>;
+// TODO: This type should probably not be public
+pub trait Disk {
+    /// Open a file as specified by base directory in 'Target', and file name `file`.
+    /// If the file is smaller than 'min_size', it will be extended with zeroes to that size.
+    fn open_file(&mut self, target: &Target, file: &str, min_size: usize) -> Result<DiskMmapHandleNew>;
 }
 /*pub trait DiskFile: Seek + Write + Read {
     fn set_len(&mut self, len: u64) -> Result<()>;
@@ -422,7 +425,7 @@ impl Seek for InMemoryFileRef {
 }*/
 
 impl Disk for InMemoryDisk {
-    fn open_file(&mut self, target: &Target, file: &str) -> anyhow::Result<DiskMmapHandleNew> {
+    fn open_file(&mut self, target: &Target, file: &str, min_size: usize) -> anyhow::Result<DiskMmapHandleNew> {
         //std::fs::create_dir_all(&path).context("create database directory")?;
         let create = target.create();
         let overwrite = target.overwrite();
@@ -566,7 +569,7 @@ impl Drop for InMemoryGrowableFileMappingData {
 }*/
 
 impl Disk for StandardDisk {
-    fn open_file(&mut self, target: &Target, file: &str) -> Result<DiskMmapHandleNew> {
+    fn open_file(&mut self, target: &Target, file: &str, min_size: usize) -> Result<DiskMmapHandleNew> {
         let path = target.path().join(format!("{}.bin", file));
         let mut overwrite = target.overwrite();
         let mut create = target.create();
@@ -584,7 +587,7 @@ impl Disk for StandardDisk {
         .with_context(|| format!("opening file {:?}", path))?)*/
 
         //TODO: Make max-size configurable!
-        let mapping = DiskMmapHandleNew::new(target, file, 4096, 1024 * 1024 * 10)?;
+        let mapping = DiskMmapHandleNew::new(target, file, min_size, 1024 * 1024 * 10)?;
 
         Ok(mapping)
     }

@@ -315,12 +315,13 @@ impl DatabaseContext {
 
     pub(crate) fn new<S: Disk>(s: &mut S, name: &Target) -> Result<Self> {
         let mut main_db_file = s
-            .open_file(name, "maindb")
+            .open_file(name, "maindb", 0)
             .context("opening main store file")?;
 
         let mut is_new = false;
         if main_db_file.used_space() < INITIAL_SIZE_BYTES {
             main_db_file.grow(INITIAL_SIZE_BYTES)?;
+            main_db_file.map_mut().fill(0);
             is_new = true;
         }
 

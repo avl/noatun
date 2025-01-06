@@ -93,8 +93,8 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
             .open(&value_path)?;
         */
 
-        let mut key_file = disk.open_file(path, "dep_keys")?;
-        let mut value_file = disk.open_file(path, "dep_values")?;
+        let mut key_file = disk.open_file(path, "dep_keys", 0)?;
+        let mut value_file = disk.open_file(path, "dep_values", 0)?;
 
         const DEFAULT_KEY_CAPACITY: usize = 3;
         const DEFAULT_VALUE_CAPACITY: usize = 3;

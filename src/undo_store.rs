@@ -6,7 +6,7 @@ use bytemuck::{Pod, Zeroable};
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 
 #[derive(Debug)]
 pub enum UndoLogEntry<'a> {
@@ -41,53 +41,40 @@ pub enum HowToProceed {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-#[repr(C)]
-struct UndoLogHeader {
-    len: usize,
-}
-
 impl UndoLog {
     pub fn new<D: Disk>(disk: &mut D, target: &Target) -> Result<UndoLog> {
-        let mut file = disk.open_file(target, "undo")?;
+        let mut file = disk.open_file(target, "undo", 0)?;
 
         Ok(UndoLog {
             store_mmap: RefCell::new(file),
         })
     }
 
-    fn access<R>(&self, f: impl FnOnce(&UndoLogHeader, &[u8]) -> R) -> R {
+    fn access<R>(&self, f: impl FnOnce(&DiskMmapHandleNew) -> R) -> R {
         let bytes = self.store_mmap.borrow();
-        let (header, rest) = bytes.map().split_at(size_of::<UndoLogHeader>());
-        let header: &UndoLogHeader = bytemuck::from_bytes(header);
-        let len = header.len;
-        f(header, &rest[0..len])
+        f(&*bytes)
     }
-    fn access_mut<R>(&mut self, f: impl FnOnce(&mut UndoLogHeader, &mut [u8]) -> R) -> R {
+    fn access_mut<R>(&mut self, f: impl FnOnce(&mut DiskMmapHandleNew) -> R) -> R {
         let mut bytes = self.store_mmap.borrow_mut();
-        let (header, rest) = bytes.map_mut().split_at_mut(size_of::<UndoLogHeader>());
-        let header: &mut UndoLogHeader = bytemuck::from_bytes_mut(header);
-        let len = header.len;
-        f(header, rest)
+        f(&mut *bytes)
     }
 
     /// Calls the callback with the most recent entry in the undo-log, repeatedly.
     /// If no entry, return false. If closure returns 'Error', return false.
     /// Otherwise return true;
     pub fn rewind(&mut self, mut cb: impl FnMut(UndoLogEntry) -> HowToProceed) -> bool {
-        self.access_mut(|header, store| {
-            let store = &store[0..header.len];
-            while let Some((new_len, item)) = Self::parse1(store) {
+        self.access_mut(|mmap| {
+            while let Some((new_len, item)) = Self::parse1(mmap.map()) {
                 match cb(item) {
                     HowToProceed::Error => {
                         return false;
                     }
                     HowToProceed::PopAndStop => {
-                        header.len = new_len;
+                        mmap.fast_truncate(new_len);
                         return true;
                     }
                     HowToProceed::PopAndContinue => {
-                        header.len = new_len;
+                        mmap.fast_truncate(new_len);
                     }
                 }
             }
@@ -139,8 +126,7 @@ impl UndoLog {
     pub fn record(&self, entry: UndoLogEntry) {
         let mut store_ref = self.store_mmap.borrow_mut();
         let store = &mut *store_ref;
-        todo!()
-        /*
+        store.seek(SeekFrom::End(0)).unwrap();
         match entry {
             UndoLogEntry::SetPointer(size) => {
                 store
@@ -186,6 +172,5 @@ impl UndoLog {
                 store.write_u8(4).expect("Failed to write to undo store");
             }
         }
-        */
     }
 }

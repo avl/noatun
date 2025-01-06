@@ -160,11 +160,11 @@ impl Ord for IndexEntry {
     }
 }
 
+
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 struct DataFileEntry {
-    /// The size of this file.
-    ///
+    /// The size of this file, in bytes.
     nominal_size: u64,
     /// The number of bytes actually used.
     /// If this becomes small, compaction may be in order
@@ -172,7 +172,7 @@ struct DataFileEntry {
     /// This means that an unfragmented file has `bytes_used` == `nominal_size`
     bytes_used: u64,
 
-    /// All files beyond this offset have been removed
+    /// All file data before this offset has been moved
     compaction_pointer: u64,
 }
 
@@ -220,7 +220,14 @@ impl<M, D: Disk> OnDiskMessageStore<M, D> {
         map: &mut DiskMmapHandleNew,
         extra: usize, //items, not bytes
     ) -> Result<()> {
+
         let xlen = map.used_space();
+
+        if xlen < size_of::<StoreHeader>() {
+            map.grow(size_of::<StoreHeader>())?;
+            map.map_mut().fill(0);
+        }
+
         let slice: &mut [u8] = map.map_mut();
         let header: &StoreHeader = bytemuck::from_bytes(&slice[0..size_of::<StoreHeader>()]);
         let file_capacity =
@@ -467,6 +474,7 @@ impl<M, D: Disk> OnDiskMessageStore<M, D> {
                 match x {
                     Ok(x) => Some((index, x)),
                     Err(x) => {
+                        eprintln!("Failed to load message #{}: {:?}", index, x);
                         //TODO: Log
                         None
                     }
@@ -499,7 +507,8 @@ impl<M, D: Disk> OnDiskMessageStore<M, D> {
         let header: FileHeaderEntry = file.read_pod()?;
 
         let msg = file.with_bytes(header.msg_size as usize, |bytes| {
-            if sha2(bytes) != header.sha2 {
+            let sha2_bytes = sha2(bytes);
+            if sha2_bytes != header.sha2 {
                 return Err(anyhow!("Message has been corrupted on disk"));
             }
             M::deserialize(bytes)
@@ -738,7 +747,7 @@ impl<M, D: Disk> OnDiskMessageStore<M, D> {
                 Cases::NextFromInput => {
                     let msg = cur_input_message.take().unwrap();
 
-                    let start_pos = info.file.stream_position()?;
+                    let start_pos = info.file.seek(SeekFrom::End(0))?;
 
                     if let Some(last_msg_id) = last_msg_id {
                         if last_msg_id >= msg.id() {
@@ -945,7 +954,7 @@ impl<M, D: Disk> OnDiskMessageStore<M, D> {
             //let data_file_path = target.path().join(format!("data{}.bin", file_number));
 
             let mut data_file = d
-                .open_file(target, &format!("data{}", file_number))
+                .open_file(target, &format!("data{}", file_number), 0)
                 .context("Opening data-file")?;
             /*OpenOptions::new()
             .read(true)
@@ -974,7 +983,7 @@ impl<M, D: Disk> OnDiskMessageStore<M, D> {
         //let index_file_path = target.path().join("index.bin");
         let mut overwrite = target.overwrite();
 
-        let mut index_file = d.open_file(target, "index").context("Opening index-file")?;
+        let mut index_file = d.open_file(target, "index", size_of::<StoreHeader>()).context("Opening index-file")?;
         /*let index_file = OpenOptions::new()
         .read(true)
         .write(true)

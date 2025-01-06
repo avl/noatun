@@ -18,11 +18,11 @@ impl Object for CounterObject {
     type Ptr = ThinPtr;
 
     fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        unsafe { context.access_pod(index) }
+        context.access_pod(index)
     }
 
     fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        unsafe { context.access_pod_mut(index) }
+        context.access_pod_mut(index)
     }
 }
 
