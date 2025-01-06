@@ -102,7 +102,6 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
         let key_size_bytes = Self::calc_needed_bytes_keys(DEFAULT_KEY_CAPACITY);
         let value_size_bytes = Self::calc_needed_bytes_vals(DEFAULT_VALUE_CAPACITY);
 
-
         key_file.grow(key_size_bytes)?;
         value_file.grow(value_size_bytes)?;
 
@@ -125,15 +124,12 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
 
-
         if observee.index() >= self.key_capacity {
-
             self.reallocate_keys((observee.index() + 1) * 2);
         }
 
         //dbg!(Self::get_count(&self.vals) + 1, self.value_capacity);
         if Self::get_count(&self.vals) + 1 >= self.value_capacity {
-
             self.reallocate_values((self.value_capacity + 1) * 2);
         }
 
@@ -198,7 +194,6 @@ impl MmapMessageDependencyTracker {
     }
 
     fn reallocate_keys(&mut self, new_count: usize) -> Result<()> {
-
         self.keys.grow(Self::calc_needed_bytes_keys(new_count));
         self.key_capacity = new_count;
         Ok(())
@@ -209,13 +204,12 @@ impl MmapMessageDependencyTracker {
         self.value_capacity = new_count;
         Ok(())
     }
-
 }
 #[cfg(test)]
 mod tests {
+    use crate::disk_abstraction::StandardDisk;
     use crate::projection_store::message_dependency_tracker::MessageDependencyTracker;
     use crate::projection_store::message_dependency_tracker::MmapMessageDependencyTracker;
-    use crate::disk_abstraction::StandardDisk;
     use crate::{SequenceNr, Target};
     use std::path::Path;
     use std::time::Instant;
@@ -225,7 +219,7 @@ mod tests {
         let mut tracker = MmapMessageDependencyTracker::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/test_smoke_deptrack.bin".into()),
-            10000
+            10000,
         )
         .unwrap();
         tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
@@ -239,7 +233,7 @@ mod tests {
         let mut tracker = MmapMessageDependencyTracker::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/test_smoke_deptrack_many.bin".into()),
-            10000
+            10000,
         )
         .unwrap();
         let t = Instant::now();

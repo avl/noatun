@@ -1,6 +1,6 @@
-use std::sync::OnceLock;
 use crate::platform_specific::get_boot_time;
 use crate::sha2_helper::sha2;
+use std::sync::OnceLock;
 
 static BOOT_CHECKSUM: OnceLock<[u8; 16]> = OnceLock::new();
 

@@ -1,5 +1,5 @@
+use crate::Target;
 use crate::platform_specific::FileMapping;
-use crate::{Target};
 use anyhow::{Context, Result, bail};
 use std::cell::Cell;
 use std::fmt::{Debug, Formatter};
@@ -24,12 +24,10 @@ pub trait FileBackend {
 
     fn shrink_committed_mapping(&self, new_size: usize) -> Result<()>;
 
-    fn grow_committed_mapping(&self, new_size: usize)
-                              -> Result<()>;
+    fn grow_committed_mapping(&self, new_size: usize) -> Result<()>;
 
     fn try_lock_exclusive(&self) -> Result<()>;
 }
-
 
 pub(crate) struct FileAccessor {
     mapping: Box<dyn FileBackend>,
@@ -68,10 +66,7 @@ impl Seek for FileAccessor {
                         .and_then(|x: i64| x.checked_sub(e))
                         .and_then(|x| x.try_into().ok())
                         .ok_or_else(|| {
-                            std::io::Error::new(
-                                ErrorKind::InvalidInput,
-                                "invalid seek position",
-                            )
+                            std::io::Error::new(ErrorKind::InvalidInput, "invalid seek position")
                         })?;
                 }
             }
@@ -144,7 +139,9 @@ impl FileAccessor {
     /// committed_len
     pub(crate) fn set_used_space(&self, new_value: usize) {
         assert!(new_value <= self.committed_size.get());
-        unsafe { *(self.mapping.ptr() as *mut usize) = new_value; }
+        unsafe {
+            *(self.mapping.ptr() as *mut usize) = new_value;
+        }
     }
 
     #[inline(always)]
@@ -306,19 +303,15 @@ impl FileAccessor {
                 bail!("maximum file size exceeded");
             }
 
-            let new_file_size = ((self.committed_size.get() + new_size + Self::HEADER_SIZE)
-                * 2)
-            .next_multiple_of(self.mapping.page_size())
-            .min(max_size);
-            self.mapping.grow_committed_mapping(
-                new_file_size
-            )?;
+            let new_file_size = ((self.committed_size.get() + new_size + Self::HEADER_SIZE) * 2)
+                .next_multiple_of(self.mapping.page_size())
+                .min(max_size);
+            self.mapping.grow_committed_mapping(new_file_size)?;
             self.committed_size.set(new_file_size);
         }
         self.set_used_space(new_size);
         Ok(())
     }
-
 
     /// This is the actual size of the file on disk. This is not the 'logical' size
     /// Should probably not be exposed, since that would mean we had a leaky abstraction
@@ -328,7 +321,8 @@ impl FileAccessor {
 
     pub(crate) fn flush_range(&self, offset: usize, len: usize) -> Result<()> {
         if offset < self.mapping.page_size() {
-            self.mapping.flush_range(0, offset + Self::HEADER_SIZE + len)?;
+            self.mapping
+                .flush_range(0, offset + Self::HEADER_SIZE + len)?;
         } else {
             self.mapping.flush_range(offset + Self::HEADER_SIZE, len)?;
             self.mapping.flush_range(0, Self::HEADER_SIZE)?;

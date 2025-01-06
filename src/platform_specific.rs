@@ -5,6 +5,7 @@ pub(crate) use unix::get_boot_time;
 
 #[cfg(unix)]
 mod unix {
+    use crate::disk_access::FileBackend;
     use anyhow::{Context, Result, anyhow, bail};
     use fs2::FileExt;
     use std::cell::Cell;
@@ -15,7 +16,6 @@ mod unix {
     use std::process::Command;
     use std::ptr::{null, null_mut};
     use std::sync::OnceLock;
-    use crate::disk_access::FileBackend;
 
     #[cfg(not(miri))]
     pub(crate) fn get_boot_time() -> String {
@@ -187,7 +187,7 @@ mod unix {
                         | libc::MAP_SHARED
                         | libc::MAP_NORESERVE
                         | libc::MAP_HUGE_2MB
-                        |libc::MAP_HUGETLB,
+                        | libc::MAP_HUGETLB,
                     -1,
                     0,
                 )
@@ -202,10 +202,7 @@ mod unix {
             Ok(())
         }
 
-        fn grow_committed_mapping(
-            &self,
-            new_size: usize,
-        ) -> Result<()> {
+        fn grow_committed_mapping(&self, new_size: usize) -> Result<()> {
             assert_eq!(new_size % self.page_size(), 0);
             if new_size <= self.committed_size.get() {
                 return Ok(());

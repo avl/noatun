@@ -1,16 +1,17 @@
-use crate::projection_store::message_dependency_tracker::{
-    MessageDependencyTracker, MmapMessageDependencyTracker,
-};
+use crate::boot_checksum::get_boot_checksum;
 use crate::disk_abstraction::{Disk, StandardDisk};
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
+use crate::projection_store::message_dependency_tracker::{
+    MessageDependencyTracker, MmapMessageDependencyTracker,
+};
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 use crate::{
-    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId,  Object,
-    Pointer, SequenceNr, Target, ThinPtr,
+    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, SequenceNr,
+    Target, ThinPtr,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use bumpalo::Bump;
 use bytemuck::{Pod, Zeroable, bytes_of, from_bytes, from_bytes_mut};
 use indexmap::{IndexMap, IndexSet};
@@ -25,7 +26,6 @@ use std::ops::Range;
 use std::path::Path;
 use std::slice;
 use std::slice::SliceIndex;
-use crate::boot_checksum::get_boot_checksum;
 
 #[derive(Debug)]
 struct RegistrarTracker<T: MessageDependencyTracker> {
@@ -68,7 +68,6 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
     ) -> Result<IndexSet<SequenceNr>> {
-
         self.unused_messages.sort(); //Sort in seq-nr order
         let mut deleted = IndexSet::new();
         let mut parent_lists = Bump::new();
@@ -308,7 +307,9 @@ impl DatabaseContext {
         header.next_seqnr = SequenceNr::INVALID;
 
         header.status = MainDbStatus(MAIN_DB_STATUS_DIRTY);
-        header.usize_size = size_of::<usize>().try_into().expect("The size of an 'usize' must be less than 256 bytes");
+        header.usize_size = size_of::<usize>()
+            .try_into()
+            .expect("The size of an 'usize' must be less than 256 bytes");
 
         header.last_boot = get_boot_checksum();
         mmap.set_used_space(size_of::<MainDbHeader>());
@@ -335,11 +336,12 @@ impl DatabaseContext {
         let header: &MainDbHeader =
             unsafe { &*(main_db_file.map_const_ptr() as *const MainDbHeader) };
         if <u8 as Into<usize>>::into(header.usize_size) != size_of::<usize>() {
-            bail!("The file on disk was created on a machine with usize = {} bytes, but this machine has usize = {} bytes",
-                header.usize_size, size_of::<usize>()
+            bail!(
+                "The file on disk was created on a machine with usize = {} bytes, but this machine has usize = {} bytes",
+                header.usize_size,
+                size_of::<usize>()
             );
         }
-
 
         Ok(Self {
             main_db_mmap: main_db_file,
@@ -364,42 +366,40 @@ impl DatabaseContext {
         }
         println!("Rewinding to {:?}", new_time);
 
-        let result = self.undo_log.rewind(|entry| {
-            match entry {
-                UndoLogEntry::SetPointer(new_pointer) => {
-                    let cur = Self::pointer_of(&self.main_db_mmap);
-                    debug_assert!(new_pointer <= cur);
-                    unsafe {
-                        Self::mut_slice(self.main_db_mmap.map_mut_ptr(), new_pointer..cur).fill(0)
-                    };
-                    Self::set_pointer_of(&self.main_db_mmap, new_pointer);
+        let result = self.undo_log.rewind(|entry| match entry {
+            UndoLogEntry::SetPointer(new_pointer) => {
+                let cur = Self::pointer_of(&self.main_db_mmap);
+                debug_assert!(new_pointer <= cur);
+                unsafe {
+                    Self::mut_slice(self.main_db_mmap.map_mut_ptr(), new_pointer..cur).fill(0)
+                };
+                Self::set_pointer_of(&self.main_db_mmap, new_pointer);
+                HowToProceed::PopAndContinue
+            }
+            UndoLogEntry::ZeroOut { start, len } => {
+                unsafe {
+                    Self::mut_slice(self.main_db_mmap.map_mut_ptr(), start..start + len).fill(0)
+                };
+                HowToProceed::PopAndContinue
+            }
+            UndoLogEntry::Restore { start, data } => {
+                unsafe {
+                    Self::mut_slice(self.main_db_mmap.map_mut_ptr(), start..start + data.len())
+                        .copy_from_slice(data)
+                };
+                HowToProceed::PopAndContinue
+            }
+            UndoLogEntry::Rewind(time) => {
+                if time == new_time {
+                    Self::raw_set_next_seqnr_of(&self.main_db_mmap, new_time);
+                    HowToProceed::PopAndStop
+                } else if time > new_time {
                     HowToProceed::PopAndContinue
-                }
-                UndoLogEntry::ZeroOut { start, len } => {
-                    unsafe {
-                        Self::mut_slice(self.main_db_mmap.map_mut_ptr(), start..start + len).fill(0)
-                    };
-                    HowToProceed::PopAndContinue
-                }
-                UndoLogEntry::Restore { start, data } => {
-                    unsafe {
-                        Self::mut_slice(self.main_db_mmap.map_mut_ptr(), start..start + data.len())
-                            .copy_from_slice(data)
-                    };
-                    HowToProceed::PopAndContinue
-                }
-                UndoLogEntry::Rewind(time) => {
-                    if time == new_time {
-                        Self::raw_set_next_seqnr_of(&self.main_db_mmap, new_time);
-                        HowToProceed::PopAndStop
-                    } else if time > new_time {
-                        HowToProceed::PopAndContinue
-                    } else {
-                        panic!(
-                            "Couldn't rewind time to {}, ended up back at {}",
-                            new_time, time
-                        );
-                    }
+                } else {
+                    panic!(
+                        "Couldn't rewind time to {}, ended up back at {}",
+                        new_time, time
+                    );
                 }
             }
         });
@@ -512,7 +512,7 @@ impl DatabaseContext {
     /// # Safety
     /// The returned range must not overlap any mutable reference
     pub unsafe fn access<'a>(&self, range: FatPtr) -> &'a [u8] {
-        assert!(range.start+range.len <= self.main_db_mmap.used_space());
+        assert!(range.start + range.len <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts(
                 self.main_db_mmap.map_const_ptr().wrapping_add(range.start),
@@ -523,7 +523,7 @@ impl DatabaseContext {
     /// # Safety
     /// The returned range must not overlap any other reference
     pub unsafe fn access_mut<'a>(&mut self, range: FatPtr) -> &'a mut [u8] {
-        assert!(range.start+range.len <= self.main_db_mmap.used_space());
+        assert!(range.start + range.len <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.main_db_mmap.map_mut_ptr().wrapping_add(range.start),

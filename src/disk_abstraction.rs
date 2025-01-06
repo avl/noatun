@@ -1,5 +1,5 @@
+use crate::Target;
 use crate::disk_access::{FileAccessor, FileBackend};
-use crate::{ Target};
 use anyhow::{Context, Result, anyhow, bail};
 use fs2::FileExt;
 use memmap2::MmapMut;
@@ -153,7 +153,6 @@ pub struct InMemoryDisk {
     files: HashMap<PathBuf, Rc<RefCell<InMemoryGrowableFileMappingData>>>,
 }
 
-
 impl Disk for InMemoryDisk {
     fn open_file(
         &mut self,
@@ -223,10 +222,7 @@ impl FileBackend for InMemoryGrowableFileMapping {
         self.truncate(new_size)
     }
 
-    fn grow_committed_mapping(
-        &self,
-        new_size: usize
-    ) -> Result<()> {
+    fn grow_committed_mapping(&self, new_size: usize) -> Result<()> {
         self.grow(new_size)?;
         Ok(())
     }

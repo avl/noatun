@@ -1,11 +1,8 @@
 use bytemuck::{Pod, Zeroable};
-use noatun::{
-    Application, DatabaseCell, DatabaseContext, Message, MessageId, Object,
-    ThinPtr,
-};
-use std::io::{Cursor, Write};
-use savefile_derive::Savefile;
 use noatun::database::Database;
+use noatun::{Application, DatabaseCell, DatabaseContext, Message, MessageId, Object, ThinPtr};
+use savefile_derive::Savefile;
+use std::io::{Cursor, Write};
 
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
@@ -19,11 +16,11 @@ struct CounterApplication;
 impl Object for CounterObject {
     type Ptr = ThinPtr;
 
-    fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
+    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
         context.access_pod(index)
     }
 
-    fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
+    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
         context.access_pod_mut(index)
     }
 }
@@ -61,15 +58,21 @@ impl Message for CounterMessage {
     }
 
     fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
-        println!("Applying message {} {} {}", self.id, self.counter, self.delta);
-        println!("  Prev values: {} {}",
-                 root.counter.get(context),
+        println!(
+            "Applying message {} {} {}",
+            self.id, self.counter, self.delta
+        );
+        println!(
+            "  Prev values: {} {}",
+            root.counter.get(context),
             root.counter2.get(context)
         );
         if self.counter == 0 {
-            root.counter.set(context, root.counter.get(context) + self.delta);
+            root.counter
+                .set(context, root.counter.get(context) + self.delta);
         } else {
-            root.counter2.set(context, root.counter2.get(context) + self.delta);
+            root.counter2
+                .set(context, root.counter2.get(context) + self.delta);
         }
     }
 
@@ -101,7 +104,7 @@ fn test_counter_object() {
         "test/integration/test_counter_object.bin",
         CounterApplication,
         true,
-        10_000
+        10_000,
     )
     .unwrap();
 
@@ -109,7 +112,8 @@ fn test_counter_object() {
         id: 2,
         counter: 0,
         delta: 42,
-    }).unwrap();
+    })
+    .unwrap();
 
     let (root, context) = db.get_root();
     assert_eq!(root.counter.get(context), 42);
@@ -118,7 +122,8 @@ fn test_counter_object() {
         id: 1,
         counter: 1,
         delta: 43,
-    }).unwrap();
+    })
+    .unwrap();
 
     let (root, context) = db.get_root();
     assert_eq!(root.counter.get(context), 42);

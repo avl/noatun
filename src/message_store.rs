@@ -1,5 +1,6 @@
-use crate::disk_abstraction::{Disk};
+use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
+use crate::sha2_helper::sha2;
 use crate::{Message, MessageId, Target};
 use anyhow::{Context, Result, anyhow, bail};
 use bytemuck::{Pod, Zeroable};
@@ -14,12 +15,10 @@ use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::{MaybeUninit, offset_of};
 use std::path::Path;
-use crate::sha2_helper::sha2;
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 #[repr(transparent)]
 struct FileOffset(u64);
-
 
 /// Size of header for each individual message in store
 const MSG_HEADER_SIZE: usize = size_of::<FileHeaderEntry>();
@@ -695,7 +694,6 @@ impl<M> OnDiskMessageStore<M> {
         let mut cur_input_message = Some(first_input_message);
         let mut actual_inserted_entries = 0;
         loop {
-
             if carry_buffer.is_empty() && cur_input_message.is_none() {
                 break;
             }
@@ -725,14 +723,16 @@ impl<M> OnDiskMessageStore<M> {
                     Cases::NextFromInput,
                     cur_input_message.as_ref().map(|x| x.id()),
                 ),
-                (Cases::NextFromCarry, carry_buffer.front().map(|x| x.message)),
+                (
+                    Cases::NextFromCarry,
+                    carry_buffer.front().map(|x| x.message),
+                ),
             ];
             let (now_case, now_message_id) = cases
                 .iter()
                 .filter_map(|(case, val)| val.map(|x| (*case, x)))
                 .min_by_key(|x| x.1)
                 .expect("There must always be some case present");
-
 
             match now_case {
                 Cases::NextFromCurrent => {
@@ -765,9 +765,9 @@ impl<M> OnDiskMessageStore<M> {
                     info.file
                         .seek(SeekFrom::Start(start_pos + MSG_HEADER_SIZE as u64))?;
 
-                    let sha2 = info.file.with_bytes(msg_size as usize, |bytes| {
-                        sha2(bytes)
-                    })?;
+                    let sha2 = info
+                        .file
+                        .with_bytes(msg_size as usize, |bytes| sha2(bytes))?;
                     // Write data store header
                     info.file.seek(SeekFrom::Start(start_pos))?;
                     info.file.write_all(bytemuck::bytes_of(&FileHeaderEntry {
@@ -940,7 +940,11 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
-    pub fn new<D: Disk>(mut d: &mut D, target: &Target, max_file_size: usize) -> Result<OnDiskMessageStore<M>> {
+    pub fn new<D: Disk>(
+        mut d: &mut D,
+        target: &Target,
+        max_file_size: usize,
+    ) -> Result<OnDiskMessageStore<M>> {
         const {
             if size_of::<usize>() < size_of::<u32>() {
                 panic!(
@@ -950,7 +954,6 @@ impl<M> OnDiskMessageStore<M> {
         }
 
         let data_files: [Result<DataFileInfo>; 2] = [0, 1].map(|file_number| {
-
             let mut data_file = d
                 .open_file(target, &format!("data{}", file_number), 0, max_file_size)
                 .context("Opening data-file")?;
@@ -995,8 +998,7 @@ impl<M> OnDiskMessageStore<M> {
             .iter()
             .enumerate()
             .min_by_key(|(index, data_file)| {
-                (100
-                    * ((data_file.nominal_size - data_file.bytes_used) as u128))
+                (100 * ((data_file.nominal_size - data_file.bytes_used) as u128))
                     / (data_file.nominal_size.max(1) as u128)
             })
             .unwrap()
@@ -1075,7 +1077,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/add_and_recover_messages.bin".into()),
-            10000
+            10000,
         )
         .unwrap();
 
@@ -1109,7 +1111,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/add_and_read_messages.bin".into()),
-            5000_000_000
+            5000_000_000,
         )
         .unwrap();
 
@@ -1177,7 +1179,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/add_and_delete_messages.bin".into()),
-            10000
+            10000,
         )
         .unwrap();
 
@@ -1213,7 +1215,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into()),
-            10000
+            10000,
         )
         .unwrap();
 
@@ -1244,7 +1246,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut InMemoryDisk::default(),
             &Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into()),
-            10000
+            10000,
         )
         .unwrap();
 
@@ -1286,5 +1288,4 @@ mod tests {
         roundtrip(FileOffset::new(u64::MAX / 2 - 1, U1::ONE));
         roundtrip(FileOffset::new(u64::MAX / 2 - 1, U1::ZERO));
     }
-
 }

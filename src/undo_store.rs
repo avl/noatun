@@ -42,7 +42,7 @@ pub enum HowToProceed {
 }
 
 impl UndoLog {
-    pub fn new<D: Disk>(disk: &mut D, target: &Target, max_size:usize) -> Result<UndoLog> {
+    pub fn new<D: Disk>(disk: &mut D, target: &Target, max_size: usize) -> Result<UndoLog> {
         let mut file = disk.open_file(target, "undo", 0, max_size)?;
 
         Ok(UndoLog {
