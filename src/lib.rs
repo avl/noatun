@@ -1050,7 +1050,7 @@ mod tests {
     fn test_msg_store_real() {
         let mut db: Database<CounterApplication> =
             Database::create_new("test/msg_store.bin", CounterApplication, true, 10000).unwrap();
-        //        let mut messages = MessageStore::new(StandardDisk, &Target::CreateNewOrOverwrite("test/msg_store.bin".into())).unwrap();
+
 
         db.append_single(CounterMessage {
             parent: None,

@@ -250,7 +250,7 @@ mod tests {
     fn smoke_deptrack() {
         let mut tracker = MmapMessageDependencyTracker::new(
             &mut StandardDisk,
-            &Target::CreateNewOrOverwrite("test_smoke_deptrack.bin".into()),
+            &Target::CreateNewOrOverwrite("test/test_smoke_deptrack.bin".into()),
             10000
         )
         .unwrap();
@@ -264,7 +264,7 @@ mod tests {
     fn smoke_deptrack_many() {
         let mut tracker = MmapMessageDependencyTracker::new(
             &mut StandardDisk,
-            &Target::CreateNewOrOverwrite("test_smoke_deptrack_many.bin".into()),
+            &Target::CreateNewOrOverwrite("test/test_smoke_deptrack_many.bin".into()),
             10000
         )
         .unwrap();

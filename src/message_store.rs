@@ -1082,7 +1082,7 @@ mod tests {
     fn add_and_recover_messages() {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
-            &Target::CreateNewOrOverwrite("add_and_recover_messages.bin".into()),
+            &Target::CreateNewOrOverwrite("test/add_and_recover_messages.bin".into()),
             10000
         )
         .unwrap();
@@ -1116,7 +1116,7 @@ mod tests {
     fn add_and_read_messages() {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
-            &Target::CreateNewOrOverwrite("add_and_read_messages.bin".into()),
+            &Target::CreateNewOrOverwrite("test/add_and_read_messages.bin".into()),
             5000_000_000
         )
         .unwrap();
@@ -1150,7 +1150,7 @@ mod tests {
     fn add_and_read_messages_twice() {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
-            &Target::CreateNewOrOverwrite("add_and_read_messages_twice.bin".into()),
+            &Target::CreateNewOrOverwrite("test/add_and_read_messages_twice.bin".into()),
             10000,
         )
         .unwrap();
@@ -1184,7 +1184,7 @@ mod tests {
     fn add_and_delete_messages() {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
-            &Target::CreateNewOrOverwrite("add_and_delete_messages.bin".into()),
+            &Target::CreateNewOrOverwrite("test/add_and_delete_messages.bin".into()),
             10000
         )
         .unwrap();
@@ -1220,7 +1220,7 @@ mod tests {
     fn test_create_disk_store() {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
-            &Target::CreateNewOrOverwrite("test_create_disk_store.bin".into()),
+            &Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into()),
             10000
         )
         .unwrap();
@@ -1251,7 +1251,7 @@ mod tests {
     fn test_create_disk_store_in_memory() {
         let mut store = OnDiskMessageStore::new(
             &mut InMemoryDisk::default(),
-            &Target::CreateNewOrOverwrite("test_create_disk_store.bin".into()),
+            &Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into()),
             10000
         )
         .unwrap();
