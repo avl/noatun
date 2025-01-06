@@ -76,7 +76,7 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
         *val_len = 0;
     }
     fn new<S: Disk>(disk: &mut S, path: &Target, max_size: usize) -> Result<Self> {
-        std::fs::create_dir_all(&path.path());
+        std::fs::create_dir_all(path.path());
         //let key_path = path.path().join("dep_keys.bin");
         //let value_path = path.path().join("dep_values.bin");
         /*let key_file = OpenOptions::new()
@@ -139,8 +139,8 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
 
         let (val_len, vals): (_, &mut [LinkedListEntry]) = Self::access(&mut self.vals);
         let (key_len, keys): (_, &mut [u64]) = Self::access(&mut self.keys);
-        debug_assert_eq!(keys.len(), self.key_capacity as usize);
-        debug_assert_eq!(vals.len(), self.value_capacity as usize);
+        debug_assert_eq!(keys.len(), self.key_capacity);
+        debug_assert_eq!(vals.len(), self.value_capacity);
 
         let prev = keys[observee.index()];
 
@@ -154,8 +154,8 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
     fn read_dependency(&mut self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> {
         let (key_len, keys): (_, &mut [u64]) = Self::access(&mut self.keys);
         let (val_len, vals): (_, &mut [LinkedListEntry]) = Self::access(&mut self.vals);
-        debug_assert_eq!(keys.len(), self.key_capacity as usize);
-        debug_assert_eq!(vals.len(), self.value_capacity as usize);
+        debug_assert_eq!(keys.len(), self.key_capacity);
+        debug_assert_eq!(vals.len(), self.value_capacity);
 
         let mut cur: u64 = if observee.index() < keys.len() {
             keys[observee.index()]
@@ -169,7 +169,7 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
             }
             let entry = &vals[cur as usize - 1];
             cur = entry.get_next();
-            return Some(entry.seq);
+            Some(entry.seq)
         })
     }
 }

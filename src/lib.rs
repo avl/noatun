@@ -1,6 +1,9 @@
 #![feature(test)]
 #![allow(unused)]
 #![allow(dead_code)]
+#![allow(clippy::unnecessary_lazy_evaluations)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::comparison_chain)]
 
 extern crate test;
 
@@ -14,7 +17,6 @@ use bytemuck::{Pod, Zeroable};
 use fs2::FileExt;
 use indexmap::IndexMap;
 use memmap2::MmapMut;
-use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
 use serde_derive::{Deserialize, Serialize};
 use std::cell::{Cell, OnceCell};
@@ -35,6 +37,8 @@ use time::format_description::well_known::Rfc3339;
 use crate::projector::Projector;
 use crate::sha2_helper::sha2;
 pub use database::Database;
+#[cfg(feature="savefile")]
+use savefile_derive::Savefile;
 
 
 mod projection_store;
@@ -62,10 +66,10 @@ mod boot_checksum;
     Hash,
     PartialOrd,
     Ord,
-    Savefile,
     Serialize,
     Deserialize,
 )]
+#[cfg_attr(feature="savefile", derive(Savefile))]
 #[repr(transparent)]
 pub struct MessageId {
     data: [u32; 4],
@@ -199,7 +203,7 @@ impl Object for DummyUnitObject {
     fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
         // # SAFETY
         // Any dangling pointer is a valid pointer to a zero-sized type
-        unsafe { &mut *(std::ptr::dangling_mut() as *mut Self) }
+        unsafe { &mut *(std::ptr::dangling_mut()) }
     }
 }
 
@@ -426,12 +430,12 @@ impl Pointer for FatPtr {
     }
     fn create<T>(addr: &T, buffer_start: *const u8) -> Self {
         let addr: *const T = addr as *const T;
-        let dummy: (*const u8, usize);
+
         assert_eq!(
             std::mem::size_of::<*const T>(),
             2 * std::mem::size_of::<usize>()
         );
-        dummy = unsafe { transmute_copy(&addr) };
+        let dummy: (*const u8, usize) =  unsafe { transmute_copy(&addr) };
         FatPtr {
             start: ((dummy.0 as usize) - (buffer_start as usize)),
             len: dummy.1,
@@ -495,6 +499,7 @@ impl<T> DatabaseVec<T>
 where
     T: FixedSizeObject + 'static,
 {
+    #[allow(clippy::mut_from_ref)]
     pub fn new(ctx: &DatabaseContext) -> &mut DatabaseVec<T> {
         unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
     }
@@ -602,7 +607,9 @@ impl<T: Object> DatabaseObjectHandle<T> {
     pub fn get_mut<'a>(&'a self, context: &mut DatabaseContext) -> &'a mut T {
         unsafe { T::access_mut(context, self.object_index) }
     }
-    pub fn new(context: &DatabaseContext, value: T) -> &mut Self
+
+    #[allow(clippy::mut_from_ref)]
+    pub fn allocate(context: &DatabaseContext, value: T) -> &mut Self
     where
         T: Object<Ptr = ThinPtr>,
         T: Pod,
@@ -634,7 +641,7 @@ impl<T: Pod> Object for DatabaseCell<T> {
     }
 }
 thread_local! {
-    static MULTI_INSTANCE_BLOCKER: Cell<bool> = Cell::new(false);
+    static MULTI_INSTANCE_BLOCKER: Cell<bool> = const { Cell::new(false) };
 }
 
 #[derive(Clone)]
@@ -647,7 +654,7 @@ impl Target {
     pub fn path(&self) -> &Path {
         let (Target::CreateNew(x) | Target::CreateNewOrOverwrite(x) | Target::OpenExisting(x)) =
             self;
-        &*x
+        x
     }
     pub fn create(&self) -> bool {
         matches!(self, Target::CreateNewOrOverwrite(_) | Target::CreateNew(_))
@@ -769,7 +776,7 @@ pub mod database {
 
         fn create(mut app: APP, target: Target, max_file_size: usize) -> Result<Database<APP>> {
             if MULTI_INSTANCE_BLOCKER.get() {
-                if !std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_ok() {
+                if std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_err() {
                     panic!(
                         "Noatun: Multiple active DB-roots in the same thread are not allowed.\
                         You can disable this diagnostic by setting env-var NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE.\
@@ -1118,7 +1125,7 @@ mod tests {
             type Message = DummyMessage<DatabaseObjectHandle<u32>>;
 
             fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
-                let obj = DatabaseObjectHandle::new(&ctx, 43u32);
+                let obj = DatabaseObjectHandle::allocate(&ctx, 43u32);
 
                 ctx.index_of(obj)
             }

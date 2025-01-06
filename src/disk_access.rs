@@ -144,12 +144,9 @@ impl FileAccessor {
     /// committed_len
     pub(crate) fn set_used_space(&self, new_value: usize) {
         assert!(new_value <= self.committed_size.get());
-        *self.used_space_mut() = new_value;
+        unsafe { *(self.mapping.ptr() as *mut usize) = new_value; }
     }
 
-    fn used_space_mut(&self) -> &mut usize {
-        unsafe { &mut *(self.mapping.ptr() as *mut usize) }
-    }
     #[inline(always)]
     pub(crate) fn free_space(&self) -> usize {
         self.committed_size.get() - Self::HEADER_SIZE - self.used_space()
@@ -204,7 +201,7 @@ impl FileAccessor {
         let mut overwrite = target.overwrite();
         let mut create = target.create();
 
-        if !std::fs::metadata(&path).is_ok() {
+        if std::fs::metadata(&path).is_err() {
             overwrite = true;
         }
         let file = OpenOptions::new()
@@ -260,7 +257,7 @@ impl FileAccessor {
         unsafe {
             slice::from_raw_parts_mut(
                 self.ptr
-                    .wrapping_add(self.seek_pos as usize)
+                    .wrapping_add(self.seek_pos)
                     .wrapping_add(Self::HEADER_SIZE),
                 bytes,
             )
@@ -277,8 +274,7 @@ impl FileAccessor {
         let src_buf = &self.map()[self.seek_pos..self.seek_pos + bytes];
 
         if target.seek_pos + bytes > target.used_space() {
-            target.grow((target.seek_pos.checked_add(bytes).unwrap())
-            )?;
+            target.grow(target.seek_pos.checked_add(bytes).unwrap())?;
         }
         let target_seek_pos = target.seek_pos;
         let dst_buf = &mut target.map_mut()[target_seek_pos..target_seek_pos + bytes];
@@ -319,7 +315,7 @@ impl FileAccessor {
             )?;
             self.committed_size.set(new_file_size);
         }
-        *self.used_space_mut() = new_size;
+        self.set_used_space(new_size);
         Ok(())
     }
 
@@ -363,7 +359,7 @@ impl FileAccessor {
             self.mapping.shrink_committed_mapping(new_alloc_size)?;
             self.committed_size.set(new_alloc_size);
         }
-        *self.used_space_mut() = new_size;
+        self.set_used_space(new_size);
         Ok(())
     }
 }

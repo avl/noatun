@@ -115,7 +115,7 @@ impl FileOffset {
         self.0 == u64::MAX
     }
     fn offset(self) -> Option<u64> {
-        (self.0 != u64::MAX).then(|| self.0 >> 1)
+        (self.0 != u64::MAX).then_some(self.0 >> 1)
     }
     fn file_and_offset(self) -> Option<(U1, u64)> {
         (self.0 != u64::MAX).then(|| {
@@ -260,7 +260,7 @@ impl<M> OnDiskMessageStore<M> {
     }
 
     #[inline]
-    fn header<'a>(map: &'a mut FileAccessor) -> Result<&'a mut StoreHeader> {
+    fn header(map: &mut FileAccessor) -> Result<&mut StoreHeader> {
         Self::provide_index_map(map, 0)?;
 
         let slice: &mut [u8] = map.map_mut();
@@ -281,10 +281,10 @@ impl<M> OnDiskMessageStore<M> {
     /// NOTE! This returns also unallocated message-entries, for writing, not just those
     /// that are initialized with data
     #[inline]
-    fn header_and_index_mut_uninit<'a>(
-        map: &'a mut FileAccessor,
+    fn header_and_index_mut_uninit(
+        map: &mut FileAccessor,
         extra: usize,
-    ) -> Result<(&'a mut StoreHeader, &'a mut [IndexEntry])> {
+    ) -> Result<(&mut StoreHeader, &mut [IndexEntry])> {
         // TODO: Create a fast-path for the case where we do have enough space, so we can inline
         // this method, and only call into something like `Self::provide_index_map` when needed
         Self::provide_index_map(map, extra)?;
@@ -295,9 +295,9 @@ impl<M> OnDiskMessageStore<M> {
         Ok((header, rest))
     }
     #[inline]
-    fn header_and_index_mut<'a>(
-        map: &'a mut FileAccessor,
-    ) -> Result<(&'a mut StoreHeader, &'a mut [IndexEntry])> {
+    fn header_and_index_mut(
+        map: &mut FileAccessor,
+    ) -> Result<(&mut StoreHeader, &mut [IndexEntry])> {
         let (store, index) = Self::header_and_index_mut_uninit(map, 0)?;
 
         let entries = store.entries as usize;
@@ -565,7 +565,7 @@ impl<M> OnDiskMessageStore<M> {
             return Ok(()); //Idempotency,
         };
 
-        let msg = Self::delete_msg(entry, &mut self.data_files)?;
+        Self::delete_msg(entry, &mut self.data_files)?;
         message_index[delete_index].file_offset.set_deleted();
         Ok(())
     }
@@ -708,6 +708,7 @@ impl<M> OnDiskMessageStore<M> {
             };
 
             #[derive(Clone, Copy, Debug)]
+            #[allow(clippy::enum_variant_names)]
             enum Cases {
                 /// The next value that should be written to the output is the one that is already
                 /// present. I.e, a no-op.
@@ -765,8 +766,7 @@ impl<M> OnDiskMessageStore<M> {
                         .seek(SeekFrom::Start(start_pos + MSG_HEADER_SIZE as u64))?;
 
                     let sha2 = info.file.with_bytes(msg_size as usize, |bytes| {
-                        let temp = sha2(bytes);
-                        temp
+                        sha2(bytes)
                     })?;
                     // Write data store header
                     info.file.seek(SeekFrom::Start(start_pos))?;
@@ -995,10 +995,9 @@ impl<M> OnDiskMessageStore<M> {
             .iter()
             .enumerate()
             .min_by_key(|(index, data_file)| {
-                let wasted_bytes_percent = (100
+                (100
                     * ((data_file.nominal_size - data_file.bytes_used) as u128))
-                    / (data_file.nominal_size.max(1) as u128);
-                wasted_bytes_percent
+                    / (data_file.nominal_size.max(1) as u128)
             })
             .unwrap()
             .0;

@@ -52,11 +52,11 @@ impl UndoLog {
 
     fn access<R>(&self, f: impl FnOnce(&FileAccessor) -> R) -> R {
         let bytes = self.store_mmap.borrow();
-        f(&*bytes)
+        f(&bytes)
     }
     fn access_mut<R>(&mut self, f: impl FnOnce(&mut FileAccessor) -> R) -> R {
         let mut bytes = self.store_mmap.borrow_mut();
-        f(&mut *bytes)
+        f(&mut bytes)
     }
 
     /// Calls the callback with the most recent entry in the undo-log, repeatedly.
@@ -82,7 +82,7 @@ impl UndoLog {
         })
     }
     fn parse1(data: &[u8]) -> Option<(usize /*new size*/, UndoLogEntry)> {
-        if data.len() == 0 {
+        if data.is_empty() {
             return None;
         }
         let mut offset = data.len() - 1;
@@ -93,7 +93,7 @@ impl UndoLog {
                 assert!(offset >= 8);
                 offset -= 8;
                 let prev_ptr = LittleEndian::read_u64(&data[offset..offset + 8]);
-                return Some((offset, UndoLogEntry::SetPointer(prev_ptr as usize)));
+                Some((offset, UndoLogEntry::SetPointer(prev_ptr as usize)))
             }
             2 => {
                 assert!(offset >= 16);
@@ -101,7 +101,7 @@ impl UndoLog {
                 let len = LittleEndian::read_u64(&data[offset..offset + 8]) as usize;
                 offset -= 8;
                 let start = LittleEndian::read_u64(&data[offset..offset + 8]) as usize;
-                return Some((offset, UndoLogEntry::ZeroOut { start, len }));
+                Some((offset, UndoLogEntry::ZeroOut { start, len }))
             }
             3 => {
                 assert!(offset >= 16);
@@ -112,13 +112,13 @@ impl UndoLog {
                 assert!(offset >= len);
                 offset -= len;
                 let buf = &data[offset..offset + len];
-                return Some((offset, UndoLogEntry::Restore { start, data: buf }));
+                Some((offset, UndoLogEntry::Restore { start, data: buf }))
             }
             4 => {
                 assert!(offset >= 4);
                 offset -= 4;
                 let time: SequenceNr = bytemuck::pod_read_unaligned(&data[offset..offset + 4]);
-                return Some((offset, UndoLogEntry::Rewind(time)));
+                Some((offset, UndoLogEntry::Rewind(time)))
             }
             _ => panic!("Corrupt undo-store"),
         }

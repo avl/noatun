@@ -100,6 +100,7 @@ struct InMemoryGrowableFileMapping {
 }
 
 impl InMemoryGrowableFileMappingData {
+    #[allow(clippy::mut_from_ref)]
     fn map_mut(&self) -> &mut [u8] {
         let slice = unsafe { slice::from_raw_parts_mut(self.data, self.used_len) };
         slice
@@ -175,7 +176,7 @@ impl Disk for InMemoryDisk {
                 }
             }
             let data_len = max_size;
-            let new_layout = Layout::from_size_align(data_len as usize, 256).unwrap();
+            let new_layout = Layout::from_size_align(data_len, 256).unwrap();
             let data_ptr = unsafe { std::alloc::alloc_zeroed(new_layout) };
 
             let data = Rc::new(RefCell::new(InMemoryGrowableFileMappingData {
@@ -256,7 +257,7 @@ impl Disk for StandardDisk {
         let mut overwrite = target.overwrite();
         let mut create = target.create();
 
-        if !std::fs::metadata(&path).is_ok() {
+        if std::fs::metadata(&path).is_err() {
             overwrite = true;
         }
 

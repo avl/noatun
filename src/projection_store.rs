@@ -59,7 +59,7 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
 
     fn finalize_message(&mut self, message_id: SequenceNr) {
         debug_assert_ne!(message_id.0, 0);
-        if self.uses.len() <= message_id.index() as usize || self.uses[message_id.index()] == 0 {
+        if self.uses.len() <= message_id.index() || self.uses[message_id.index()] == 0 {
             self.unused_messages.push(message_id);
         }
     }
@@ -103,7 +103,7 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
             };
             for parent in msg.parents() {
                 let parent_index = SequenceNr::from_index(messages.get_index_of(parent)?
-                    .expect("Parent unknown. This is not supported like this - it needs to be cleansed before msg added to store.").try_into().unwrap());
+                    .expect("Parent unknown. This is not supported like this - it needs to be cleansed before msg added to store."));
                 if let Some(remapping) = parent_remap.get(&parent_index) {
                     parent_list.extend(remapping);
                 } else {
@@ -477,6 +477,7 @@ impl DatabaseContext {
         }
     }
 
+    #[allow(clippy::mut_from_ref)]
     pub fn allocate_pod<T: Pod>(&self) -> &mut T {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { &mut *(bytes as *mut T) }
@@ -508,7 +509,10 @@ impl DatabaseContext {
         let start = self.allocate_raw(size, align);
         unsafe { std::slice::from_raw_parts_mut(start, size) }
     }
+    /// # Safety
+    /// The returned range must not overlap any mutable reference
     pub unsafe fn access<'a>(&self, range: FatPtr) -> &'a [u8] {
+        assert!(range.start+range.len <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts(
                 self.main_db_mmap.map_const_ptr().wrapping_add(range.start),
@@ -516,7 +520,10 @@ impl DatabaseContext {
             )
         }
     }
+    /// # Safety
+    /// The returned range must not overlap any other reference
     pub unsafe fn access_mut<'a>(&mut self, range: FatPtr) -> &'a mut [u8] {
+        assert!(range.start+range.len <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.main_db_mmap.map_mut_ptr().wrapping_add(range.start),
@@ -524,6 +531,8 @@ impl DatabaseContext {
             )
         }
     }
+    /// # Safety
+    /// The given range must point to valid memory, and must not overlap any other reference
     pub unsafe fn mut_slice<'a>(data: *mut u8, range: Range<usize>) -> &'a mut [u8] {
         unsafe {
             std::slice::from_raw_parts_mut(data.wrapping_add(range.start), range.end - range.start)
