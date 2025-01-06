@@ -2,7 +2,7 @@ use crate::projection_store::message_dependency_tracker::{
     MessageDependencyTracker, MmapMessageDependencyTracker,
 };
 use crate::disk_abstraction::{Disk, StandardDisk};
-use crate::disk_access::DiskAccessor;
+use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
@@ -68,7 +68,7 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
     ) -> Result<IndexSet<SequenceNr>> {
-        //println!("Messages: {:#?}", messages);
+
         self.unused_messages.sort(); //Sort in seq-nr order
         let mut deleted = IndexSet::new();
         let mut parent_lists = Bump::new();
@@ -175,7 +175,7 @@ pub struct MainDbHeader {
 }
 
 pub struct DatabaseContext {
-    main_db_mmap: DiskAccessor,
+    main_db_mmap: FileAccessor,
     //pointer: Cell<usize>,
     root_index: Option<GenPtr>,
     undo_log: UndoLog,
@@ -247,18 +247,18 @@ impl DatabaseContext {
         header.next_seqnr = new_value;
     }
     #[inline(always)]
-    fn set_pointer_of(main_db_mmap: &DiskAccessor, new_value: usize) {
+    fn set_pointer_of(main_db_mmap: &FileAccessor, new_value: usize) {
         /*let header: &mut MainDbHeader =
             unsafe { &mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
         header.pointer = new_value as u64;*/
         main_db_mmap.set_used_space(new_value);
     }
     #[inline(always)]
-    fn pointer_of(main_db_mmap: &DiskAccessor) -> usize {
+    fn pointer_of(main_db_mmap: &FileAccessor) -> usize {
         main_db_mmap.used_space()
     }
     #[inline(always)]
-    fn raw_set_next_seqnr_of(main_db_mmap: &DiskAccessor, new_value: SequenceNr) {
+    fn raw_set_next_seqnr_of(main_db_mmap: &FileAccessor, new_value: SequenceNr) {
         let header: &mut MainDbHeader =
             unsafe { &mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
         header.next_seqnr = new_value;
@@ -302,7 +302,7 @@ impl DatabaseContext {
         Ok(())
     }
 
-    fn write_initial_header(mmap: &mut DiskAccessor) {
+    fn write_initial_header(mmap: &mut FileAccessor) {
         let header: &mut MainDbHeader =
             bytemuck::from_bytes_mut(&mut mmap.map_mut()[0..size_of::<MainDbHeader>()]);
         header.next_seqnr = SequenceNr::INVALID;
@@ -365,7 +365,6 @@ impl DatabaseContext {
         println!("Rewinding to {:?}", new_time);
 
         let result = self.undo_log.rewind(|entry| {
-            println!("Entry: {:?}", entry);
             match entry {
                 UndoLogEntry::SetPointer(new_pointer) => {
                     let cur = Self::pointer_of(&self.main_db_mmap);
@@ -631,7 +630,6 @@ impl DatabaseContext {
         }
         let observer = self.next_seqnr();
         if observer != observee {
-            println!("Tracking that {} observed {}", observer, observee);
             self.registrar_tracker
                 .borrow_mut()
                 .report_observed(observer, observee);

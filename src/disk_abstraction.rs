@@ -1,4 +1,4 @@
-use crate::disk_access::{DiskAccessor, FileMappingTrait};
+use crate::disk_access::{FileAccessor, FileBackend};
 use crate::{ Target};
 use anyhow::{Context, Result, anyhow, bail};
 use fs2::FileExt;
@@ -51,8 +51,7 @@ custom allocators?)
 /// Use to abstract away the concrete mmap and disk io implementations.
 /// This can be used to easily change implementations of these, but more
 /// importantly, it allows us to run under miri
-// TODO: This type should probably not be public
-pub trait Disk {
+pub(crate) trait Disk {
     /// Open a file as specified by base directory in 'Target', and file name `file`.
     /// If the file is smaller than 'min_size', it will be extended with zeroes to that size.
     fn open_file(
@@ -61,7 +60,7 @@ pub trait Disk {
         file: &str,
         min_size: usize,
         max_size: usize,
-    ) -> Result<DiskAccessor>;
+    ) -> Result<FileAccessor>;
 }
 /*pub trait DiskFile: Seek + Write + Read {
     fn set_len(&mut self, len: u64) -> Result<()>;
@@ -161,7 +160,7 @@ impl Disk for InMemoryDisk {
         file: &str,
         min_size: usize,
         max_size: usize,
-    ) -> anyhow::Result<DiskAccessor> {
+    ) -> anyhow::Result<FileAccessor> {
         //std::fs::create_dir_all(&path).context("create database directory")?;
         let create = target.create();
         let overwrite = target.overwrite();
@@ -190,11 +189,11 @@ impl Disk for InMemoryDisk {
 
         let mapping = InMemoryGrowableFileMapping { backing: data };
 
-        Ok(DiskAccessor::from_mapping(mapping))
+        Ok(FileAccessor::from_mapping(mapping))
     }
 }
 
-impl FileMappingTrait for InMemoryGrowableFileMapping {
+impl FileBackend for InMemoryGrowableFileMapping {
     fn page_size(&self) -> usize {
         2 * 1024 * 1024
     }
@@ -225,8 +224,7 @@ impl FileMappingTrait for InMemoryGrowableFileMapping {
 
     fn grow_committed_mapping(
         &self,
-        new_size: usize,
-        filename_for_diagnostics: &str,
+        new_size: usize
     ) -> Result<()> {
         self.grow(new_size)?;
         Ok(())
@@ -253,7 +251,7 @@ impl Disk for StandardDisk {
         file: &str,
         min_size: usize,
         max_size: usize,
-    ) -> Result<DiskAccessor> {
+    ) -> Result<FileAccessor> {
         let path = target.path().join(format!("{}.bin", file));
         let mut overwrite = target.overwrite();
         let mut create = target.create();
@@ -262,7 +260,7 @@ impl Disk for StandardDisk {
             overwrite = true;
         }
 
-        let mapping = DiskAccessor::new(target, file, min_size, max_size)?;
+        let mapping = FileAccessor::new(target, file, min_size, max_size)?;
 
         Ok(mapping)
     }

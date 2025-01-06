@@ -210,14 +210,13 @@ mod projector {
     use crate::message_store::OnDiskMessageStore;
     use anyhow::Result;
 
-    // TODO: This type should probably not be public
-    pub struct Projector<APP: Application> {
+    pub(crate) struct Projector<APP: Application> {
         messages: OnDiskMessageStore<APP::Message>,
         phantom_data: PhantomData<(*const APP::Root, APP::Message)>,
     }
 
     impl<APP: Application> Projector<APP> {
-        pub fn new<D: Disk>(s: &mut D, target: &Target, max_size: usize) -> Result<Projector<APP>> {
+        pub(crate) fn new<D: Disk>(s: &mut D, target: &Target, max_size: usize) -> Result<Projector<APP>> {
             Ok(Projector {
                 messages: OnDiskMessageStore::new(s, target, max_size)?,
                 phantom_data: PhantomData,
@@ -291,7 +290,6 @@ mod projector {
             //context.set_next_seqnr(SequenceNr::from_index(next_index));
             let must_remove = context.finalize_transaction(&mut self.messages)?;
             for index in must_remove {
-                println!("Removing message {:?}", index);
                 self.messages.mark_deleted_by_index(index.index());
                 //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
             }
@@ -520,13 +518,10 @@ where
 
         if self.length > 0 {
             let old_ptr = FatPtr::from(self.data, T::SIZE * self.length);
-            println!("Copy old");
             ctx.copy(old_ptr, dest_index.0);
         }
 
         let new_len = self.length + 1;
-
-        println!("Write-pod with db.vec");
 
         ctx.write_pod(
             DatabaseVec {
@@ -542,10 +537,8 @@ where
 
     pub fn push_new<'a>(&'a mut self, ctx: &mut DatabaseContext) -> &'a mut T {
         if self.length >= self.capacity {
-            println!("Realloc-leg");
             self.realloc_add(ctx, (self.capacity + 1) * 2);
         } else {
-            println!("no-Realloc-leg");
             ctx.write_pod(self.length + 1, &mut self.length);
         }
         ctx.update_registrar(&mut self.length_registrar);
@@ -688,8 +681,8 @@ pub mod database {
             let root = unsafe { <APP::Root as Object>::access(&self.context, root_ptr) };
             (root, &self.context)
         }
-        // TODO: This method should probably not be public (changes should only happen through messages)
-        pub fn with_root_mut<R>(
+
+        pub(crate) fn with_root_mut<R>(
             &mut self,
             f: impl FnOnce(&mut APP::Root, &mut DatabaseContext, &mut Projector<APP>) -> R,
         ) -> Result<R> {
@@ -814,7 +807,7 @@ pub mod database {
 mod tests {
     use super::*;
     use crate::projection_store::MainDbHeader;
-    use crate::disk_access::DiskAccessor;
+    use crate::disk_access::FileAccessor;
     use byteorder::{LittleEndian, WriteBytesExt};
     use database::Database;
     use savefile::{load_noschema, save_noschema};
@@ -825,7 +818,7 @@ mod tests {
 
     #[test]
     fn test_mmap_big() {
-        let mut mmap = DiskAccessor::new(
+        let mut mmap = FileAccessor::new(
             &Target::CreateNewOrOverwrite("test/mmap_test_big".into()),
             "mmap",
             0,
@@ -837,7 +830,7 @@ mod tests {
 
     #[test]
     fn test_mmap_helper() {
-        let mut mmap = DiskAccessor::new(
+        let mut mmap = FileAccessor::new(
             &Target::CreateNewOrOverwrite("test/mmap_test1".into()),
             "mmap",
             0,
@@ -851,19 +844,19 @@ mod tests {
         mmap.seek(SeekFrom::Start(12)).unwrap();
         mmap.write_u64::<LittleEndian>(0x2c).unwrap();
         mmap.seek(SeekFrom::Start(12)).unwrap();
-        let initial_ptr = mmap.get_ptr();
+        let initial_ptr = mmap.map_mut_ptr();
         assert_eq!(mmap.read_u64::<LittleEndian>().unwrap(), 0x2c);
 
         mmap.seek(SeekFrom::Start(3000_000)).unwrap();
         mmap.write_u8(1).unwrap();
-        assert_eq!(initial_ptr, mmap.get_ptr());
+        assert_eq!(initial_ptr, mmap.map_mut_ptr());
 
         mmap.seek(SeekFrom::Start(3000_000)).unwrap();
         assert_eq!(mmap.read_u8().unwrap(), 1);
 
         mmap.flush_all().unwrap();
 
-        println!("Truncate");
+
         mmap.truncate(0).unwrap();
         mmap.seek(SeekFrom::Start(0)).unwrap();
 
@@ -1023,7 +1016,7 @@ mod tests {
         }
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut CounterObject) {
-            println!("Applying {:?}", self);
+
             if self.inc1 != 0 {
                 root.counter.set(
                     context,
@@ -1159,28 +1152,28 @@ mod tests {
         db.with_root_mut(|counter_vec, context, _| {
             assert_eq!(counter_vec.len(context), 0);
 
-            println!("1");
+
             let new_element = counter_vec.push_new(context);
             let new_element = counter_vec.get_mut(context, 0);
-            println!("2");
+
 
             new_element.counter.set(context, 47);
             let new_element = counter_vec.push_new(context);
             new_element.counter.set(context, 48);
-            println!("3");
+
 
             assert_eq!(counter_vec.len(context), 2);
 
             let item = counter_vec.get_mut(context, 1);
             assert_eq!(*item.counter, 48);
 
-            println!("4");
+
 
             for _ in 0..10 {
                 let new_element = counter_vec.push_new(context);
-                println!("5");
+
             }
-            println!("6");
+
 
             let item = counter_vec.get_mut(context, 1);
             assert_eq!(*item.counter, 48);
@@ -1214,11 +1207,11 @@ mod tests {
             db.with_root_mut(|counter_vec, context, _| {
                 context.set_next_seqnr(SequenceNr::from_index(1));
                 assert_eq!(counter_vec.len(context), 0);
-                println!("Pre-push");
+
                 let new_element = counter_vec.push_new(context);
                 new_element.counter.set(context, 47);
                 new_element.counter2.set(context, 48);
-                println!("Pre-set-time");
+
                 context.set_next_seqnr(SequenceNr::from_index(2));
                 assert_eq!(counter_vec.len(context), 1);
                 context.set_next_seqnr(SequenceNr::from_index(3));
@@ -1234,7 +1227,7 @@ mod tests {
             });
         }
 
-        println!("Rewind!");
+
         db.force_rewind(SequenceNr::from_index(1));
 
         {

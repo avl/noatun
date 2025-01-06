@@ -1,5 +1,5 @@
 use crate::disk_abstraction::{Disk};
-use crate::disk_access::DiskAccessor;
+use crate::disk_access::FileAccessor;
 use crate::{Message, MessageId, Target};
 use anyhow::{Context, Result, anyhow, bail};
 use bytemuck::{Pod, Zeroable};
@@ -177,7 +177,7 @@ struct DataFileEntry {
 
 #[derive(Debug)]
 struct DataFileInfo {
-    file: DiskAccessor,
+    file: FileAccessor,
     file_number: U1,
 }
 
@@ -206,7 +206,7 @@ struct StoreHeader {
 
 pub(crate) struct OnDiskMessageStore<M> {
     target: Target,
-    index_mmap: DiskAccessor,
+    index_mmap: FileAccessor,
     data_files: [DataFileInfo; 2],
     active_file: U1,
     phantom: PhantomData<M>,
@@ -214,7 +214,7 @@ pub(crate) struct OnDiskMessageStore<M> {
 
 impl<M> OnDiskMessageStore<M> {
     fn provide_index_map(
-        map: &mut DiskAccessor,
+        map: &mut FileAccessor,
         extra: usize, //items, not bytes
     ) -> Result<()> {
         let xlen = map.used_space();
@@ -260,7 +260,7 @@ impl<M> OnDiskMessageStore<M> {
     }
 
     #[inline]
-    fn header<'a>(map: &'a mut DiskAccessor) -> Result<&'a mut StoreHeader> {
+    fn header<'a>(map: &'a mut FileAccessor) -> Result<&'a mut StoreHeader> {
         Self::provide_index_map(map, 0)?;
 
         let slice: &mut [u8] = map.map_mut();
@@ -282,7 +282,7 @@ impl<M> OnDiskMessageStore<M> {
     /// that are initialized with data
     #[inline]
     fn header_and_index_mut_uninit<'a>(
-        map: &'a mut DiskAccessor,
+        map: &'a mut FileAccessor,
         extra: usize,
     ) -> Result<(&'a mut StoreHeader, &'a mut [IndexEntry])> {
         // TODO: Create a fast-path for the case where we do have enough space, so we can inline
@@ -296,7 +296,7 @@ impl<M> OnDiskMessageStore<M> {
     }
     #[inline]
     fn header_and_index_mut<'a>(
-        map: &'a mut DiskAccessor,
+        map: &'a mut FileAccessor,
     ) -> Result<(&'a mut StoreHeader, &'a mut [IndexEntry])> {
         let (store, index) = Self::header_and_index_mut_uninit(map, 0)?;
 
@@ -596,7 +596,6 @@ impl<M> OnDiskMessageStore<M> {
     /// merge with the index. Marks the db clean.
     ///
     /// Returns the index of the first insertion point, or None if all messages already existed.
-    // TODO: Make sure this method detects if message to be inserted already exists!
     pub fn append_many_sorted(
         &mut self,
         messages: impl ExactSizeIterator<Item = M>,
@@ -684,19 +683,20 @@ impl<M> OnDiskMessageStore<M> {
 
         let mut size_delta = 0usize;
         let mut last_msg_id = None;
-        let mut minne: VecDeque<IndexEntry> = VecDeque::with_capacity(len);
+        let mut carry_buffer: VecDeque<IndexEntry> = VecDeque::with_capacity(len);
         let mut input_stream_pos = 0;
 
         let first_input_message: M = (messages.next().unwrap());
-        // TODO: Make sure this method detects if message to be inserted already exists!
+
         let (Ok(first_index) | Err(first_index)) = index[0..index_header.entries as usize]
             .binary_search_by_key(&first_input_message.id(), |x| x.message);
         let mut cur_index = first_index;
 
         let mut cur_input_message = Some(first_input_message);
-
+        let mut actual_inserted_entries = 0;
         loop {
-            if minne.is_empty() && cur_input_message.is_none() {
+
+            if carry_buffer.is_empty() && cur_input_message.is_none() {
                 break;
             }
             //dbg!(&cur_input_message, &minne);
@@ -709,9 +709,13 @@ impl<M> OnDiskMessageStore<M> {
 
             #[derive(Clone, Copy, Debug)]
             enum Cases {
+                /// The next value that should be written to the output is the one that is already
+                /// present. I.e, a no-op.
                 NextFromCurrent,
+                /// The next that should be written is the current input message
                 NextFromInput,
-                NextFromMinne,
+                /// The next should be from 'carry' - i.e, we're compacting
+                NextFromCarry,
             }
 
             let cases = [
@@ -720,7 +724,7 @@ impl<M> OnDiskMessageStore<M> {
                     Cases::NextFromInput,
                     cur_input_message.as_ref().map(|x| x.id()),
                 ),
-                (Cases::NextFromMinne, minne.front().map(|x| x.message)),
+                (Cases::NextFromCarry, carry_buffer.front().map(|x| x.message)),
             ];
             let (now_case, now_message_id) = cases
                 .iter()
@@ -731,6 +735,11 @@ impl<M> OnDiskMessageStore<M> {
 
             match now_case {
                 Cases::NextFromCurrent => {
+                    if present_id == cur_input_message.as_ref().map(|x| x.id()) {
+                        cur_input_message = messages.next();
+                        eprintln!("Duplicate id detected");
+                        continue;
+                    }
                     unreachable!("This shouldn't, logically, happen");
                 }
                 Cases::NextFromInput => {
@@ -770,7 +779,7 @@ impl<M> OnDiskMessageStore<M> {
 
                     // Append to the index (compacting while doing so)
                     if cur_index < index_header.entries as usize {
-                        minne.push_back(*cur_index_entry);
+                        carry_buffer.push_back(*cur_index_entry);
                     }
                     *cur_index_entry = IndexEntry {
                         message: msg.id(),
@@ -784,10 +793,11 @@ impl<M> OnDiskMessageStore<M> {
                     index_header.data_files[self.active_file.index()].nominal_size += full_msg_size;
 
                     cur_input_message = messages.next();
+                    actual_inserted_entries += 1;
                 }
-                Cases::NextFromMinne => {
-                    *cur_index_entry = minne.pop_front().unwrap();
-                    //println!("Assigning new item from input to pos {}", cur_index);
+                Cases::NextFromCarry => {
+                    *cur_index_entry = carry_buffer.pop_front().unwrap();
+
                     cur_index += 1;
                 }
             }
@@ -802,7 +812,7 @@ impl<M> OnDiskMessageStore<M> {
 
         let data_file = &mut index_header.data_files[self.active_file.index()];
         data_file.bytes_used += size_delta as u64;
-        index_header.entries += len as u32;
+        index_header.entries += actual_inserted_entries as u32;
 
         Ok(Some(first_index))
     }
@@ -940,17 +950,10 @@ impl<M> OnDiskMessageStore<M> {
         }
 
         let data_files: [Result<DataFileInfo>; 2] = [0, 1].map(|file_number| {
-            //let data_file_path = target.path().join(format!("data{}.bin", file_number));
 
             let mut data_file = d
                 .open_file(target, &format!("data{}", file_number), 0, max_file_size)
                 .context("Opening data-file")?;
-            /*OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(target.create())
-            .truncate(target.overwrite())*/
-            //.open(&data_file_path).context("Opening data-file")?;
 
             data_file
                 .try_lock_exclusive()
@@ -969,21 +972,11 @@ impl<M> OnDiskMessageStore<M> {
             .try_into()
             .unwrap_or_else(|_| unreachable!());
 
-        //let index_file_path = target.path().join("index.bin");
         let mut overwrite = target.overwrite();
 
         let mut index_file = d
             .open_file(target, "index", size_of::<StoreHeader>(), max_file_size)
             .context("Opening index-file")?;
-        /*let index_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(target.create())
-        .truncate(overwrite)
-        .open(&index_file_path)
-        .context("Opening index-file")
-        ?;*/
-
         index_file
             .try_lock_exclusive()
             .context("While obtaining lock on index-file")?;

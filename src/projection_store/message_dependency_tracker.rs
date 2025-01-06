@@ -1,5 +1,5 @@
 use crate::disk_abstraction::Disk;
-use crate::disk_access::DiskAccessor;
+use crate::disk_access::FileAccessor;
 use crate::{SequenceNr, Target};
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
@@ -35,18 +35,18 @@ impl MessageDependencyTracker for IndexMap<SequenceNr, Vec<SequenceNr>> {
     }
 
     fn clear(&mut self) {
-        todo!()
+        self.clear();
     }
 }
 
 // Mapping from observee to observers.
 pub struct MmapMessageDependencyTracker {
     /// the sequencenr that has been observed
-    keys: DiskAccessor,
+    keys: FileAccessor,
     key_capacity: usize,
     /// the sequence nr that have observed each key. I.e, the messages that
     /// are dependent upon the key.
-    vals: DiskAccessor,
+    vals: FileAccessor,
     value_capacity: usize,
 }
 
@@ -102,7 +102,7 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
         let key_size_bytes = Self::calc_needed_bytes_keys(DEFAULT_KEY_CAPACITY);
         let value_size_bytes = Self::calc_needed_bytes_vals(DEFAULT_VALUE_CAPACITY);
 
-        //println!("Setting lens: {} {}", key_size_bytes, value_size_bytes);
+
         key_file.grow(key_size_bytes)?;
         value_file.grow(value_size_bytes)?;
 
@@ -125,15 +125,15 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
 
-        //println!("Observee index {}, cap: {}", observee.index(), self.key_capacity);
+
         if observee.index() >= self.key_capacity {
-            //println!("REALLOC!");
+
             self.reallocate_keys((observee.index() + 1) * 2);
         }
 
         //dbg!(Self::get_count(&self.vals) + 1, self.value_capacity);
         if Self::get_count(&self.vals) + 1 >= self.value_capacity {
-            println!("REALLOC! to {}", (self.value_capacity + 1) * 2);
+
             self.reallocate_values((self.value_capacity + 1) * 2);
         }
 
@@ -150,10 +150,6 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
         keys[observee.index()] = *val_len + 1;
 
         *val_len += 1;
-        /*println!("Final state:\n{:?} keys: {:?}\n{:?} values: {:?}",
-            key_len, keys,
-            val_len, vals,
-        )*/
     }
     fn read_dependency(&mut self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> {
         let (key_len, keys): (_, &mut [u64]) = Self::access(&mut self.keys);
@@ -179,22 +175,16 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
 }
 impl MmapMessageDependencyTracker {
     #[inline]
-    fn get_count(mmap: &DiskAccessor) -> usize {
+    fn get_count(mmap: &FileAccessor) -> usize {
         *bytemuck::from_bytes::<u64>(&mmap.map()[0..size_of::<u64>()]) as usize
     }
     #[inline]
-    fn access<T: Pod>(mmap: &mut DiskAccessor) -> (&mut u64, &mut [T]) {
+    fn access<T: Pod>(mmap: &mut FileAccessor) -> (&mut u64, &mut [T]) {
         let slice_bytes: &mut [u8] = mmap.map_mut();
 
-        println!(
-            "Mmap size: {}, item size: {}",
-            slice_bytes.len(),
-            size_of::<T>()
-        );
         let (slice_a, slice_b) = slice_bytes.split_at_mut(std::mem::size_of::<u64>());
         let count: &mut u64 = bytemuck::from_bytes_mut(slice_a);
         let slice: &mut [T] = bytemuck::cast_slice_mut(slice_b);
-        println!("Count: {}, cap: {}", count, slice.len());
         (count, slice)
     }
 
@@ -208,34 +198,18 @@ impl MmapMessageDependencyTracker {
     }
 
     fn reallocate_keys(&mut self, new_count: usize) -> Result<()> {
-        //println!("Reallocating keys to {}", new_count);
+
         self.keys.grow(Self::calc_needed_bytes_keys(new_count));
         self.key_capacity = new_count;
         Ok(())
     }
     fn reallocate_values(&mut self, new_count: usize) -> Result<()> {
-        //println!("Reallocating values to {}", new_count);
-        /*Self::reallocate(
-            &mut self.vals,
-            &mut *self.value_file,
-            Self::calc_needed_bytes_vals(new_count),
-        )?;*/
         self.vals.grow(Self::calc_needed_bytes_vals(new_count));
 
         self.value_capacity = new_count;
         Ok(())
     }
 
-    /*fn reallocate(
-        mmap: &mut DiskMmapHandle,
-        new_bytes: usize,
-    ) -> Result<()> {
-        //file.set_len(new_bytes as u64)?;
-        //file.remap(mmap, new_bytes as u64)?;
-        mmap.remap(new_bytes)?;
-        println!("file remap to {} {}", new_bytes, mmap.len());
-        Ok(())
-    }*/
 }
 #[cfg(test)]
 mod tests {

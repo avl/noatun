@@ -15,7 +15,7 @@ mod unix {
     use std::process::Command;
     use std::ptr::{null, null_mut};
     use std::sync::OnceLock;
-    use crate::disk_access::FileMappingTrait;
+    use crate::disk_access::FileBackend;
 
     #[cfg(not(miri))]
     pub(crate) fn get_boot_time() -> String {
@@ -108,18 +108,18 @@ mod unix {
             }
 
             let mut temp = FileMapping {
-                file: file,
+                file,
                 base_ptr: ptr as *mut u8,
                 file_name: filename_for_diagnostics.to_string(),
                 committed_size: Cell::new(0),
                 total_size: actual_size,
             };
-            temp.grow_committed_mapping(min_initial_size, filename_for_diagnostics)?;
+            temp.grow_committed_mapping(min_initial_size)?;
             Ok(temp)
         }
     }
 
-    impl FileMappingTrait for FileMapping {
+    impl FileBackend for FileMapping {
         fn page_size(&self) -> usize {
             Self::page_size()
         }
@@ -174,7 +174,7 @@ mod unix {
             if new_size >= self.committed_size.get() {
                 return Ok(());
             }
-            println!("Shrinking to {}", new_size);
+
             let prev_size = self.committed_size.get();
             let shrink_by = prev_size - new_size;
             let ptr = unsafe {
@@ -205,7 +205,6 @@ mod unix {
         fn grow_committed_mapping(
             &self,
             new_size: usize,
-            filename_for_diagnostics: &str,
         ) -> Result<()> {
             assert_eq!(new_size % self.page_size(), 0);
             if new_size <= self.committed_size.get() {
@@ -235,7 +234,7 @@ mod unix {
             if ptr as usize == 0 || ptr as usize == usize::MAX {
                 bail!(
                     "while remapping, mmap of file {} failed: {:?}",
-                    filename_for_diagnostics,
+                    self.file_name,
                     std::io::Error::from_raw_os_error(
                         std::io::Error::last_os_error().raw_os_error().unwrap()
                     )

@@ -9,8 +9,7 @@ use std::os::fd::AsRawFd;
 use std::ptr::slice_from_raw_parts_mut;
 use std::slice;
 
-//TODO: Rename this
-pub trait FileMappingTrait {
+pub trait FileBackend {
     fn page_size(&self) -> usize;
     fn flush_all(&self) -> Result<()>;
     fn flush_range(&self, start: usize, len: usize) -> Result<()>;
@@ -25,17 +24,15 @@ pub trait FileMappingTrait {
 
     fn shrink_committed_mapping(&self, new_size: usize) -> Result<()>;
 
-    fn grow_committed_mapping(&self, new_size: usize, filename_for_diagnostics: &str)
+    fn grow_committed_mapping(&self, new_size: usize)
                               -> Result<()>;
 
     fn try_lock_exclusive(&self) -> Result<()>;
 }
 
 
-//TODO: Rename
-// TODO: This type should probably not be public
-pub struct DiskAccessor {
-    mapping: Box<dyn FileMappingTrait>,
+pub(crate) struct FileAccessor {
+    mapping: Box<dyn FileBackend>,
     /// This is the start of the memory-map.
     /// I.e, this points at the header.
     /// The actual contents start after the header.
@@ -46,13 +43,13 @@ pub struct DiskAccessor {
     seek_pos: usize,
 }
 
-impl Debug for DiskAccessor {
+impl Debug for FileAccessor {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "DiskMmapHandleNew({})", self.committed_size.get())
     }
 }
 
-impl Seek for DiskAccessor {
+impl Seek for FileAccessor {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         match pos {
             SeekFrom::Start(s) => {
@@ -94,7 +91,7 @@ impl Seek for DiskAccessor {
     }
 }
 
-impl Read for DiskAccessor {
+impl Read for FileAccessor {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.seek_pos == self.used_space() {
             return Ok(0);
@@ -106,7 +103,7 @@ impl Read for DiskAccessor {
         Ok(getnow)
     }
 }
-impl Write for DiskAccessor {
+impl Write for FileAccessor {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if self.seek_pos + buf.len() > self.used_space() {
             self.grow(self.seek_pos + buf.len())
@@ -132,7 +129,7 @@ impl Write for DiskAccessor {
     }
 }
 
-impl DiskAccessor {
+impl FileAccessor {
     /// Use a header size that ensures start of payload is at least 16 byte aligned
     /// 16 bytes is enough for any type used by noatun itself. Client data can be
     /// aligned at even larger values, and this is supported, byt will waste some space.
@@ -174,7 +171,7 @@ impl DiskAccessor {
         unsafe { slice::from_raw_parts_mut(self.ptr.wrapping_add(Self::HEADER_SIZE), used) }
     }
 
-    pub(crate) fn from_mapping(mapping: impl FileMappingTrait + 'static) -> Self {
+    pub(crate) fn from_mapping(mapping: impl FileBackend + 'static) -> Self {
         Self {
             ptr: mapping.ptr(),
             mapping: Box::new(mapping),
@@ -240,7 +237,7 @@ impl DiskAccessor {
         )
         .with_context(|| format!("failed to memory map file {}", filename))?;
 
-        let mut temp = DiskAccessor {
+        let mut temp = FileAccessor {
             committed_size: Cell::new(mapping.committed_size()),
             ptr: mapping.ptr(),
             mapping: Box::new(mapping),
@@ -251,7 +248,7 @@ impl DiskAccessor {
     }
 }
 
-impl DiskAccessor {
+impl FileAccessor {
     pub fn try_lock_exclusive(&self) -> Result<()> {
         self.mapping.try_lock_exclusive()
     }
@@ -273,14 +270,15 @@ impl DiskAccessor {
         Ok(())
     }
 
-    pub fn copy_to(&mut self, bytes: usize, target: &mut DiskAccessor) -> Result<()> {
+    pub fn copy_to(&mut self, bytes: usize, target: &mut FileAccessor) -> Result<()> {
         if self.seek_pos + bytes > self.used_space() {
             bail!("requested number of bytes not available in file");
         }
         let src_buf = &self.map()[self.seek_pos..self.seek_pos + bytes];
 
         if target.seek_pos + bytes > target.used_space() {
-            target.grow((target.seek_pos + bytes))?; //TODO: Use checked arithmetic
+            target.grow((target.seek_pos.checked_add(bytes).unwrap())
+            )?;
         }
         let target_seek_pos = target.seek_pos;
         let dst_buf = &mut target.map_mut()[target_seek_pos..target_seek_pos + bytes];
@@ -317,8 +315,7 @@ impl DiskAccessor {
             .next_multiple_of(self.mapping.page_size())
             .min(max_size);
             self.mapping.grow_committed_mapping(
-                new_file_size,
-                "?", /*TODO: Use real name here!*/
+                new_file_size
             )?;
             self.committed_size.set(new_file_size);
         }
@@ -326,12 +323,6 @@ impl DiskAccessor {
         Ok(())
     }
 
-    // TODO: Remove, merge with 'map_mut_ptr'
-    pub(crate) fn get_ptr(&self) -> *mut u8 {
-        //TODO: Consider storing this value instead of mapping, with the HEADER_SIZE pre-added,
-        // for perf
-        self.mapping.ptr().wrapping_add(Self::HEADER_SIZE)
-    }
 
     /// This is the actual size of the file on disk. This is not the 'logical' size
     /// Should probably not be exposed, since that would mean we had a leaky abstraction
@@ -340,8 +331,12 @@ impl DiskAccessor {
     }
 
     pub(crate) fn flush_range(&self, offset: usize, len: usize) -> Result<()> {
-        self.mapping.flush_range(offset + Self::HEADER_SIZE, len)?;
-        self.mapping.flush_range(0, Self::HEADER_SIZE)?; //TODO: We could detect if this range is in the same page as the preivous, and do a single flush in that case
+        if offset < self.mapping.page_size() {
+            self.mapping.flush_range(0, offset + Self::HEADER_SIZE + len)?;
+        } else {
+            self.mapping.flush_range(offset + Self::HEADER_SIZE, len)?;
+            self.mapping.flush_range(0, Self::HEADER_SIZE)?;
+        }
         Ok(())
     }
 

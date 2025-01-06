@@ -1,9 +1,10 @@
 use bytemuck::{Pod, Zeroable};
 use noatun::{
-    Application, DatabaseCell, DatabaseContext, Message, MessageId, Object, SequenceNr,
+    Application, DatabaseCell, DatabaseContext, Message, MessageId, Object,
     ThinPtr,
 };
-use std::io::Write;
+use std::io::{Cursor, Write};
+use savefile_derive::Savefile;
 use noatun::database::Database;
 
 #[derive(Clone, Copy, Zeroable, Pod)]
@@ -41,35 +42,46 @@ impl<'a> CounterObject {
     }*/
 }
 
-#[derive(Debug)]
+#[derive(Debug, Savefile)]
 struct CounterMessage {
-    _id: u32,
+    id: u32,
+    counter: u8,
+    delta: u32,
 }
 
 impl Message for CounterMessage {
     type Root = CounterObject;
 
     fn id(&self) -> MessageId {
-        todo!()
+        MessageId::new_debug(self.id)
     }
 
     fn parents(&self) -> impl ExactSizeIterator<Item = MessageId> {
         std::iter::empty()
     }
 
-    fn apply(&self, _context: &mut DatabaseContext, _root: &mut Self::Root) {
-        todo!()
+    fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
+        println!("Applying message {} {} {}", self.id, self.counter, self.delta);
+        println!("  Prev values: {} {}",
+                 root.counter.get(context),
+            root.counter2.get(context)
+        );
+        if self.counter == 0 {
+            root.counter.set(context, root.counter.get(context) + self.delta);
+        } else {
+            root.counter2.set(context, root.counter2.get(context) + self.delta);
+        }
     }
 
-    fn deserialize(_buf: &[u8]) -> anyhow::Result<Self>
+    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
-        todo!()
+        Ok(savefile::load_noschema(&mut Cursor::new(buf), 1)?)
     }
 
-    fn serialize<W: Write>(&self, _writer: W) -> anyhow::Result<()> {
-        todo!()
+    fn serialize<W: Write>(&self, mut writer: W) -> anyhow::Result<()> {
+        Ok(savefile::save_noschema(&mut writer, 1, self)?)
     }
 }
 
@@ -92,42 +104,23 @@ fn test_counter_object() {
         10_000
     )
     .unwrap();
-    db.with_root_mut(|counter, context, _| {
-        context.set_next_seqnr(SequenceNr::from_index(1));
-        assert_eq!(counter.counter.get(context), 0);
-        counter.counter.set(context, 42);
-        counter.counter2.set(context, 43);
-        counter.counter.set(context, 44);
 
-        assert_eq!(*counter.counter, 44);
-    })
-    .unwrap();
-}
-#[test]
-fn test_counter_mayhem() {
-    let mut db1: Database<CounterApplication> = Database::create_new(
-        "test/integration/test_counter_mayhem.bin",
-        CounterApplication,
-        true,
-        10_000
-    )
-    .unwrap();
-    db1.with_root_mut(|_counter1, context1, _| {
-        context1.set_next_seqnr(SequenceNr::from_index(1));
-    })
-    .unwrap();
-    drop(db1);
-    let mut db2: Database<CounterApplication> = Database::create_new(
-        "test/integration/test_counter_mayhem2.bin",
-        CounterApplication,
-        true,
-        10_000
-    )
-    .unwrap();
+    db.append_single(CounterMessage {
+        id: 1,
+        counter: 0,
+        delta: 42,
+    }).unwrap();
 
-    db2.with_root_mut(|counter2, context2, _| {
-        context2.set_next_seqnr(SequenceNr::from_index(1));
-        counter2.counter.set(context2, 42);
-    })
-    .unwrap();
+    let (root, context) = db.get_root();
+    assert_eq!(root.counter.get(context), 42);
+
+    db.append_single(CounterMessage {
+        id: 2,
+        counter: 1,
+        delta: 43,
+    }).unwrap();
+
+    let (root, context) = db.get_root();
+    assert_eq!(root.counter.get(context), 42);
+    assert_eq!(root.counter2.get(context), 43);
 }
