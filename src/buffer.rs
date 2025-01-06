@@ -26,7 +26,7 @@ use std::path::Path;
 use std::slice;
 use std::slice::SliceIndex;
 
-const INITIAL_SIZE_BYTES: usize = 1024 * 1024 + size_of::<MainDbHeader>();
+//const INITIAL_SIZE_BYTES: usize = 512 * 1024 + size_of::<MainDbHeader>();
 
 #[derive(Debug)]
 struct RegistrarTracker<T: MessageDependencyTracker> {
@@ -65,9 +65,9 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
         }
     }
 
-    fn finalize_transaction<M: Message + Debug, D: Disk>(
+    fn finalize_transaction<M: Message + Debug>(
         &mut self,
-        messages: &mut OnDiskMessageStore<M, D>,
+        messages: &mut OnDiskMessageStore<M>,
     ) -> Result<IndexSet<SequenceNr>> {
         //println!("Messages: {:#?}", messages);
         self.unused_messages.sort(); //Sort in seq-nr order
@@ -294,7 +294,7 @@ impl DatabaseContext {
     }
     pub fn clear(&mut self) -> Result<()> {
         self.main_db_mmap.truncate(0);
-        self.main_db_mmap.grow(INITIAL_SIZE_BYTES)?;
+        self.main_db_mmap.grow(size_of::<MainDbHeader>())?;
         Self::write_initial_header(&mut self.main_db_mmap);
         self.undo_log.clear();
         self.registrar_tracker.borrow_mut().clear();
@@ -319,8 +319,10 @@ impl DatabaseContext {
             .context("opening main store file")?;
 
         let mut is_new = false;
-        if main_db_file.used_space() < INITIAL_SIZE_BYTES {
-            main_db_file.grow(INITIAL_SIZE_BYTES)?;
+        if main_db_file.used_space() < size_of::<MainDbHeader>() {
+            main_db_file
+                .grow(size_of::<MainDbHeader>())
+                .context("Writing initial header to main db file")?;
             main_db_file.map_mut().fill(0);
             is_new = true;
         }
@@ -591,9 +593,9 @@ impl DatabaseContext {
     }
     /// Call after a complete update, i.e, applying multiple messages
     /// Returns all messages that can now be removed.
-    pub(crate) fn finalize_transaction<MSG: Message + Debug, D: Disk>(
+    pub(crate) fn finalize_transaction<MSG: Message + Debug>(
         &mut self,
-        message_store: &mut OnDiskMessageStore<MSG, D>,
+        message_store: &mut OnDiskMessageStore<MSG>,
     ) -> Result<Vec<SequenceNr>> {
         Ok(self
             .registrar_tracker

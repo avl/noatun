@@ -55,7 +55,12 @@ custom allocators?)
 pub trait Disk {
     /// Open a file as specified by base directory in 'Target', and file name `file`.
     /// If the file is smaller than 'min_size', it will be extended with zeroes to that size.
-    fn open_file(&mut self, target: &Target, file: &str, min_size: usize) -> Result<DiskMmapHandleNew>;
+    fn open_file(
+        &mut self,
+        target: &Target,
+        file: &str,
+        min_size: usize,
+    ) -> Result<DiskMmapHandleNew>;
 }
 /*pub trait DiskFile: Seek + Write + Read {
     fn set_len(&mut self, len: u64) -> Result<()>;
@@ -425,7 +430,12 @@ impl Seek for InMemoryFileRef {
 }*/
 
 impl Disk for InMemoryDisk {
-    fn open_file(&mut self, target: &Target, file: &str, min_size: usize) -> anyhow::Result<DiskMmapHandleNew> {
+    fn open_file(
+        &mut self,
+        target: &Target,
+        file: &str,
+        min_size: usize,
+    ) -> anyhow::Result<DiskMmapHandleNew> {
         //std::fs::create_dir_all(&path).context("create database directory")?;
         let create = target.create();
         let overwrite = target.overwrite();
@@ -569,7 +579,12 @@ impl Drop for InMemoryGrowableFileMappingData {
 }*/
 
 impl Disk for StandardDisk {
-    fn open_file(&mut self, target: &Target, file: &str, min_size: usize) -> Result<DiskMmapHandleNew> {
+    fn open_file(
+        &mut self,
+        target: &Target,
+        file: &str,
+        min_size: usize,
+    ) -> Result<DiskMmapHandleNew> {
         let path = target.path().join(format!("{}.bin", file));
         let mut overwrite = target.overwrite();
         let mut create = target.create();

@@ -4,7 +4,7 @@
 
 extern crate test;
 
-use crate::disk_abstraction::{Disk, StandardDisk};
+use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
 use crate::on_disk_message_store::OnDiskMessageStore;
 use crate::platform_specific::{FileMapping, get_boot_time};
 use anyhow::{Context, Result, bail};
@@ -67,6 +67,7 @@ pub(crate) mod platform_specific {
         use std::ptr::{null, null_mut};
         use std::sync::OnceLock;
 
+        #[cfg(not(miri))]
         pub(crate) fn get_boot_time() -> String {
             let output = Command::new("who")
                 .arg("-b")
@@ -84,6 +85,10 @@ pub(crate) mod platform_specific {
                 panic!("'who -b' command output did not contain the string 'system boot'");
             }
             result
+        }
+        #[cfg(miri)]
+        pub(crate) fn get_boot_time() -> String {
+            "system boot miri".to_string()
         }
 
         pub(crate) struct FileMapping {
@@ -103,12 +108,12 @@ pub(crate) mod platform_specific {
             }
         }
 
-        static PAGE_SIZE:OnceLock<usize> = OnceLock::new();
+        static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
 
         impl FileMapping {
             pub fn page_size() -> usize {
-                (*PAGE_SIZE.get_or_init(||unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) as usize }))
-                    .max(2usize*1024*1024)
+                (*PAGE_SIZE.get_or_init(|| unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) as usize }))
+                    .max(2usize * 1024 * 1024)
             }
             pub(crate) fn committed_size(&self) -> usize {
                 self.committed_size.get()
@@ -132,14 +137,23 @@ pub(crate) mod platform_specific {
                         null_mut(),
                         max_size,
                         libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_ANONYMOUS|libc::MAP_SHARED|libc::MAP_NORESERVE|libc::MAP_HUGE_2MB,
+                        libc::MAP_ANONYMOUS
+                            | libc::MAP_SHARED
+                            | libc::MAP_NORESERVE
+                            | libc::MAP_HUGE_2MB,
                         -1,
                         0,
                     )
                 };
 
                 if ptr as usize == 0 || ptr as usize == usize::MAX {
-                    bail!("mmap of file {} failed: {:x?}", filename_for_diagnostics, std::io::Error::from_raw_os_error(std::io::Error::last_os_error().raw_os_error().unwrap()));
+                    bail!(
+                        "mmap of file {} failed: {:x?}",
+                        filename_for_diagnostics,
+                        std::io::Error::from_raw_os_error(
+                            std::io::Error::last_os_error().raw_os_error().unwrap()
+                        )
+                    );
                 }
 
                 let mut temp = FileMapping {
@@ -162,20 +176,28 @@ pub(crate) mod platform_specific {
             }
             fn flush_range(&self, start: usize, len: usize) -> Result<()> {
                 unsafe {
-                    let start_rounded_down = if start%Self::page_size() == 0 {
+                    let start_rounded_down = if start % Self::page_size() == 0 {
                         start
                     } else {
-                        start.next_multiple_of(Self::page_size())-Self::page_size()
+                        start.next_multiple_of(Self::page_size()) - Self::page_size()
                     };
                     let rounding_delta = start - start_rounded_down;
                     if libc::msync(
                         self.base_ptr.wrapping_add(start_rounded_down) as *mut _,
-                        len+rounding_delta,
+                        len + rounding_delta,
                         libc::MS_SYNC,
                     ) != 0
                     {
                         // TODO: Provide filename here?
-                        bail!("msync {}..{} of file {} failed: {:x?}", start,start+len,"?", std::io::Error::from_raw_os_error(std::io::Error::last_os_error().raw_os_error().unwrap()));
+                        bail!(
+                            "msync {}..{} of file {} failed: {:x?}",
+                            start,
+                            start + len,
+                            "?",
+                            std::io::Error::from_raw_os_error(
+                                std::io::Error::last_os_error().raw_os_error().unwrap()
+                            )
+                        );
                     }
                 }
                 Ok(())
@@ -209,7 +231,11 @@ pub(crate) mod platform_specific {
                         self.base_ptr.wrapping_add(new_size) as *mut _,
                         shrink_by,
                         libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_FIXED|libc::MAP_ANONYMOUS|libc::MAP_SHARED|libc::MAP_NORESERVE|libc::MAP_HUGE_2MB,
+                        libc::MAP_FIXED
+                            | libc::MAP_ANONYMOUS
+                            | libc::MAP_SHARED
+                            | libc::MAP_NORESERVE
+                            | libc::MAP_HUGE_2MB,
                         -1,
                         0,
                     )
@@ -249,7 +275,7 @@ pub(crate) mod platform_specific {
                         self.base_ptr as *mut _,
                         new_size,
                         libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_FIXED|libc::MAP_SHARED|libc::MAP_HUGE_2MB,
+                        libc::MAP_FIXED | libc::MAP_SHARED | libc::MAP_HUGE_2MB,
                         self.file.as_raw_fd(),
                         0,
                     )
@@ -302,7 +328,7 @@ pub(crate) mod growable_file_mapping {
     use anyhow::{Context, Result, bail};
     use std::cell::Cell;
     use std::fmt::{Debug, Formatter};
-    use std::fs::{create_dir_all, File, OpenOptions};
+    use std::fs::{File, OpenOptions, create_dir_all};
     use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
     use std::os::fd::AsRawFd;
     use std::ptr::slice_from_raw_parts_mut;
@@ -365,7 +391,10 @@ pub(crate) mod growable_file_mapping {
                             .and_then(|x: i64| x.checked_sub(e))
                             .and_then(|x| x.try_into().ok())
                             .ok_or_else(|| {
-                                std::io::Error::new(ErrorKind::InvalidInput, "invalid seek position")
+                                std::io::Error::new(
+                                    ErrorKind::InvalidInput,
+                                    "invalid seek position",
+                                )
                             })?;
                     }
                 }
@@ -401,9 +430,7 @@ pub(crate) mod growable_file_mapping {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             if self.seek_pos + buf.len() > self.used_space() {
                 self.grow(self.seek_pos + buf.len())
-                    .map_err(|e| {
-                        std::io::Error::new(ErrorKind::Other, e)
-                    })?;
+                    .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
             }
 
             let dest = unsafe {
@@ -516,21 +543,22 @@ pub(crate) mod growable_file_mapping {
             let mut len = File::metadata(&file)?.len() as usize;
             let new_used_size = len.saturating_sub(Self::HEADER_SIZE).max(initial_size);
             if len < initial_size + Self::HEADER_SIZE || len % page_size != 0 {
-                len = len.max(initial_size + Self::HEADER_SIZE).next_multiple_of(page_size);
+                len = len
+                    .max(initial_size + Self::HEADER_SIZE)
+                    .next_multiple_of(page_size);
                 file.set_len((len) as u64)
-                    .with_context(|| {
-                        format!(
-                            "Resizing file {:?} to {} bytes",
-                            &path,
-                            len
-                        )
-                    })?;
+                    .with_context(|| format!("Resizing file {:?} to {} bytes", &path, len))?;
                 file.sync_all().context("fsync")?;
             }
 
             let filename = path.to_string_lossy();
-            let mapping = FileMapping::new(file, len, (max_size+Self::HEADER_SIZE).next_multiple_of(page_size), &filename)
-                .with_context(|| format!("failed to memory map file {}", filename))?;
+            let mapping = FileMapping::new(
+                file,
+                len,
+                (max_size + Self::HEADER_SIZE).next_multiple_of(page_size),
+                &filename,
+            )
+            .with_context(|| format!("failed to memory map file {}", filename))?;
 
             let mut temp = DiskMmapHandleNew {
                 committed_size: Cell::new(mapping.committed_size()),
@@ -553,8 +581,13 @@ pub(crate) mod growable_file_mapping {
             }
 
             unsafe {
-                slice::from_raw_parts_mut(self.ptr.wrapping_add(self.seek_pos as usize).wrapping_add(Self::HEADER_SIZE), bytes)
-                    .fill(0)
+                slice::from_raw_parts_mut(
+                    self.ptr
+                        .wrapping_add(self.seek_pos as usize)
+                        .wrapping_add(Self::HEADER_SIZE),
+                    bytes,
+                )
+                .fill(0)
             }
             self.seek_pos += bytes;
             Ok(())
@@ -577,7 +610,6 @@ pub(crate) mod growable_file_mapping {
             self.seek_pos += bytes;
             target.seek_pos += bytes;
 
-
             Ok(())
         }
 
@@ -595,14 +627,15 @@ pub(crate) mod growable_file_mapping {
 
         pub(crate) fn grow(&self, new_size: usize) -> Result<()> {
             if new_size + Self::HEADER_SIZE > self.committed_size.get() {
-
                 let max_size = self.mapping.maximum_size();
                 if new_size + Self::HEADER_SIZE >= max_size {
                     bail!("maximum file size exceeded");
                 }
 
-                let new_file_size = ((self.committed_size.get() + new_size + Self::HEADER_SIZE) * 2)
-                    .next_multiple_of(self.mapping.page_size()).min(max_size);
+                let new_file_size = ((self.committed_size.get() + new_size + Self::HEADER_SIZE)
+                    * 2)
+                .next_multiple_of(self.mapping.page_size())
+                .min(max_size);
                 self.mapping.grow_committed_mapping(
                     new_file_size,
                     "?", /*TODO: Use real name here!*/
@@ -835,15 +868,14 @@ impl Object for DummyUnitObject {
     }
 }
 
-
 // TODO: This type should probably not be public
-pub struct MessageStore<APP: Application, D: Disk> {
-    messages: OnDiskMessageStore<APP::Message, D>,
+pub struct MessageStore<APP: Application> {
+    messages: OnDiskMessageStore<APP::Message>,
     phantom_data: PhantomData<(*const APP::Root, APP::Message)>,
 }
 
-impl<APP: Application, D: Disk> MessageStore<APP, D> {
-    pub fn new(s: D, target: &Target) -> Result<MessageStore<APP, D>> {
+impl<APP: Application> MessageStore<APP> {
+    pub fn new<D: Disk>(s: &mut D, target: &Target) -> Result<MessageStore<APP>> {
         Ok(MessageStore {
             messages: OnDiskMessageStore::new(s, target)?,
             phantom_data: PhantomData,
@@ -997,7 +1029,7 @@ pub trait Application {
 
 pub struct Database<Base: Application> {
     context: DatabaseContext,
-    message_store: MessageStore<Base, StandardDisk>,
+    message_store: MessageStore<Base>,
     app: Base,
 }
 
@@ -1301,7 +1333,7 @@ impl<APP: Application> Database<APP> {
     // TODO: This method should probably not be public (changes should only happen through messages)
     pub fn with_root_mut<R>(
         &mut self,
-        f: impl FnOnce(&mut APP::Root, &mut DatabaseContext, &mut MessageStore<APP, StandardDisk>) -> R,
+        f: impl FnOnce(&mut APP::Root, &mut DatabaseContext, &mut MessageStore<APP>) -> R,
     ) -> Result<R> {
         if !self.context.mark_dirty()? {
             // Recovery needed
@@ -1320,7 +1352,7 @@ impl<APP: Application> Database<APP> {
     fn recover(
         app: &mut APP,
         context: &mut DatabaseContext,
-        message_store: &mut MessageStore<APP, StandardDisk>,
+        message_store: &mut MessageStore<APP>,
     ) -> Result<()> {
         context.clear()?;
 
@@ -1366,6 +1398,21 @@ impl<APP: Application> Database<APP> {
         })?
     }
 
+    /// Create a database residing entirely in memory.
+    /// This is mostly useful for tests
+    pub fn create_in_memory(mut app: APP) -> Result<Database<APP>> {
+        let mut disk = InMemoryDisk::default();
+        let target = Target::CreateNew(PathBuf::default());
+        let mut ctx =
+            DatabaseContext::new(&mut disk, &target).context("creating database in memory")?;
+        let mut message_store = MessageStore::new(&mut disk, &target)?;
+        Ok(Database {
+            context: ctx,
+            app,
+            message_store,
+        })
+    }
+
     fn create(mut app: APP, target: Target) -> Result<Database<APP>> {
         if MULTI_INSTANCE_BLOCKER.get() {
             if !std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_ok() {
@@ -1384,7 +1431,7 @@ impl<APP: Application> Database<APP> {
 
         let is_dirty = ctx.is_dirty();
 
-        let mut message_store = MessageStore::new(StandardDisk, &target)?;
+        let mut message_store = MessageStore::new(&mut StandardDisk, &target)?;
         if is_dirty {
             Self::recover(&mut app, &mut ctx, &mut message_store)?;
             ctx.mark_clean()?;
@@ -1424,15 +1471,14 @@ mod tests {
         )
         .unwrap();
         mmap.write_u32::<LittleEndian>(0x2b).unwrap();
-        use std::io::Seek;
-        use std::io::Read;
         use byteorder::ReadBytesExt;
+        use std::io::Read;
+        use std::io::Seek;
         mmap.seek(SeekFrom::Start(12)).unwrap();
         mmap.write_u64::<LittleEndian>(0x2c).unwrap();
         mmap.seek(SeekFrom::Start(12)).unwrap();
         let initial_ptr = mmap.get_ptr();
         assert_eq!(mmap.read_u64::<LittleEndian>().unwrap(), 0x2c);
-
 
         mmap.seek(SeekFrom::Start(3000_000)).unwrap();
         mmap.write_u8(1).unwrap();
@@ -1454,7 +1500,6 @@ mod tests {
         mmap.write_u8(42).unwrap();
         mmap.seek(SeekFrom::Start(0)).unwrap();
         assert_eq!(mmap.read_u8().unwrap(), 42);
-
     }
 
     struct DummyMessage<T> {
@@ -1629,9 +1674,44 @@ mod tests {
     }
 
     #[test]
-    fn test_msg_store() {
+    fn test_msg_store_real() {
         let mut db: Database<CounterApplication> =
             Database::create_new("test/msg_store.bin", CounterApplication, true).unwrap();
+        //        let mut messages = MessageStore::new(StandardDisk, &Target::CreateNewOrOverwrite("test/msg_store.bin".into())).unwrap();
+
+        db.append_single(CounterMessage {
+            parent: None,
+            id: MessageId::new_debug(0x100),
+            inc1: 2,
+            set1: 0,
+        })
+        .unwrap();
+        db.append_single(CounterMessage {
+            parent: Some(MessageId::new_debug(0x100)),
+            id: MessageId::new_debug(0x101),
+            inc1: 0,
+            set1: 42,
+        })
+        .unwrap();
+        db.append_single(CounterMessage {
+            parent: Some(MessageId::new_debug(0x101)),
+            id: MessageId::new_debug(0x102),
+            inc1: 1,
+            set1: 0,
+        })
+        .unwrap();
+
+        // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
+
+        db.with_root_mut(|root, context, _| {
+            assert_eq!(root.counter.get(context), 43);
+        });
+    }
+
+    #[test]
+    fn test_msg_store_inmem_miri() {
+        let mut db: Database<CounterApplication> =
+            Database::create_in_memory(CounterApplication).unwrap();
         //        let mut messages = MessageStore::new(StandardDisk, &Target::CreateNewOrOverwrite("test/msg_store.bin".into())).unwrap();
 
         db.append_single(CounterMessage {
