@@ -1,4 +1,3 @@
 /target
 /*.bin
-/test
-/test_smoke_deptrack
+/test/
