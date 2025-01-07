@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use noatun::database::Database;
-use noatun::{Application, DatabaseCell, DatabaseContext, Message, MessageId, Object, ThinPtr};
+use noatun::{Application, DatabaseContext, Message, MessageId, Object, ThinPtr};
+use noatun::data_types::DatabaseCell;
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 

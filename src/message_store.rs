@@ -321,7 +321,6 @@ impl<M> OnDiskMessageStore<M> {
             // Recovery needed
             self.recover()?;
         }
-        //TODO: Make sure we actually inspect the status when reading db!
         let ret = f(self);
         self.update_status(STATUS_OK)
             .expect("failed to mark db as OK after transaction complete");
@@ -1046,7 +1045,7 @@ mod tests {
         }
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
-            todo!()
+            unimplemented!()
         }
 
         fn deserialize(buf: &[u8]) -> anyhow::Result<Self>

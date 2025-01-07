@@ -39,6 +39,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use crate::data_types::DatabaseCell;
 
 mod disk_abstraction;
 mod message_store;
@@ -180,7 +181,10 @@ pub trait Message: Debug {
 }
 
 /// A state-less object, mostly useful for testing
+#[derive(Clone,Copy,Pod,Zeroable)]
+#[repr(C)]
 pub struct DummyUnitObject;
+
 
 impl Object for DummyUnitObject {
     type Ptr = ThinPtr;
@@ -367,33 +371,21 @@ impl Object for u8 {
     }
 }
 pub trait Application {
-    type Root: Object;
+    type Root: Object + ?Sized;
     type Message: Message<Root = Self::Root>;
 
     fn initialize_root(ctx: &mut DatabaseContext) -> <Self::Root as Object>::Ptr;
 }
 
-#[derive(Copy, Clone)]
-#[repr(C)]
-pub struct DatabaseCell<T: Copy> {
-    value: T,
-    registrar: SequenceNr,
-}
-
-impl<T: Copy> Deref for DatabaseCell<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.value
-    }
-}
 
 #[derive(Copy, Clone, Debug)]
 pub struct FatPtr {
     start: usize,
+    /// Size in bytes
     len: usize,
 }
 impl FatPtr {
+    /// Start index, and size in bytes
     pub fn from(start: usize, len: usize) -> FatPtr {
         FatPtr { start, len }
     }
@@ -457,192 +449,232 @@ impl Object for [u8] {
     }
 }
 
-unsafe impl<T> Zeroable for DatabaseCell<T> where T: Pod {}
+pub mod data_types {
+    use std::marker::PhantomData;
+    use std::mem::transmute_copy;
+    use std::ops::Deref;
+    use bytemuck::{Pod, Zeroable};
+    use crate::{DatabaseContext, FatPtr, FixedSizeObject, Object, Pointer, SequenceNr, ThinPtr};
 
-unsafe impl<T> Pod for DatabaseCell<T> where T: Pod {}
-impl<T: Pod> DatabaseCell<T> {
-    pub fn get(&self, context: &DatabaseContext) -> T {
-        context.observe_registrar(self.registrar);
-        self.value
-    }
-    pub fn set<'a>(&'a mut self, context: &'a mut DatabaseContext, new_value: T) {
-        let index = context.index_of(self);
-        //context.write(index, bytes_of(&new_value));
-        context.write_pod(new_value, &mut self.value);
-        context.update_registrar(&mut self.registrar);
-    }
-}
-
-#[repr(C)]
-pub struct DatabaseVec<T> {
-    length: usize,
-    capacity: usize,
-    data: usize,
-    length_registrar: SequenceNr,
-    phantom_data: PhantomData<T>,
-}
-
-unsafe impl<T> Zeroable for DatabaseVec<T> {}
-
-impl<T> Copy for DatabaseVec<T> {}
-
-impl<T> Clone for DatabaseVec<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-unsafe impl<T> Pod for DatabaseVec<T> where T: 'static {}
-
-impl<T> DatabaseVec<T>
-where
-    T: FixedSizeObject + 'static,
-{
-    #[allow(clippy::mut_from_ref)]
-    pub fn new(ctx: &DatabaseContext) -> &mut DatabaseVec<T> {
-        unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
-    }
-    pub fn len(&self, ctx: &mut DatabaseContext) -> usize {
-        ctx.observe_registrar(self.length_registrar);
-        self.length
-    }
-    pub fn get(&self, ctx: &DatabaseContext, index: usize) -> &T {
-        let offset = self.data + index * T::SIZE;
-        unsafe { T::access(ctx, ThinPtr(offset)) }
-    }
-    pub fn get_mut(&mut self, ctx: &mut DatabaseContext, index: usize) -> &mut T {
-        let offset = self.data + index * T::SIZE;
-        let t = unsafe { T::access_mut(ctx, ThinPtr(offset)) };
-        t
+    #[derive(Copy, Clone)]
+    #[repr(C)]
+    pub struct DatabaseCell<T: Copy> {
+        value: T,
+        registrar: SequenceNr,
     }
 
-    fn realloc_add(&mut self, ctx: &mut DatabaseContext, new_capacity: usize) {
-        let dest = ctx.allocate_raw(new_capacity * T::SIZE, T::ALIGN);
-        let dest_index = ctx.index_of_ptr(dest);
+    impl<T: Copy> Deref for DatabaseCell<T> {
+        type Target = T;
 
-        if self.length > 0 {
-            let old_ptr = FatPtr::from(self.data, T::SIZE * self.length);
-            ctx.copy(old_ptr, dest_index.0);
-        }
-
-        let new_len = self.length + 1;
-
-        ctx.write_pod(
-            DatabaseVec {
-                length: new_len,
-                capacity: new_capacity,
-                data: dest_index.0,
-                length_registrar: SequenceNr::default(),
-                phantom_data: Default::default(),
-            },
-            self,
-        )
-    }
-
-    pub fn push_new<'a>(&'a mut self, ctx: &mut DatabaseContext) -> &'a mut T {
-        if self.length >= self.capacity {
-            self.realloc_add(ctx, (self.capacity + 1) * 2);
-        } else {
-            ctx.write_pod(self.length + 1, &mut self.length);
-        }
-        ctx.update_registrar(&mut self.length_registrar);
-
-        self.get_mut(ctx, self.length - 1)
-    }
-}
-
-impl<T> Object for DatabaseVec<T>
-where
-    T: FixedSizeObject + 'static,
-{
-    type Ptr = ThinPtr;
-
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        unsafe { &*(context.start_ptr().wrapping_add(index.0) as *const DatabaseVec<T>) }
-    }
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        unsafe { context.access_pod_mut(index) }
-    }
-}
-
-#[repr(transparent)]
-struct DatabaseObjectHandle<T: Object> {
-    object_index: T::Ptr,
-    phantom: PhantomData<T>,
-}
-
-unsafe impl<T: Object> Zeroable for DatabaseObjectHandle<T> {}
-
-impl<T: Object> Copy for DatabaseObjectHandle<T> {}
-
-impl<T: Object> Clone for DatabaseObjectHandle<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-unsafe impl<T: Object + 'static> Pod for DatabaseObjectHandle<T> {}
-impl<T: Object> Object for DatabaseObjectHandle<T> {
-    type Ptr = ThinPtr;
-
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        unsafe {
-            &*(context.start_ptr().wrapping_add(index.0) as *const _
-                as *const DatabaseObjectHandle<T>)
+        fn deref(&self) -> &Self::Target {
+            &self.value
         }
     }
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        unsafe {
-            &mut *(context.start_ptr().wrapping_add(index.0) as *const _
-                as *mut DatabaseObjectHandle<T>)
+
+    unsafe impl<T> Zeroable for DatabaseCell<T> where T: Pod {}
+
+    unsafe impl<T> Pod for DatabaseCell<T> where T: Pod {}
+    impl<T: Pod> DatabaseCell<T> {
+        pub fn get(&self, context: &DatabaseContext) -> T {
+            context.observe_registrar(self.registrar);
+            self.value
+        }
+        pub fn set<'a>(&'a mut self, context: &'a mut DatabaseContext, new_value: T) {
+            let index = context.index_of(self);
+            //context.write(index, bytes_of(&new_value));
+            context.write_pod(new_value, &mut self.value);
+            context.update_registrar(&mut self.registrar);
         }
     }
-}
 
-impl<T: Object> DatabaseObjectHandle<T> {
-    pub fn get<'a>(&'a self, context: &DatabaseContext) -> &'a T {
-        unsafe { T::access(context, self.object_index) }
-    }
-    pub fn get_mut<'a>(&self, context: &mut DatabaseContext) -> &'a mut T {
-        unsafe { T::access_mut(context, self.object_index) }
+
+
+    impl<T: Pod + Object> DatabaseCell<T> {
+        #[allow(clippy::mut_from_ref)]
+        pub fn new(context: &DatabaseContext) -> &mut Self {
+            let memory = unsafe { context.allocate_pod::<T>() };
+            unsafe { &mut *(memory as *mut _ as *mut DatabaseCell<T>) }
+        }
     }
 
-    #[allow(clippy::mut_from_ref)]
-    pub fn allocate(context: &DatabaseContext, value: T) -> &mut Self
+    impl<T: Pod> Object for DatabaseCell<T> {
+        type Ptr = ThinPtr;
+
+        unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
+            context.access_pod(index)
+        }
+
+        unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
+            context.access_pod_mut(index)
+        }
+    }
+
+    #[repr(C)]
+    pub struct DatabaseVec<T> {
+        length: usize,
+        capacity: usize,
+        data: usize,
+        length_registrar: SequenceNr,
+        phantom_data: PhantomData<T>,
+    }
+
+    unsafe impl<T> Zeroable for DatabaseVec<T> {}
+
+    impl<T> Copy for DatabaseVec<T> {}
+
+    impl<T> Clone for DatabaseVec<T> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+
+    unsafe impl<T> Pod for DatabaseVec<T> where T: 'static {}
+
+    impl<T> DatabaseVec<T>
     where
-        T: Object<Ptr = ThinPtr>,
-        T: Pod,
+        T: FixedSizeObject + 'static,
     {
-        let this = unsafe { context.allocate_pod::<DatabaseObjectHandle<T>>() };
-        let target = unsafe { context.allocate_pod::<T>() };
-        *target = value;
-        this.object_index = context.index_of(target);
-        this
+        #[allow(clippy::mut_from_ref)]
+        pub fn new(ctx: &DatabaseContext) -> &mut DatabaseVec<T> {
+            unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
+        }
+        pub fn len(&self, ctx: &mut DatabaseContext) -> usize {
+            ctx.observe_registrar(self.length_registrar);
+            self.length
+        }
+        pub fn get(&self, ctx: &DatabaseContext, index: usize) -> &T {
+            let offset = self.data + index * T::SIZE;
+            unsafe { T::access(ctx, ThinPtr(offset)) }
+        }
+        pub fn get_mut(&mut self, ctx: &mut DatabaseContext, index: usize) -> &mut T {
+            let offset = self.data + index * T::SIZE;
+            let t = unsafe { T::access_mut(ctx, ThinPtr(offset)) };
+            t
+        }
+
+        fn realloc_add(&mut self, ctx: &mut DatabaseContext, new_capacity: usize) {
+            let dest = ctx.allocate_raw(new_capacity * T::SIZE, T::ALIGN);
+            let dest_index = ctx.index_of_ptr(dest);
+
+            if self.length > 0 {
+                let old_ptr = FatPtr::from(self.data, T::SIZE * self.length);
+                ctx.copy(old_ptr, dest_index.0);
+            }
+
+            let new_len = self.length + 1;
+
+            ctx.write_pod(
+                DatabaseVec {
+                    length: new_len,
+                    capacity: new_capacity,
+                    data: dest_index.0,
+                    length_registrar: SequenceNr::default(),
+                    phantom_data: Default::default(),
+                },
+                self,
+            )
+        }
+
+        pub fn push_new<'a>(&'a mut self, ctx: &mut DatabaseContext) -> &'a mut T {
+            if self.length >= self.capacity {
+                self.realloc_add(ctx, (self.capacity + 1) * 2);
+            } else {
+                ctx.write_pod(self.length + 1, &mut self.length);
+            }
+            ctx.update_registrar(&mut self.length_registrar);
+
+            self.get_mut(ctx, self.length - 1)
+        }
+    }
+
+    impl<T> Object for DatabaseVec<T>
+    where
+        T: FixedSizeObject + 'static,
+    {
+        type Ptr = ThinPtr;
+        unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
+            context.access_pod(index)
+        }
+        unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
+            context.access_pod_mut(index)
+        }
+    }
+
+    #[repr(transparent)]
+    pub struct DatabaseObjectHandle<T: Object + ?Sized> {
+        object_index: T::Ptr,
+        phantom: PhantomData<T>,
+    }
+
+    unsafe impl<T: Object+?Sized> Zeroable for DatabaseObjectHandle<T> {}
+
+    impl<T: Object+?Sized> Copy for DatabaseObjectHandle<T> {}
+
+    impl<T: Object+?Sized> Clone for DatabaseObjectHandle<T> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+
+    unsafe impl<T: Object + ?Sized + 'static> Pod for DatabaseObjectHandle<T> {}
+    impl<T: Object+?Sized+'static> Object for DatabaseObjectHandle<T> {
+        type Ptr = ThinPtr;
+
+        unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
+            context.access_pod(index)
+        }
+        unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
+            context.access_pod_mut(index)
+        }
+    }
+
+    impl<T: Object+?Sized> DatabaseObjectHandle<T> {
+        pub fn get(&self, context: &DatabaseContext) -> &T {
+            unsafe { T::access(context, self.object_index) }
+        }
+        pub fn get_mut(&mut self, context: &mut DatabaseContext) -> &mut T {
+            unsafe { T::access_mut(context, self.object_index) }
+        }
+
+        #[allow(clippy::mut_from_ref)]
+        pub fn allocate(context: &DatabaseContext, value: T) -> &mut Self
+        where
+            T: Object<Ptr = ThinPtr>,
+            T: Pod,
+        {
+            let this = unsafe { context.allocate_pod::<DatabaseObjectHandle<T>>() };
+            let target = unsafe { context.allocate_pod::<T>() };
+            *target = value;
+            this.object_index = context.index_of(target);
+            this
+        }
+
+        #[allow(clippy::mut_from_ref)]
+        pub fn allocate_unsized<'a>(context: &'a DatabaseContext, value: &T) -> &'a mut Self
+        where
+            T: Object<Ptr = FatPtr> + 'static,
+        {
+            let size_bytes = std::mem::size_of_val(value);
+            let this = unsafe { context.allocate_pod::<DatabaseObjectHandle<T>>() };
+            let target_dst_ptr = unsafe { context.allocate_raw(size_bytes, std::mem::align_of_val(value)) };
+
+            let target_src_ptr = value as *const T as *const u8;
+
+            let (src_ptr, src_metadata): (*const u8, usize) = unsafe { transmute_copy(&value) };
+
+            unsafe { std::ptr::copy(target_src_ptr, target_dst_ptr, size_bytes) };
+            let thin_index = context.index_of(unsafe{&*target_dst_ptr});
+
+            this.object_index = FatPtr::from(thin_index.start(), src_metadata);
+            this
+        }
     }
 }
 
-impl<T: Pod + Object> DatabaseCell<T> {
-    #[allow(clippy::mut_from_ref)]
-    pub fn new(context: &DatabaseContext) -> &mut Self {
-        let memory = unsafe { context.allocate_pod::<T>() };
-        unsafe { &mut *(memory as *mut _ as *mut DatabaseCell<T>) }
-    }
-}
-
-impl<T: Pod> Object for DatabaseCell<T> {
-    type Ptr = ThinPtr;
-
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        unsafe { context.access_pod(index) }
-    }
-
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        unsafe { context.access_pod_mut(index) }
-    }
-}
 thread_local! {
-    static MULTI_INSTANCE_BLOCKER: Cell<bool> = const { Cell::new(false) };
-}
+        static MULTI_INSTANCE_BLOCKER: Cell<bool> = const { Cell::new(false) };
+    }
+
 
 #[derive(Clone)]
 pub enum Target {
@@ -687,6 +719,7 @@ pub mod database {
         pub fn get_root(&self) -> (&APP::Root, &DatabaseContext) {
             let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
             let root = unsafe { <APP::Root as Object>::access(&self.context, root_ptr) };
+            //let root = self.context.access_pod(root_ptr);
             (root, &self.context)
         }
 
@@ -700,7 +733,10 @@ pub mod database {
             }
 
             let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
+
             let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
+            //let root = self.context.access_pod_mut(root_ptr);
+
 
             let t = f(root, &mut self.context, &mut self.message_store);
 
@@ -723,6 +759,7 @@ pub mod database {
             // Safety:
             // Recover is only called when the db is not used
             let root = unsafe { <APP::Root as Object>::access_mut(context, root_ptr) };
+            //let root = context.access_pod(root_ptr);
             message_store.apply_missing_messages(root, context)?;
 
             Ok(())
@@ -778,6 +815,10 @@ pub mod database {
             let mut ctx = DatabaseContext::new(&mut disk, &target, max_size)
                 .context("creating database in memory")?;
             let mut message_store = Projector::new(&mut disk, &target, max_size)?;
+
+            Self::recover(&mut app, &mut ctx, &mut message_store)?;
+            ctx.mark_clean()?;
+
             Ok(Database {
                 context: ctx,
                 app,
@@ -833,6 +874,9 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::io::{Cursor, SeekFrom};
     use test::Bencher;
+    use data_types::DatabaseObjectHandle;
+    use data_types::DatabaseVec;
+    use data_types::DatabaseCell;
 
     #[test]
     fn test_mmap_big() {
@@ -899,7 +943,7 @@ mod tests {
         type Root = T;
 
         fn id(&self) -> MessageId {
-            todo!()
+            unimplemented!()
         }
 
         fn parents(&self) -> impl ExactSizeIterator<Item = MessageId> {
@@ -907,18 +951,18 @@ mod tests {
         }
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
-            todo!()
+            unimplemented!()
         }
 
         fn deserialize(buf: &[u8]) -> Result<Self>
         where
             Self: Sized,
         {
-            todo!()
+            unimplemented!()
         }
 
         fn serialize<W: Write>(&self, writer: W) -> Result<()> {
-            todo!()
+            unimplemented!()
         }
     }
 
@@ -982,18 +1026,18 @@ mod tests {
         }
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
-            todo!()
+            unimplemented!()
         }
 
         fn deserialize(buf: &[u8]) -> Result<Self>
         where
             Self: Sized,
         {
-            todo!()
+            unimplemented!()
         }
 
         fn serialize<W: Write>(&self, writer: W) -> Result<()> {
-            todo!()
+            unimplemented!()
         }
     }
 
@@ -1146,6 +1190,59 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_to_unsized_miri() {
+        struct HandleApplication;
+
+        impl Application for HandleApplication {
+            type Root = DatabaseObjectHandle<[u8]>;
+            type Message = DummyMessage<DatabaseObjectHandle<[u8]>>;
+
+            fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
+                let obj = DatabaseObjectHandle::allocate_unsized(&ctx, [43u8,45].as_slice());
+
+                ctx.index_of(obj)
+            }
+        }
+
+        let mut db: Database<HandleApplication> =
+            Database::create_in_memory(HandleApplication, 1000).unwrap();
+
+        let app = HandleApplication;
+        let (handle, context) = db.get_root();
+        assert_eq!(handle.get(context), &[43,45]);
+    }
+
+    #[test]
+    fn test_handle_miri() {
+        struct HandleApplication;
+
+        impl Application for HandleApplication {
+            type Root = DatabaseObjectHandle<u32>;
+            type Message = DummyMessage<DatabaseObjectHandle<u32>>;
+
+            fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
+                let obj = DatabaseObjectHandle::allocate(&ctx, 43u32);
+
+                ctx.index_of(obj)
+            }
+        }
+
+        let mut db: Database<HandleApplication> =
+            Database::create_in_memory(HandleApplication, 1000).unwrap();
+
+        let app = HandleApplication;
+        let (handle, context) = db.get_root();
+        assert_eq!(*handle.get(context), 43);
+
+        db.with_root_mut(|root, context, _| {
+            let a1 = root.get_mut(context);
+           assert_eq!(*a1, 43);
+        });
+
+    }
+
+
+    #[test]
     fn test_vec0() {
         struct CounterVecApplication;
 
@@ -1187,6 +1284,8 @@ mod tests {
             assert_eq!(*item.counter, 48);
         });
     }
+
+
     #[test]
     fn test_vec_miri0() {
         struct CounterVecApplication;

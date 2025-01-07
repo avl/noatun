@@ -17,20 +17,10 @@ use std::rc::Rc;
 use std::slice;
 use std::sync::{Arc, MutexGuard};
 /* TODO
-compile_error!("Before the vacation
-
-you just got it compiling again after introducing a memory-only backend, that should be
-compatible with miri.
-
-You also changed the main implementation of the message store to the file-based (mmap) one.
-
-Todo:
 
 1: Verify the new backend (message_store)
 
 2: Verify the actual main orchestration logic
-
-3: Run in miri
 
 4: Add more tests, hammer it with chaos!
 
@@ -41,11 +31,7 @@ custom allocators?)
 
 7: Can we do something to the chain-of-dependent updates problem? Main snapshots?
 
-8: Can we trim messages once certain parts of them turn out unused?
-
 9: Check if we can publish this, or if employer wants it?
-
-")
 */
 
 /// Use to abstract away the concrete mmap and disk io implementations.
