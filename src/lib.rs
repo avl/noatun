@@ -180,6 +180,7 @@ pub trait Message: Debug {
     fn serialize<W: Write>(&self, writer: W) -> Result<()>;
 }
 
+
 /// A state-less object, mostly useful for testing
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
@@ -199,12 +200,111 @@ impl Object for DummyUnitObject {
     }
 }
 
+
+mod update_head_tracker {
+    use crate::disk_abstraction::Disk;
+    use crate::disk_access::FileAccessor;
+    use crate::MessageId;
+    use anyhow::Result;
+
+    pub(crate) struct UpdateHeadTracker {
+        file: FileAccessor
+    }
+
+    impl UpdateHeadTracker {
+
+        pub(crate) fn add_new_update_head(&mut self,
+                                          subsumed: &[MessageId],
+                                          new_message_id: &MessageId) -> anyhow::Result<()> {
+            let mapping = self.file.map_mut();
+            let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
+            let mut i = 0;
+            let mut file_len = id_mapping.len();
+            let mut maplen = id_mapping.len();
+            while i < maplen {
+                if subsumed.contains(&id_mapping[i]) {
+                    if i != maplen-1 {
+                        id_mapping.swap(i, maplen-1);
+                    }
+                    maplen -= 1;
+                } else {
+                    i += 1;
+                }
+            }
+            if maplen == file_len {
+                self.file.grow((file_len +1)*size_of::<MessageId>())?;
+                file_len = file_len +1;
+            }
+
+            let mapping = self.file.map_mut();
+            let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
+
+            id_mapping[maplen] = new_message_id.clone();
+            maplen += 1;
+
+            if maplen < file_len {
+                self.file.fast_truncate(maplen);
+            }
+            Ok(())
+        }
+
+        pub(crate) fn get_update_heads(&self) -> &[MessageId] {
+            bytemuck::cast_slice(self.file.map())
+        }
+        pub(crate) fn new<D:Disk>(disk: &mut D, target: &Self::Target) -> Result<UpdateHeadTracker> {
+            Ok(Self {
+                file: disk.open_file(target,"update_head", 0, 10*1024*1024)?,
+            })
+        }
+    }
+}
+
+mod update_tail_tracker {
+    use crate::disk_abstraction::Disk;
+    use crate::disk_access::FileAccessor;
+    use crate::message_store::OnDiskMessageStore;
+    use crate::{Message, MessageId, Target};
+
+
+    pub(crate) struct UpdateTailTracker {
+        file: FileAccessor
+    }
+
+    /// Contains messages that cannot be applied to main store because we don't know
+    /// their ancestors
+    pub(crate) struct Quarantine<M:Message> {
+        quarantine: OnDiskMessageStore<M>
+    }
+    impl<M:Message> Quarantine<M> {
+        pub(crate) fn add_new_update_tail(&mut self,
+                                          message: &M,
+                                          existing: &OnDiskMessageStore<M>) -> Result<()> {
+            for item in message.parents() {
+                if !existing.contains_message(item)? {
+
+                }
+
+            }
+            todo!()
+        }
+
+        pub(crate) fn new<D:Disk>(disk: &mut D, target: &Target, max_file_size: usize) -> anyhow::Result<Self> {
+            let mut sub = target.append("tail");
+            Ok(Self {
+                quarantine: OnDiskMessageStore::new(disk, &sub, max_file_size)?,
+            })
+        }
+    }
+
+}
+
 mod projector {
     use crate::disk_abstraction::Disk;
     use crate::message_store::OnDiskMessageStore;
-    use crate::{Application, DatabaseContext, Message, SequenceNr, Target};
+    use crate::{Application, Database, DatabaseContext, Message, MessageId, SequenceNr, Target};
     use anyhow::Result;
     use std::marker::PhantomData;
+    use crate::disk_access::FileAccessor;
 
     pub(crate) struct Projector<APP: Application> {
         messages: OnDiskMessageStore<APP::Message>,
@@ -212,6 +312,18 @@ mod projector {
     }
 
     impl<APP: Application> Projector<APP> {
+        pub fn get_upstream_of(&self, message_id: &[MessageId], count: usize) -> impl Iterator<Item=APP::Message> {
+            self.messages.get_upstream_of(message_id, count)
+        }
+
+        pub(crate) fn get_update_heads(&self) -> &[MessageId] {
+            self.messages.get_update_heads()
+        }
+
+        pub fn recover(&mut self) -> Result<()> {
+            self.messages.recover()
+        }
+
         pub(crate) fn new<D: Disk>(
             s: &mut D,
             target: &Target,
@@ -280,6 +392,7 @@ mod projector {
             root: &mut APP::Root,
             context: &mut DatabaseContext,
         ) -> Result<()> {
+
             for (seq, msg) in self
                 .messages
                 .query_by_index(context.next_seqnr().try_index().unwrap())?
@@ -325,6 +438,26 @@ pub trait Object {
     // TODO: Don't expose these methods. Too hard to use correctly!
     unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self;
 }
+
+
+#[derive(Clone,Debug,Copy,Pod,Zeroable)]
+#[repr(transparent)]
+pub struct PodObject<T:Pod> {
+    pub pod: T,
+}
+
+impl<T:Pod> Object for PodObject<T> {
+    type Ptr = ThinPtr;
+
+    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
+        unsafe { context.access_pod(index) }
+    }
+
+    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
+        unsafe { context.access_pod_mut(index) }
+    }
+}
+
 
 pub trait FixedSizeObject: Object<Ptr = ThinPtr> + Sized + Pod {
     const SIZE: usize = std::mem::size_of::<Self>();
@@ -682,6 +815,17 @@ pub enum Target {
     CreateNew(PathBuf),
 }
 impl Target {
+    fn path_buf(&mut self) -> &mut PathBuf {
+        let (Target::CreateNew(x) | Target::CreateNewOrOverwrite(x) | Target::OpenExisting(x)) =
+            self;
+        x
+    }
+    #[must_use]
+    pub fn append(&self, path: &str) -> Target {
+        let mut temp = self.clone();
+        *temp.path_buf() = self.path().join(path);
+        temp
+    }
     pub fn path(&self) -> &Path {
         let (Target::CreateNew(x) | Target::CreateNewOrOverwrite(x) | Target::OpenExisting(x)) =
             self;
@@ -696,13 +840,12 @@ impl Target {
 }
 
 pub mod database {
-    use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
+    use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
     use crate::projector::Projector;
-    use crate::{
-        Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Object, Pointer, SequenceNr, Target,
-    };
+    use crate::{Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Object, Pointer, SequenceNr, Target, MessageId, MessageComponent, Message};
     use anyhow::{Context, Result};
     use std::path::{Path, PathBuf};
+    use crate::disk_access::FileAccessor;
 
     pub struct Database<Base: Application> {
         context: DatabaseContext,
@@ -710,9 +853,24 @@ pub mod database {
         app: Base,
     }
 
+    //TODO: Make the modules in this file be distinct files
+
     impl<APP: Application> Database<APP> {
         pub(crate) fn force_rewind(&mut self, index: SequenceNr) {
             self.context.rewind(index)
+        }
+
+        pub fn contains_message(&self, message_id: MessageId) -> bool {
+            todo!()
+        }
+
+        pub fn get_upstream_of(&self, message_id: &[MessageId], count: usize) -> impl Iterator<Item=APP::Message> {
+            self.message_store.get_upstream_of(message_id, count)
+        }
+
+
+        pub(crate) fn get_update_heads(&self) -> &[MessageId] {
+            self.message_store.get_update_heads()
         }
 
         pub fn get_root(&self) -> (&APP::Root, &DatabaseContext) {
@@ -747,6 +905,7 @@ pub mod database {
         ) -> Result<()> {
             context.clear()?;
 
+            message_store.recover();
             let root_ptr = APP::initialize_root(context);
             context.set_root_ptr(root_ptr.as_generic());
 
@@ -757,6 +916,8 @@ pub mod database {
             let root = unsafe { <APP::Root as Object>::access_mut(context, root_ptr) };
             //let root = context.access_pod(root_ptr);
             message_store.apply_missing_messages(root, context)?;
+
+
 
             Ok(())
         }
@@ -828,7 +989,7 @@ pub mod database {
             Ok(Database {
                 context: ctx,
                 app,
-                message_store,
+                message_store
             })
         }
 
@@ -844,13 +1005,15 @@ pub mod database {
                 }
             }
             MULTI_INSTANCE_BLOCKER.set(true);
+            let mut disk = StandardDisk;
 
-            let mut ctx = DatabaseContext::new(&mut StandardDisk, &target, max_file_size)
+            let mut ctx = DatabaseContext::new(&mut disk, &target, max_file_size)
                 .context("opening database")?;
 
             let is_dirty = ctx.is_dirty();
 
-            let mut message_store = Projector::new(&mut StandardDisk, &target, max_file_size)?;
+            let mut message_store = Projector::new(&mut disk, &target, max_file_size)?;
+            let mut update_heads = disk.open_file(&target, "update_heads", 0, 128*1024*1024)?;
             if is_dirty {
                 Self::recover(&mut app, &mut ctx, &mut message_store)?;
                 ctx.mark_clean()?;
@@ -868,6 +1031,124 @@ pub mod database {
         }
     }
 }
+
+
+pub mod distributor {
+    use std::collections::HashSet;
+    use indexmap::{IndexMap, IndexSet};
+    use libc::send;
+    use savefile_derive::Savefile;
+    use crate::{Application, Database, MessageId};
+
+    // Principle
+    // The node that is 'most ahead' (highest MessageId) has responsibility.
+    // If knows all the heads of other node, just sends perfect updates.
+    // Otherwise:
+    // Must request messages until it has complete picture
+
+    struct SerializedMessage {
+        data: Vec<u8>
+    }
+
+
+    struct MessageSubGraphNode {
+        id: MessageId,
+        parents: Vec<MessageId>
+    }
+
+    #[derive(Savefile)]
+    enum DistributorMessage {
+        /// Report all update heads for the sender
+        ReportHeads(Vec<MessageId>),
+        /// Report a cut in the source node message graph
+        RequestUpstream {
+            query: Vec<MessageId>,
+            /// How many levels to ascend from message
+            count: usize,
+        },
+        UpstreamResponse {
+            query: Vec<MessageId>,
+            count: usize,
+            messages: Vec<MessageSubGraphNode>,
+        },
+        /// Command the recipient to send all descendants of the given message
+        SendMessageAndAllDescendants {
+            message_id: Vec<MessageId>,
+        },
+        Message(SerializedMessage)
+    }
+
+    struct Distributor {
+
+    }
+
+    impl Distributor {
+        fn get_heads<APP:Application>(&self, database: Database<APP>) -> DistributorMessage {
+            DistributorMessage::ReportHeads(todo!())
+        }
+
+        fn receive_message<APP:Application>(&self, database: Database<APP>, message: DistributorMessage) -> Vec<DistributorMessage> {
+            let mut output = vec![];
+            match message {
+                DistributorMessage::ReportHeads(messages) => {
+                    for message in messages {
+                        if database.contains_message(message) {
+                            continue;
+                        }
+                        output.push(DistributorMessage::RequestUpstream {
+                            query: message,
+                            count: 4,
+                        })
+                    }
+                }
+                DistributorMessage::RequestUpstream { query, count } => {
+                    let mut response: IndexMap<MessageId, APP::Message> = IndexMap::new();
+                    let messages = database.get_upstream_of(&query, count).map(|msg|todo!()).collect();
+                    output.push(DistributorMessage::UpstreamResponse {
+                        query,
+                        count,
+                        messages,
+                    })
+                }
+                DistributorMessage::UpstreamResponse { query, count, messages } => {
+                    let mut unknowns: HashSet<MessageId> = HashSet::new();
+                    let mut send_cmds = vec![];
+                    for msg in messages {
+                        if database.contains_message(msg.id) {
+                            continue; //We already have this one
+                        }
+                        if msg.parents.iter().all(|x|database.contains_message(*x)) {
+                            // We have all the parents, a perfect msg to request!
+                            send_cmds.push(msg.id);
+                            continue;
+                        }
+                        unknowns.extend(msg.parents);
+                    }
+                    if send_cmds.is_empty() == false {
+                        output.push(DistributorMessage::SendMessageAndAllDescendants { message_id: send_cmds});
+                    }
+                    if unknowns.is_empty() == false {
+                        output.push(DistributorMessage::RequestUpstream {query: unknowns.into_iter().collect(), count: 2*count});
+                    }
+                }
+                DistributorMessage::SendMessageAndAllDescendants { message_id } => {
+                    for msg in message_id.iter().map(|x|database.get_message(*x)) {
+                        output.push(DistributorMessage::Message(msg));
+                    }
+                }
+                DistributorMessage::Message(msg) => {
+                    database.append_many(msg);
+                }
+            }
+
+            output
+        }
+
+
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1132,6 +1413,7 @@ mod tests {
         })
         .unwrap();
 
+        println!("Update heads: {:?}", db.get_update_heads());
         // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
 
         db.with_root_mut(|root, context| {

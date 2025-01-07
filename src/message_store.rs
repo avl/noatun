@@ -1,14 +1,14 @@
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::sha2_helper::sha2;
-use crate::{Message, MessageId, Target};
+use crate::{Database, Message, MessageId, Target};
 use anyhow::{Context, Result, anyhow, bail};
 use bytemuck::{Pod, Zeroable};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use fs2::FileExt;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -197,8 +197,8 @@ const STATUS_NOK: u32 = 0;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct StoreHeader {
-    dirty_status: u32,
     entries: u32,
+    padding: u32,
     // Compact file=1 + old file being compacted=0
     data_files: [DataFileEntry; 2],
 }
@@ -209,9 +209,68 @@ pub(crate) struct OnDiskMessageStore<M> {
     data_files: [DataFileInfo; 2],
     active_file: U1,
     phantom: PhantomData<M>,
+
+    /// MessageId's that aren't parents to any other message
+    update_heads: FileAccessor,
+
+    /// MessageId's that don't have any known parents.
+    /// Note, this does not include messages that lack parents. Only initial messages
+    /// lack parents.
+    update_tails: FileAccessor,
 }
 
 impl<M> OnDiskMessageStore<M> {
+    pub(crate) fn register_heads_and_tails(update_heads: &mut FileAccessor,
+                                           subsumed: &[MessageId],
+                                           new_message_id: &MessageId) -> Result<()> {
+        Self::add_new_update_head(update_heads, subsumed, new_message_id)?;
+
+        Ok(())
+    }
+
+    pub fn get_upstream_of(&mut self, message_ids: &[MessageId], count: usize) -> impl Iterator<Item=M> where M:Message {
+
+        assert!(!message_ids.is_empty());
+        assert!(message_ids.is_sorted());
+
+        let input_message_ids : HashSet<MessageId> = message_ids.iter().cloned().collect();
+        let (header, message_index) = self.header_and_index().context("opening index file")?;
+        let data_files = &mut self.data_files;
+
+        let mut index = 0;
+
+        let mut breadth = HashSet::new();
+        for message_id in message_ids.iter().rev() {
+            breadth.insert(*message_id);
+            if let Ok(cand) = message_index.binary_search_by_key(message_ids.last().unwrap(), |x| x.message) {
+                index = cand;
+                break;
+            }
+        }
+
+        message_index[0..index].iter().rev()
+            .map(|x|{
+                let mut msg = Self::read_msg(x, data_files).ok()?;
+                if breadth.remove(&msg.id()) {
+                    breadth.extend(msg.parents());
+                    if input_message_ids.contains(&msg.id()) {
+                        (None, false)
+                    } else {
+                        (Some(msg), false)
+                    }
+                } else {
+                    (None, breadth.is_empty())
+                }
+            })
+            .take_while(|(_,done)|!*done)
+            .filter_map(|(msg, _)|msg)
+            .take(count)
+    }
+
+    pub(crate) fn get_update_tails(&self) -> &[MessageId] {
+        bytemuck::cast_slice(self.update_tails.map())
+    }
+
     fn provide_index_map(
         map: &mut FileAccessor,
         extra: usize, //items, not bytes
@@ -253,7 +312,7 @@ impl<M> OnDiskMessageStore<M> {
             bytemuck::from_bytes_mut(&mut slice[0..size_of::<StoreHeader>()]);
         // We're currently updating, so status should be 'NOK'. But we haven't failed,
         // so as soon as the transaction is complete, this will be set to OK again.
-        header.dirty_status = STATUS_NOK;
+
 
         Ok(())
     }
@@ -313,24 +372,6 @@ impl<M> OnDiskMessageStore<M> {
         Ok((header, &rest[0..header.entries as usize]))
     }
 
-    fn with_transaction<R>(&mut self, mut f: impl FnOnce(&mut Self) -> Result<R>) -> Result<R>
-    where
-        M: Message,
-    {
-        if self.update_status(STATUS_NOK)? != STATUS_OK {
-            // Recovery needed
-            self.recover()?;
-        }
-        let ret = f(self);
-        self.update_status(STATUS_OK)
-            .expect("failed to mark db as OK after transaction complete");
-        ret
-    }
-
-    fn end_transaction(&mut self) -> Result<()> {
-        self.update_status(STATUS_OK)?;
-        Ok(())
-    }
 
     /// Recover from index corruption.
     /// You should never need to call this explicitly, it will be called automatically
@@ -355,6 +396,9 @@ impl<M> OnDiskMessageStore<M> {
                 max_count_messages += 1;
             }
         }
+
+        self.update_heads.fast_truncate(0);
+        let mut parents = Vec::new();
 
         let (index_header, index) =
             Self::header_and_index_mut_uninit(&mut self.index_mmap, max_count_messages)?;
@@ -395,6 +439,10 @@ impl<M> OnDiskMessageStore<M> {
                         continue;
                     }
                 };
+                parents.clear();
+                parents.extend(msg.parents());
+                Self::register_heads_and_tails(&mut self.update_heads, &parents, &msg.id())?;
+
                 file_entry.bytes_used += header.msg_size + MSG_HEADER_SIZE as u64;
                 index[index_ptr] = IndexEntry {
                     message: header.message_id,
@@ -408,24 +456,15 @@ impl<M> OnDiskMessageStore<M> {
 
         index[0..index_header.entries as usize].sort();
 
-        self.update_status(STATUS_OK)?;
+
 
         Ok(())
     }
 
-    fn update_status(&mut self, status: u32) -> Result<u32> {
-        let header = Self::header(&mut self.index_mmap)?;
-        let prev = header.dirty_status;
-        if prev != status {
-            header.dirty_status = status;
-            self.index_mmap.flush_range(
-                offset_of!(StoreHeader, dirty_status),
-                std::mem::size_of::<u32>(),
-            )?;
-        }
-        Ok(prev)
+    pub fn contains_message(&self, start: MessageId) -> Result<bool> {
+        let (header, message_index) = self.header_and_index().context("opening index file")?;
+        Ok(message_index.binary_search_by_key(&start, |x| x.message).is_ok())
     }
-
     /// Get all messages with id start or greater
     fn query(&self, start: MessageId) -> Result<impl Iterator<Item = &IndexEntry>> {
         let (header, message_index) = self.header_and_index().context("opening index file")?;
@@ -490,6 +529,8 @@ impl<M> OnDiskMessageStore<M> {
         let Some((file, offset)) = entry.file_offset.file_and_offset() else {
             return Err(anyhow!("Message not found in store (appears deleted)"));
         };
+
+        //TODO: We could probably have a way to create a very cheap read-only clone
         let mut file = &mut data_files[file.index()].file;
         file.seek(SeekFrom::Start(offset))
             .context("Seeking to message data")?;
@@ -563,6 +604,8 @@ impl<M> OnDiskMessageStore<M> {
             return Ok(()); //Idempotency,
         };
 
+
+
         Self::delete_msg(entry, &mut self.data_files)?;
         message_index[delete_index].file_offset.set_deleted();
         Ok(())
@@ -601,7 +644,7 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message + Debug,
     {
-        self.with_transaction(|tself| tself.do_append_many_sorted(messages))
+        self.do_append_many_sorted(messages)
     }
 
     /// If the message was inserted, returns the insertion index.
@@ -624,7 +667,7 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message,
     {
-        self.with_transaction(|tself| tself.do_delete_many(messages))
+        self.do_delete_many(messages)
     }
 
     fn do_delete_many(&mut self, messages: impl Iterator<Item = MessageId>) -> Result<()> {
@@ -692,6 +735,7 @@ impl<M> OnDiskMessageStore<M> {
 
         let mut cur_input_message = Some(first_input_message);
         let mut actual_inserted_entries = 0;
+        let mut parents = Vec::new();
         loop {
             if carry_buffer.is_empty() && cur_input_message.is_none() {
                 break;
@@ -744,6 +788,10 @@ impl<M> OnDiskMessageStore<M> {
                 }
                 Cases::NextFromInput => {
                     let msg = cur_input_message.take().unwrap();
+
+                    parents.clear();
+                    parents.extend(msg.parents());
+                    Self::register_heads_and_tails(&mut self.update_heads, &parents, &msg.id())?;
 
                     let start_pos = info.file.seek(SeekFrom::End(0))?;
 
@@ -823,11 +871,11 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message,
     {
-        self.with_transaction(|tself| {
-            tself.do_compact(|wasted_space, total_space| {
-                (100 * wasted_space) / total_space > tolerated_fragmentation_percent as u64
-            })
+
+        self.do_compact(|wasted_space, total_space| {
+            (100 * wasted_space) / total_space > tolerated_fragmentation_percent as u64
         })
+
     }
 
     /// Compact all files
@@ -986,10 +1034,6 @@ impl<M> OnDiskMessageStore<M> {
         let len = index_file.used_space();
 
         let index = Self::header(&mut index_file)?;
-        if overwrite {
-            // We've overwritten (truncated) the existing file, so it's definitely not corrupt
-            index.dirty_status = STATUS_OK;
-        }
 
         // The active file is the one with the least percentage of wasted bytes
         let active = index
@@ -1002,6 +1046,8 @@ impl<M> OnDiskMessageStore<M> {
             })
             .unwrap()
             .0;
+        let mut update_heads = d.open_file(&target, "update_heads", 0, 128*1024*1024)?;
+        let mut update_tails = d.open_file(&target, "update_tails", 0, 128*1024*1024)?;
 
         let mut this = Self {
             target: target.clone(),
@@ -1009,6 +1055,8 @@ impl<M> OnDiskMessageStore<M> {
             data_files,
             active_file: U1::from_index(active),
             phantom: Default::default(),
+            update_heads,
+            update_tails,
         };
 
         Ok(this)

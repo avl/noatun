@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::Database;
-use noatun::{Application, DatabaseContext, Message, MessageId, Object, ThinPtr};
+use noatun::{Application, DatabaseContext, Message, MessageId, PodObject, ThinPtr};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 
@@ -14,34 +14,6 @@ struct CounterObject {
 
 struct CounterApplication;
 
-impl Object for CounterObject {
-    type Ptr = ThinPtr;
-
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        unsafe { context.access_pod(index) }
-    }
-
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        unsafe {
-            let a: &mut CounterObject = context.access_pod_mut(index);
-            a
-        }
-    }
-}
-
-impl<'a> CounterObject {
-    /*fn set_counter(&mut self, ctx: &mut DatabaseContext, value1: u32, value2: u32) {
-        self.counter.set(ctx, value1);
-        self.counter2.set(ctx, value2);
-    }
-    fn new(ctx: &mut DatabaseContext) -> &mut CounterObject {
-        let counter: &mut DatabaseCell<u32> = DatabaseCell::new(ctx);
-        assert_eq!(ctx.index_of(counter).0, 0);
-        let counter2: &mut DatabaseCell<u32> = DatabaseCell::new(ctx);
-        assert_eq!(ctx.index_of(counter2).0, 4);
-        Self::access_mut(ctx, ThinPtr(0))
-    }*/
-}
 
 #[derive(Debug, Savefile)]
 struct CounterMessage {
@@ -51,7 +23,7 @@ struct CounterMessage {
 }
 
 impl Message for CounterMessage {
-    type Root = CounterObject;
+    type Root = PodObject<CounterObject>;
 
     fn id(&self) -> MessageId {
         MessageId::new_debug(self.id)
@@ -67,15 +39,15 @@ impl Message for CounterMessage {
             self.id, self.counter, self.delta
         );
 
-        root.counter
-            .set(context, root.counter.get(context) + self.delta);
+        root.pod.counter
+            .set(context, root.pod.counter.get(context) + self.delta);
         let cell: &mut DatabaseCell<u32> = DatabaseCell::allocate(context);
         cell.set(context, self.delta);
         let cell_slice =
             unsafe { std::slice::from_raw_parts_mut(cell as *mut DatabaseCell<u32>, 1) };
 
         let handle = DatabaseObjectHandle::new(context.index_of(cell_slice));
-        root.counter2.push(context, handle);
+        root.pod.counter2.push(context, handle);
     }
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
@@ -91,11 +63,11 @@ impl Message for CounterMessage {
 }
 
 impl Application for CounterApplication {
-    type Root = CounterObject;
+    type Root = PodObject<CounterObject>;
     type Message = CounterMessage;
 
     fn initialize_root(ctx: &mut DatabaseContext) -> ThinPtr {
-        let ctr = ctx.allocate_pod::<CounterObject>();
+        let ctr = ctx.allocate_pod::<PodObject<CounterObject>>();
         ctx.index_of(ctr)
     }
 }
@@ -113,7 +85,7 @@ fn test_counter_object_miri() {
     .unwrap();
 
     let (root, context) = db.get_root();
-    assert_eq!(root.counter.get(context), 42);
+    assert_eq!(root.pod.counter.get(context), 42);
 
     db.append_single(CounterMessage {
         id: 1,
@@ -123,9 +95,9 @@ fn test_counter_object_miri() {
     .unwrap();
 
     let (root, context) = db.get_root();
-    assert_eq!(root.counter.get(context), 85);
-    assert_eq!(root.counter2.len(context), 2);
-    let vec_elem = root.counter2.get(context, 0);
+    assert_eq!(root.pod.counter.get(context), 85);
+    assert_eq!(root.pod.counter2.len(context), 2);
+    let vec_elem = root.pod.counter2.get(context, 0);
     let arr = vec_elem.get(context);
     let arr_item = &arr[0];
     assert_eq!(
