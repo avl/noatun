@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
+use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::Database;
 use noatun::{Application, DatabaseContext, Message, MessageId, Object, ThinPtr};
-use noatun::data_types::DatabaseCell;
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 
@@ -9,7 +9,7 @@ use std::io::{Cursor, Write};
 #[repr(C)]
 struct CounterObject {
     counter: DatabaseCell<u32>,
-    counter2: DatabaseCell<u32>,
+    counter2: DatabaseVec<DatabaseObjectHandle<[DatabaseCell<u8>]>>,
 }
 
 struct CounterApplication;
@@ -18,11 +18,14 @@ impl Object for CounterObject {
     type Ptr = ThinPtr;
 
     unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        context.access_pod(index)
+        unsafe { context.access_pod(index) }
     }
 
     unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        context.access_pod_mut(index)
+        unsafe {
+            let a: &mut CounterObject = context.access_pod_mut(index);
+            a
+        }
     }
 }
 
@@ -63,18 +66,16 @@ impl Message for CounterMessage {
             "Applying message {} {} {}",
             self.id, self.counter, self.delta
         );
-        println!(
-            "  Prev values: {} {}",
-            root.counter.get(context),
-            root.counter2.get(context)
-        );
-        if self.counter == 0 {
-            root.counter
-                .set(context, root.counter.get(context) + self.delta);
-        } else {
-            root.counter2
-                .set(context, root.counter2.get(context) + self.delta);
-        }
+
+        root.counter
+            .set(context, root.counter.get(context) + self.delta);
+        let cell: &mut DatabaseCell<u32> = DatabaseCell::allocate(context);
+        cell.set(context, self.delta);
+        let cell_slice =
+            unsafe { std::slice::from_raw_parts_mut(cell as *mut DatabaseCell<u32>, 1) };
+
+        let handle = DatabaseObjectHandle::new(context.index_of(cell_slice));
+        root.counter2.push(context, handle);
     }
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
@@ -100,14 +101,9 @@ impl Application for CounterApplication {
 }
 
 #[test]
-fn test_counter_object() {
-    let mut db: Database<CounterApplication> = Database::create_new(
-        "test/integration/test_counter_object.bin",
-        CounterApplication,
-        true,
-        10_000,
-    )
-    .unwrap();
+fn test_counter_object_miri() {
+    let mut db: Database<CounterApplication> =
+        Database::create_in_memory(CounterApplication, 10_000).unwrap();
 
     db.append_single(CounterMessage {
         id: 2,
@@ -127,6 +123,13 @@ fn test_counter_object() {
     .unwrap();
 
     let (root, context) = db.get_root();
-    assert_eq!(root.counter.get(context), 42);
-    assert_eq!(root.counter2.get(context), 43);
+    assert_eq!(root.counter.get(context), 85);
+    assert_eq!(root.counter2.len(context), 2);
+    let vec_elem = root.counter2.get(context, 0);
+    let arr = vec_elem.get(context);
+    let arr_item = &arr[0];
+    assert_eq!(
+        arr_item.get(context),
+        43u8
+    );
 }

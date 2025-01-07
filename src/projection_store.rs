@@ -463,15 +463,15 @@ impl DatabaseContext {
 
             self.undo_log.record(UndoLogEntry::Restore {
                 start: dest_index,
-                data: self.access(FatPtr::from(dest_index, source.len)),
+                data: self.access_slice(FatPtr::from(dest_index, source.len)),
             });
 
-            let dest = self.access_mut(FatPtr {
+            let dest = self.access_slice_mut::<u8>(FatPtr {
                 start: dest_index,
                 len: source.len,
             });
 
-            let src = self.access(source);
+            let src = self.access_slice(source);
 
             dest.copy_from_slice(src);
         }
@@ -511,26 +511,27 @@ impl DatabaseContext {
     }
     /// # Safety
     /// The returned range must not overlap any mutable reference
-    pub unsafe fn access<'a>(&self, range: FatPtr) -> &'a [u8] {
+    pub unsafe fn access_slice<'a, T: Pod>(&self, range: FatPtr) -> &'a [T] {
         assert!(range.start + range.len <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts(
-                self.main_db_mmap.map_const_ptr().wrapping_add(range.start),
-                range.len,
+                self.main_db_mmap.map_const_ptr().wrapping_add(range.start) as *const T,
+                range.len / size_of::<T>(),
             )
         }
     }
     /// # Safety
     /// The returned range must not overlap any other reference
-    pub unsafe fn access_mut<'a>(&mut self, range: FatPtr) -> &'a mut [u8] {
+    pub unsafe fn access_slice_mut<'a, T: Pod>(&mut self, range: FatPtr) -> &'a mut [T] {
         assert!(range.start + range.len <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts_mut(
-                self.main_db_mmap.map_mut_ptr().wrapping_add(range.start),
-                range.len,
+                self.main_db_mmap.map_mut_ptr().wrapping_add(range.start) as *mut T,
+                range.len / size_of::<T>(),
             )
         }
     }
+
     /// # Safety
     /// The given range must point to valid memory, and must not overlap any other reference
     pub unsafe fn mut_slice<'a>(data: *mut u8, range: Range<usize>) -> &'a mut [u8] {
@@ -538,7 +539,10 @@ impl DatabaseContext {
             std::slice::from_raw_parts_mut(data.wrapping_add(range.start), range.end - range.start)
         }
     }
-    pub fn access_pod<'a, T: Pod>(&self, index: ThinPtr) -> &'a T {
+
+    /// # Safety:
+    /// Caller must ensure no mutable reference exists to the requested object
+    pub unsafe fn access_pod<'a, T: Pod>(&self, index: ThinPtr) -> &'a T {
         if index
             .0
             .checked_add(size_of::<T>())
@@ -554,7 +558,10 @@ impl DatabaseContext {
             ))
         }
     }
-    pub fn access_pod_mut<'a, T: Pod>(&mut self, index: ThinPtr) -> &'a mut T {
+
+    /// # Safety:
+    /// Caller must ensure no references exists to the requested object
+    pub unsafe fn access_pod_mut<'a, T: Pod>(&mut self, index: ThinPtr) -> &'a mut T {
         if index
             .0
             .checked_add(size_of::<T>())
@@ -577,10 +584,10 @@ impl DatabaseContext {
             start: index,
             len: data.len(),
         };
-        let target = unsafe { self.access_mut(fat) };
+        let target = unsafe { self.access_slice_mut(fat) };
         target.copy_from_slice(data);
     }
-    pub fn write_pod<T: Pod>(&mut self, src: T, dest: &mut T) {
+    pub fn write_pod<T: Pod>(&self, src: T, dest: &mut T) {
         let dest_index = self.index_of_sized(dest);
 
         self.undo_log.record(UndoLogEntry::Restore {
@@ -592,7 +599,7 @@ impl DatabaseContext {
     pub fn index_of_sized<T: Sized>(&self, t: &T) -> ThinPtr {
         ThinPtr::create(t, self.main_db_mmap.map_const_ptr())
     }
-    pub fn index_of<T: Object>(&self, t: &T) -> T::Ptr {
+    pub fn index_of<T: Object + ?Sized>(&self, t: &T) -> T::Ptr {
         T::Ptr::create(t, self.main_db_mmap.map_const_ptr())
     }
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {
@@ -617,7 +624,7 @@ impl DatabaseContext {
             .collect())
     }
 
-    pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr) {
+    pub fn update_registrar(&self, registrar_point: &mut SequenceNr) {
         let mut track = self.registrar_tracker.borrow_mut();
         if registrar_point.0 != 0 {
             track.decrease_use(*registrar_point);

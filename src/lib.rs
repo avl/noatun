@@ -7,6 +7,7 @@
 
 extern crate test;
 
+use crate::data_types::DatabaseCell;
 use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
 use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::{FileMapping, get_boot_time};
@@ -39,7 +40,6 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
-use crate::data_types::DatabaseCell;
 
 mod disk_abstraction;
 mod message_store;
@@ -181,10 +181,9 @@ pub trait Message: Debug {
 }
 
 /// A state-less object, mostly useful for testing
-#[derive(Clone,Copy,Pod,Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct DummyUnitObject;
-
 
 impl Object for DummyUnitObject {
     type Ptr = ThinPtr;
@@ -229,12 +228,7 @@ mod projector {
             context: &mut DatabaseContext,
             message: APP::Message,
         ) -> Result<bool> {
-            if let Some(insert_point) = self.messages.append_single(message)? {
-                self.rewind(context, insert_point)?;
-                Ok(true)
-            } else {
-                Ok(false)
-            }
+            self.push_sorted_messages(context, std::iter::once(message))
         }
 
         /// Returns true if any of the messages were not previously present
@@ -246,7 +240,14 @@ mod projector {
             let mut messages: Vec<APP::Message> = message.collect();
             messages.sort_unstable_by_key(|x| x.id());
 
-            if let Some(insert_point) = self.messages.append_many_sorted(messages.into_iter())? {
+            self.push_sorted_messages(context, messages.into_iter())
+        }
+        pub(crate) fn push_sorted_messages(
+            &mut self,
+            context: &mut DatabaseContext,
+            messages: impl ExactSizeIterator<Item = APP::Message>,
+        ) -> Result<bool> {
+            if let Some(insert_point) = self.messages.append_many_sorted(messages)? {
                 if let Some(cur_main_db_next_index) = context.next_seqnr().try_index() {
                     if insert_point < cur_main_db_next_index {
                         self.rewind(context, insert_point)?;
@@ -258,7 +259,6 @@ mod projector {
                 Ok(false)
             }
         }
-
         fn rewind(&mut self, context: &mut DatabaseContext, point: usize) -> Result<()> {
             context.rewind(SequenceNr::from_index(point));
             Ok(())
@@ -306,7 +306,7 @@ pub enum GenPtr {
 
 pub trait Pointer: Copy + Debug + 'static {
     fn start(self) -> usize;
-    fn create<T>(addr: &T, buffer_start: *const u8) -> Self;
+    fn create<T: ?Sized>(addr: &T, buffer_start: *const u8) -> Self;
     fn as_generic(&self) -> GenPtr;
 }
 
@@ -336,47 +336,12 @@ impl<T: Object<Ptr = ThinPtr> + Sized + Copy + Pod> FixedSizeObject for T {
     const ALIGN: usize = std::mem::align_of::<Self>();
 }
 
-impl Object for usize {
-    type Ptr = ThinPtr;
-
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        unsafe { context.access_pod(index) }
-    }
-
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        unsafe { context.access_pod_mut(index) }
-    }
-}
-
-impl Object for u32 {
-    type Ptr = ThinPtr;
-
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        unsafe { context.access_pod(index) }
-    }
-
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        unsafe { context.access_pod_mut(index) }
-    }
-}
-impl Object for u8 {
-    type Ptr = ThinPtr;
-
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        unsafe { context.access_pod(index) }
-    }
-
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        unsafe { context.access_pod_mut(index) }
-    }
-}
 pub trait Application {
     type Root: Object + ?Sized;
     type Message: Message<Root = Self::Root>;
 
     fn initialize_root(ctx: &mut DatabaseContext) -> <Self::Root as Object>::Ptr;
 }
-
 
 #[derive(Copy, Clone, Debug)]
 pub struct FatPtr {
@@ -405,7 +370,7 @@ impl Pointer for ThinPtr {
         self.0
     }
 
-    fn create<T>(addr: &T, buffer_start: *const u8) -> Self {
+    fn create<T: ?Sized>(addr: &T, buffer_start: *const u8) -> Self {
         let index = (addr as *const T as *const u8 as usize) - (buffer_start as usize);
         ThinPtr(index)
     }
@@ -419,17 +384,16 @@ impl Pointer for FatPtr {
     fn start(self) -> usize {
         self.start
     }
-    fn create<T>(addr: &T, buffer_start: *const u8) -> Self {
-        let addr: *const T = addr as *const T;
+    fn create<T: ?Sized>(addr: &T, buffer_start: *const u8) -> Self {
 
         assert_eq!(
             std::mem::size_of::<*const T>(),
             2 * std::mem::size_of::<usize>()
         );
-        let dummy: (*const u8, usize) = unsafe { transmute_copy(&addr) };
+
         FatPtr {
-            start: ((dummy.0 as usize) - (buffer_start as usize)),
-            len: dummy.1,
+            start: ((addr as *const T as *const u8 as usize) - (buffer_start as usize)),
+            len: size_of_val(addr),
         }
     }
     fn as_generic(&self) -> GenPtr {
@@ -437,24 +401,24 @@ impl Pointer for FatPtr {
     }
 }
 
-impl Object for [u8] {
+impl<T: FixedSizeObject> Object for [T] {
     type Ptr = FatPtr;
 
     unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        unsafe { context.access(index) }
+        unsafe { context.access_slice(index) }
     }
 
     unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        unsafe { context.access_mut(index) }
+        unsafe { context.access_slice_mut(index) }
     }
 }
 
 pub mod data_types {
+    use crate::{DatabaseContext, FatPtr, FixedSizeObject, Object, Pointer, SequenceNr, ThinPtr};
+    use bytemuck::{Pod, Zeroable};
     use std::marker::PhantomData;
     use std::mem::transmute_copy;
     use std::ops::Deref;
-    use bytemuck::{Pod, Zeroable};
-    use crate::{DatabaseContext, FatPtr, FixedSizeObject, Object, Pointer, SequenceNr, ThinPtr};
 
     #[derive(Copy, Clone)]
     #[repr(C)]
@@ -462,6 +426,16 @@ pub mod data_types {
         value: T,
         registrar: SequenceNr,
     }
+
+    pub trait DatabaseCellArrayExt<T:Pod> {
+        fn observe(&self, context: &DatabaseContext) -> Vec<T>;
+    }
+    impl<T:Pod> DatabaseCellArrayExt<T> for &[DatabaseCell<T>] {
+        fn observe(&self, context: &DatabaseContext) -> Vec<T> {
+            self.iter().map(|x|x.get(context)).collect()
+        }
+    }
+
 
     impl<T: Copy> Deref for DatabaseCell<T> {
         type Target = T;
@@ -479,7 +453,11 @@ pub mod data_types {
             context.observe_registrar(self.registrar);
             self.value
         }
-        pub fn set<'a>(&'a mut self, context: &'a mut DatabaseContext, new_value: T) {
+        pub fn get_ref(&self, context: &DatabaseContext) -> &T {
+            context.observe_registrar(self.registrar);
+            &self.value
+        }
+        pub fn set<'a>(&'a mut self, context: &'a DatabaseContext, new_value: T) {
             let index = context.index_of(self);
             //context.write(index, bytes_of(&new_value));
             context.write_pod(new_value, &mut self.value);
@@ -487,13 +465,17 @@ pub mod data_types {
         }
     }
 
-
-
-    impl<T: Pod + Object> DatabaseCell<T> {
+    impl<T: Pod> DatabaseCell<T> {
         #[allow(clippy::mut_from_ref)]
-        pub fn new(context: &DatabaseContext) -> &mut Self {
-            let memory = unsafe { context.allocate_pod::<T>() };
+        pub fn allocate(context: &DatabaseContext) -> &mut Self {
+            let memory = unsafe { context.allocate_pod::<DatabaseCell<T>>() };
             unsafe { &mut *(memory as *mut _ as *mut DatabaseCell<T>) }
+        }
+        pub fn new(value: T) -> DatabaseCell<T> {
+            DatabaseCell {
+                value,
+                registrar: Default::default(),
+            }
         }
     }
 
@@ -501,11 +483,11 @@ pub mod data_types {
         type Ptr = ThinPtr;
 
         unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-            context.access_pod(index)
+            unsafe { context.access_pod(index) }
         }
 
         unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-            context.access_pod_mut(index)
+            unsafe { context.access_pod_mut(index) }
         }
     }
 
@@ -538,7 +520,7 @@ pub mod data_types {
         pub fn new(ctx: &DatabaseContext) -> &mut DatabaseVec<T> {
             unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
         }
-        pub fn len(&self, ctx: &mut DatabaseContext) -> usize {
+        pub fn len(&self, ctx: &DatabaseContext) -> usize {
             ctx.observe_registrar(self.length_registrar);
             self.length
         }
@@ -550,6 +532,12 @@ pub mod data_types {
             let offset = self.data + index * T::SIZE;
             let t = unsafe { T::access_mut(ctx, ThinPtr(offset)) };
             t
+        }
+        pub fn write(&mut self, ctx: &mut DatabaseContext, index: usize, val: T) {
+            let offset = self.data + index * T::SIZE;
+            unsafe {
+                *T::access_mut(ctx, ThinPtr(offset)) = val;
+            };
         }
 
         fn realloc_add(&mut self, ctx: &mut DatabaseContext, new_capacity: usize) {
@@ -575,7 +563,11 @@ pub mod data_types {
             )
         }
 
-        pub fn push_new<'a>(&'a mut self, ctx: &mut DatabaseContext) -> &'a mut T {
+        pub fn push_zeroed(&mut self, context: &mut DatabaseContext) -> &mut T {
+            self.push(context, T::zeroed());
+            self.get_mut(context, self.length - 1)
+        }
+        pub fn push<'a>(&'a mut self, ctx: &mut DatabaseContext, t: T) {
             if self.length >= self.capacity {
                 self.realloc_add(ctx, (self.capacity + 1) * 2);
             } else {
@@ -583,7 +575,7 @@ pub mod data_types {
             }
             ctx.update_registrar(&mut self.length_registrar);
 
-            self.get_mut(ctx, self.length - 1)
+            self.write(ctx, self.length - 1, t)
         }
     }
 
@@ -593,10 +585,10 @@ pub mod data_types {
     {
         type Ptr = ThinPtr;
         unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-            context.access_pod(index)
+            unsafe { context.access_pod(index) }
         }
         unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-            context.access_pod_mut(index)
+            unsafe { context.access_pod_mut(index) }
         }
     }
 
@@ -606,34 +598,41 @@ pub mod data_types {
         phantom: PhantomData<T>,
     }
 
-    unsafe impl<T: Object+?Sized> Zeroable for DatabaseObjectHandle<T> {}
+    unsafe impl<T: Object + ?Sized> Zeroable for DatabaseObjectHandle<T> {}
 
-    impl<T: Object+?Sized> Copy for DatabaseObjectHandle<T> {}
+    impl<T: Object + ?Sized> Copy for DatabaseObjectHandle<T> {}
 
-    impl<T: Object+?Sized> Clone for DatabaseObjectHandle<T> {
+    impl<T: Object + ?Sized> Clone for DatabaseObjectHandle<T> {
         fn clone(&self) -> Self {
             *self
         }
     }
 
     unsafe impl<T: Object + ?Sized + 'static> Pod for DatabaseObjectHandle<T> {}
-    impl<T: Object+?Sized+'static> Object for DatabaseObjectHandle<T> {
+    impl<T: Object + ?Sized + 'static> Object for DatabaseObjectHandle<T> {
         type Ptr = ThinPtr;
 
         unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-            context.access_pod(index)
+            unsafe { context.access_pod(index) }
         }
         unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-            context.access_pod_mut(index)
+            unsafe { context.access_pod_mut(index) }
         }
     }
 
-    impl<T: Object+?Sized> DatabaseObjectHandle<T> {
+    impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
         pub fn get(&self, context: &DatabaseContext) -> &T {
             unsafe { T::access(context, self.object_index) }
         }
         pub fn get_mut(&mut self, context: &mut DatabaseContext) -> &mut T {
             unsafe { T::access_mut(context, self.object_index) }
+        }
+
+        pub fn new(value: T::Ptr) -> Self {
+            Self {
+                object_index: value,
+                phantom: Default::default(),
+            }
         }
 
         #[allow(clippy::mut_from_ref)]
@@ -656,25 +655,25 @@ pub mod data_types {
         {
             let size_bytes = std::mem::size_of_val(value);
             let this = unsafe { context.allocate_pod::<DatabaseObjectHandle<T>>() };
-            let target_dst_ptr = unsafe { context.allocate_raw(size_bytes, std::mem::align_of_val(value)) };
+            let target_dst_ptr =
+                unsafe { context.allocate_raw(size_bytes, std::mem::align_of_val(value)) };
 
             let target_src_ptr = value as *const T as *const u8;
 
             let (src_ptr, src_metadata): (*const u8, usize) = unsafe { transmute_copy(&value) };
 
             unsafe { std::ptr::copy(target_src_ptr, target_dst_ptr, size_bytes) };
-            let thin_index = context.index_of(unsafe{&*target_dst_ptr});
+            let thin_index = context.index_of_ptr(target_dst_ptr);
 
-            this.object_index = FatPtr::from(thin_index.start(), src_metadata);
+            this.object_index = FatPtr::from(thin_index.start(), size_bytes);
             this
         }
     }
 }
 
 thread_local! {
-        static MULTI_INSTANCE_BLOCKER: Cell<bool> = const { Cell::new(false) };
-    }
-
+    static MULTI_INSTANCE_BLOCKER: Cell<bool> = const { Cell::new(false) };
+}
 
 #[derive(Clone)]
 pub enum Target {
@@ -725,7 +724,7 @@ pub mod database {
 
         pub(crate) fn with_root_mut<R>(
             &mut self,
-            f: impl FnOnce(&mut APP::Root, &mut DatabaseContext, &mut Projector<APP>) -> R,
+            f: impl FnOnce(&mut APP::Root, &mut DatabaseContext) -> R,
         ) -> Result<R> {
             if !self.context.mark_dirty()? {
                 // Recovery needed
@@ -733,12 +732,9 @@ pub mod database {
             }
 
             let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
-
             let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
-            //let root = self.context.access_pod_mut(root_ptr);
 
-
-            let t = f(root, &mut self.context, &mut self.message_store);
+            let t = f(root, &mut self.context);
 
             self.context.mark_clean();
             Ok(t)
@@ -799,12 +795,22 @@ pub mod database {
         }
 
         pub fn append_many(&mut self, messages: impl Iterator<Item = APP::Message>) -> Result<()> {
-            self.with_root_mut(|root, context, message_store| {
-                message_store.push_messages(context, messages)?;
-                message_store.apply_missing_messages(root, context)?;
+            if !self.context.mark_dirty()? {
+                // Recovery needed
+                Self::recover(&mut self.app, &mut self.context, &mut self.message_store)?;
+            }
 
-                Ok(())
-            })?
+            self.message_store
+                .push_messages(&mut self.context, messages)?;
+
+            let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
+            let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
+
+            self.message_store
+                .apply_missing_messages(root, &mut self.context)?;
+
+            self.context.mark_clean();
+            Ok(())
         }
 
         /// Create a database residing entirely in memory.
@@ -868,15 +874,16 @@ mod tests {
     use crate::disk_access::FileAccessor;
     use crate::projection_store::MainDbHeader;
     use byteorder::{LittleEndian, WriteBytesExt};
+    use data_types::DatabaseCell;
+    use data_types::DatabaseObjectHandle;
+    use data_types::DatabaseVec;
     use database::Database;
     use savefile::{load_noschema, save_noschema};
     use savefile_derive::Savefile;
     use sha2::{Digest, Sha256};
     use std::io::{Cursor, SeekFrom};
     use test::Bencher;
-    use data_types::DatabaseObjectHandle;
-    use data_types::DatabaseVec;
-    use data_types::DatabaseCell;
+    use crate::data_types::DatabaseCellArrayExt;
 
     #[test]
     fn test_mmap_big() {
@@ -1046,7 +1053,7 @@ mod tests {
         let mut db: Database<CounterApplication> =
             Database::create_new("test/test1.bin", CounterApplication, true, 1000).unwrap();
 
-        db.with_root_mut(|counter, context, _message_store| {
+        db.with_root_mut(|counter, context| {
             assert_eq!(counter.counter.get(context), 0);
             counter.counter.set(context, 42);
             counter.counter2.set(context, 43);
@@ -1127,7 +1134,7 @@ mod tests {
 
         // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
 
-        db.with_root_mut(|root, context, _| {
+        db.with_root_mut(|root, context| {
             assert_eq!(root.counter.get(context), 43);
         });
     }
@@ -1161,7 +1168,7 @@ mod tests {
 
         // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
 
-        db.with_root_mut(|root, context, _| {
+        db.with_root_mut(|root, context| {
             assert_eq!(root.counter.get(context), 43);
         });
     }
@@ -1171,11 +1178,11 @@ mod tests {
         struct HandleApplication;
 
         impl Application for HandleApplication {
-            type Root = DatabaseObjectHandle<u32>;
-            type Message = DummyMessage<DatabaseObjectHandle<u32>>;
+            type Root = DatabaseObjectHandle<DatabaseCell<u32>>;
+            type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
 
             fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
-                let obj = DatabaseObjectHandle::allocate(&ctx, 43u32);
+                let obj = DatabaseObjectHandle::allocate(&ctx, DatabaseCell::new(43u32));
 
                 ctx.index_of(obj)
             }
@@ -1186,7 +1193,7 @@ mod tests {
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
-        assert_eq!(*handle.get(context), 43);
+        assert_eq!(handle.get(context).get(context), 43);
     }
 
     #[test]
@@ -1194,11 +1201,13 @@ mod tests {
         struct HandleApplication;
 
         impl Application for HandleApplication {
-            type Root = DatabaseObjectHandle<[u8]>;
-            type Message = DummyMessage<DatabaseObjectHandle<[u8]>>;
+            type Root = DatabaseObjectHandle<[DatabaseCell<u8>]>;
+            type Message = DummyMessage<DatabaseObjectHandle<[DatabaseCell<u8>]>>;
 
             fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
-                let obj = DatabaseObjectHandle::allocate_unsized(&ctx, [43u8,45].as_slice());
+                let obj = DatabaseObjectHandle::allocate_unsized(&ctx, [
+                    43u8, 45
+                ].map(|x|DatabaseCell::new(x)).as_slice());
 
                 ctx.index_of(obj)
             }
@@ -1209,7 +1218,7 @@ mod tests {
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
-        assert_eq!(handle.get(context), &[43,45]);
+        assert_eq!(handle.get(context).observe(context), &[43, 45]);
     }
 
     #[test]
@@ -1217,11 +1226,11 @@ mod tests {
         struct HandleApplication;
 
         impl Application for HandleApplication {
-            type Root = DatabaseObjectHandle<u32>;
-            type Message = DummyMessage<DatabaseObjectHandle<u32>>;
+            type Root = DatabaseObjectHandle<DatabaseCell<u32>>;
+            type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
 
             fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
-                let obj = DatabaseObjectHandle::allocate(&ctx, 43u32);
+                let obj = DatabaseObjectHandle::allocate(&ctx, DatabaseCell::new(43u32));
 
                 ctx.index_of(obj)
             }
@@ -1232,15 +1241,13 @@ mod tests {
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
-        assert_eq!(*handle.get(context), 43);
+        assert_eq!(handle.get(context).get(context), 43);
 
-        db.with_root_mut(|root, context, _| {
+        db.with_root_mut(|root, context| {
             let a1 = root.get_mut(context);
-           assert_eq!(*a1, 43);
+            assert_eq!(a1.get(context), 43);
         });
-
     }
-
 
     #[test]
     fn test_vec0() {
@@ -1259,14 +1266,14 @@ mod tests {
 
         let mut db: Database<CounterVecApplication> =
             Database::create_new("test/test_vec0", CounterVecApplication, true, 10000).unwrap();
-        db.with_root_mut(|counter_vec, context, _| {
+        db.with_root_mut(|counter_vec, context| {
             assert_eq!(counter_vec.len(context), 0);
 
-            let new_element = counter_vec.push_new(context);
+            let new_element = counter_vec.push_zeroed(context);
             let new_element = counter_vec.get_mut(context, 0);
 
             new_element.counter.set(context, 47);
-            let new_element = counter_vec.push_new(context);
+            let new_element = counter_vec.push_zeroed(context);
             new_element.counter.set(context, 48);
 
             assert_eq!(counter_vec.len(context), 2);
@@ -1277,14 +1284,13 @@ mod tests {
             //assert_eq!(*item2.counter, 48);
 
             for _ in 0..10 {
-                let new_element = counter_vec.push_new(context);
+                let new_element = counter_vec.push_zeroed(context);
             }
 
             let item = counter_vec.get_mut(context, 1);
             assert_eq!(*item.counter, 48);
         });
     }
-
 
     #[test]
     fn test_vec_miri0() {
@@ -1303,14 +1309,14 @@ mod tests {
 
         let mut db: Database<CounterVecApplication> =
             Database::create_in_memory(CounterVecApplication, 10000).unwrap();
-        db.with_root_mut(|counter_vec, context, _| {
+        db.with_root_mut(|counter_vec, context| {
             assert_eq!(counter_vec.len(context), 0);
 
-            let new_element = counter_vec.push_new(context);
+            let new_element = counter_vec.push_zeroed(context);
             let new_element = counter_vec.get_mut(context, 0);
 
             new_element.counter.set(context, 47);
-            let new_element = counter_vec.push_new(context);
+            let new_element = counter_vec.push_zeroed(context);
             new_element.counter.set(context, 48);
 
             assert_eq!(counter_vec.len(context), 2);
@@ -1321,7 +1327,7 @@ mod tests {
             //assert_eq!(*item2.counter, 48);
 
             for _ in 0..10 {
-                let new_element = counter_vec.push_new(context);
+                let new_element = counter_vec.push_zeroed(context);
             }
 
             let item = counter_vec.get_mut(context, 1);
@@ -1352,11 +1358,11 @@ mod tests {
             Database::create_new("test/vec_undo", CounterVecApplication, true, 10000).unwrap();
 
         {
-            db.with_root_mut(|counter_vec, context, _| {
+            db.with_root_mut(|counter_vec, context| {
                 context.set_next_seqnr(SequenceNr::from_index(1));
                 assert_eq!(counter_vec.len(context), 0);
 
-                let new_element = counter_vec.push_new(context);
+                let new_element = counter_vec.push_zeroed(context);
                 new_element.counter.set(context, 47);
                 new_element.counter2.set(context, 48);
 
@@ -1367,7 +1373,7 @@ mod tests {
         }
 
         {
-            db.with_root_mut(|counter_vec, context, _| {
+            db.with_root_mut(|counter_vec, context| {
                 let counter = counter_vec.get_mut(context, 0);
                 counter.counter.set(context, 50);
                 context.rewind(SequenceNr::from_index(2));
@@ -1378,7 +1384,7 @@ mod tests {
         db.force_rewind(SequenceNr::from_index(1));
 
         {
-            db.with_root_mut(|counter_vec, context, _| {
+            db.with_root_mut(|counter_vec, context| {
                 assert_eq!(counter_vec.len(context), 0);
             });
         }
