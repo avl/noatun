@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::fmt::{Debug, Formatter};
 use std::fs::{File, OpenOptions, create_dir_all};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::marker::PhantomData;
 use std::os::fd::AsRawFd;
 use std::ptr::slice_from_raw_parts_mut;
 use std::slice;
@@ -41,9 +42,88 @@ pub(crate) struct FileAccessor {
     seek_pos: usize,
 }
 
+pub(crate) struct ReadonlyFileAccessor<'a> {
+    ptr: *mut u8,
+    size: usize,
+    seek_pos: usize,
+    phantom: PhantomData<&'a ()>,
+}
+impl<'a> Read for ReadonlyFileAccessor<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.seek_pos == self.size {
+            return Ok(0);
+        }
+        let getnow = (self.size - self.seek_pos).min(buf.len());
+        let m = self.map();
+        buf[0..getnow].copy_from_slice(&m[self.seek_pos..self.seek_pos + getnow]);
+        self.seek_pos += getnow;
+        Ok(getnow)
+    }
+}
+impl<'a> ReadonlyFileAccessor<'a> {
+    pub(crate) fn map(&self) -> &[u8] {
+        let used = self.size;
+        unsafe { slice::from_raw_parts(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE), used) }
+    }
+
+    pub fn with_bytes<R>(&mut self, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
+        if self.seek_pos + bytes > self.size {
+            bail!("requested number of bytes not available in file");
+        }
+        let data = &self.map()[self.seek_pos..self.seek_pos + bytes];
+        let ret = f(data);
+        self.seek_pos += bytes;
+        Ok(ret)
+    }
+
+}
+impl<'a> Seek for ReadonlyFileAccessor<'a> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        match pos {
+            SeekFrom::Start(s) => {
+                self.seek_pos = s.try_into().map_err(|_| {
+                    std::io::Error::new(ErrorKind::InvalidInput, "invalid seek position")
+                })?;
+            }
+            SeekFrom::End(e) => {
+                if e == 0 {
+                    self.seek_pos = self.size;
+                } else {
+                    self.seek_pos = self
+                        .size
+                        .try_into()
+                        .ok()
+                        .and_then(|x: i64| x.checked_sub(e))
+                        .and_then(|x| x.try_into().ok())
+                        .ok_or_else(|| {
+                            std::io::Error::new(ErrorKind::InvalidInput, "invalid seek position")
+                        })?;
+                }
+            }
+            SeekFrom::Current(delta) => {
+                self.seek_pos = self
+                    .seek_pos
+                    .try_into()
+                    .ok()
+                    .and_then(|x: i64| x.checked_add(delta))
+                    .and_then(|x| x.try_into().ok())
+                    .ok_or_else(|| {
+                        std::io::Error::new(ErrorKind::InvalidInput, "invalid seek position")
+                    })?;
+            }
+        }
+        Ok(self.seek_pos as u64)
+    }
+}
+
 impl Debug for FileAccessor {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DiskMmapHandleNew({})", self.committed_size.get())
+        write!(f, "FileAccessor({})", self.committed_size.get())
+    }
+}
+impl<'a> Debug for ReadonlyFileAccessor<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ReadonlyFileAccessor({})", self.size)
     }
 }
 
@@ -129,6 +209,15 @@ impl FileAccessor {
     /// 16 bytes is enough for any type used by noatun itself. Client data can be
     /// aligned at even larger values, and this is supported, byt will waste some space.
     const HEADER_SIZE: usize = 16;
+
+    pub(crate) fn readonly(&self) -> ReadonlyFileAccessor {
+        ReadonlyFileAccessor {
+            ptr: self.ptr,
+            size: self.used_space(),
+            seek_pos: self.seek_pos,
+            phantom: Default::default(),
+        }
+    }
 
     #[inline(always)]
     pub(crate) fn used_space(&self) -> usize {

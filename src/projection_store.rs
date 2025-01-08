@@ -26,68 +26,159 @@ use std::ops::Range;
 use std::path::Path;
 use std::slice;
 use std::slice::SliceIndex;
+use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
+
+mod registrar_info {
+    use crate::SequenceNr;
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct RegistrarInfo {
+        uses: u32,
+    }
+    impl RegistrarInfo {
+        pub fn get_opaque(&self) -> bool {
+            self.uses&0x8000_0000 != 0
+        }
+        pub fn set_non_opaque(&mut self) {
+            self.uses|=0x8000_0000;
+        }
+        pub fn get_use(&self) -> u32 {
+            self.uses&0x7FFF_FFFF
+        }
+        pub fn increase_use(&mut self) {
+            if self.get_use() >= 0x7FFF_FFFF {
+                return;
+            }
+            self.uses += 1;
+        }
+        pub fn decrease_use(&mut self) {
+            let cur_uses = self.get_use();
+            if cur_uses == 0 {
+                panic!("Internal error, use count wrong");
+            }
+            if cur_uses >= 0x7FFF_FFFF {
+                return;
+            }
+            self.uses -= 1;
+        }
+    }
+
+    // TODO: We might want to optimize by only looking at 'seq' in the Ord impl
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    pub struct UnusedInfo {
+        /// The message that is no longer used (to be deleted, possibly)
+        pub seq: SequenceNr,
+        /// True if the above message only wrote opaque data
+        pub opaque: bool,
+    }
+}
+
 
 #[derive(Debug)]
-struct RegistrarTracker<T: MessageDependencyTracker> {
-    uses: Vec<u32>,
+struct RegistrarTracker {
+    //TODO: Move this to mmap-file too!
+    uses: Vec<RegistrarInfo>,
     /// Messages are added to this list when their
     /// last registrar_point is overwritten
     /// Such messages are candidates to be removed, but only if
     /// no other message (that isn't also to be removed), depend on it.
-    unused_messages: Vec<SequenceNr>,
+    unused_messages: Vec<UnusedInfo>,
 
-    /// Mapping from message-id to other messages that have read output
-    /// from said message
-    message_dependencies: T,
+    // Mapping from message-id to other messages that have read output
+    // from said message
+    //message_dependencies: T,
 }
 mod message_dependency_tracker;
 
-impl<T: MessageDependencyTracker> RegistrarTracker<T> {
-    fn new<S: Disk>(disk: &mut S, path: &Target, max_size: usize) -> Result<RegistrarTracker<T>> {
+impl RegistrarTracker {
+    fn new<S: Disk>(disk: &mut S, path: &Target, max_size: usize) -> Result<RegistrarTracker> {
         Ok(RegistrarTracker {
             uses: vec![],
             unused_messages: vec![],
-            message_dependencies: T::new(disk, path, max_size)?,
+            //message_dependencies: T::new(disk, path, max_size)?,
         })
     }
 
     fn clear(&mut self) {
         self.uses.clear();
         self.unused_messages.clear();
-        self.message_dependencies.clear();
+        //self.message_dependencies.clear();
     }
 
     fn finalize_message(&mut self, message_id: SequenceNr) {
         debug_assert_ne!(message_id.0, 0);
-        if self.uses.len() <= message_id.index() || self.uses[message_id.index()] == 0 {
-            self.unused_messages.push(message_id);
+        if self.uses.len() <= message_id.index() {
+            // This is a bit of a special case. This is a message
+            // that did not actually modify any state at all during its projection.
+            self.unused_messages.push(UnusedInfo {
+                seq: message_id,
+                opaque: true,
+            });
+            return;
+        }
+        let track = &self.uses[message_id.index()];
+
+        if track.get_use() == 0 {
+            self.unused_messages.push(UnusedInfo {
+                seq: message_id,
+                opaque: track.get_opaque(),
+            });
         }
     }
+
+    /*
+About deletions:
+
+We can delete messages that no longer have any effect on the state, but only in these
+circumstances:
+
+ 1: Messages that only update OpaqueData
+ 2: Messages that have never been transmitted, and upon which no existing message depends
+ 3: Messages that are older than MAX_PARTITION_TIME, and have no trace in the state at
+    MAX_PARTITION_TIME.
+
+*/
 
     fn finalize_transaction<M: Message + Debug>(
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
-    ) -> Result<IndexSet<SequenceNr>> {
+        is_before_cutoff: bool
+    ) -> Result<Vec<SequenceNr>> {
         self.unused_messages.sort(); //Sort in seq-nr order
-        let mut deleted = IndexSet::new();
+        let mut deleted = Vec::new();
         let mut parent_lists = Bump::new();
 
         'outer: for msg in self.unused_messages.iter().rev() {
-            for observer in self.message_dependencies.read_dependency(*msg) {
-                if !deleted.contains(&observer) {
-                    // 'msg' can't be deleted, because it's observed by
-                    // 'observer' - i.e a later message that has not been deleted.
-                    println!(
-                        "Can't delete {:?} because it's observed by {:?}",
-                        msg, observer
-                    );
-                    continue 'outer;
-                }
+
+            if msg.opaque {
+                // This can be deleted
+            } else if is_before_cutoff {
+                // can be deleted,
+            } else {
+                println!(
+                    "Can't delete {:?}, because we can't know if someone will use its output",
+                    msg
+                );
+                continue 'outer;
             }
+            /*else if !messages.has_been_transmitted(msg.seq) {
+
+                for observer in self.message_dependencies.read_dependency(msg.seq) {
+                    if !deleted.contains(&observer) {
+                        // 'msg' can't be deleted, because it's observed by
+                        // 'observer' - i.e a later message that has not been deleted.
+                        println!(
+                            "Can't delete {:?} because it's observed by {:?}",
+                            msg, observer
+                        );
+                        continue 'outer;
+                    }
+                }
+            }*/
 
             println!("Deleting {:?}", msg);
 
-            deleted.insert(*msg);
+            deleted.push(msg.seq);
         }
         self.unused_messages.clear();
 
@@ -116,28 +207,38 @@ impl<T: MessageDependencyTracker> RegistrarTracker<T> {
         }
         Ok(deleted)
     }
-    fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
+    //fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
         /*self.message_dependencies
         .entry(observee)
         .or_default()
         .push(observer);*/
-        self.message_dependencies
-            .record_dependency(observee, observer);
-    }
+        /*self.message_dependencies
+            .record_dependency(observee, observer);*/
+    //}
     fn increase_use(&mut self, registrar: SequenceNr) {
         if self.uses.len() <= registrar.index() {
-            self.uses.resize(registrar.index() + 1, 0);
+            self.uses.resize(registrar.index() + 1, RegistrarInfo::default());
         }
-        self.uses[registrar.index()] += 1;
+        self.uses[registrar.index()].increase_use();
+    }
+    fn set_non_opaque(&mut self, registrar: SequenceNr) {
+        if self.uses.len() <= registrar.index() {
+            self.uses.resize(registrar.index() + 1, RegistrarInfo::default());
+        }
+        self.uses[registrar.index()].set_non_opaque();
     }
     fn decrease_use(&mut self, registrar: SequenceNr) {
         let cur = &mut self.uses[registrar.index()];
-        if *cur == 0 {
+        if cur.get_use() == 0 {
             panic!("Corrupt use count for sequence nr {:?}", registrar);
         }
-        *cur -= 1;
-        if *cur == 0 {
-            self.unused_messages.push(registrar);
+        cur.decrease_use();
+        if cur.get_use() == 0 {
+            // This is the normal way messages end up in 'unused_messags'
+            self.unused_messages.push(UnusedInfo {
+                seq: registrar,
+                opaque: cur.get_opaque(),
+            });
         }
     }
 }
@@ -182,7 +283,7 @@ pub struct DatabaseContext {
     phantom: PhantomData<*mut ()>,
 
     // The current message being written (or None if not open for writing)
-    registrar_tracker: RefCell<RegistrarTracker<MmapMessageDependencyTracker>>,
+    registrar_tracker: RefCell<RegistrarTracker>,
     // The next message expected to be applied.
     // Starts at 0. When a message is being applied, this field
     // will have the seqnr of the message being applied, not the next one.
@@ -619,15 +720,18 @@ impl DatabaseContext {
         Ok(self
             .registrar_tracker
             .borrow_mut()
-            .finalize_transaction(message_store)?
+            .finalize_transaction(message_store, false)?
             .into_iter()
             .collect())
     }
 
-    pub fn update_registrar(&self, registrar_point: &mut SequenceNr) {
+    pub fn update_registrar(&self, registrar_point: &mut SequenceNr, opaque: bool) {
         let mut track = self.registrar_tracker.borrow_mut();
         if registrar_point.0 != 0 {
             track.decrease_use(*registrar_point);
+        }
+        if !opaque {
+            track.set_non_opaque(*registrar_point);
         }
         let current_registrar = self.next_seqnr();
         track.increase_use(current_registrar);
@@ -635,9 +739,9 @@ impl DatabaseContext {
         self.write_pod(current_registrar, registrar_point)
     }
 
-    /// Signify that the current message has observed data previously written
-    /// by 'registrar'.
-    pub fn observe_registrar(&self, observee: SequenceNr) {
+    // Signify that the current message has observed data previously written
+    // by 'registrar'.
+    /*pub fn observe_registrar(&self, observee: SequenceNr) {
         if self.next_seqnr().is_invalid() {
             return;
         }
@@ -650,5 +754,5 @@ impl DatabaseContext {
                 .borrow_mut()
                 .report_observed(observer, observee);
         }
-    }
+    }*/
 }

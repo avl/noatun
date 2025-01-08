@@ -8,12 +8,16 @@ use memmap2::{Mmap, MmapMut};
 use std::fs::{File, OpenOptions};
 use std::iter;
 use std::path::Path;
+use crate::projection_store::message_dependency_tracker::linked_list_entry::LinkedListEntry;
 
 pub trait MessageDependencyTracker {
     fn new<S: Disk>(s: &mut S, path: &Target, max_size: usize) -> Result<Self>
     where
         Self: Sized;
     fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr);
+
+    /// Find all messages that have observed 'observee'. I.e,
+    /// all messages that depend on 'observee'
     fn read_dependency(&mut self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr>;
 
     fn clear(&mut self);
@@ -42,30 +46,46 @@ impl MessageDependencyTracker for IndexMap<SequenceNr, Vec<SequenceNr>> {
 // Mapping from observee to observers.
 pub struct MmapMessageDependencyTracker {
     /// the sequencenr that has been observed
+    /// This is a sequence of u64 message indices, pointing at LinkedListEntry's in 'vals'
     keys: FileAccessor,
     key_capacity: usize,
     /// the sequence nr that have observed each key. I.e, the messages that
     /// are dependent upon the key.
+    /// This is a sequence of 'LinkedListEntry'.
     vals: FileAccessor,
     value_capacity: usize,
 }
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-#[repr(C)]
-struct LinkedListEntry {
-    next_lsb: u32,
-    next_msb: u32,
-    seq: SequenceNr,
-}
+mod linked_list_entry {
+    use bytemuck::{Pod, Zeroable};
+    use crate::SequenceNr;
 
-impl LinkedListEntry {
-    fn set_next(&mut self, next: u64) {
-        self.next_lsb = next as u32;
-        self.next_msb = (next >> 32) as u32;
+    #[derive(Debug, Clone, Copy, Pod, Zeroable)]
+    #[repr(C)]
+    pub(crate) struct LinkedListEntry {
+        // use two values, so we only use 12 byte per entry, because of alignment
+        // 0 means 'the end'
+        next_lsb: u32,
+        next_msb: u32,
+        seq: SequenceNr,
     }
-    fn get_next(&self) -> u64 {
-        self.next_lsb as u64 | ((self.next_msb as u64) << 32)
+
+    impl LinkedListEntry {
+        pub(crate) fn set_next(&mut self, next: u64) {
+            self.next_lsb = next as u32;
+            self.next_msb = (next >> 32) as u32;
+        }
+        pub(crate) fn get_next(&self) -> u64 {
+            self.next_lsb as u64 | ((self.next_msb as u64) << 32)
+        }
+        pub(crate) fn seq(&self) -> SequenceNr {
+            self.seq
+        }
+        pub(crate) fn set_seq(&mut self, new_seq: SequenceNr) {
+            self.seq = new_seq;
+        }
     }
+
 }
 
 impl MessageDependencyTracker for MmapMessageDependencyTracker {
@@ -141,7 +161,7 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
         let prev = keys[observee.index()];
 
         let new_entry: &mut LinkedListEntry = &mut vals[*val_len as usize];
-        new_entry.seq = observer;
+        new_entry.set_seq(observer);
         new_entry.set_next(prev);
         keys[observee.index()] = *val_len + 1;
 
@@ -165,7 +185,7 @@ impl MessageDependencyTracker for MmapMessageDependencyTracker {
             }
             let entry = &vals[cur as usize - 1];
             cur = entry.get_next();
-            Some(entry.seq)
+            Some(entry.seq())
         })
     }
 }
