@@ -44,6 +44,7 @@ impl MessageDependencyTracker for IndexMap<SequenceNr, Vec<SequenceNr>> {
 }
 
 // Mapping from observee to observers.
+#[derive(Debug)]
 pub struct MmapMessageDependencyTracker {
     /// the sequencenr that has been observed
     /// This is a sequence of u64 message indices, pointing at LinkedListEntry's in 'vals'

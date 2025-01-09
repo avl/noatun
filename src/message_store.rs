@@ -30,6 +30,10 @@ struct FileHeaderEntry {
     sha2: [u8; 16],
     /// Size of message payload (without this header)
     msg_size: u64,
+    has_been_transmitted: u8,
+    padding1: u8,
+    padding2: u16,
+    padding4: u32
 }
 
 impl FileHeaderEntry {
@@ -180,15 +184,7 @@ struct DataFileInfo {
     file_number: U1,
 }
 
-#[repr(C, u8)]
-enum WriteLogKind {
-    CompactFile(u32),
-}
 
-struct WriteLogEntry {
-    kind: WriteLogKind,
-    checksum: u64,
-}
 
 const STATUS_OK: u32 = 1;
 /// Not ok
@@ -489,7 +485,7 @@ impl<M> OnDiskMessageStore<M> {
     pub fn query_by_index(
         &mut self,
         index: usize,
-    ) -> Result<impl Iterator<Item = (usize /*seqnr*/, M)>>
+    ) -> Result<impl Iterator<Item = (usize /*seqnr/index*/, M)>>
     where
         M: Message,
     {
@@ -526,6 +522,22 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
+    pub(crate) fn may_have_been_transmitted(&self, msg: SequenceNr) -> Result<bool> {
+        let (header, message_index) = self.header_and_index().context("opening index file")?;
+
+        if let Some(index) = message_index.get(msg.index()) {
+            if let Some((file,offset)) = index.file_offset.file_and_offset() {
+                let mut file = self.data_files[file.index()].file.readonly();
+                file.seek(SeekFrom::Start(offset))
+                    .context("Seeking to message data")?;
+                let header: FileHeaderEntry = file.read_pod()?;
+                return Ok(header.has_been_transmitted!=0);
+            }
+            Ok(true)
+        } else {
+            Ok(true)
+        }
+    }
 
     fn read_msg(entry: &IndexEntry, data_files: &[DataFileInfo; 2]) -> Result<M>
     where
@@ -647,11 +659,12 @@ impl<M> OnDiskMessageStore<M> {
         &mut self,
         messages: impl ExactSizeIterator<Item = M>,
         message_inserted: impl FnMut(MessageId, /*parents*/&[MessageId]) -> Result<()>,
+        local: bool
     ) -> Result<Option<usize>>
     where
         M: Message + Debug,
     {
-        self.do_append_many_sorted(messages, message_inserted)
+        self.do_append_many_sorted(messages, message_inserted, local)
     }
 
 
@@ -708,6 +721,7 @@ impl<M> OnDiskMessageStore<M> {
         &mut self,
         mut messages: impl ExactSizeIterator<Item = M>,
         mut message_inserted: impl FnMut(MessageId, &[MessageId]/*parents*/) -> Result<()>,
+        local: bool,
     ) -> Result<Option<usize>>
     where
         M: Message + Debug,
@@ -824,6 +838,10 @@ impl<M> OnDiskMessageStore<M> {
                         message_id: msg.id(),
                         sha2,
                         msg_size,
+                        has_been_transmitted: (!local) as u8,
+                        padding1: 0,
+                        padding2: 0,
+                        padding4: 0,
                     }))?;
                     info.file.seek(SeekFrom::Start(end_pos))?;
 
@@ -1139,7 +1157,7 @@ mod tests {
             data: vec![42u8; 4],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}).unwrap();
+        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
 
         {
             let header =
@@ -1177,7 +1195,7 @@ mod tests {
         });
 
         let prev = Instant::now();
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}).unwrap();
+        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
         println!("Add time: {:?}", prev.elapsed());
 
         let prev = Instant::now();
@@ -1207,14 +1225,14 @@ mod tests {
             data: vec![42u8; 4],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}).unwrap();
+        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
         let msgs = (0..COUNT).map(|i| OnDiskMessage {
             id: 2 * i as u64 + 1,
             seq: 2 * i as u64 + 1,
             data: vec![43u8; 4],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}).unwrap();
+        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
 
         let msg = store
             .read_message(MessageId::new_debug(2))
@@ -1241,7 +1259,7 @@ mod tests {
             data: vec![42u8; 4],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}).unwrap();
+        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
 
         store
             .delete_many(
@@ -1277,7 +1295,7 @@ mod tests {
             data: vec![42u8; 1024],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}).unwrap();
+        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
 
         println!("Init: {:?}", init.elapsed());
         let mut count = 0;
@@ -1308,7 +1326,7 @@ mod tests {
             data: vec![42u8; 4],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}).unwrap();
+        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
 
         println!("Init: {:?}", init.elapsed());
         let mut count = 0;

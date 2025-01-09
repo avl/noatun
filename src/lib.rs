@@ -31,7 +31,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::marker::PhantomData;
 use std::mem::{transmute, transmute_copy};
-use std::ops::{Deref, Range};
+use std::ops::{Add, Deref, Range};
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
@@ -67,12 +67,13 @@ pub struct MessageId {
 
 impl Display for MessageId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let time_ms = ((self.data[0] as u64) << 16) + ((self.data[1]) >> 16) as u64;
 
+        let time_ms = self.timestamp();
         let unix_timestamp = (time_ms / 1000) as i64;
         let timestamp_ms = time_ms % 1000;
 
-        let time = OffsetDateTime::from_unix_timestamp(unix_timestamp).unwrap();
+        let time = OffsetDateTime::from_unix_timestamp(unix_timestamp).unwrap()
+            .add(Duration::from_millis(timestamp_ms));
 
         let time_str = time.format(&Rfc3339).unwrap(); //All values representable should be formattable here
         write!(
@@ -97,6 +98,9 @@ impl Debug for MessageId {
 }
 
 impl MessageId {
+    pub fn timestamp(&self) -> u64 {
+        ((self.data[0] as u64) << 16) + ((self.data[1]) >> 16) as u64
+    }
     pub fn min(self, other: MessageId) -> MessageId {
         if self < other { self } else { other }
     }
@@ -306,6 +310,7 @@ mod projector {
     use crate::{Application, Database, DatabaseContext, Message, MessageId, SequenceNr, Target};
     use anyhow::Result;
     use std::marker::PhantomData;
+    use std::time::{Duration, SystemTime};
     use crate::disk_access::FileAccessor;
     use crate::update_head_tracker::UpdateHeadTracker;
 
@@ -313,6 +318,7 @@ mod projector {
         messages: OnDiskMessageStore<APP::Message>,
         head_tracker: UpdateHeadTracker,
         phantom_data: PhantomData<(*const APP::Root, APP::Message)>,
+        cutoff_interval: Duration,
     }
 
     impl<APP: Application> Projector<APP> {
@@ -345,11 +351,13 @@ mod projector {
             s: &mut D,
             target: &Target,
             max_size: usize,
+            cutoff_interval: Duration,
         ) -> Result<Projector<APP>> {
             Ok(Projector {
                 messages: OnDiskMessageStore::new(s, target, max_size)?,
                 head_tracker: UpdateHeadTracker::new(s, target)?,
                 phantom_data: PhantomData,
+                cutoff_interval,
             })
         }
         /// Returns true if the message did not exist and was inserted
@@ -357,8 +365,9 @@ mod projector {
             &mut self,
             context: &mut DatabaseContext,
             message: APP::Message,
+            local: bool
         ) -> Result<bool> {
-            self.push_sorted_messages(context, std::iter::once(message))
+            self.push_sorted_messages(context, std::iter::once(message), local)
         }
 
         /// Returns true if any of the messages were not previously present
@@ -366,18 +375,20 @@ mod projector {
             &mut self,
             context: &mut DatabaseContext,
             message: impl Iterator<Item = APP::Message>,
+            local: bool,
         ) -> Result<bool> {
             let mut messages: Vec<APP::Message> = message.collect();
             messages.sort_unstable_by_key(|x| x.id());
 
-            self.push_sorted_messages(context, messages.into_iter())
+            self.push_sorted_messages(context, messages.into_iter(), local)
         }
         pub(crate) fn push_sorted_messages(
             &mut self,
             context: &mut DatabaseContext,
             messages: impl ExactSizeIterator<Item = APP::Message>,
+            local: bool,
         ) -> Result<bool> {
-            if let Some(insert_point) = self.messages.append_many_sorted(messages, |id,parents|self.head_tracker.add_new_update_head(id,parents))? {
+            if let Some(insert_point) = self.messages.append_many_sorted(messages, |id,parents|self.head_tracker.add_new_update_head(id,parents), local)? {
 
                 if let Some(cur_main_db_next_index) = context.next_seqnr().try_index() {
                     if insert_point < cur_main_db_next_index {
@@ -412,20 +423,61 @@ mod projector {
             context: &mut DatabaseContext,
         ) -> Result<()> {
 
-            for (seq, msg) in self
+
+            let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?;
+            let cutoff = now.saturating_sub(self.cutoff_interval).as_millis().try_into()?;
+
+
+            let cur_seqnr = context.next_seqnr();
+
+            compile_error!("Test this whole 'before cutoff' thing, and this 2-run thing!")
+            let first_run = self
                 .messages
-                .query_by_index(context.next_seqnr().try_index().unwrap())?
-            {
-                let seqnr = SequenceNr::from_index(seq);
-                Self::apply_single_message(context, root, &msg, seqnr);
+                .query_by_index(context.next_seqnr().try_index().unwrap())?;
+
+            if let Some(next_run_start) = do_run::<APP>(context, root, first_run, cutoff)? {
+                do_finalize(self, context, true);
+                let second_run = self
+                    .messages
+                    .query_by_index(next_run_start)?;
+                do_run::<APP>(context, root, second_run, cutoff)?;
+            }
+            do_finalize(self, context, false);
+
+            /// If returns true, need to finalize before-cutoff-part, then continue at given index
+            fn do_run<APP:Application>(
+                context: &mut DatabaseContext,
+                root: &mut APP::Root,
+                items: impl Iterator<Item=(usize, APP::Message)>, cutoff: u64) -> Result<Option<usize>> {
+                let mut seen_before_cutoff = false;
+                let mut last_element_was_before_cutoff = false;
+                for (seq, msg) in items
+                {
+                    let seqnr = SequenceNr::from_index(seq);
+                    let is_before_cutoff = msg.id().timestamp() < cutoff;
+                    if  is_before_cutoff {
+                        seen_before_cutoff = true;
+                    }
+                    if !is_before_cutoff && seen_before_cutoff {
+                        return Ok(Some(seqnr.index()));
+                    }
+                    Projector::<APP>::apply_single_message(context, root, &msg, seqnr);
+                    last_element_was_before_cutoff = is_before_cutoff;
+                }
+                Ok(None)
+            }
+
+
+            fn do_finalize<APP:Application>(tself: &mut Projector<APP>, context: &mut DatabaseContext, before_cutoff: bool) -> Result<()> {
+                let must_remove = context.finalize_transaction(&mut tself.messages, before_cutoff)?;
+                for index in must_remove {
+                    tself.messages.mark_deleted_by_index(index.index());
+                    //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
+                }
+                Ok(())
             }
             //let next_index = self.messages.next_index()?;
             //context.set_next_seqnr(SequenceNr::from_index(next_index));
-            let must_remove = context.finalize_transaction(&mut self.messages)?;
-            for index in must_remove {
-                self.messages.mark_deleted_by_index(index.index());
-                //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
-            }
             Ok(())
         }
     }
@@ -698,9 +750,6 @@ pub mod data_types {
             *self
         }
     }
-    compile_error!("Do we really want to scrap the whole observer-system? Can it be salvaged?
-    It appears not.
-    ")
 
     unsafe impl<T> Pod for DatabaseVec<T> where T: 'static {}
 
@@ -904,6 +953,7 @@ pub mod database {
     use crate::{Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Object, Pointer, SequenceNr, Target, MessageId, MessageComponent, Message};
     use anyhow::{Context, Result};
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
     use crate::disk_access::FileAccessor;
     use crate::update_head_tracker::UpdateHeadTracker;
 
@@ -991,6 +1041,7 @@ pub mod database {
             app: APP,
             overwrite_existing: bool,
             max_file_size: usize,
+            cutoff_interval: Duration
         ) -> Result<Database<APP>> {
             Self::create(
                 app,
@@ -1000,32 +1051,35 @@ pub mod database {
                     Target::CreateNew(path.as_ref().to_path_buf())
                 },
                 max_file_size,
+                cutoff_interval
             )
         }
         pub fn open(
             path: impl AsRef<Path>,
             app: APP,
             max_file_size: usize,
+            cutoff_interval: Duration
         ) -> Result<Database<APP>> {
             Self::create(
                 app,
                 Target::OpenExisting(path.as_ref().to_path_buf()),
                 max_file_size,
+                cutoff_interval
             )
         }
 
-        pub fn append_single(&mut self, message: APP::Message) -> Result<()> {
-            self.append_many(std::iter::once(message))
+        pub fn append_single(&mut self, message: APP::Message, local: bool) -> Result<()> {
+            self.append_many(std::iter::once(message), local)
         }
 
-        pub fn append_many(&mut self, messages: impl Iterator<Item = APP::Message>) -> Result<()> {
+        pub fn append_many(&mut self, messages: impl Iterator<Item = APP::Message>, local: bool) -> Result<()> {
             if !self.context.mark_dirty()? {
                 // Recovery needed
                 Self::recover(&mut self.app, &mut self.context, &mut self.message_store)?;
             }
 
             self.message_store
-                .push_messages(&mut self.context, messages)?;
+                .push_messages(&mut self.context, messages, local)?;
 
             let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
             let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
@@ -1053,13 +1107,14 @@ pub mod database {
 
         /// Create a database residing entirely in memory.
         /// This is mostly useful for tests
-        pub fn create_in_memory(mut app: APP, max_size: usize) -> Result<Database<APP>> {
+        // TODO: Use builder pattern?
+        pub fn create_in_memory(mut app: APP, max_size: usize, cutoff_interval: Duration) -> Result<Database<APP>> {
             Self::set_multi_instance_block();
             let mut disk = InMemoryDisk::default();
             let target = Target::CreateNew(PathBuf::default());
             let mut ctx = DatabaseContext::new(&mut disk, &target, max_size)
                 .context("creating database in memory")?;
-            let mut message_store = Projector::new(&mut disk, &target, max_size)?;
+            let mut message_store = Projector::new(&mut disk, &target, max_size, cutoff_interval)?;
 
             Self::recover(&mut app, &mut ctx, &mut message_store)?;
             ctx.mark_clean()?;
@@ -1071,7 +1126,7 @@ pub mod database {
             })
         }
 
-        fn create(mut app: APP, target: Target, max_file_size: usize) -> Result<Database<APP>> {
+        fn create(mut app: APP, target: Target, max_file_size: usize, cutoff_interval: Duration) -> Result<Database<APP>> {
             Self::set_multi_instance_block();
             let mut disk = StandardDisk;
 
@@ -1080,7 +1135,7 @@ pub mod database {
 
             let is_dirty = ctx.is_dirty();
 
-            let mut message_store = Projector::new(&mut disk, &target, max_file_size)?;
+            let mut message_store = Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
             let mut update_heads = disk.open_file(&target, "update_heads", 0, 128*1024*1024)?;
             if is_dirty {
                 Self::recover(&mut app, &mut ctx, &mut message_store)?;
@@ -1234,7 +1289,7 @@ pub mod distributor {
                 }
                 DistributorMessage::Message(msg) => {
                     let message = msg.to_message(&msg.data)?;
-                    database.append_many(std::iter::once(message))?;
+                    database.append_many(std::iter::once(message), true)?;
                 }
             }
 
@@ -1494,21 +1549,21 @@ mod tests {
             id: MessageId::new_debug(0x100),
             inc1: 2,
             set1: 0,
-        })
+        }, true)
         .unwrap();
         db.append_single(CounterMessage {
             parent: Some(MessageId::new_debug(0x100)),
             id: MessageId::new_debug(0x101),
             inc1: 0,
             set1: 42,
-        })
+        }, true)
         .unwrap();
         db.append_single(CounterMessage {
             parent: Some(MessageId::new_debug(0x101)),
             id: MessageId::new_debug(0x102),
             inc1: 1,
             set1: 0,
-        })
+        }, true)
         .unwrap();
 
         println!("Update heads: {:?}", db.get_update_heads());
@@ -1529,21 +1584,21 @@ mod tests {
             id: MessageId::new_debug(0x100),
             inc1: 2,
             set1: 0,
-        })
+        }, true)
         .unwrap();
         db.append_single(CounterMessage {
             parent: Some(MessageId::new_debug(0x100)),
             id: MessageId::new_debug(0x101),
             inc1: 0,
             set1: 42,
-        })
+        }, true)
         .unwrap();
         db.append_single(CounterMessage {
             parent: Some(MessageId::new_debug(0x101)),
             id: MessageId::new_debug(0x102),
             inc1: 1,
             set1: 0,
-        })
+        }, true)
         .unwrap();
 
         // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
@@ -1563,21 +1618,21 @@ mod tests {
             id: MessageId::new_debug(0x100),
             inc1: 2,
             set1: 0,
-        })
+        }, true)
             .unwrap();
         db.append_single(CounterMessage {
             parent: Some(MessageId::new_debug(0x100)),
             id: MessageId::new_debug(0x101),
             inc1: 0,
             set1: 42,
-        })
+        }, true)
             .unwrap();
         db.append_single(CounterMessage {
             parent: Some(MessageId::new_debug(0x101)),
             id: MessageId::new_debug(0x102),
             inc1: 1,
             set1: 0,
-        })
+        }, true)
             .unwrap();
 
         let mut d = distributor::Distributor {};

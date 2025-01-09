@@ -86,7 +86,7 @@ struct RegistrarTracker {
 
     // Mapping from message-id to other messages that have read output
     // from said message
-    //message_dependencies: T,
+    message_dependencies: MmapMessageDependencyTracker,
 }
 mod message_dependency_tracker;
 
@@ -95,7 +95,7 @@ impl RegistrarTracker {
         Ok(RegistrarTracker {
             uses: vec![],
             unused_messages: vec![],
-            //message_dependencies: T::new(disk, path, max_size)?,
+            message_dependencies: MmapMessageDependencyTracker::new(disk, path, max_size)?,
         })
     }
 
@@ -135,7 +135,7 @@ circumstances:
  1: Messages that only update OpaqueData
  2: Messages that have never been transmitted, and upon which no existing message depends
  3: Messages that are older than MAX_PARTITION_TIME, and have no trace in the state at
-    MAX_PARTITION_TIME.
+    MAX_PARTITION_TIME, and upon which no message depends
 
 */
 
@@ -152,16 +152,7 @@ circumstances:
 
             if msg.opaque {
                 // This can be deleted
-            } else if is_before_cutoff {
-                // can be deleted,
-            } else {
-                println!(
-                    "Can't delete {:?}, because we can't know if someone will use its output",
-                    msg
-                );
-                continue 'outer;
-            }
-            /*else if !messages.has_been_transmitted(msg.seq) {
+            } else if !messages.may_have_been_transmitted(msg.seq)? || is_before_cutoff {
 
                 for observer in self.message_dependencies.read_dependency(msg.seq) {
                     if !deleted.contains(&observer) {
@@ -174,7 +165,14 @@ circumstances:
                         continue 'outer;
                     }
                 }
-            }*/
+            } else {
+                println!(
+                    "Can't delete {:?}, because we can't know if someone will use its output",
+                    msg
+                );
+                continue 'outer;
+            }
+
 
             println!("Deleting {:?}", msg);
 
@@ -716,11 +714,12 @@ impl DatabaseContext {
     pub(crate) fn finalize_transaction<MSG: Message + Debug>(
         &mut self,
         message_store: &mut OnDiskMessageStore<MSG>,
+        is_before_cutoff: bool
     ) -> Result<Vec<SequenceNr>> {
         Ok(self
             .registrar_tracker
             .borrow_mut()
-            .finalize_transaction(message_store, false)?
+            .finalize_transaction(message_store, is_before_cutoff)?
             .into_iter()
             .collect())
     }
