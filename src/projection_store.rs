@@ -37,7 +37,7 @@ mod registrar_info {
     }
     impl RegistrarInfo {
         pub fn get_opaque(&self) -> bool {
-            self.uses&0x8000_0000 != 0
+            self.uses&0x8000_0000 == 0
         }
         pub fn set_non_opaque(&mut self) {
             self.uses|=0x8000_0000;
@@ -139,7 +139,7 @@ circumstances:
 
 */
 
-    fn finalize_transaction<M: Message + Debug>(
+    fn calculate_stale_messages<M: Message + Debug>(
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
         is_before_cutoff: bool
@@ -148,6 +148,7 @@ circumstances:
         let mut deleted = Vec::new();
         let mut parent_lists = Bump::new();
 
+        println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
         'outer: for msg in self.unused_messages.iter().rev() {
 
             if msg.opaque {
@@ -205,14 +206,14 @@ circumstances:
         }
         Ok(deleted)
     }
-    //fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
+    fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
         /*self.message_dependencies
         .entry(observee)
         .or_default()
         .push(observer);*/
-        /*self.message_dependencies
-            .record_dependency(observee, observer);*/
-    //}
+        self.message_dependencies
+            .record_dependency(observee, observer);
+    }
     fn increase_use(&mut self, registrar: SequenceNr) {
         if self.uses.len() <= registrar.index() {
             self.uses.resize(registrar.index() + 1, RegistrarInfo::default());
@@ -322,6 +323,10 @@ impl DatabaseContext {
         let header: &MainDbHeader =
             unsafe { &*(self.main_db_mmap.map_const_ptr() as *const MainDbHeader) };
         header.next_seqnr
+    }
+
+    pub fn buggy_clear_registrars(&mut self) {
+        self.registrar_tracker.borrow_mut().clear();
     }
 
     // We call this 'pointer' here, but 'used_space' in mmap.
@@ -711,7 +716,7 @@ impl DatabaseContext {
     }
     /// Call after a complete update, i.e, applying multiple messages
     /// Returns all messages that can now be removed.
-    pub(crate) fn finalize_transaction<MSG: Message + Debug>(
+    pub(crate) fn calculate_stale_messages<MSG: Message + Debug>(
         &mut self,
         message_store: &mut OnDiskMessageStore<MSG>,
         is_before_cutoff: bool
@@ -719,7 +724,7 @@ impl DatabaseContext {
         Ok(self
             .registrar_tracker
             .borrow_mut()
-            .finalize_transaction(message_store, is_before_cutoff)?
+            .calculate_stale_messages(message_store, is_before_cutoff)?
             .into_iter()
             .collect())
     }
@@ -729,10 +734,10 @@ impl DatabaseContext {
         if registrar_point.0 != 0 {
             track.decrease_use(*registrar_point);
         }
-        if !opaque {
-            track.set_non_opaque(*registrar_point);
-        }
         let current_registrar = self.next_seqnr();
+        if !opaque {
+            track.set_non_opaque(current_registrar);
+        }
         track.increase_use(current_registrar);
         drop(track);
         self.write_pod(current_registrar, registrar_point)
@@ -740,7 +745,7 @@ impl DatabaseContext {
 
     // Signify that the current message has observed data previously written
     // by 'registrar'.
-    /*pub fn observe_registrar(&self, observee: SequenceNr) {
+    pub fn observe_registrar(&self, observee: SequenceNr) {
         if self.next_seqnr().is_invalid() {
             return;
         }
@@ -753,5 +758,5 @@ impl DatabaseContext {
                 .borrow_mut()
                 .report_observed(observer, observee);
         }
-    }*/
+    }
 }

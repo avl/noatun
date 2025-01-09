@@ -9,6 +9,7 @@ use std::marker::PhantomData;
 use std::os::fd::AsRawFd;
 use std::ptr::slice_from_raw_parts_mut;
 use std::slice;
+use bytemuck::Pod;
 
 pub trait FileBackend {
     fn page_size(&self) -> usize;
@@ -384,6 +385,18 @@ impl FileAccessor {
         self.seek_pos += bytes;
         Ok(ret)
     }
+
+    /// Does _not_ use or update seek position
+    pub fn mutate_pod<P:Pod>(&mut self, offset: usize) -> Result<&mut P> {
+        let bytes = size_of::<P>();
+
+        if offset + bytes > self.used_space() {
+            bail!("requested number of bytes not available in file");
+        }
+        let data = &mut self.map_mut()[offset..offset + bytes];
+        Ok(bytemuck::from_bytes_mut(data))
+    }
+
 
     pub(crate) fn grow(&self, new_size: usize) -> Result<()> {
         if new_size + Self::HEADER_SIZE > self.committed_size.get() {

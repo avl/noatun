@@ -4,6 +4,7 @@ use noatun::database::Database;
 use noatun::{Application, DatabaseContext, Message, MessageId, PodObject, ThinPtr};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
@@ -75,13 +76,13 @@ impl Application for CounterApplication {
 #[test]
 fn test_counter_object_miri() {
     let mut db: Database<CounterApplication> =
-        Database::create_in_memory(CounterApplication, 10_000).unwrap();
+        Database::create_in_memory(CounterApplication, 10_000, Duration::from_secs(1000), None).unwrap();
 
     db.append_single(CounterMessage {
         id: 2,
         counter: 0,
         delta: 42,
-    })
+    }, true)
     .unwrap();
 
     let (root, context) = db.get_root();
@@ -91,7 +92,7 @@ fn test_counter_object_miri() {
         id: 1,
         counter: 1,
         delta: 43,
-    })
+    }, true)
     .unwrap();
 
     let (root, context) = db.get_root();

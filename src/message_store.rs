@@ -51,7 +51,6 @@ pub trait ReadPod {
 pub trait WritePod {
     fn write_pod<T: Pod>(&mut self, pod: &T) -> Result<()>;
 }
-
 impl<R: Read> ReadPod for R {
     fn read_pod<T: Pod>(&mut self) -> Result<T> {
         let mut zeroed = T::zeroed();
@@ -60,7 +59,6 @@ impl<R: Read> ReadPod for R {
         Ok(zeroed)
     }
 }
-
 impl<W: Write> WritePod for W {
     fn write_pod<T: Pod>(&mut self, pod: &T) -> Result<()> {
         let bytes = bytemuck::bytes_of(pod);
@@ -120,6 +118,10 @@ impl FileOffset {
     fn offset(self) -> Option<u64> {
         (self.0 != u64::MAX).then_some(self.0 >> 1)
     }
+
+    // TODO: Consider changing u64 almost everywhere here to usize.
+    // We absolutely _don't_ support files larger than usize (because we're memory-mapping, and
+    // on 32-bit systems virtual memory is still smaller than usize range).
     fn file_and_offset(self) -> Option<(U1, u64)> {
         (self.0 != u64::MAX).then(|| {
             (
@@ -417,7 +419,6 @@ impl<M> OnDiskMessageStore<M> {
 
             loop {
                 let file_offset = file_info.file.stream_position()?;
-                dbg!(file_offset, file_length);
                 if file_offset == file_length {
                     break;
                 }
@@ -463,7 +464,14 @@ impl<M> OnDiskMessageStore<M> {
 
     pub fn contains_message(&self, start: MessageId) -> Result<bool> {
         let (header, message_index) = self.header_and_index().context("opening index file")?;
-        Ok(message_index.binary_search_by_key(&start, |x| x.message).is_ok())
+        match message_index.binary_search_by_key(&start, |x| x.message){
+            Ok(index) => {
+                Ok(!message_index[index].file_offset.is_deleted())
+            }
+            Err(err) => {
+                Ok(false)
+            }
+        }
     }
     /// Get all messages with id start or greater
     fn query(&self, start: MessageId) -> Result<impl Iterator<Item = &IndexEntry>> {
@@ -646,6 +654,24 @@ impl<M> OnDiskMessageStore<M> {
             }
             None => Err(anyhow!("Invalid message index")),
         }
+    }
+
+    pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<()> {
+        let (header, message_index) =
+            Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
+        let Ok(index) = message_index.binary_search_by_key(&message_id, |x| x.message) else {
+            // TODO: Trace log?
+            return Ok(());
+        };
+        let index_entry = &message_index[index];
+
+        if let Some((file, offset)) = index_entry.file_offset.file_and_offset() {
+            let file_header: &mut FileHeaderEntry = self.data_files[file.index()].file.mutate_pod(offset as usize)?;
+            file_header.has_been_transmitted = 1;
+        } else {
+            // Deleted
+        }
+        Ok(())
     }
 
     /// Add the given messages.
