@@ -3,9 +3,6 @@ use crate::disk_abstraction::{Disk, StandardDisk};
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
-use crate::projection_store::message_dependency_tracker::{
-    MessageDependencyTracker, MmapMessageDependencyTracker,
-};
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 use crate::{
     Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, SequenceNr,
@@ -24,12 +21,20 @@ use std::marker::PhantomData;
 use std::mem::transmute_copy;
 use std::ops::Range;
 use std::path::Path;
-use std::slice;
+use std::{iter, slice};
 use std::slice::SliceIndex;
-use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
+use crate::data_types::{DatabaseVec, RawDatabaseVec};
+use crate::projection_store::message_dependency_tracker::linked_list_entry::DepTrackLinkedListEntry;
+use crate::projection_store::registrar_info::{RegistrarInfo, RegistrarTracker, UnusedInfo};
 
 mod registrar_info {
-    use crate::SequenceNr;
+    use std::fmt::Debug;
+    use bumpalo::Bump;
+    use indexmap::IndexMap;
+    use crate::disk_abstraction::Disk;
+
+    use crate::{DatabaseContext, Message, SequenceNr, Target};
+    use crate::message_store::OnDiskMessageStore;
 
     #[derive(Debug, Clone, Default)]
     pub(crate) struct RegistrarInfo {
@@ -71,176 +76,170 @@ mod registrar_info {
         /// True if the above message only wrote opaque data
         pub opaque: bool,
     }
-}
 
+    #[derive(Debug)]
+    pub(crate) struct RegistrarTracker {
+        //TODO: Move this to mmap-file too!
+        uses: Vec<RegistrarInfo>,
+        /// Messages are added to this list when their
+        /// last registrar_point is overwritten
+        /// Such messages are candidates to be removed, but only if
+        /// no other message (that isn't also to be removed), depend on it.
+        unused_messages: Vec<UnusedInfo>,
 
-#[derive(Debug)]
-struct RegistrarTracker {
-    //TODO: Move this to mmap-file too!
-    uses: Vec<RegistrarInfo>,
-    /// Messages are added to this list when their
-    /// last registrar_point is overwritten
-    /// Such messages are candidates to be removed, but only if
-    /// no other message (that isn't also to be removed), depend on it.
-    unused_messages: Vec<UnusedInfo>,
-
-    // Mapping from message-id to other messages that have read output
-    // from said message
-    message_dependencies: MmapMessageDependencyTracker,
-}
-mod message_dependency_tracker;
-
-impl RegistrarTracker {
-    fn new<S: Disk>(disk: &mut S, path: &Target, max_size: usize) -> Result<RegistrarTracker> {
-        Ok(RegistrarTracker {
-            uses: vec![],
-            unused_messages: vec![],
-            message_dependencies: MmapMessageDependencyTracker::new(disk, path, max_size)?,
-        })
+        // Mapping from message-id to other messages that have read output
+        // from said message
     }
-
-    fn clear(&mut self) {
-        self.uses.clear();
-        self.unused_messages.clear();
-        //self.message_dependencies.clear();
-    }
-
-    fn finalize_message(&mut self, message_id: SequenceNr) {
-        debug_assert_ne!(message_id.0, 0);
-        if self.uses.len() <= message_id.index() {
-            // This is a bit of a special case. This is a message
-            // that did not actually modify any state at all during its projection.
-            self.unused_messages.push(UnusedInfo {
-                seq: message_id,
-                opaque: true,
-            });
-            return;
+    impl RegistrarTracker {
+        pub(crate) fn new<S: Disk>(disk: &mut S, path: &Target, max_size: usize) -> anyhow::Result<RegistrarTracker> {
+            Ok(RegistrarTracker {
+                uses: vec![],
+                unused_messages: vec![],
+            })
         }
-        let track = &self.uses[message_id.index()];
 
-        if track.get_use() == 0 {
-            self.unused_messages.push(UnusedInfo {
-                seq: message_id,
-                opaque: track.get_opaque(),
-            });
+        pub(crate) fn clear(&mut self) {
+            self.uses.clear();
+            self.unused_messages.clear();
+            //self.message_dependencies.clear();
         }
-    }
 
-    /*
-About deletions:
+        pub(crate) fn finalize_message(&mut self, message_id: SequenceNr) {
+            debug_assert_ne!(message_id.0, 0);
+            if self.uses.len() <= message_id.index() {
+                // This is a bit of a special case. This is a message
+                // that did not actually modify any state at all during its projection.
+                self.unused_messages.push(UnusedInfo {
+                    seq: message_id,
+                    opaque: true,
+                });
+                return;
+            }
+            let track = &self.uses[message_id.index()];
 
-We can delete messages that no longer have any effect on the state, but only in these
-circumstances:
+            if track.get_use() == 0 {
+                self.unused_messages.push(UnusedInfo {
+                    seq: message_id,
+                    opaque: track.get_opaque(),
+                });
+            }
+        }
 
- 1: Messages that only update OpaqueData
- 2: Messages that have never been transmitted, and upon which no existing message depends
- 3: Messages that are older than MAX_PARTITION_TIME, and have no trace in the state at
-    MAX_PARTITION_TIME, and upon which no message depends
+        /*
+    About deletions:
 
-*/
+    We can delete messages that no longer have any effect on the state, but only in these
+    circumstances:
 
-    fn calculate_stale_messages<M: Message + Debug>(
-        &mut self,
-        messages: &mut OnDiskMessageStore<M>,
-        is_before_cutoff: bool
-    ) -> Result<Vec<SequenceNr>> {
-        self.unused_messages.sort(); //Sort in seq-nr order
-        let mut deleted = Vec::new();
-        let mut parent_lists = Bump::new();
+     1: Messages that only update OpaqueData
+     2: Messages that have never been transmitted, and upon which no existing message depends
+     3: Messages that are older than MAX_PARTITION_TIME, and have no trace in the state at
+        MAX_PARTITION_TIME, and upon which no message depends
 
-        println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
-        'outer: for msg in self.unused_messages.iter().rev() {
+    */
 
-            if msg.opaque {
-                // This can be deleted
-            } else if !messages.may_have_been_transmitted(msg.seq)? || is_before_cutoff {
+        pub(crate) fn calculate_stale_messages<M: Message + Debug>(
+            &mut self,
+            context: &mut DatabaseContext,
+            messages: &mut OnDiskMessageStore<M>,
+            is_before_cutoff: bool
+        ) -> anyhow::Result<Vec<SequenceNr>> {
+            self.unused_messages.sort(); //Sort in seq-nr order
+            let mut deleted = Vec::new();
+            let mut parent_lists = Bump::new();
 
-                for observer in self.message_dependencies.read_dependency(msg.seq) {
-                    if !deleted.contains(&observer) {
-                        // 'msg' can't be deleted, because it's observed by
-                        // 'observer' - i.e a later message that has not been deleted.
-                        println!(
-                            "Can't delete {:?} because it's observed by {:?}",
-                            msg, observer
-                        );
-                        continue 'outer;
+            println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
+            'outer: for msg in self.unused_messages.iter().rev() {
+
+                if msg.opaque {
+                    // This can be deleted
+                } else if !messages.may_have_been_transmitted(msg.seq)? || is_before_cutoff {
+
+                    for observer in context.read_dependency(context, msg.seq) {
+                        if !deleted.contains(&observer) {
+                            // 'msg' can't be deleted, because it's observed by
+                            // 'observer' - i.e a later message that has not been deleted.
+                            println!(
+                                "Can't delete {:?} because it's observed by {:?}",
+                                msg, observer
+                            );
+                            continue 'outer;
+                        }
+                    }
+                } else {
+                    println!(
+                        "Can't delete {:?}, because we can't know if someone will use its output",
+                        msg
+                    );
+                    continue 'outer;
+                }
+
+
+                println!("Deleting {:?}", msg);
+
+                deleted.push(msg.seq);
+            }
+            self.unused_messages.clear();
+
+            // 'deleted' ends up in reverse seqnr-order
+            // iterate in seq-nr order.
+            let mut parent_remap: IndexMap<SequenceNr, Vec<SequenceNr>> = IndexMap::new();
+            for deleted in deleted.iter().rev() {
+                let mut parent_list = vec![];
+
+                let Some(msg) = messages.read_message_by_index(deleted.index())? else {
+                    panic!("Attempt to delete already-deleted message.");
+                };
+                for parent in msg.parents() {
+                    let parent_index = SequenceNr::from_index(messages.get_index_of(parent)?
+                        .expect("Parent unknown. This is not supported like this - it needs to be cleansed before msg added to store."));
+                    if let Some(remapping) = parent_remap.get(&parent_index) {
+                        parent_list.extend(remapping);
+                    } else {
+                        parent_list.push(parent_index);
                     }
                 }
-            } else {
-                println!(
-                    "Can't delete {:?}, because we can't know if someone will use its output",
-                    msg
-                );
-                continue 'outer;
+
+                parent_list.sort();
+                parent_list.dedup();
+                parent_remap.insert(*deleted, parent_list);
             }
-
-
-            println!("Deleting {:?}", msg);
-
-            deleted.push(msg.seq);
+            Ok(deleted)
         }
-        self.unused_messages.clear();
-
-        // 'deleted' ends up in reverse seqnr-order
-        // iterate in seq-nr order.
-        let mut parent_remap: IndexMap<SequenceNr, Vec<SequenceNr>> = IndexMap::new();
-        for deleted in deleted.iter().rev() {
-            let mut parent_list = vec![];
-
-            let Some(msg) = messages.read_message_by_index(deleted.index())? else {
-                panic!("Attempt to delete already-deleted message.");
-            };
-            for parent in msg.parents() {
-                let parent_index = SequenceNr::from_index(messages.get_index_of(parent)?
-                    .expect("Parent unknown. This is not supported like this - it needs to be cleansed before msg added to store."));
-                if let Some(remapping) = parent_remap.get(&parent_index) {
-                    parent_list.extend(remapping);
-                } else {
-                    parent_list.push(parent_index);
-                }
+        pub(crate) fn increase_use(&mut self, registrar: SequenceNr) {
+            if self.uses.len() <= registrar.index() {
+                self.uses.resize(registrar.index() + 1, RegistrarInfo::default());
             }
+            self.uses[registrar.index()].increase_use();
+        }
+        pub(crate) fn set_non_opaque(&mut self, registrar: SequenceNr) {
+            if self.uses.len() <= registrar.index() {
+                self.uses.resize(registrar.index() + 1, RegistrarInfo::default());
+            }
+            self.uses[registrar.index()].set_non_opaque();
+        }
+        pub(crate) fn decrease_use(&mut self, registrar: SequenceNr) {
+            let cur = &mut self.uses[registrar.index()];
+            if cur.get_use() == 0 {
+                panic!("Corrupt use count for sequence nr {:?}", registrar);
+            }
+            cur.decrease_use();
+            if cur.get_use() == 0 {
+                // This is the normal way messages end up in 'unused_messags'
+                self.unused_messages.push(UnusedInfo {
+                    seq: registrar,
+                    opaque: cur.get_opaque(),
+                });
+            }
+        }
+    }
 
-            parent_list.sort();
-            parent_list.dedup();
-            parent_remap.insert(*deleted, parent_list);
-        }
-        Ok(deleted)
-    }
-    fn report_observed(&mut self, observer: SequenceNr, observee: SequenceNr) {
-        /*self.message_dependencies
-        .entry(observee)
-        .or_default()
-        .push(observer);*/
-        self.message_dependencies
-            .record_dependency(observee, observer);
-    }
-    fn increase_use(&mut self, registrar: SequenceNr) {
-        if self.uses.len() <= registrar.index() {
-            self.uses.resize(registrar.index() + 1, RegistrarInfo::default());
-        }
-        self.uses[registrar.index()].increase_use();
-    }
-    fn set_non_opaque(&mut self, registrar: SequenceNr) {
-        if self.uses.len() <= registrar.index() {
-            self.uses.resize(registrar.index() + 1, RegistrarInfo::default());
-        }
-        self.uses[registrar.index()].set_non_opaque();
-    }
-    fn decrease_use(&mut self, registrar: SequenceNr) {
-        let cur = &mut self.uses[registrar.index()];
-        if cur.get_use() == 0 {
-            panic!("Corrupt use count for sequence nr {:?}", registrar);
-        }
-        cur.decrease_use();
-        if cur.get_use() == 0 {
-            // This is the normal way messages end up in 'unused_messags'
-            self.unused_messages.push(UnusedInfo {
-                seq: registrar,
-                opaque: cur.get_opaque(),
-            });
-        }
-    }
 }
+
+
+
+mod message_dependency_tracker;
+
 
 const DEFAULT_SIZE: usize = 10000;
 
@@ -273,6 +272,12 @@ pub struct MainDbHeader {
     last_boot: [u8; 16],
 }
 
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]pub struct MainDbAuxHeader {
+    deptrack_keys: ThinPtr,
+    deptrack_vals: ThinPtr,
+}
+
 pub struct DatabaseContext {
     main_db_mmap: FileAccessor,
     //pointer: Cell<usize>,
@@ -287,6 +292,14 @@ pub struct DatabaseContext {
     // Starts at 0. When a message is being applied, this field
     // will have the seqnr of the message being applied, not the next one.
     //next_seqnr: SequenceNr,
+
+    /// the sequencenr that has been observed
+    /// This is a sequence of u64 message indices, pointing at LinkedListEntry's in 'vals'
+    deptrack_keys: ThinPtr,
+    /// the sequence nr that have observed each key. I.e, the messages that
+    /// are dependent upon the key.
+    /// This is a sequence of 'LinkedListEntry'.
+    deptrack_vals: ThinPtr,
 }
 
 // This has been shamelessly lifted from the rust std
@@ -318,6 +331,106 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
 }
 
 impl DatabaseContext {
+
+    fn clear_deptrack(&mut self, context: &mut DatabaseContext) {
+        let (key_len, keys): (_, &mut [u64]) = Self::access(context, self.deptrack_keys);
+        *key_len = 0;
+        let (val_len, vals): (_, &mut [crate::projection_store::message_dependency_tracker::linked_list_entry::DepTrackLinkedListEntry]) = Self::access(context, self.deptrack_vals);
+        *val_len = 0;
+    }
+
+    fn record_dependency(&self, observee: SequenceNr, observer: SequenceNr) {
+        assert!(observee.is_valid());
+        assert!(observer.is_valid());
+
+        let aux_header = self.get_aux_header();
+
+        let keys: &mut RawDatabaseVec<ThinPtr> = unsafe { self.access_pod_mut(aux_header.deptrack_keys) };
+        let vals: &mut RawDatabaseVec<DepTrackLinkedListEntry> = unsafe { self.access_pod_mut(aux_header.deptrack_vals) };
+
+        keys.grow(self, observee.index());
+        if observee.index() >= keys.len() {
+            keys.grow(self, observee.index()+1);
+        }
+
+        //let (val_len, vals): (_, &mut [crate::projection_store::message_dependency_tracker::linked_list_entry::DepTrackLinkedListEntry]) = Self::access(&mut self.deptrack_vals);
+        //let (key_len, keys): (_, &mut [u64]) = Self::access(&mut self.deptrack_keys);
+        //debug_assert_eq!(keys.len(), self.key_capacity);
+        //debug_assert_eq!(vals.len(), self.value_capacity);
+
+        let prev = keys.get_internal(self, observee.index());
+
+        let mut new_entry = DepTrackLinkedListEntry::default();
+        new_entry.set_seq(observer);
+        new_entry.set_next(*prev);
+
+        let new_entry = vals.push_internal(self, new_entry);
+
+        let key_place = keys.get_mut_internal(self, observee.index());
+
+        self.write_pod(new_entry, key_place);
+
+        compile_error!("Continue porting the record-dependency system to persist in the MainDb, so it rolls back naturally")
+
+    }
+    fn read_dependency(&mut self, context: &mut DatabaseContext, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> {
+        let (key_len, keys): (_, &mut [u64]) = Self::access(context, self.deptrack_keys);
+        let (val_len, vals): (_, &mut [crate::projection_store::message_dependency_tracker::linked_list_entry::DepTrackLinkedListEntry]) = Self::access(context, self.deptrack_vals);
+
+        let mut cur: u64 = if observee.index() < keys.len() {
+            keys[observee.index()]
+        } else {
+            0
+        };
+
+        iter::from_fn(move || {
+            if cur == 0 {
+                return None;
+            }
+            let entry = &vals[cur as usize - 1];
+            cur = entry.get_next();
+            Some(entry.seq())
+        })
+    }
+    #[inline]
+    fn get_count(mmap: &FileAccessor) -> usize {
+        *bytemuck::from_bytes::<u64>(&mmap.map()[0..size_of::<u64>()]) as usize
+    }
+    #[inline]
+    fn access<'a, T: Pod>(context: &mut DatabaseContext, index: ThinPtr) -> (&'a mut u64, &'a mut [T]) {
+
+        let vec = unsafe { RawDatabaseVec::<u8>::access_mut(context, index) };
+
+        let slice_bytes: &mut [u8] = vec.get_full_slice_mut(context);
+
+        let (slice_a, slice_b) = slice_bytes.split_at_mut(std::mem::size_of::<u64>());
+        let count: &mut u64 = bytemuck::from_bytes_mut(slice_a);
+        let slice: &mut [T] = bytemuck::cast_slice_mut(slice_b);
+        (count, slice)
+    }
+
+    // Record mapping from observee to observer
+
+    fn calc_needed_bytes_keys(count: usize) -> usize {
+        (std::mem::size_of::<u64>()) * count + std::mem::size_of::<u64>()
+    }
+    fn calc_needed_bytes_vals(count: usize) -> usize {
+        (std::mem::size_of::<u64>() + size_of::<SequenceNr>()) * count + std::mem::size_of::<u64>()
+    }
+
+    fn reallocate_keys(&mut self, context: &mut DatabaseContext, new_count: usize) -> Result<()> {
+        let keys = unsafe { RawDatabaseVec::<u8>::access_mut(context, self.deptrack_keys) };
+
+        keys.grow(Self::calc_needed_bytes_keys(new_count));
+        Ok(())
+    }
+    fn reallocate_values(&mut self, new_count: usize) -> Result<()> {
+        self.deptrack_vals.grow(Self::calc_needed_bytes_vals(new_count));
+
+        self.value_capacity = new_count;
+        Ok(())
+    }
+
     #[inline(always)]
     pub fn next_seqnr(&self) -> SequenceNr {
         let header: &MainDbHeader =
@@ -397,15 +510,30 @@ impl DatabaseContext {
     }
     pub fn clear(&mut self) -> Result<()> {
         self.main_db_mmap.truncate(0);
-        self.main_db_mmap.grow(size_of::<MainDbHeader>())?;
+        self.main_db_mmap.grow(size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>())?;
         Self::write_initial_header(&mut self.main_db_mmap);
         self.undo_log.clear();
         self.registrar_tracker.borrow_mut().clear();
 
+        let aux_header: &mut MainDbAuxHeader =
+            bytemuck::from_bytes_mut(&mut self.main_db_mmap.map_mut()[size_of::<MainDbHeader>()..size_of::<MainDbHeader>()+size_of::<MainDbAuxHeader>()]);
+
+        aux_header.deptrack_keys =
+            self.index_of_sized(RawDatabaseVec::<ThinPtr>::new(self));
+        aux_header.deptrack_vals =
+            self.index_of_sized(RawDatabaseVec::<DepTrackLinkedListEntry>::new(self));
+
         Ok(())
     }
 
+    pub(crate) fn get_aux_header(&self) -> MainDbAuxHeader {
+        let aux_header: &MainDbAuxHeader =
+            bytemuck::from_bytes(&mut self.main_db_mmap.map()[size_of::<MainDbHeader>()..size_of::<MainDbHeader>()+size_of::<MainDbAuxHeader>()]);
+        *aux_header
+    }
+
     fn write_initial_header(mmap: &mut FileAccessor) {
+        assert_eq!(mmap.get_used_space(), size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>());
         let header: &mut MainDbHeader =
             bytemuck::from_bytes_mut(&mut mmap.map_mut()[0..size_of::<MainDbHeader>()]);
         header.next_seqnr = SequenceNr::INVALID;
@@ -416,7 +544,11 @@ impl DatabaseContext {
             .expect("The size of an 'usize' must be less than 256 bytes");
 
         header.last_boot = get_boot_checksum();
-        mmap.set_used_space(size_of::<MainDbHeader>());
+        let aux_header: &mut MainDbAuxHeader =
+            bytemuck::from_bytes_mut(&mut mmap.map_mut()[size_of::<MainDbHeader>()..size_of::<MainDbHeader>()+size_of::<MainDbAuxHeader>()]);
+        aux_header.deptrack_keys = ThinPtr(0);
+        aux_header.deptrack_vals = ThinPtr(0);
+
     }
 
     pub(crate) fn new<S: Disk>(s: &mut S, name: &Target, max_size: usize) -> Result<Self> {
@@ -561,7 +693,7 @@ impl DatabaseContext {
         }
     }
 
-    pub fn copy(&mut self, source: FatPtr, dest_index: usize) {
+    pub fn copy(&self, source: FatPtr, dest_index: usize) {
         unsafe {
             //dbg!(&source, &dest_index);
 
@@ -614,7 +746,33 @@ impl DatabaseContext {
         unsafe { std::slice::from_raw_parts_mut(start, size) }
     }
     /// # Safety
+    /// The returned range must not overlap any mutable reference.
+    /// Alignment must be right.
+    pub unsafe fn access_slice_at<'a, T: Pod>(&self, offset: usize, size: usize) -> &'a [T] {
+        assert!(offset + size * size_of::<T>() <= self.main_db_mmap.used_space());
+        unsafe {
+            std::slice::from_raw_parts(
+                self.main_db_mmap.map_const_ptr().wrapping_add(offset) as *const T,
+                size,
+            )
+        }
+    }
+    /// # Safety
+    /// The returned range must not overlap any reference.
+    /// Alignment must be right.
+    pub unsafe fn access_slice_at_mut<'a, T: Pod>(&self, offset: usize, size: usize) -> &'a mut [T] {
+        assert!(offset + size * size_of::<T>() <= self.main_db_mmap.used_space());
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.main_db_mmap.map_mut_ptr().wrapping_add(offset) as *mut T,
+                size,
+            )
+        }
+    }
+
+    /// # Safety
     /// The returned range must not overlap any mutable reference
+    /// Alignment must be right.
     pub unsafe fn access_slice<'a, T: Pod>(&self, range: FatPtr) -> &'a [T] {
         assert!(range.start + range.len <= self.main_db_mmap.used_space());
         unsafe {
@@ -626,7 +784,8 @@ impl DatabaseContext {
     }
     /// # Safety
     /// The returned range must not overlap any other reference
-    pub unsafe fn access_slice_mut<'a, T: Pod>(&mut self, range: FatPtr) -> &'a mut [T] {
+    /// Alignment must be right.
+    pub unsafe fn access_slice_mut<'a, T: Pod>(&self, range: FatPtr) -> &'a mut [T] {
         assert!(range.start + range.len <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts_mut(
@@ -665,7 +824,7 @@ impl DatabaseContext {
 
     /// # Safety:
     /// Caller must ensure no references exists to the requested object
-    pub unsafe fn access_pod_mut<'a, T: Pod>(&mut self, index: ThinPtr) -> &'a mut T {
+    pub unsafe fn access_pod_mut<'a, T: Pod>(&self, index: ThinPtr) -> &'a mut T {
         if index
             .0
             .checked_add(size_of::<T>())
@@ -754,9 +913,7 @@ impl DatabaseContext {
         }
         let observer = self.next_seqnr();
         if observer != observee {
-            self.registrar_tracker
-                .borrow_mut()
-                .report_observed(observer, observee);
+            self.record_dependency(observee, observer);
         }
     }
 }

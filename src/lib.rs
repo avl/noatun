@@ -574,13 +574,9 @@ impl<T:Pod> Object for PodObject<T> {
 
 
 pub trait FixedSizeObject: Object<Ptr = ThinPtr> + Sized + Pod {
-    const SIZE: usize = std::mem::size_of::<Self>();
-    const ALIGN: usize = std::mem::align_of::<Self>();
 }
 
 impl<T: Object<Ptr = ThinPtr> + Sized + Copy + Pod> FixedSizeObject for T {
-    const SIZE: usize = std::mem::size_of::<Self>();
-    const ALIGN: usize = std::mem::align_of::<Self>();
 }
 
 pub trait Application {
@@ -602,6 +598,8 @@ impl FatPtr {
         FatPtr { start, len }
     }
 }
+// TODO: We should probably have a generic ThinPtr type, like ThinPtr<T>,
+// that allows type-safe access to &mut T
 #[derive(Copy, Clone, Debug)]
 pub struct ThinPtr(pub usize);
 
@@ -661,11 +659,11 @@ impl<T: FixedSizeObject> Object for [T] {
 }
 
 pub mod data_types {
-    use crate::{DatabaseContext, FatPtr, FixedSizeObject, Object, Pointer, SequenceNr, ThinPtr};
+    use crate::{Database, DatabaseContext, FatPtr, FixedSizeObject, Object, Pointer, SequenceNr, ThinPtr};
     use bytemuck::{Pod, Zeroable};
     use std::marker::PhantomData;
     use std::mem::transmute_copy;
-    use std::ops::Deref;
+    use std::ops::{Deref, Range};
     use sha2::digest::typenum::Zero;
 
     #[derive(Copy, Clone)]
@@ -774,6 +772,126 @@ pub mod data_types {
             unsafe { context.access_pod_mut(index) }
         }
     }
+    #[repr(C)]
+    pub struct RawDatabaseVec<T> {
+        length: usize,
+        capacity: usize,
+        data: usize,
+        phantom_data: PhantomData<T>,
+    }
+    unsafe impl<T> Zeroable for RawDatabaseVec<T> {}
+
+    impl<T> Copy for RawDatabaseVec<T> {}
+
+    impl<T> Clone for RawDatabaseVec<T> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+
+    unsafe impl<T> Pod for RawDatabaseVec<T> where T: 'static {}
+
+    impl<T:'static> RawDatabaseVec<T> {
+        fn realloc_add(&mut self, ctx: &DatabaseContext, new_capacity: usize) {
+            let dest = ctx.allocate_raw(new_capacity * size_of::<T>(), align_of::<T>());
+            let dest_index = ctx.index_of_ptr(dest);
+
+            if self.length > 0 {
+                let old_ptr = FatPtr::from(self.data, size_of::<T>() * self.length);
+                ctx.copy(old_ptr, dest_index.0);
+            }
+
+            let new_len = self.length + 1;
+
+            ctx.write_pod(
+                DatabaseVec {
+                    length: new_len,
+                    capacity: new_capacity,
+                    data: dest_index.0,
+                    length_registrar: SequenceNr::default(),
+                    phantom_data: Default::default(),
+                },
+                self,
+            )
+        }
+        pub fn grow(&mut self, ctx: &DatabaseContext, new_length: usize) {
+            if new_length < self.length {
+                return;
+            }
+            if self.capacity < self.length {
+                self.realloc_add(ctx, 2*new_length);
+            }
+            self.length = new_length;
+        }
+        #[allow(clippy::mut_from_ref)]
+        pub fn new(ctx: &DatabaseContext) -> &mut DatabaseVec<T> {
+            unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
+        }
+    }
+    impl<T:Pod+'static> RawDatabaseVec<T> {
+        pub(crate) fn get_slice(&self, context: &DatabaseContext, range: Range<usize>) -> &[T] {
+            let offset = self.data + range.start * size_of::<T>();
+            let len = range.end - range.start;
+
+            unsafe { context.access_slice_at(offset, len) }
+        }
+        pub(crate) fn get_full_slice_mut(&self, context: &DatabaseContext) -> &mut [T] {
+            let offset = self.data;
+            unsafe { context.access_slice_at_mut(offset, self.length) }
+        }
+        pub(crate) fn len(&self) -> usize {
+            self.length
+        }
+        pub(crate) fn get_full_slice(&self, context: &DatabaseContext) -> &[T] {
+            let offset = self.data;
+            unsafe { context.access_slice_at(offset, self.length) }
+        }
+        pub(crate) fn get_slice_mut(&self, context: &DatabaseContext, range: Range<usize>) -> &mut [T] {
+            let offset = self.data + range.start * size_of::<T>();
+            let len = range.end - range.start;
+
+            unsafe { context.access_slice_at_mut(offset, len) }
+        }
+        pub(crate) fn get_internal(&self, ctx: &DatabaseContext, index: usize) -> &T {
+            let offset = self.data + index * size_of::<T>();
+            unsafe { ctx.access_pod(ThinPtr(offset)) }
+        }
+        pub(crate) fn get_mut_internal(&self, ctx: &mut DatabaseContext, index: usize) -> &mut T {
+            let offset = self.data + index * size_of::<T>();
+            let t = unsafe { ctx.access_pod_mut(ThinPtr(offset)) };
+            t
+        }
+        pub(crate) fn write_internal(&mut self, ctx: &DatabaseContext, index: usize, val: T) {
+            let offset = self.data + index * size_of::<T>();
+            unsafe {
+                ctx.write_pod(val, ctx.access_pod_mut(ThinPtr(offset)));
+            };
+        }
+        pub(crate) fn push_internal<'a>(&'a mut self, ctx: &DatabaseContext, t: T) -> ThinPtr where T:Pod{
+            if self.length >= self.capacity {
+                self.realloc_add(ctx, (self.capacity + 1) * 2);
+            } else {
+                ctx.write_pod(self.length + 1, &mut self.length);
+            }
+
+            self.write_internal(ctx, self.length - 1, t);
+            let offset = self.data + (self.length - 1) * size_of::<T>();
+            ThinPtr(offset)
+        }
+    }
+    impl<T> Object for RawDatabaseVec<T>
+    where
+        T: FixedSizeObject + 'static,
+    {
+        type Ptr = ThinPtr;
+        unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
+            unsafe { context.access_pod(index) }
+        }
+        unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
+            unsafe { context.access_pod_mut(index) }
+        }
+    }
+
 
     #[repr(C)]
     pub struct DatabaseVec<T> {
@@ -796,40 +914,13 @@ pub mod data_types {
 
     unsafe impl<T> Pod for DatabaseVec<T> where T: 'static {}
 
-    impl<T> DatabaseVec<T>
-    where
-        T: FixedSizeObject + 'static,
-    {
-        #[allow(clippy::mut_from_ref)]
-        pub fn new(ctx: &DatabaseContext) -> &mut DatabaseVec<T> {
-            unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
-        }
-        pub fn len(&self, ctx: &DatabaseContext) -> usize {
-            ctx.observe_registrar(self.length_registrar);
-            self.length
-        }
-        pub fn get(&self, ctx: &DatabaseContext, index: usize) -> &T {
-            let offset = self.data + index * T::SIZE;
-            unsafe { T::access(ctx, ThinPtr(offset)) }
-        }
-        pub fn get_mut(&mut self, ctx: &mut DatabaseContext, index: usize) -> &mut T {
-            let offset = self.data + index * T::SIZE;
-            let t = unsafe { T::access_mut(ctx, ThinPtr(offset)) };
-            t
-        }
-        pub fn write(&mut self, ctx: &mut DatabaseContext, index: usize, val: T) {
-            let offset = self.data + index * T::SIZE;
-            unsafe {
-                *T::access_mut(ctx, ThinPtr(offset)) = val;
-            };
-        }
-
+    impl<T:'static> DatabaseVec<T> {
         fn realloc_add(&mut self, ctx: &mut DatabaseContext, new_capacity: usize) {
-            let dest = ctx.allocate_raw(new_capacity * T::SIZE, T::ALIGN);
+            let dest = ctx.allocate_raw(new_capacity * size_of::<T>(), align_of::<T>());
             let dest_index = ctx.index_of_ptr(dest);
 
             if self.length > 0 {
-                let old_ptr = FatPtr::from(self.data, T::SIZE * self.length);
+                let old_ptr = FatPtr::from(self.data, size_of::<T>() * self.length);
                 ctx.copy(old_ptr, dest_index.0);
             }
 
@@ -845,6 +936,35 @@ pub mod data_types {
                 },
                 self,
             )
+        }
+        #[allow(clippy::mut_from_ref)]
+        pub fn new(ctx: &DatabaseContext) -> &mut DatabaseVec<T> {
+            unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
+        }
+    }
+
+    impl<T> DatabaseVec<T>
+    where
+        T: FixedSizeObject + 'static,
+    {
+        pub fn len(&self, ctx: &DatabaseContext) -> usize {
+            ctx.observe_registrar(self.length_registrar);
+            self.length
+        }
+        pub fn get(&self, ctx: &DatabaseContext, index: usize) -> &T {
+            let offset = self.data + index * size_of::<T>();
+            unsafe { T::access(ctx, ThinPtr(offset)) }
+        }
+        pub fn get_mut(&mut self, ctx: &mut DatabaseContext, index: usize) -> &mut T {
+            let offset = self.data + index * size_of::<T>();
+            let t = unsafe { T::access_mut(ctx, ThinPtr(offset)) };
+            t
+        }
+        pub(crate) fn write(&mut self, ctx: &mut DatabaseContext, index: usize, val: T) {
+            let offset = self.data + index * size_of::<T>();
+            unsafe {
+                ctx.write_pod(val, T::access_mut(ctx, ThinPtr(offset)));
+            };
         }
 
         pub fn push_zeroed(&mut self, context: &mut DatabaseContext) -> &mut T {
@@ -1394,7 +1514,7 @@ pub mod distributor {
 mod tests {
     use super::*;
     use crate::disk_access::FileAccessor;
-    use crate::projection_store::MainDbHeader;
+    use crate::projection_store::{MainDbAuxHeader, MainDbHeader};
     use byteorder::{LittleEndian, WriteBytesExt};
     use data_types::DatabaseCell;
     use data_types::DatabaseObjectHandle;
@@ -1970,7 +2090,7 @@ mod tests {
 
                 // This assert might not hold in the future, if we redesign things.
                 // It's a bit white-box, consider removing.
-                assert_eq!(index.start(), size_of::<MainDbHeader>());
+                assert_eq!(index.start(), size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>());
                 index
             }
 
