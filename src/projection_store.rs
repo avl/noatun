@@ -5,7 +5,7 @@ use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 use crate::{
-    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, SequenceNr,
+    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer,
     Target, ThinPtr,
 };
 use anyhow::{Context, Result, bail};
@@ -24,8 +24,9 @@ use std::path::Path;
 use std::{iter, slice};
 use std::slice::SliceIndex;
 use crate::data_types::{DatabaseVec, RawDatabaseVec};
-use crate::projection_store::message_dependency_tracker::linked_list_entry::DepTrackLinkedListEntry;
+
 use crate::projection_store::registrar_info::{RegistrarInfo, RegistrarTracker, UnusedInfo};
+use crate::sequence_nr::SequenceNr;
 
 mod registrar_info {
     use std::fmt::Debug;
@@ -33,8 +34,9 @@ mod registrar_info {
     use indexmap::IndexMap;
     use crate::disk_abstraction::Disk;
 
-    use crate::{DatabaseContext, Message, SequenceNr, Target};
+    use crate::{DatabaseContext, Message, Target};
     use crate::message_store::OnDiskMessageStore;
+    use crate::sequence_nr::SequenceNr;
 
     #[derive(Debug, Clone, Default)]
     pub(crate) struct RegistrarInfo {
@@ -105,7 +107,7 @@ mod registrar_info {
         }
 
         pub(crate) fn finalize_message(&mut self, message_id: SequenceNr) {
-            debug_assert_ne!(message_id.0, 0);
+            debug_assert!(message_id.is_valid());
             if self.uses.len() <= message_id.index() {
                 // This is a bit of a special case. This is a message
                 // that did not actually modify any state at all during its projection.
@@ -140,7 +142,7 @@ mod registrar_info {
 
         pub(crate) fn calculate_stale_messages<M: Message + Debug>(
             &mut self,
-            context: &mut DatabaseContext,
+            context: &DatabaseContext,
             messages: &mut OnDiskMessageStore<M>,
             is_before_cutoff: bool
         ) -> anyhow::Result<Vec<SequenceNr>> {
@@ -155,7 +157,7 @@ mod registrar_info {
                     // This can be deleted
                 } else if !messages.may_have_been_transmitted(msg.seq)? || is_before_cutoff {
 
-                    for observer in context.read_dependency(context, msg.seq) {
+                    for observer in context.read_dependency(msg.seq) {
                         if !deleted.contains(&observer) {
                             // 'msg' can't be deleted, because it's observed by
                             // 'observer' - i.e a later message that has not been deleted.
@@ -238,7 +240,6 @@ mod registrar_info {
 
 
 
-mod message_dependency_tracker;
 
 
 const DEFAULT_SIZE: usize = 10000;
@@ -275,7 +276,6 @@ pub struct MainDbHeader {
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]pub struct MainDbAuxHeader {
     deptrack_keys: ThinPtr,
-    deptrack_vals: ThinPtr,
 }
 
 pub struct DatabaseContext {
@@ -292,14 +292,6 @@ pub struct DatabaseContext {
     // Starts at 0. When a message is being applied, this field
     // will have the seqnr of the message being applied, not the next one.
     //next_seqnr: SequenceNr,
-
-    /// the sequencenr that has been observed
-    /// This is a sequence of u64 message indices, pointing at LinkedListEntry's in 'vals'
-    deptrack_keys: ThinPtr,
-    /// the sequence nr that have observed each key. I.e, the messages that
-    /// are dependent upon the key.
-    /// This is a sequence of 'LinkedListEntry'.
-    deptrack_vals: ThinPtr,
 }
 
 // This has been shamelessly lifted from the rust std
@@ -330,14 +322,18 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
     }
 }
 
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub(crate) struct DepTrackLinkedListEntry {
+    // TODO: Possibly make this struct 4-byte aligned, and remove the padding
+    pub next: ThinPtr,
+    pub seq: SequenceNr,
+    pub padding: u32,
+}
+
+
 impl DatabaseContext {
 
-    fn clear_deptrack(&mut self, context: &mut DatabaseContext) {
-        let (key_len, keys): (_, &mut [u64]) = Self::access(context, self.deptrack_keys);
-        *key_len = 0;
-        let (val_len, vals): (_, &mut [crate::projection_store::message_dependency_tracker::linked_list_entry::DepTrackLinkedListEntry]) = Self::access(context, self.deptrack_vals);
-        *val_len = 0;
-    }
 
     fn record_dependency(&self, observee: SequenceNr, observer: SequenceNr) {
         assert!(observee.is_valid());
@@ -346,9 +342,8 @@ impl DatabaseContext {
         let aux_header = self.get_aux_header();
 
         let keys: &mut RawDatabaseVec<ThinPtr> = unsafe { self.access_pod_mut(aux_header.deptrack_keys) };
-        let vals: &mut RawDatabaseVec<DepTrackLinkedListEntry> = unsafe { self.access_pod_mut(aux_header.deptrack_vals) };
 
-        keys.grow(self, observee.index());
+
         if observee.index() >= keys.len() {
             keys.grow(self, observee.index()+1);
         }
@@ -358,77 +353,37 @@ impl DatabaseContext {
         //debug_assert_eq!(keys.len(), self.key_capacity);
         //debug_assert_eq!(vals.len(), self.value_capacity);
 
-        let prev = keys.get_internal(self, observee.index());
-
-        let mut new_entry = DepTrackLinkedListEntry::default();
-        new_entry.set_seq(observer);
-        new_entry.set_next(*prev);
-
-        let new_entry = vals.push_internal(self, new_entry);
-
         let key_place = keys.get_mut_internal(self, observee.index());
 
-        self.write_pod(new_entry, key_place);
+        let mut new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod();
 
-        compile_error!("Continue porting the record-dependency system to persist in the MainDb, so it rolls back naturally")
+
+        self.write_pod(*key_place, &mut new_entry.next);
+        self.write_pod(observer, &mut new_entry.seq);
+
+        let new_entry_index = self.index_of_sized(new_entry);
+        self.write_pod(new_entry_index, key_place);
+
 
     }
-    fn read_dependency(&mut self, context: &mut DatabaseContext, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> {
-        let (key_len, keys): (_, &mut [u64]) = Self::access(context, self.deptrack_keys);
-        let (val_len, vals): (_, &mut [crate::projection_store::message_dependency_tracker::linked_list_entry::DepTrackLinkedListEntry]) = Self::access(context, self.deptrack_vals);
+    fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> {
+        let aux_header = self.get_aux_header();
+        let keys: &RawDatabaseVec<ThinPtr> = unsafe { self.access_pod(aux_header.deptrack_keys) };
 
-        let mut cur: u64 = if observee.index() < keys.len() {
-            keys[observee.index()]
+        let mut cur: ThinPtr = if observee.index() < keys.len() {
+            *keys.get_mut_internal(self, observee.index())
         } else {
-            0
+            ThinPtr(0)
         };
 
         iter::from_fn(move || {
-            if cur == 0 {
+            if cur.0 == 0 {
                 return None;
             }
-            let entry = &vals[cur as usize - 1];
-            cur = entry.get_next();
-            Some(entry.seq())
+            let entry: &DepTrackLinkedListEntry = unsafe { self.access_pod(cur) };
+            cur = entry.next;
+            Some(entry.seq)
         })
-    }
-    #[inline]
-    fn get_count(mmap: &FileAccessor) -> usize {
-        *bytemuck::from_bytes::<u64>(&mmap.map()[0..size_of::<u64>()]) as usize
-    }
-    #[inline]
-    fn access<'a, T: Pod>(context: &mut DatabaseContext, index: ThinPtr) -> (&'a mut u64, &'a mut [T]) {
-
-        let vec = unsafe { RawDatabaseVec::<u8>::access_mut(context, index) };
-
-        let slice_bytes: &mut [u8] = vec.get_full_slice_mut(context);
-
-        let (slice_a, slice_b) = slice_bytes.split_at_mut(std::mem::size_of::<u64>());
-        let count: &mut u64 = bytemuck::from_bytes_mut(slice_a);
-        let slice: &mut [T] = bytemuck::cast_slice_mut(slice_b);
-        (count, slice)
-    }
-
-    // Record mapping from observee to observer
-
-    fn calc_needed_bytes_keys(count: usize) -> usize {
-        (std::mem::size_of::<u64>()) * count + std::mem::size_of::<u64>()
-    }
-    fn calc_needed_bytes_vals(count: usize) -> usize {
-        (std::mem::size_of::<u64>() + size_of::<SequenceNr>()) * count + std::mem::size_of::<u64>()
-    }
-
-    fn reallocate_keys(&mut self, context: &mut DatabaseContext, new_count: usize) -> Result<()> {
-        let keys = unsafe { RawDatabaseVec::<u8>::access_mut(context, self.deptrack_keys) };
-
-        keys.grow(Self::calc_needed_bytes_keys(new_count));
-        Ok(())
-    }
-    fn reallocate_values(&mut self, new_count: usize) -> Result<()> {
-        self.deptrack_vals.grow(Self::calc_needed_bytes_vals(new_count));
-
-        self.value_capacity = new_count;
-        Ok(())
     }
 
     #[inline(always)]
@@ -512,28 +467,33 @@ impl DatabaseContext {
         self.main_db_mmap.truncate(0);
         self.main_db_mmap.grow(size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>())?;
         Self::write_initial_header(&mut self.main_db_mmap);
+        self.write_initial_aux_header();
         self.undo_log.clear();
         self.registrar_tracker.borrow_mut().clear();
-
-        let aux_header: &mut MainDbAuxHeader =
-            bytemuck::from_bytes_mut(&mut self.main_db_mmap.map_mut()[size_of::<MainDbHeader>()..size_of::<MainDbHeader>()+size_of::<MainDbAuxHeader>()]);
-
-        aux_header.deptrack_keys =
-            self.index_of_sized(RawDatabaseVec::<ThinPtr>::new(self));
-        aux_header.deptrack_vals =
-            self.index_of_sized(RawDatabaseVec::<DepTrackLinkedListEntry>::new(self));
 
         Ok(())
     }
 
     pub(crate) fn get_aux_header(&self) -> MainDbAuxHeader {
+
+        let slice = self.main_db_mmap.map_const_ptr().wrapping_add(size_of::<MainDbHeader>());
+        let slice = unsafe { std::slice::from_raw_parts(slice, size_of::<MainDbAuxHeader>()) };
         let aux_header: &MainDbAuxHeader =
-            bytemuck::from_bytes(&mut self.main_db_mmap.map()[size_of::<MainDbHeader>()..size_of::<MainDbHeader>()+size_of::<MainDbAuxHeader>()]);
+            bytemuck::from_bytes(slice);
         *aux_header
     }
 
+    pub(crate) fn write_initial_aux_header(&mut self) {
+        let deptrack_keys = self.index_of_sized(RawDatabaseVec::<ThinPtr>::new(self));
+        let aux_header: &mut MainDbAuxHeader =
+            bytemuck::from_bytes_mut(&mut self.main_db_mmap.map_mut()[size_of::<MainDbHeader>()..size_of::<MainDbHeader>()+size_of::<MainDbAuxHeader>()]);
+
+        aux_header.deptrack_keys =
+            deptrack_keys;
+    }
+
     fn write_initial_header(mmap: &mut FileAccessor) {
-        assert_eq!(mmap.get_used_space(), size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>());
+        assert_eq!(mmap.used_space(), size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>());
         let header: &mut MainDbHeader =
             bytemuck::from_bytes_mut(&mut mmap.map_mut()[0..size_of::<MainDbHeader>()]);
         header.next_seqnr = SequenceNr::INVALID;
@@ -544,10 +504,6 @@ impl DatabaseContext {
             .expect("The size of an 'usize' must be less than 256 bytes");
 
         header.last_boot = get_boot_checksum();
-        let aux_header: &mut MainDbAuxHeader =
-            bytemuck::from_bytes_mut(&mut mmap.map_mut()[size_of::<MainDbHeader>()..size_of::<MainDbHeader>()+size_of::<MainDbAuxHeader>()]);
-        aux_header.deptrack_keys = ThinPtr(0);
-        aux_header.deptrack_vals = ThinPtr(0);
 
     }
 
@@ -557,9 +513,9 @@ impl DatabaseContext {
             .context("opening main store file")?;
 
         let mut is_new = false;
-        if main_db_file.used_space() < size_of::<MainDbHeader>() {
+        if main_db_file.used_space() < size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>() {
             main_db_file
-                .grow(size_of::<MainDbHeader>())
+                .grow(size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>())
                 .context("Writing initial header to main db file")?;
             main_db_file.map_mut().fill(0);
             is_new = true;
@@ -579,13 +535,24 @@ impl DatabaseContext {
             );
         }
 
-        Ok(Self {
+        let mut t = Self {
             main_db_mmap: main_db_file,
             root_index: None,
             undo_log: UndoLog::new(s, name, max_size)?,
             phantom: Default::default(),
             registrar_tracker: RefCell::new(RegistrarTracker::new(s, name, max_size)?),
-        })
+        };
+        // TODO: It's a bit of a code smell that at this precise point in th execution,
+        // a DatabaseContext exists, but it's not actually fully initialized until we write the
+        // aux header. This is functionally correct, no-one can observe this half-initialized
+        // DatabaseContext at this point in the code. But ideally we'd find a way to not have a
+        // half-initialized object. The trick is that writing the initial header requires
+        // allocation, which we currently can't do without a (partially) initialized
+        // DatabaseContext
+        if is_new {
+            t.write_initial_aux_header();
+        }
+        Ok(t)
     }
 
     /// Note: Must not be public, since while output of [`crate::Database::get_root`] is still
@@ -883,14 +850,14 @@ impl DatabaseContext {
         Ok(self
             .registrar_tracker
             .borrow_mut()
-            .calculate_stale_messages(message_store, is_before_cutoff)?
+            .calculate_stale_messages(self, message_store, is_before_cutoff)?
             .into_iter()
             .collect())
     }
 
     pub fn update_registrar(&self, registrar_point: &mut SequenceNr, opaque: bool) {
         let mut track = self.registrar_tracker.borrow_mut();
-        if registrar_point.0 != 0 {
+        if registrar_point.is_valid() {
             track.decrease_use(*registrar_point);
         }
         let current_registrar = self.next_seqnr();
@@ -915,5 +882,46 @@ impl DatabaseContext {
         if observer != observee {
             self.record_dependency(observee, observer);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{DatabaseContext, Target};
+    use crate::disk_abstraction::InMemoryDisk;
+    use crate::sequence_nr::SequenceNr;
+    use std::time::Instant;
+    #[test]
+    fn smoke_deptrack() {
+        let mut disk = InMemoryDisk::default();
+        let mut tracker = DatabaseContext::new(&mut disk,
+            &Target::CreateNew("ctx".into()), 10000).unwrap();
+
+
+        tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
+
+        let result: Vec<_> = tracker.read_dependency(SequenceNr::from_index(1)).collect();
+        assert_eq!(result, vec![SequenceNr::from_index(2)]);
+    }
+
+    #[test]
+    fn smoke_deptrack_many() {
+        let mut disk = InMemoryDisk::default();
+        let mut tracker = DatabaseContext::new(&mut disk,
+                                               &Target::CreateNew("ctx".into()), 10000).unwrap();
+
+        let t = Instant::now();
+        for i in 0..100_usize {
+            tracker.record_dependency(SequenceNr::from_index(i.isqrt()), SequenceNr::from_index(i));
+        }
+        println!("Time: {:?}", t.elapsed());
+
+        let result: Vec<_> = tracker
+            .read_dependency(SequenceNr::from_index(8))
+            .map(|x| x.index())
+            .collect();
+        assert_eq!(result, vec![
+            80, 79, 78, 77, 76, 75, 74, 73, 72, 71, 70, 69, 68, 67, 66, 65, 64
+        ]);
     }
 }

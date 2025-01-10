@@ -144,60 +144,66 @@ impl MessageId {
 
 }
 
-#[derive(Pod, Zeroable, Copy, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[repr(transparent)]
-// 0 is an invalid sequence number, used to represent 'not a number'
-pub struct SequenceNr(u32);
+pub mod sequence_nr {
+    use std::fmt::{Debug, Display, Formatter};
+    use bytemuck::{Pod, Zeroable};
 
-impl Display for SequenceNr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if self.0 == 0 {
-            write!(f, "#INVALID")
-        } else {
-            write!(f, "#{}", self.0 - 1)
+    #[derive(Pod, Zeroable, Copy, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    #[repr(transparent)]
+    // 0 is an invalid sequence number, used to represent 'not a number'
+    pub struct SequenceNr(u32);
+    impl Display for SequenceNr {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            if self.0 == 0 {
+                write!(f, "#INVALID")
+            } else {
+                write!(f, "#{}", self.0 - 1)
+            }
         }
     }
-}
-impl Debug for SequenceNr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if self.0 == 0 {
-            write!(f, "#INVALID")
-        } else {
-            write!(f, "#{}", self.0 - 1)
+    impl Debug for SequenceNr {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            if self.0 == 0 {
+                write!(f, "#INVALID")
+            } else {
+                write!(f, "#{}", self.0 - 1)
+            }
         }
     }
+
+    impl SequenceNr {
+        pub const INVALID: SequenceNr = SequenceNr(0);
+        pub fn is_invalid(self) -> bool {
+            self.0 == 0
+        }
+        pub fn is_valid(self) -> bool {
+            self.0 != 0
+        }
+        pub fn successor(self) -> SequenceNr {
+            SequenceNr(self.0 + 1)
+        }
+        pub fn from_index(index: usize) -> SequenceNr {
+            if index >= (u32::MAX - 1) as usize {
+                panic!("More than 2^32 elements created. Not supported by noatun");
+            }
+            SequenceNr(index as u32 + 1)
+        }
+        pub fn index(self) -> usize {
+            if self.0 == 0 {
+                panic!("0 SequenceNr does not have an index")
+            }
+            self.0 as usize - 1
+        }
+        pub fn try_index(self) -> Option<usize> {
+            if self.0 == 0 {
+                return None;
+            }
+            Some(self.0 as usize - 1)
+        }
+    }
+
 }
 
-impl SequenceNr {
-    pub const INVALID: SequenceNr = SequenceNr(0);
-    pub fn is_invalid(self) -> bool {
-        self.0 == 0
-    }
-    pub fn is_valid(self) -> bool {
-        self.0 != 0
-    }
-    pub fn successor(self) -> SequenceNr {
-        SequenceNr(self.0 + 1)
-    }
-    pub fn from_index(index: usize) -> SequenceNr {
-        if index >= (u32::MAX - 1) as usize {
-            panic!("More than 2^32 elements created. Not supported by noatun");
-        }
-        SequenceNr(index as u32 + 1)
-    }
-    pub fn index(self) -> usize {
-        if self.0 == 0 {
-            panic!("0 SequenceNr does not have an index")
-        }
-        self.0 as usize - 1
-    }
-    pub fn try_index(self) -> Option<usize> {
-        if self.0 == 0 {
-            return None;
-        }
-        Some(self.0 as usize - 1)
-    }
-}
 
 pub trait Message: Debug {
     type Root: Object;
@@ -334,12 +340,13 @@ mod update_tail_tracker {
 mod projector {
     use crate::disk_abstraction::Disk;
     use crate::message_store::OnDiskMessageStore;
-    use crate::{Application, Database, DatabaseContext, Message, MessageId, SequenceNr, Target};
+    use crate::{Application, Database, DatabaseContext, Message, MessageId, Target};
     use anyhow::Result;
     use std::marker::PhantomData;
     use std::time::{Duration, SystemTime};
     use chrono::{DateTime, Utc};
     use crate::disk_access::FileAccessor;
+    use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
 
     pub(crate) struct Projector<APP: Application> {
@@ -659,12 +666,13 @@ impl<T: FixedSizeObject> Object for [T] {
 }
 
 pub mod data_types {
-    use crate::{Database, DatabaseContext, FatPtr, FixedSizeObject, Object, Pointer, SequenceNr, ThinPtr};
+    use crate::{Database, DatabaseContext, FatPtr, FixedSizeObject, Object, Pointer, ThinPtr};
     use bytemuck::{Pod, Zeroable};
     use std::marker::PhantomData;
     use std::mem::transmute_copy;
     use std::ops::{Deref, Range};
     use sha2::digest::typenum::Zero;
+    use crate::sequence_nr::SequenceNr;
 
     #[derive(Copy, Clone)]
     #[repr(C)]
@@ -792,7 +800,11 @@ pub mod data_types {
     unsafe impl<T> Pod for RawDatabaseVec<T> where T: 'static {}
 
     impl<T:'static> RawDatabaseVec<T> {
-        fn realloc_add(&mut self, ctx: &DatabaseContext, new_capacity: usize) {
+        fn realloc_add(&mut self, ctx: &DatabaseContext, new_capacity: usize, new_len: usize) {
+            debug_assert!(new_capacity >= new_len);
+            debug_assert!(new_capacity >= self.capacity);
+            debug_assert!(new_len >= self.length);
+
             let dest = ctx.allocate_raw(new_capacity * size_of::<T>(), align_of::<T>());
             let dest_index = ctx.index_of_ptr(dest);
 
@@ -801,27 +813,27 @@ pub mod data_types {
                 ctx.copy(old_ptr, dest_index.0);
             }
 
-            let new_len = self.length + 1;
+            let new_len = new_len;
 
             ctx.write_pod(
-                DatabaseVec {
+                RawDatabaseVec {
                     length: new_len,
                     capacity: new_capacity,
                     data: dest_index.0,
-                    length_registrar: SequenceNr::default(),
                     phantom_data: Default::default(),
                 },
                 self,
             )
         }
         pub fn grow(&mut self, ctx: &DatabaseContext, new_length: usize) {
-            if new_length < self.length {
+            if new_length <= self.length {
                 return;
             }
-            if self.capacity < self.length {
-                self.realloc_add(ctx, 2*new_length);
+            if self.capacity < new_length {
+                self.realloc_add(ctx, 2*new_length, new_length);
+            } else {
+                ctx.write_pod(new_length, &mut self.length);
             }
-            self.length = new_length;
         }
         #[allow(clippy::mut_from_ref)]
         pub fn new(ctx: &DatabaseContext) -> &mut DatabaseVec<T> {
@@ -856,7 +868,7 @@ pub mod data_types {
             let offset = self.data + index * size_of::<T>();
             unsafe { ctx.access_pod(ThinPtr(offset)) }
         }
-        pub(crate) fn get_mut_internal(&self, ctx: &mut DatabaseContext, index: usize) -> &mut T {
+        pub(crate) fn get_mut_internal(&self, ctx: &DatabaseContext, index: usize) -> &mut T {
             let offset = self.data + index * size_of::<T>();
             let t = unsafe { ctx.access_pod_mut(ThinPtr(offset)) };
             t
@@ -869,7 +881,7 @@ pub mod data_types {
         }
         pub(crate) fn push_internal<'a>(&'a mut self, ctx: &DatabaseContext, t: T) -> ThinPtr where T:Pod{
             if self.length >= self.capacity {
-                self.realloc_add(ctx, (self.capacity + 1) * 2);
+                self.realloc_add(ctx, (self.capacity + 1) * 2, self.length + 1);
             } else {
                 ctx.write_pod(self.length + 1, &mut self.length);
             }
@@ -915,7 +927,10 @@ pub mod data_types {
     unsafe impl<T> Pod for DatabaseVec<T> where T: 'static {}
 
     impl<T:'static> DatabaseVec<T> {
-        fn realloc_add(&mut self, ctx: &mut DatabaseContext, new_capacity: usize) {
+        fn realloc_add(&mut self, ctx: &mut DatabaseContext, new_capacity: usize, new_len: usize) {
+            debug_assert!(new_capacity >= new_len);
+            debug_assert!(new_capacity >= self.capacity);
+            debug_assert!(new_len >= self.length);
             let dest = ctx.allocate_raw(new_capacity * size_of::<T>(), align_of::<T>());
             let dest_index = ctx.index_of_ptr(dest);
 
@@ -923,8 +938,6 @@ pub mod data_types {
                 let old_ptr = FatPtr::from(self.data, size_of::<T>() * self.length);
                 ctx.copy(old_ptr, dest_index.0);
             }
-
-            let new_len = self.length + 1;
 
             ctx.write_pod(
                 DatabaseVec {
@@ -963,7 +976,8 @@ pub mod data_types {
         pub(crate) fn write(&mut self, ctx: &mut DatabaseContext, index: usize, val: T) {
             let offset = self.data + index * size_of::<T>();
             unsafe {
-                ctx.write_pod(val, T::access_mut(ctx, ThinPtr(offset)));
+                let dest = T::access_mut(ctx, ThinPtr(offset));
+                ctx.write_pod(val, dest);
             };
         }
 
@@ -973,7 +987,7 @@ pub mod data_types {
         }
         pub fn push<'a>(&'a mut self, ctx: &mut DatabaseContext, t: T) {
             if self.length >= self.capacity {
-                self.realloc_add(ctx, (self.capacity + 1) * 2);
+                self.realloc_add(ctx, (self.capacity + 1) * 2, self.length + 1);
             } else {
                 ctx.write_pod(self.length + 1, &mut self.length);
             }
@@ -1113,12 +1127,13 @@ impl Target {
 pub mod database {
     use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
     use crate::projector::Projector;
-    use crate::{Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Object, Pointer, SequenceNr, Target, MessageId, MessageComponent, Message};
+    use crate::{Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Object, Pointer, Target, MessageId, MessageComponent, Message};
     use anyhow::{Context, Result};
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};
     use chrono::{DateTime, Utc};
     use crate::disk_access::FileAccessor;
+    use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
 
     pub struct Database<Base: Application> {
@@ -1159,7 +1174,7 @@ pub mod database {
         }
 
         pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
-            self.time_override.unwrap_or(Utc::now())
+            self.time_override.unwrap_or_else(||Utc::now())
         }
 
         pub(crate) fn with_root_mut<R>(
@@ -1323,7 +1338,7 @@ pub mod database {
                 .context("creating database in memory")?;
             let mut message_store = Projector::new(&mut disk, &target, max_size, cutoff_interval)?;
 
-            Self::recover(&mut app, &mut ctx, &mut message_store, mock_time.unwrap_or(Utc::now()))?;
+            Self::recover(&mut app, &mut ctx, &mut message_store, mock_time.unwrap_or_else(||Utc::now()))?;
             ctx.mark_clean()?;
 
             Ok(Database {
@@ -1512,6 +1527,7 @@ pub mod distributor {
 
 #[cfg(test)]
 mod tests {
+    use crate::sequence_nr::SequenceNr;
     use super::*;
     use crate::disk_access::FileAccessor;
     use crate::projection_store::{MainDbAuxHeader, MainDbHeader};
@@ -1792,7 +1808,7 @@ mod tests {
     #[test]
     fn test_msg_store_inmem_miri() {
         let mut db: Database<CounterApplication> =
-            Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), None).unwrap();
+            Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
 
         db.append_single(CounterMessage {
             parent: None,
@@ -1957,7 +1973,7 @@ mod tests {
         }
 
         let mut db: Database<HandleApplication> =
-            Database::create_in_memory(HandleApplication, 1000, Duration::from_secs(1000), None).unwrap();
+            Database::create_in_memory(HandleApplication, 1000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
@@ -1980,7 +1996,7 @@ mod tests {
         }
 
         let mut db: Database<HandleApplication> =
-            Database::create_in_memory(HandleApplication, 1000, Duration::from_secs(1000), None).unwrap();
+            Database::create_in_memory(HandleApplication, 1000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
@@ -2051,7 +2067,7 @@ mod tests {
         }
 
         let mut db: Database<CounterVecApplication> =
-            Database::create_in_memory(CounterVecApplication, 10000, Duration::from_secs(1000), None).unwrap();
+            Database::create_in_memory(CounterVecApplication, 10000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
         db.with_root_mut(|counter_vec, context| {
             assert_eq!(counter_vec.len(context), 0);
 
@@ -2087,10 +2103,6 @@ mod tests {
             fn initialize_root(ctx: &mut DatabaseContext) -> ThinPtr {
                 let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new(ctx);
                 let index = ctx.index_of(obj);
-
-                // This assert might not hold in the future, if we redesign things.
-                // It's a bit white-box, consider removing.
-                assert_eq!(index.start(), size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>());
                 index
             }
 

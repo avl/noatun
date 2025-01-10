@@ -1,12 +1,13 @@
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
-use crate::{MessageId, SequenceNr, Target};
+use crate::{MessageId, Target};
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
 use std::io::{Seek, SeekFrom, Write};
+use crate::sequence_nr::SequenceNr;
 
 #[derive(Debug)]
 pub enum UndoLogEntry<'a> {

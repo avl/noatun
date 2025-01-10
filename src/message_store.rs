@@ -1,7 +1,7 @@
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::sha2_helper::sha2;
-use crate::{Database, Message, MessageId, SequenceNr, Target};
+use crate::{Database, Message, MessageId, Target};
 use anyhow::{Context, Result, anyhow, bail};
 use bytemuck::{Pod, Zeroable};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -15,6 +15,7 @@ use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::{MaybeUninit, offset_of};
 use std::path::Path;
+use crate::sequence_nr::SequenceNr;
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 #[repr(transparent)]

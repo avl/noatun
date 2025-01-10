@@ -5,6 +5,7 @@ use noatun::{Application, DatabaseContext, Message, MessageId, PodObject, ThinPt
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::time::Duration;
+use datetime_literal::datetime;
 
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
@@ -76,7 +77,7 @@ impl Application for CounterApplication {
 #[test]
 fn test_counter_object_miri() {
     let mut db: Database<CounterApplication> =
-        Database::create_in_memory(CounterApplication, 10_000, Duration::from_secs(1000), None).unwrap();
+        Database::create_in_memory(CounterApplication, 10_000, Duration::from_secs(1000), Some(datetime!(2023-01-01 Z))).unwrap();
 
     db.append_single(CounterMessage {
         id: 2,
