@@ -790,7 +790,7 @@ circumstances:
         let mut deleted = Vec::new();
         let mut parent_lists = Bump::new();
 
-        println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
+        //println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
         'outer: for msg in unused_messages.iter().rev() {
 
             if msg.opaque {

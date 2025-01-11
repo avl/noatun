@@ -140,7 +140,6 @@ impl MessageId {
     }
     pub fn timestamp(&self) -> u64 {
         let restes = ((self.data[0] as u64) ) + (((self.data[1]&0xffff) as u64) << 32) as u64;
-        println!("restest: {:x?}", restes);
         restes
     }
     pub fn from_parts(time: DateTime<Utc>, random: [u8;10]) -> Result<MessageId> {
@@ -149,7 +148,6 @@ impl MessageId {
         if t >= 1<<48 {
             bail!("Time value is too large");
         }
-        println!("t: {:x?}", t);
         let mut data = [0u8;16];
         data[0..6].copy_from_slice(&t.to_le_bytes()[0..6]);
         data[6..16].copy_from_slice(&random);
@@ -357,7 +355,7 @@ mod update_tail_tracker {
 
 mod projector {
     use crate::disk_abstraction::Disk;
-    use crate::message_store::OnDiskMessageStore;
+    use crate::message_store::{IndexEntry, OnDiskMessageStore};
     use crate::{Application, Database, DatabaseContext, Message, MessageId, Target};
     use anyhow::Result;
     use std::marker::PhantomData;
@@ -398,6 +396,9 @@ mod projector {
             self.messages.recover(
                                   |id,parents|self.head_tracker.add_new_update_head(id,parents)
             )
+        }
+        pub fn get_all_message_ids(&self) -> Result<&[IndexEntry]> {
+            self.messages.get_all_message_ids()
         }
 
         pub(crate) fn new<D: Disk>(
@@ -1181,6 +1182,7 @@ pub mod database {
     use std::time::{Duration, SystemTime};
     use chrono::{DateTime, Utc};
     use crate::disk_access::FileAccessor;
+    use crate::message_store::IndexEntry;
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
 
@@ -1212,6 +1214,10 @@ pub mod database {
 
         pub(crate) fn get_update_heads(&self) -> &[MessageId] {
             self.message_store.get_update_heads()
+        }
+
+        pub fn get_all_message_ids(&self) -> Result<&[IndexEntry]> {
+            self.message_store.get_all_message_ids()
         }
 
         pub fn get_root(&self) -> (&APP::Root, &DatabaseContext) {
@@ -2212,7 +2218,7 @@ mod tests {
         use std::time::Duration;
         use datetime_literal::datetime;
         use crate::{Database, MessageId};
-        use crate::distributor::Distributor;
+        use crate::distributor::{Distributor, DistributorMessage};
         use crate::tests::{CounterApplication, CounterMessage};
 
         fn create_app(id: u64) -> Database<CounterApplication> {
@@ -2231,7 +2237,7 @@ mod tests {
 
         #[test]
         fn test_distributor() {
-            let app1 = create_app(1);
+            let mut app1 = create_app(1);
             let mut app2 = create_app(2);
 
             let dist1 = crate::distributor::Distributor {};
@@ -2239,9 +2245,37 @@ mod tests {
 
             let msg1 = dist1.get_periodic_message(&app1);
 
-            let result = dist2.receive_message(&mut app2, msg1).unwrap();
+            compile_error!("Evolve the distributor! Test edge-cases. Automate tests. Chaos!")
+
+            println!("dist1 sent: {:?}", msg1);
+            let mut result = dist2.receive_message(&mut app2, msg1).unwrap();
+
+            println!("dist2 sent: {:?}", result);
 
             insta::assert_debug_snapshot!(result);
+            assert_eq!(result.len(), 1);
+
+            let mut result = dist1.receive_message(&mut app1, result.pop().unwrap()).unwrap();
+            println!("dist1 sent: {:?}", result);
+            insta::assert_debug_snapshot!(result);
+            assert_eq!(result.len(), 1);
+
+            let mut result = dist2.receive_message(&mut app2, result.pop().unwrap()).unwrap();
+            println!("dist2 sent: {:?}", result);
+            insta::assert_debug_snapshot!(result);
+
+            let mut result = dist1.receive_message(&mut app1, result.pop().unwrap()).unwrap();
+            println!("dist1 sent: {:?}", result);
+            assert!(matches!(&result[0], DistributorMessage::Message(_)));
+            assert_eq!(result.len(), 1);
+
+            let mut result = dist2.receive_message(&mut app2, result.pop().unwrap()).unwrap();
+            println!("App2 all msgs: {:?}", app2.get_all_message_ids().unwrap());
+            println!("App2 update heads: {:?}", app2.get_update_heads());
+
+            insta::assert_debug_snapshot!(app2.get_all_message_ids().unwrap());
+            insta::assert_debug_snapshot!(app2.get_update_heads());
+
 
         }
     }

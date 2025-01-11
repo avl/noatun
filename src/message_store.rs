@@ -138,7 +138,7 @@ impl FileOffset {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-struct IndexEntry {
+pub struct IndexEntry {
     message: MessageId,
     /// Offset into the logical file-area, or deletion-marker
     file_offset: FileOffset,
@@ -224,10 +224,15 @@ impl<M> OnDiskMessageStore<M> {
     // message-id + parents
     pub fn get_upstream_of(&self, message_ids: &[MessageId], count: usize) -> Result<impl Iterator<Item=M>> where M:Message {
 
-        assert!(!message_ids.is_empty());
-        assert!(message_ids.is_sorted());
+        debug_assert!(!message_ids.is_empty());
+        debug_assert!(message_ids.is_sorted());
+        #[cfg(debug_assertions)]{
+            // Check no duplicates
+            for window in message_ids.windows(2) {
+                assert_ne!(window[0], window[1]);
+            }
+        }
 
-        let input_message_ids : HashSet<MessageId> = message_ids.iter().cloned().collect();
         let (header, message_index) = self.header_and_index().context("opening index file")?;
         let data_files = &self.data_files;
 
@@ -237,7 +242,7 @@ impl<M> OnDiskMessageStore<M> {
         for message_id in message_ids.iter().rev() {
             breadth.insert(*message_id);
             if let Ok(cand) = message_index.binary_search_by_key(message_ids.last().unwrap(), |x| x.message) {
-                index = cand+1;
+                index = index.max(cand+1);
                 break;
             }
         }
@@ -258,11 +263,7 @@ impl<M> OnDiskMessageStore<M> {
                     };
 
                     breadth.extend(msg.parents());
-                    if input_message_ids.contains(&msg.id()) {
-                        (None, false)
-                    } else {
-                        (Some(msg), false)
-                    }
+                    (Some(msg), false)
                 } else {
                     (None, breadth.is_empty())
                 }
@@ -619,6 +620,10 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
+    pub fn get_all_message_ids(&self) -> Result<&[IndexEntry]> {
+        let (_header, message_index) = self.header_and_index().context("opening index file")?;
+        Ok(message_index)
+    }
 
     /// Delete any message with the given index. Idempotent, does nothing if index is already
     /// deleted or does not exist.
