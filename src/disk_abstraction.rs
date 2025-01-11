@@ -18,9 +18,6 @@ use std::slice;
 use std::sync::{Arc, MutexGuard};
 /* TODO
 
-1: Verify the new backend (message_store)
-
-2: Verify the actual main orchestration logic
 
 4: Add more tests, hammer it with chaos!
 

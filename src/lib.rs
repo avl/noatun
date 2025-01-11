@@ -82,7 +82,7 @@ impl Display for MessageId {
             f,
             "{:?}-{:x}-{:x}-{:x}",
             time_str,
-            self.data[1] & 0xffff,
+            (self.data[1] & 0xffff0000)>>16,
             self.data[2],
             self.data[3]
         )
@@ -91,18 +91,24 @@ impl Display for MessageId {
 
 impl Debug for MessageId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "#{:x}_{:x}_{:x}",
-            self.data[0], self.data[1], self.data[2]
-        )
+        if cfg!(test) && self.data[0] == 0 {
+            write!(
+                f,
+                "#{:x}_{:x}_{:x}",
+                self.data[0], self.data[1], self.data[2]
+            )
+        } else {
+            write!(
+                f,
+                "{}",
+                self
+            )
+        }
     }
 }
 
 impl MessageId {
-    pub fn timestamp(&self) -> u64 {
-        ((self.data[0] as u64) << 16) + ((self.data[1]) >> 16) as u64
-    }
+
     pub fn min(self, other: MessageId) -> MessageId {
         if self < other { self } else { other }
     }
@@ -117,7 +123,7 @@ impl MessageId {
     /// Create an artificial MessageId, mostly useful for tests and possibly debugging.
     pub fn new_debug(nr: u32) -> Self {
         Self {
-            data: [nr, 0, 0, 0],
+            data: [0, 0, 0, nr],
         }
     }
 
@@ -126,15 +132,26 @@ impl MessageId {
         rand::thread_rng().fill_bytes(&mut random_part);
         Self::from_parts(time, random_part)
     }
+    pub fn from_parts_for_test(time: DateTime<Utc>, random: u64) -> MessageId {
+        let mut data = [0u8;10];
+        data[2..10].copy_from_slice(&random.to_le_bytes());
 
+        Self::from_parts(time, data).unwrap()
+    }
+    pub fn timestamp(&self) -> u64 {
+        let restes = ((self.data[0] as u64) ) + (((self.data[1]&0xffff) as u64) << 32) as u64;
+        println!("restest: {:x?}", restes);
+        restes
+    }
     pub fn from_parts(time: DateTime<Utc>, random: [u8;10]) -> Result<MessageId> {
         let t:u64 = time.timestamp_millis()
             .try_into().context("Time value is out of range. Value must be ")?;
         if t >= 1<<48 {
             bail!("Time value is too large");
         }
+        println!("t: {:x?}", t);
         let mut data = [0u8;16];
-        data[0..6].copy_from_slice(&t.to_le_bytes()[2..8]);
+        data[0..6].copy_from_slice(&t.to_le_bytes()[0..6]);
         data[6..16].copy_from_slice(&random);
 
         Ok(MessageId{
@@ -297,6 +314,7 @@ mod update_head_tracker {
     }
 }
 
+// TODO: Do we need this?
 mod update_tail_tracker {
     use crate::disk_abstraction::Disk;
     use crate::disk_access::FileAccessor;
@@ -470,6 +488,8 @@ mod projector {
 
             let cur_seqnr = context.next_seqnr();
 
+            context.clear_unused_tracking();
+
 
             let first_run = self
                 .messages
@@ -632,6 +652,12 @@ impl Pointer for ThinPtr {
     }
 }
 
+impl ThinPtr {
+    pub fn null()  -> ThinPtr {
+        ThinPtr(0)
+    }
+}
+
 impl Pointer for FatPtr {
     fn start(self) -> usize {
         self.start
@@ -666,11 +692,12 @@ impl<T: FixedSizeObject> Object for [T] {
 }
 
 pub mod data_types {
+    use std::fmt::{Debug, Formatter};
     use crate::{Database, DatabaseContext, FatPtr, FixedSizeObject, Object, Pointer, ThinPtr};
     use bytemuck::{Pod, Zeroable};
     use std::marker::PhantomData;
     use std::mem::transmute_copy;
-    use std::ops::{Deref, Range};
+    use std::ops::{Deref, Index, Range};
     use sha2::digest::typenum::Zero;
     use crate::sequence_nr::SequenceNr;
 
@@ -781,6 +808,7 @@ pub mod data_types {
         }
     }
     #[repr(C)]
+
     pub struct RawDatabaseVec<T> {
         length: usize,
         capacity: usize,
@@ -791,12 +819,28 @@ pub mod data_types {
 
     impl<T> Copy for RawDatabaseVec<T> {}
 
+    impl<T> Default for RawDatabaseVec<T> {
+        fn default() -> Self {
+            Self {
+                length: 0,
+                capacity: 0,
+                data: 0,
+                phantom_data: Default::default(),
+            }
+        }
+    }
+
     impl<T> Clone for RawDatabaseVec<T> {
         fn clone(&self) -> Self {
             *self
         }
     }
 
+    impl<T> Debug for RawDatabaseVec<T> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "RawDatabaseVec({})", self.length)
+        }
+    }
     unsafe impl<T> Pod for RawDatabaseVec<T> where T: 'static {}
 
     impl<T:'static> RawDatabaseVec<T> {
@@ -825,6 +869,9 @@ pub mod data_types {
                 self,
             )
         }
+        pub fn len(&self) -> usize {
+            self.length
+        }
         pub fn grow(&mut self, ctx: &DatabaseContext, new_length: usize) {
             if new_length <= self.length {
                 return;
@@ -851,9 +898,6 @@ pub mod data_types {
             let offset = self.data;
             unsafe { context.access_slice_at_mut(offset, self.length) }
         }
-        pub(crate) fn len(&self) -> usize {
-            self.length
-        }
         pub(crate) fn get_full_slice(&self, context: &DatabaseContext) -> &[T] {
             let offset = self.data;
             unsafe { context.access_slice_at(offset, self.length) }
@@ -864,29 +908,31 @@ pub mod data_types {
 
             unsafe { context.access_slice_at_mut(offset, len) }
         }
-        pub(crate) fn get_internal(&self, ctx: &DatabaseContext, index: usize) -> &T {
+        pub(crate) fn get(&self, ctx: &DatabaseContext, index: usize) -> &T {
+            assert!(index < self.length);
             let offset = self.data + index * size_of::<T>();
             unsafe { ctx.access_pod(ThinPtr(offset)) }
         }
-        pub(crate) fn get_mut_internal(&self, ctx: &DatabaseContext, index: usize) -> &mut T {
+        pub(crate) fn get_mut(&self, ctx: &DatabaseContext, index: usize) -> &mut T {
+            assert!(index < self.length);
             let offset = self.data + index * size_of::<T>();
             let t = unsafe { ctx.access_pod_mut(ThinPtr(offset)) };
             t
         }
-        pub(crate) fn write_internal(&mut self, ctx: &DatabaseContext, index: usize, val: T) {
+        pub(crate) fn write_untracked(&mut self, ctx: &DatabaseContext, index: usize, val: T) {
             let offset = self.data + index * size_of::<T>();
             unsafe {
                 ctx.write_pod(val, ctx.access_pod_mut(ThinPtr(offset)));
             };
         }
-        pub(crate) fn push_internal<'a>(&'a mut self, ctx: &DatabaseContext, t: T) -> ThinPtr where T:Pod{
+        pub(crate) fn push_untracked<'a>(&'a mut self, ctx: &DatabaseContext, t: T) -> ThinPtr where T:Pod{
             if self.length >= self.capacity {
                 self.realloc_add(ctx, (self.capacity + 1) * 2, self.length + 1);
             } else {
                 ctx.write_pod(self.length + 1, &mut self.length);
             }
 
-            self.write_internal(ctx, self.length - 1, t);
+            self.write_untracked(ctx, self.length - 1, t);
             let offset = self.data + (self.length - 1) * size_of::<T>();
             ThinPtr(offset)
         }
@@ -965,10 +1011,12 @@ pub mod data_types {
             self.length
         }
         pub fn get(&self, ctx: &DatabaseContext, index: usize) -> &T {
+            assert!(index < self.length);
             let offset = self.data + index * size_of::<T>();
             unsafe { T::access(ctx, ThinPtr(offset)) }
         }
         pub fn get_mut(&mut self, ctx: &mut DatabaseContext, index: usize) -> &mut T {
+            assert!(index < self.length);
             let offset = self.data + index * size_of::<T>();
             let t = unsafe { T::access_mut(ctx, ThinPtr(offset)) };
             t
@@ -1205,7 +1253,6 @@ pub mod database {
             }
 
             self.message_store.rewind(&mut self.context, 0)?;
-            self.context.buggy_clear_registrars();
 
             let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
             let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
@@ -1314,17 +1361,20 @@ pub mod database {
         }
 
         fn set_multi_instance_block() {
-            if MULTI_INSTANCE_BLOCKER.get() {
-                if std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_err() {
-                    panic!(
-                        "Noatun: Multiple active DB-roots in the same thread are not allowed.\
+            #[cfg(not(test))]
+            {
+                if MULTI_INSTANCE_BLOCKER.get() {
+                    if std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_err() {
+                        panic!(
+                            "Noatun: Multiple active DB-roots in the same thread are not allowed.\
                         You can disable this diagnostic by setting env-var NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE.\
                         Note, unsoundness can occur if DatabaseContext from one instance is used by data \
                         for other."
-                    );
+                        );
+                    }
                 }
+                MULTI_INSTANCE_BLOCKER.set(true);
             }
-            MULTI_INSTANCE_BLOCKER.set(true);
         }
 
         /// Create a database residing entirely in memory.
@@ -1445,12 +1495,15 @@ pub mod distributor {
     }
 
     impl Distributor {
-        pub fn get_heads<APP:Application>(&self, database: &Database<APP>) -> DistributorMessage {
+        /// Call this to retrieve a message that should be sent periodically
+        pub fn get_periodic_message<APP:Application>(&self, database: &Database<APP>) -> DistributorMessage {
             DistributorMessage::ReportHeads(
                 database.get_update_heads().into_iter().copied().collect()
             )
         }
 
+        /// Call this with an incoming, received message.
+        /// The return is a set of messages that must be sent as a result of the incoming message.
         pub fn receive_message<APP:Application>(&self, database: &mut Database<APP>, message: DistributorMessage) -> Result<Vec<DistributorMessage>> {
             let mut output = vec![];
             match message {
@@ -1516,11 +1569,8 @@ pub mod distributor {
                     database.append_many(std::iter::once(message), true)?;
                 }
             }
-
             Ok(output)
         }
-
-
     }
 }
 
@@ -1888,7 +1938,7 @@ mod tests {
     }
 
     #[test]
-    fn test_distributor() {
+    fn test_cutoff_handling() {
         let mut db: Database<CounterApplication> =
             Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), None).unwrap();
 
@@ -1916,7 +1966,7 @@ mod tests {
 
         let mut d = distributor::Distributor {};
 
-        println!("Heads: {:?}", d.get_heads(&db));
+        println!("Heads: {:?}", d.get_periodic_message(&db));
 
         let r = d.receive_message(&mut db, DistributorMessage::RequestUpstream {
             query: vec![MessageId::new_debug(0x102)],
@@ -2157,4 +2207,43 @@ mod tests {
             hasher.finalize()
         });
     }
+
+    mod distributor_tests {
+        use std::time::Duration;
+        use datetime_literal::datetime;
+        use crate::{Database, MessageId};
+        use crate::distributor::Distributor;
+        use crate::tests::{CounterApplication, CounterMessage};
+
+        fn create_app(id: u64) -> Database<CounterApplication> {
+            let mut db: Database<CounterApplication> =
+                Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
+            let message_id = MessageId::from_parts_for_test(datetime!(2021-01-01 Z), id);
+            println!("id: {:?} from {}", message_id, id);
+            db.append_single(CounterMessage{
+                id:message_id,
+                parent: None,
+                inc1: 1,
+                set1: 0,
+            }, true);
+            db
+        }
+
+        #[test]
+        fn test_distributor() {
+            let app1 = create_app(1);
+            let mut app2 = create_app(2);
+
+            let dist1 = crate::distributor::Distributor {};
+            let dist2 = crate::distributor::Distributor {};
+
+            let msg1 = dist1.get_periodic_message(&app1);
+
+            let result = dist2.receive_message(&mut app2, msg1).unwrap();
+
+            insta::assert_debug_snapshot!(result);
+
+        }
+    }
+
 }

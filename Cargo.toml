@@ -38,3 +38,4 @@ savefile="0.18"
 savefile-derive = "0.18"
 noatun = { path = ".", features = ["savefile"] }
 datetime_literal = "0.1"
+insta = "1.42"

@@ -18,39 +18,41 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::mem::transmute_copy;
+use std::mem::{offset_of, transmute_copy};
 use std::ops::Range;
 use std::path::Path;
 use std::{iter, slice};
 use std::slice::SliceIndex;
 use crate::data_types::{DatabaseVec, RawDatabaseVec};
 
-use crate::projection_store::registrar_info::{RegistrarInfo, RegistrarTracker, UnusedInfo};
+use crate::projection_store::registrar_info::{RegistrarInfo,  UnusedInfo};
 use crate::sequence_nr::SequenceNr;
 
 mod registrar_info {
     use std::fmt::Debug;
     use bumpalo::Bump;
+    use bytemuck::{Pod, Zeroable};
     use indexmap::IndexMap;
     use crate::disk_abstraction::Disk;
 
-    use crate::{DatabaseContext, Message, Target};
+    use crate::{DatabaseContext, Message, Target, ThinPtr};
     use crate::message_store::OnDiskMessageStore;
     use crate::sequence_nr::SequenceNr;
 
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
+    #[repr(C)]
     pub(crate) struct RegistrarInfo {
         uses: u32,
     }
     impl RegistrarInfo {
         pub fn get_opaque(&self) -> bool {
-            self.uses&0x8000_0000 == 0
+            self.uses & 0x8000_0000 == 0
         }
         pub fn set_non_opaque(&mut self) {
-            self.uses|=0x8000_0000;
+            self.uses |= 0x8000_0000;
         }
         pub fn get_use(&self) -> u32 {
-            self.uses&0x7FFF_FFFF
+            self.uses & 0x7FFF_FFFF
         }
         pub fn increase_use(&mut self) {
             if self.get_use() >= 0x7FFF_FFFF {
@@ -78,167 +80,7 @@ mod registrar_info {
         /// True if the above message only wrote opaque data
         pub opaque: bool,
     }
-
-    #[derive(Debug)]
-    pub(crate) struct RegistrarTracker {
-        //TODO: Move this to mmap-file too!
-        uses: Vec<RegistrarInfo>,
-        /// Messages are added to this list when their
-        /// last registrar_point is overwritten
-        /// Such messages are candidates to be removed, but only if
-        /// no other message (that isn't also to be removed), depend on it.
-        unused_messages: Vec<UnusedInfo>,
-
-        // Mapping from message-id to other messages that have read output
-        // from said message
-    }
-    impl RegistrarTracker {
-        pub(crate) fn new<S: Disk>(disk: &mut S, path: &Target, max_size: usize) -> anyhow::Result<RegistrarTracker> {
-            Ok(RegistrarTracker {
-                uses: vec![],
-                unused_messages: vec![],
-            })
-        }
-
-        pub(crate) fn clear(&mut self) {
-            self.uses.clear();
-            self.unused_messages.clear();
-            //self.message_dependencies.clear();
-        }
-
-        pub(crate) fn finalize_message(&mut self, message_id: SequenceNr) {
-            debug_assert!(message_id.is_valid());
-            if self.uses.len() <= message_id.index() {
-                // This is a bit of a special case. This is a message
-                // that did not actually modify any state at all during its projection.
-                self.unused_messages.push(UnusedInfo {
-                    seq: message_id,
-                    opaque: true,
-                });
-                return;
-            }
-            let track = &self.uses[message_id.index()];
-
-            if track.get_use() == 0 {
-                self.unused_messages.push(UnusedInfo {
-                    seq: message_id,
-                    opaque: track.get_opaque(),
-                });
-            }
-        }
-
-        /*
-    About deletions:
-
-    We can delete messages that no longer have any effect on the state, but only in these
-    circumstances:
-
-     1: Messages that only update OpaqueData
-     2: Messages that have never been transmitted, and upon which no existing message depends
-     3: Messages that are older than MAX_PARTITION_TIME, and have no trace in the state at
-        MAX_PARTITION_TIME, and upon which no message depends
-
-    */
-
-        pub(crate) fn calculate_stale_messages<M: Message + Debug>(
-            &mut self,
-            context: &DatabaseContext,
-            messages: &mut OnDiskMessageStore<M>,
-            is_before_cutoff: bool
-        ) -> anyhow::Result<Vec<SequenceNr>> {
-            self.unused_messages.sort(); //Sort in seq-nr order
-            let mut deleted = Vec::new();
-            let mut parent_lists = Bump::new();
-
-            println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
-            'outer: for msg in self.unused_messages.iter().rev() {
-
-                if msg.opaque {
-                    // This can be deleted
-                } else if !messages.may_have_been_transmitted(msg.seq)? || is_before_cutoff {
-
-                    for observer in context.read_dependency(msg.seq) {
-                        if !deleted.contains(&observer) {
-                            // 'msg' can't be deleted, because it's observed by
-                            // 'observer' - i.e a later message that has not been deleted.
-                            println!(
-                                "Can't delete {:?} because it's observed by {:?}",
-                                msg, observer
-                            );
-                            continue 'outer;
-                        }
-                    }
-                } else {
-                    println!(
-                        "Can't delete {:?}, because we can't know if someone will use its output",
-                        msg
-                    );
-                    continue 'outer;
-                }
-
-
-                println!("Deleting {:?}", msg);
-
-                deleted.push(msg.seq);
-            }
-            self.unused_messages.clear();
-
-            // 'deleted' ends up in reverse seqnr-order
-            // iterate in seq-nr order.
-            let mut parent_remap: IndexMap<SequenceNr, Vec<SequenceNr>> = IndexMap::new();
-            for deleted in deleted.iter().rev() {
-                let mut parent_list = vec![];
-
-                let Some(msg) = messages.read_message_by_index(deleted.index())? else {
-                    panic!("Attempt to delete already-deleted message.");
-                };
-                for parent in msg.parents() {
-                    let parent_index = SequenceNr::from_index(messages.get_index_of(parent)?
-                        .expect("Parent unknown. This is not supported like this - it needs to be cleansed before msg added to store."));
-                    if let Some(remapping) = parent_remap.get(&parent_index) {
-                        parent_list.extend(remapping);
-                    } else {
-                        parent_list.push(parent_index);
-                    }
-                }
-
-                parent_list.sort();
-                parent_list.dedup();
-                parent_remap.insert(*deleted, parent_list);
-            }
-            Ok(deleted)
-        }
-        pub(crate) fn increase_use(&mut self, registrar: SequenceNr) {
-            if self.uses.len() <= registrar.index() {
-                self.uses.resize(registrar.index() + 1, RegistrarInfo::default());
-            }
-            self.uses[registrar.index()].increase_use();
-        }
-        pub(crate) fn set_non_opaque(&mut self, registrar: SequenceNr) {
-            if self.uses.len() <= registrar.index() {
-                self.uses.resize(registrar.index() + 1, RegistrarInfo::default());
-            }
-            self.uses[registrar.index()].set_non_opaque();
-        }
-        pub(crate) fn decrease_use(&mut self, registrar: SequenceNr) {
-            let cur = &mut self.uses[registrar.index()];
-            if cur.get_use() == 0 {
-                panic!("Corrupt use count for sequence nr {:?}", registrar);
-            }
-            cur.decrease_use();
-            if cur.get_use() == 0 {
-                // This is the normal way messages end up in 'unused_messags'
-                self.unused_messages.push(UnusedInfo {
-                    seq: registrar,
-                    opaque: cur.get_opaque(),
-                });
-            }
-        }
-    }
-
 }
-
-
 
 
 
@@ -273,10 +115,15 @@ pub struct MainDbHeader {
     last_boot: [u8; 16],
 }
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-#[repr(C)]pub struct MainDbAuxHeader {
-    deptrack_keys: ThinPtr,
+
+#[derive(Debug, Clone, Copy, Default,Pod, Zeroable)]
+#[repr(C)]
+pub struct MainDbAuxHeader {
+    deptrack_keys: RawDatabaseVec<ThinPtr>,
+    uses: RawDatabaseVec<RegistrarInfo>,
 }
+
+
 
 pub struct DatabaseContext {
     main_db_mmap: FileAccessor,
@@ -287,11 +134,13 @@ pub struct DatabaseContext {
     phantom: PhantomData<*mut ()>,
 
     // The current message being written (or None if not open for writing)
-    registrar_tracker: RefCell<RegistrarTracker>,
+    //registrar_tracker: RefCell<RegistrarTracker>,
+    unused_messages: RefCell<Vec<UnusedInfo>>,
     // The next message expected to be applied.
     // Starts at 0. When a message is being applied, this field
     // will have the seqnr of the message being applied, not the next one.
     //next_seqnr: SequenceNr,
+
 }
 
 // This has been shamelessly lifted from the rust std
@@ -339,10 +188,10 @@ impl DatabaseContext {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
 
-        let aux_header = self.get_aux_header();
-
-        let keys: &mut RawDatabaseVec<ThinPtr> = unsafe { self.access_pod_mut(aux_header.deptrack_keys) };
-
+        // #Safety:
+        // No code holds this reference while calling other code that does.
+        // Generally, it is not long held. DatabaseContext is neither Sync nor Send.
+        let keys = unsafe { self.get_deptrack_keys() };
 
         if observee.index() >= keys.len() {
             keys.grow(self, observee.index()+1);
@@ -353,7 +202,7 @@ impl DatabaseContext {
         //debug_assert_eq!(keys.len(), self.key_capacity);
         //debug_assert_eq!(vals.len(), self.value_capacity);
 
-        let key_place = keys.get_mut_internal(self, observee.index());
+        let key_place = keys.get_mut(self, observee.index());
 
         let mut new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod();
 
@@ -367,11 +216,10 @@ impl DatabaseContext {
 
     }
     fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> {
-        let aux_header = self.get_aux_header();
-        let keys: &RawDatabaseVec<ThinPtr> = unsafe { self.access_pod(aux_header.deptrack_keys) };
+        let keys: &RawDatabaseVec<ThinPtr> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observee.index() < keys.len() {
-            *keys.get_mut_internal(self, observee.index())
+            *keys.get_mut(self, observee.index())
         } else {
             ThinPtr(0)
         };
@@ -391,10 +239,6 @@ impl DatabaseContext {
         let header: &MainDbHeader =
             unsafe { &*(self.main_db_mmap.map_const_ptr() as *const MainDbHeader) };
         header.next_seqnr
-    }
-
-    pub fn buggy_clear_registrars(&mut self) {
-        self.registrar_tracker.borrow_mut().clear();
     }
 
     // We call this 'pointer' here, but 'used_space' in mmap.
@@ -469,27 +313,39 @@ impl DatabaseContext {
         Self::write_initial_header(&mut self.main_db_mmap);
         self.write_initial_aux_header();
         self.undo_log.clear();
-        self.registrar_tracker.borrow_mut().clear();
+        self.unused_messages.borrow_mut().clear();
 
         Ok(())
     }
 
-    pub(crate) fn get_aux_header(&self) -> MainDbAuxHeader {
+    pub fn clear_unused_tracking(&mut self) {
+        self.unused_messages.borrow_mut().clear();
+    }
 
+    pub(crate) fn get_aux_header(&self) -> &MainDbAuxHeader {
         let slice = self.main_db_mmap.map_const_ptr().wrapping_add(size_of::<MainDbHeader>());
         let slice = unsafe { std::slice::from_raw_parts(slice, size_of::<MainDbAuxHeader>()) };
         let aux_header: &MainDbAuxHeader =
             bytemuck::from_bytes(slice);
-        *aux_header
+        aux_header
+    }
+    unsafe fn get_deptrack_keys<'a>(&self) -> &'a mut RawDatabaseVec<ThinPtr> {
+        unsafe { &mut *(self.main_db_mmap.map_mut_ptr()
+            .wrapping_add(size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, deptrack_keys))
+            as *mut RawDatabaseVec<ThinPtr>) }
+    }
+    unsafe fn get_uses<'a>(&self) -> &'a mut RawDatabaseVec<RegistrarInfo> {
+        unsafe { &mut *(self.main_db_mmap.map_mut_ptr()
+            .wrapping_add(size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, uses))
+            as *mut RawDatabaseVec<RegistrarInfo>) }
     }
 
+
     pub(crate) fn write_initial_aux_header(&mut self) {
-        let deptrack_keys = self.index_of_sized(RawDatabaseVec::<ThinPtr>::new(self));
         let aux_header: &mut MainDbAuxHeader =
             bytemuck::from_bytes_mut(&mut self.main_db_mmap.map_mut()[size_of::<MainDbHeader>()..size_of::<MainDbHeader>()+size_of::<MainDbAuxHeader>()]);
-
-        aux_header.deptrack_keys =
-            deptrack_keys;
+        *aux_header = MainDbAuxHeader::default();
+        assert!(self.pointer() >= size_of::<MainDbHeader>()+size_of::<MainDbAuxHeader>());
     }
 
     fn write_initial_header(mmap: &mut FileAccessor) {
@@ -540,7 +396,7 @@ impl DatabaseContext {
             root_index: None,
             undo_log: UndoLog::new(s, name, max_size)?,
             phantom: Default::default(),
-            registrar_tracker: RefCell::new(RegistrarTracker::new(s, name, max_size)?),
+            unused_messages: RefCell::new(Vec::default()),
         };
         // TODO: It's a bit of a code smell that at this precise point in th execution,
         // a DatabaseContext exists, but it's not actually fully initialized until we write the
@@ -838,7 +694,7 @@ impl DatabaseContext {
 
     /// Call after writing a message.
     pub fn finalize_message(&mut self, seqnr: SequenceNr) {
-        self.registrar_tracker.borrow_mut().finalize_message(seqnr);
+        self.rt_finalize_message(seqnr);
     }
     /// Call after a complete update, i.e, applying multiple messages
     /// Returns all messages that can now be removed.
@@ -848,24 +704,21 @@ impl DatabaseContext {
         is_before_cutoff: bool
     ) -> Result<Vec<SequenceNr>> {
         Ok(self
-            .registrar_tracker
-            .borrow_mut()
-            .calculate_stale_messages(self, message_store, is_before_cutoff)?
+            .rt_calculate_stale_messages(message_store, is_before_cutoff)?
             .into_iter()
             .collect())
     }
 
     pub fn update_registrar(&self, registrar_point: &mut SequenceNr, opaque: bool) {
-        let mut track = self.registrar_tracker.borrow_mut();
         if registrar_point.is_valid() {
-            track.decrease_use(*registrar_point);
+            self.rt_decrease_use(*registrar_point);
         }
         let current_registrar = self.next_seqnr();
         if !opaque {
-            track.set_non_opaque(current_registrar);
+            self.rt_set_non_opaque(current_registrar);
         }
-        track.increase_use(current_registrar);
-        drop(track);
+        self.rt_increase_use(current_registrar);
+
         self.write_pod(current_registrar, registrar_point)
     }
 
@@ -881,6 +734,147 @@ impl DatabaseContext {
         let observer = self.next_seqnr();
         if observer != observee {
             self.record_dependency(observee, observer);
+        }
+    }
+
+
+    pub(crate) fn rt_finalize_message(&self, message_id: SequenceNr) {
+        debug_assert!(message_id.is_valid());
+        let aux_header = self.get_aux_header();
+        let mut unused_messages = self.unused_messages.borrow_mut();
+
+        // #SAFETY
+        // We only hold this for this method, and we call no other code that
+        // uses the same memory. So does all other users of 'get_uses'.
+        let uses = unsafe { self.get_uses() };
+
+        if uses.len() <= message_id.index() {
+            // This is a bit of a special case. This is a message
+            // that did not actually modify any state at all during its projection.
+            unused_messages.push(UnusedInfo {
+                seq: message_id,
+                opaque: true,
+            });
+            return;
+        }
+        let track = uses.get(self, message_id.index());
+
+        if track.get_use() == 0 {
+            unused_messages.push(UnusedInfo {
+                seq: message_id,
+                opaque: track.get_opaque(),
+            });
+        }
+    }
+
+    /*
+About deletions:
+
+We can delete messages that no longer have any effect on the state, but only in these
+circumstances:
+
+ 1: Messages that only update OpaqueData
+ 2: Messages that have never been transmitted, and upon which no existing message depends
+ 3: Messages that are older than MAX_PARTITION_TIME, and have no trace in the state at
+    MAX_PARTITION_TIME, and upon which no message depends
+
+*/
+
+    pub(crate) fn rt_calculate_stale_messages<M: Message + Debug>(
+        &mut self,
+        messages: &mut OnDiskMessageStore<M>,
+        is_before_cutoff: bool
+    ) -> anyhow::Result<Vec<SequenceNr>> {
+        let mut unused_messages = self.unused_messages.borrow_mut();
+        unused_messages.sort(); //Sort in seq-nr order
+        let mut deleted = Vec::new();
+        let mut parent_lists = Bump::new();
+
+        println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
+        'outer: for msg in unused_messages.iter().rev() {
+
+            if msg.opaque {
+                // This can be deleted
+            } else if !messages.may_have_been_transmitted(msg.seq)? || is_before_cutoff {
+
+                for observer in self.read_dependency(msg.seq) {
+                    if !deleted.contains(&observer) {
+                        // 'msg' can't be deleted, because it's observed by
+                        // 'observer' - i.e a later message that has not been deleted.
+                        println!(
+                            "Can't delete {:?} because it's observed by {:?}",
+                            msg, observer
+                        );
+                        continue 'outer;
+                    }
+                }
+            } else {
+                println!(
+                    "Can't delete {:?}, because we can't know if someone will use its output",
+                    msg
+                );
+                continue 'outer;
+            }
+
+
+            println!("Deleting {:?}", msg);
+
+            deleted.push(msg.seq);
+        }
+        unused_messages.clear();
+
+        // 'deleted' ends up in reverse seqnr-order
+        // iterate in seq-nr order.
+        let mut parent_remap: IndexMap<SequenceNr, Vec<SequenceNr>> = IndexMap::new();
+        for deleted in deleted.iter().rev() {
+            let mut parent_list = vec![];
+
+            let Some(msg) = messages.read_message_by_index(deleted.index())? else {
+                panic!("Attempt to delete already-deleted message.");
+            };
+            for parent in msg.parents() {
+                let parent_index = SequenceNr::from_index(messages.get_index_of(parent)?
+                    .expect("Parent unknown. This is not supported like this - it needs to be cleansed before msg added to store."));
+                if let Some(remapping) = parent_remap.get(&parent_index) {
+                    parent_list.extend(remapping);
+                } else {
+                    parent_list.push(parent_index);
+                }
+            }
+
+            parent_list.sort();
+            parent_list.dedup();
+            parent_remap.insert(*deleted, parent_list);
+        }
+        Ok(deleted)
+    }
+    pub(crate) fn rt_increase_use(&self, registrar: SequenceNr) {
+        let uses = unsafe { self.get_uses() };
+        if uses.len() <= registrar.index() {
+            uses.grow(self, registrar.index() + 1);
+        }
+        uses.get_mut(self,registrar.index()).increase_use();
+    }
+    pub(crate) fn rt_set_non_opaque(&self, registrar: SequenceNr) {
+        let uses = unsafe { self.get_uses() };
+        if uses.len() <= registrar.index() {
+            uses.grow(self, registrar.index() + 1);
+        }
+        uses.get_mut(self, registrar.index()).set_non_opaque();
+    }
+    pub(crate) fn rt_decrease_use(&self, registrar: SequenceNr) {
+        let uses = unsafe { self.get_uses() };
+        let cur = uses.get_mut(self, registrar.index());
+        if cur.get_use() == 0 {
+            panic!("Corrupt use count for sequence nr {:?}", registrar);
+        }
+        cur.decrease_use();
+        if cur.get_use() == 0 {
+            // This is the normal way messages end up in 'unused_messags'
+            self.unused_messages.borrow_mut().push(UnusedInfo {
+                seq: registrar,
+                opaque: cur.get_opaque(),
+            });
         }
     }
 }
