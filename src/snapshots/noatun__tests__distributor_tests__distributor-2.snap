@@ -4,14 +4,11 @@ expression: result
 ---
 [
     UpstreamResponse {
-        query: [
-            "2021-01-01T00:00:00Z"-0-0-0,
-        ],
-        count: 4,
         messages: [
             MessageSubGraphNode {
                 id: "2021-01-01T00:00:00Z"-0-0-0,
                 parents: [],
+                query_count: 4,
             },
         ],
     },

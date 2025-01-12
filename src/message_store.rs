@@ -9,7 +9,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use fs2::FileExt;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -217,12 +217,12 @@ impl<M> OnDiskMessageStore<M> {
     // message-id + parents
     pub fn get_upstream_of(
         &self,
-        message_ids: &[MessageId],
-        count: usize,
-    ) -> Result<impl Iterator<Item = M>>
+        message_ids: impl DoubleEndedIterator<Item=(MessageId,/*query count*/usize)>,
+    ) -> Result<impl Iterator<Item = (M,usize/*query count*/)>>
     where
         M: Message,
     {
+        /*
         debug_assert!(!message_ids.is_empty());
         debug_assert!(message_ids.is_sorted());
         #[cfg(debug_assertions)]
@@ -231,21 +231,34 @@ impl<M> OnDiskMessageStore<M> {
             for window in message_ids.windows(2) {
                 assert_ne!(window[0], window[1]);
             }
-        }
+        }*/
 
         let (header, message_index) = self.header_and_index().context("opening index file")?;
         let data_files = &self.data_files;
 
         let mut index = 0;
 
-        let mut breadth = HashSet::new();
-        for message_id in message_ids.iter().rev() {
-            breadth.insert(*message_id);
-            if let Ok(cand) =
-                message_index.binary_search_by_key(message_ids.last().unwrap(), |x| x.message)
+        let mut breadth = HashMap::new();
+        #[cfg(debug_assertions)]
+        let mut prev = None;
+
+        let mut first = true;
+        for (message_id,count) in message_ids.rev() {
+            #[cfg(debug_assertions)]
             {
-                index = index.max(cand + 1);
-                break;
+                if let Some(prev) = prev {
+                    assert!(prev > message_id); //All unique, all sorted.
+                }
+                prev = Some(message_id);
+            }
+            breadth.insert(message_id, (count/*original count*/, count/*remaining count*/));
+
+            if first{
+                if let Ok(cand) =
+                    message_index.binary_search_by_key(&message_id, |x| x.message)
+                {
+                    index = index.max(cand + 1);
+                }
             }
         }
 
@@ -253,7 +266,7 @@ impl<M> OnDiskMessageStore<M> {
             .iter()
             .rev()
             .map(move |x| {
-                if breadth.remove(&x.message) {
+                if let Some((original_count, remaining_count)) = breadth.remove(&x.message) {
                     if x.file_offset.is_deleted() {
                         return (None, breadth.is_empty());
                     }
@@ -266,15 +279,21 @@ impl<M> OnDiskMessageStore<M> {
                         }
                     };
 
-                    breadth.extend(msg.parents());
-                    (Some(msg), false)
+                    if remaining_count > 0 {
+                        for parent in msg.parents() {
+                            let (entry_orig_count,entry_remaining_count) = breadth.entry(parent).or_insert((0,0));
+                            *entry_orig_count = (*entry_orig_count).max(original_count);
+                            *entry_remaining_count += remaining_count - 1;
+                        }
+                    }
+                    (Some((msg, original_count)), false)
                 } else {
                     (None, breadth.is_empty())
                 }
             })
             .take_while(|(_, done)| !*done)
             .filter_map(|(msg, _)| msg)
-            .take(count))
+            )
     }
 
     fn provide_index_map(

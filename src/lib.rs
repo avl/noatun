@@ -370,10 +370,9 @@ mod projector {
     impl<APP: Application> Projector<APP> {
         pub fn get_upstream_of(
             &self,
-            message_id: &[MessageId],
-            count: usize,
-        ) -> Result<impl Iterator<Item = APP::Message>> {
-            self.messages.get_upstream_of(message_id, count)
+            message_id: impl DoubleEndedIterator<Item=(MessageId, usize)>,
+        ) -> Result<impl Iterator<Item = (APP::Message,/*count*/usize)>> {
+            self.messages.get_upstream_of(message_id)
         }
 
         pub(crate) fn get_update_heads(&self) -> &[MessageId] {
@@ -1218,10 +1217,9 @@ pub mod database {
 
         pub fn get_upstream_of(
             &self,
-            message_id: &[MessageId],
-            count: usize,
-        ) -> Result<impl Iterator<Item = APP::Message>> {
-            self.message_store.get_upstream_of(message_id, count)
+            message_id: impl DoubleEndedIterator<Item=(MessageId, /*query count*/usize)>,
+        ) -> Result<impl Iterator<Item = (APP::Message,/*query count*/usize)>> {
+            self.message_store.get_upstream_of(message_id)
         }
 
         pub fn load_message(&self, message_id: MessageId) -> Result<APP::Message> {
@@ -1492,8 +1490,8 @@ pub mod distributor {
     use indexmap::{IndexMap, IndexSet};
     use libc::send;
     use savefile_derive::Savefile;
-    use std::collections::HashSet;
-
+    use std::collections::{HashMap, HashSet};
+    use std::hash::{Hash, Hasher};
     // Principle
     // The node that is 'most ahead' (highest MessageId) has responsibility.
     // If knows all the heads of other node, just sends perfect updates.
@@ -1505,8 +1503,8 @@ pub mod distributor {
         data: Vec<u8>,
     }
     impl SerializedMessage {
-        pub fn to_message<M: Message>(&self, data: &[u8]) -> Result<M> {
-            M::deserialize(data)
+        pub fn to_message<M: Message>(&self) -> Result<M> {
+            M::deserialize(&self.data)
         }
         pub fn new<M: Message>(m: M) -> Result<SerializedMessage> {
             let mut data = vec![];
@@ -1515,11 +1513,34 @@ pub mod distributor {
         }
     }
 
+    /// NOTE!
+    /// Partial+Eq+Hash for this method _only_ looks at the 'id' field.
+    /// This should logically be enough, since the set of parents should
+    /// be unique for a particular MessageId, at any particular time.
+    /// Note however, that since parents can be deleted, this means
+    /// MessageSubGraphNode instances shouldn't be stored.
     #[derive(Debug, Savefile, Clone)]
     pub struct MessageSubGraphNode {
         id: MessageId,
         parents: Vec<MessageId>,
+        query_count: usize,
     }
+
+    impl PartialEq for MessageSubGraphNode {
+        fn eq(&self, other: &Self) -> bool {
+            self.id == other.id
+        }
+    }
+    impl Eq for MessageSubGraphNode {
+    }
+    impl Hash for MessageSubGraphNode {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.id.hash(state)
+        }
+    }
+
+
+
 
     #[derive(Debug, Savefile, Clone)]
     pub enum DistributorMessage {
@@ -1527,13 +1548,11 @@ pub mod distributor {
         ReportHeads(Vec<MessageId>),
         /// Report a cut in the source node message graph
         RequestUpstream {
-            query: Vec<MessageId>,
-            /// How many levels to ascend from message
-            count: usize,
+            /// the usize is How many levels to ascend from message
+            query: Vec<(MessageId,usize)>,
+
         },
         UpstreamResponse {
-            query: Vec<MessageId>,
-            count: usize,
             messages: Vec<MessageSubGraphNode>,
         },
         /// Command the recipient to send all descendants of the given message
@@ -1543,9 +1562,20 @@ pub mod distributor {
         Message(SerializedMessage),
     }
 
+    struct MergedDistributorMessages {
+        report_heads: IndexSet<MessageId>,
+        requests: IndexMap<MessageId,/*count*/usize>,
+        responses: IndexSet<MessageSubGraphNode>,
+        send_msg_and_descendants: IndexSet<MessageId>,
+        actual_messages: Vec<SerializedMessage>,
+    }
+
     pub struct Distributor {}
 
     impl Distributor {
+
+
+
         /// Call this to retrieve a message that should be sent periodically
         pub fn get_periodic_message<APP: Application>(
             &self,
@@ -1556,97 +1586,144 @@ pub mod distributor {
             )
         }
 
-        /// Call this with an incoming, received message.
-        /// The return is a set of messages that must be sent as a result of the incoming message.
-        pub fn receive_message<APP: Application>(
-            &self,
-            database: &mut Database<APP>,
-            message: DistributorMessage,
-        ) -> Result<Vec<DistributorMessage>> {
-            let mut output = vec![];
-            match message {
-                DistributorMessage::ReportHeads(messages) => {
-                    for message in messages {
-                        if database.contains_message(message)? {
-                            continue;
+        pub fn receive_message<APP: Application>(&mut self,  database: &mut Database<APP>, input: impl Iterator<Item=DistributorMessage>) -> Result<Vec<DistributorMessage>> {
+            let mut accumulated_heads: IndexSet<MessageId> = IndexSet::new();
+            let mut accumulated_upstream_queries = IndexMap::new();
+            let mut accumulated_responses = IndexSet::new();
+            let mut accumulated_send_msg_and_descendants = IndexSet::new();
+            let mut accumulated_serialized = vec![];
+            for item in input {
+                match item {
+                    DistributorMessage::ReportHeads(heads) => {
+                        accumulated_heads.extend(heads);
+                    }
+                    DistributorMessage::RequestUpstream { query } => {
+                        for (msg,count) in query {
+                            let accum_count = accumulated_upstream_queries.entry(msg).or_insert(0usize);
+                            *accum_count = (*accum_count).max(count);
                         }
-                        output.push(DistributorMessage::RequestUpstream {
-                            query: vec![message],
-                            count: 4,
-                        })
                     }
-                }
-                DistributorMessage::RequestUpstream { query, count } => {
-                    let mut response: IndexMap<MessageId, APP::Message> = IndexMap::new();
-                    let messages: Vec<MessageSubGraphNode> = database
-                        .get_upstream_of(&query, count)?
-                        .map(|msg| MessageSubGraphNode {
-                            id: msg.id(),
-                            parents: msg.parents().collect(),
-                        })
-                        .collect();
-                    output.push(DistributorMessage::UpstreamResponse {
-                        query,
-                        count,
-                        messages,
-                    })
-                }
-                DistributorMessage::UpstreamResponse {
-                    query,
-                    count,
-                    messages,
-                } => {
-                    let mut unknowns: HashSet<MessageId> = HashSet::new();
-                    let mut send_cmds = vec![];
-                    for msg in messages {
-                        if database.contains_message(msg.id)? {
-                            continue; //We already have this one
-                        }
-                        let mut err = Ok(());
-                        let have_all_parents = msg.parents.iter().all(|x| {
-                            database
-                                .contains_message(*x)
-                                .map_err(|e| {
-                                    err = Err(e);
-                                })
-                                .is_ok()
-                        });
-                        err?;
-                        if have_all_parents {
-                            // We have all the parents, a perfect msg to request!
-                            send_cmds.push(msg.id);
-                            continue;
-                        }
-                        unknowns.extend(msg.parents);
+                    DistributorMessage::UpstreamResponse { messages } => {
+                        accumulated_responses.extend(messages);
                     }
-                    if send_cmds.is_empty() == false {
-                        output.push(DistributorMessage::SendMessageAndAllDescendants {
-                            message_id: send_cmds,
-                        });
+                    DistributorMessage::SendMessageAndAllDescendants { message_id } => {
+                        accumulated_send_msg_and_descendants.extend(message_id);
                     }
-                    if unknowns.is_empty() == false {
-                        output.push(DistributorMessage::RequestUpstream {
-                            query: unknowns.into_iter().collect(),
-                            count: 2 * count,
-                        });
+                    DistributorMessage::Message(msg) => {
+                        accumulated_serialized.push(msg);
                     }
-                }
-                DistributorMessage::SendMessageAndAllDescendants { message_id } => {
-                    for msg in message_id.iter().map(|x| database.load_message(*x)) {
-                        let msg = msg?;
-                        output.push(DistributorMessage::Message(SerializedMessage::new(msg)?));
-                    }
-                }
-                DistributorMessage::Message(msg) => {
-                    let message = msg.to_message(&msg.data)?;
-
-                    println!("==========================================\nAppend message: {:?}", message);
-                    database.append_many(std::iter::once(message), true)?;
-                    println!("All message ides: {:?}", database.get_all_message_ids());
                 }
             }
+            let mut output = Vec::new();
+
+            self.process_reported_heads(database, accumulated_heads, &mut output);
+            self.process_request_upstream(database, accumulated_upstream_queries, &mut output);
+            self.process_upstream_response(database, accumulated_responses, &mut output);
+            self.process_send_message_all_descendants(database, accumulated_send_msg_and_descendants, &mut output);
+            self.process_received_messages(database, accumulated_serialized, &mut output);
             Ok(output)
         }
+
+        fn process_reported_heads<APP: Application>(&self, database: &mut Database<APP>, accumulated_heads: IndexSet<MessageId>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+            let mut messages_to_request = vec![];
+            for message in accumulated_heads {
+                if database.contains_message(message)? {
+                    continue;
+                }
+                messages_to_request.push((message, 4));
+            }
+            if !messages_to_request.is_empty() {
+                output.push(DistributorMessage::RequestUpstream {
+                    query: messages_to_request,
+                });
+            }
+            Ok(())
+        }
+        fn process_request_upstream<APP: Application>(&self, database: &mut Database<APP>, accumulated_heads: IndexMap<MessageId, usize>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+            let mut response: IndexMap<MessageId, APP::Message> = IndexMap::new();
+            let messages: Vec<MessageSubGraphNode> = database
+                .get_upstream_of(accumulated_heads.into_iter())?
+                .map(|(msg,query_count)| MessageSubGraphNode {
+                    id: msg.id(),
+                    parents: msg.parents().collect(),
+                    query_count,
+                })
+                .collect();
+            if !messages.is_empty() {
+                output.push(DistributorMessage::UpstreamResponse {
+                    messages,
+                });
+            }
+            Ok(())
+        }
+        fn process_upstream_response<APP: Application>(&self, database: &mut Database<APP>, upstream_response: IndexSet<MessageSubGraphNode>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+            let mut unknowns: HashSet<(MessageId, usize)> = HashSet::new();
+            let mut send_cmds = vec![];
+            for msg in upstream_response {
+                if database.contains_message(msg.id)? {
+                    continue; //We already have this one
+                }
+                let mut err = Ok(());
+                let have_all_parents = msg.parents.iter().all(|x| {
+                    database
+                        .contains_message(*x)
+                        .map_err(|e| {
+                            err = Err(e);
+                        })
+                        .is_ok()
+                });
+                err?;
+                if have_all_parents {
+                    // We have all the parents, a perfect msg to request!
+                    send_cmds.push(msg.id);
+                    continue;
+                }
+                unknowns.extend(msg.parents.iter().map(|x|(*x,msg.query_count)));
+            }
+            if send_cmds.is_empty() == false {
+                output.push(DistributorMessage::SendMessageAndAllDescendants {
+                    message_id: send_cmds,
+                });
+            }
+            if unknowns.is_empty() == false {
+                output.push(DistributorMessage::RequestUpstream {
+                    query: unknowns.into_iter().collect(),
+                });
+            }
+
+            Ok(())
+        }
+        fn process_send_message_all_descendants<APP: Application>(&self, database: &mut Database<APP>, message_list: IndexSet<MessageId>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+            for msg in message_list.iter().map(|x| database.load_message(*x)) {
+                let msg = msg?;
+                output.push(DistributorMessage::Message(SerializedMessage::new(msg)?));
+            }
+            Ok(())
+        }
+
+        fn process_received_messages<APP: Application>(&self, database: &mut Database<APP>, message_list: Vec<SerializedMessage>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+
+            let messages = message_list.into_iter().map(|x|x.to_message())
+                .filter_map(|x|{
+                    match x {
+                        Ok(x) => Some(x),
+                        Err(x) => {
+                            eprintln!("Message could not be deserialized: {:?}", x);
+                            None
+                        }
+                    }
+                })
+                .inspect(|x|
+                    {
+                        println!("==========================================\nAppend message: {:?}", x);
+                    })
+                ;
+
+            database.append_many(messages, false)?;
+            println!("All message ides: {:?}", database.get_all_message_ids());
+            Ok(())
+        }
+
     }
 }
 
@@ -1670,6 +1747,7 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::io::{Cursor, SeekFrom};
     use test::Bencher;
+    use std::iter::once;
 
     #[test]
     fn test_mmap_big() {
@@ -2100,10 +2178,9 @@ mod tests {
         println!("Heads: {:?}", d.get_periodic_message(&db));
 
         let r = d
-            .receive_message(&mut db, DistributorMessage::RequestUpstream {
-                query: vec![MessageId::new_debug(0x102)],
-                count: 2,
-            })
+            .receive_message(&mut db, std::iter::once(DistributorMessage::RequestUpstream {
+                query: vec![(MessageId::new_debug(0x102),2)],
+            }))
             .unwrap();
         println!("Clarify: {:?}", r);
 
@@ -2384,6 +2461,7 @@ mod tests {
         use chrono::DateTime;
         use chrono::Utc;
         use std::mem::swap;
+        use std::iter::once;
 
         fn create_app(
             id: u64,
@@ -2434,12 +2512,13 @@ mod tests {
             let mut next_ether = vec![];
             loop {
                 for (db_id,(distr,db)) in dbs.iter_mut().enumerate() {
-                    for (src_id,msg) in ether.iter() {
-                        if *src_id == db_id { continue; }
-                        let sent = distr.receive_message(db, (*msg).clone()).unwrap();
-                        println!("db: {:?} sent {:?}", db_id, sent);
-                        next_ether.extend(sent.into_iter().map(|x|(db_id,x)));
-                    }
+                    let sent = distr.receive_message(db,
+                                                     ether.iter().filter(|(x_src_id,msg)|*x_src_id!=db_id)
+                                                         .map(|(_src,x)|x.clone())
+                    ).unwrap();
+                    println!("db: {:?} sent {:?}", db_id, sent);
+                    next_ether.extend(sent.into_iter().map(|x|(db_id,x)));
+
                 }
                 if next_ether.is_empty() {
                     break;
@@ -2508,13 +2587,13 @@ mod tests {
             let mut app1 = create_app(1, [(datetime!(2021-01-01 Z), [].as_slice(), 1, 0, true)]);
             let mut app2 = create_app(2, [(datetime!(2021-01-02 Z), [].as_slice(), 1, 0, true)]);
 
-            let dist1 = crate::distributor::Distributor {};
-            let dist2 = crate::distributor::Distributor {};
+            let mut dist1 = crate::distributor::Distributor {};
+            let mut dist2 = crate::distributor::Distributor {};
 
             let msg1 = dist1.get_periodic_message(&app1);
 
             println!("dist1 sent: {:?}", msg1);
-            let mut result = dist2.receive_message(&mut app2, msg1).unwrap();
+            let mut result = dist2.receive_message(&mut app2, once(msg1)).unwrap();
 
             println!("dist2 sent: {:?}", result);
 
@@ -2522,27 +2601,27 @@ mod tests {
             assert_eq!(result.len(), 1);
 
             let mut result = dist1
-                .receive_message(&mut app1, result.pop().unwrap())
+                .receive_message(&mut app1, once(result.pop().unwrap()))
                 .unwrap();
             println!("dist1 sent: {:?}", result);
             insta::assert_debug_snapshot!(result);
             assert_eq!(result.len(), 1);
 
             let mut result = dist2
-                .receive_message(&mut app2, result.pop().unwrap())
+                .receive_message(&mut app2, once(result.pop().unwrap()))
                 .unwrap();
             println!("dist2 sent: {:?}", result);
             insta::assert_debug_snapshot!(result);
 
             let mut result = dist1
-                .receive_message(&mut app1, result.pop().unwrap())
+                .receive_message(&mut app1, once(result.pop().unwrap()))
                 .unwrap();
             println!("dist1 sent: {:?}", result);
             assert!(matches!(&result[0], DistributorMessage::Message(_)));
             assert_eq!(result.len(), 1);
 
             let mut result = dist2
-                .receive_message(&mut app2, result.pop().unwrap())
+                .receive_message(&mut app2, once(result.pop().unwrap()))
                 .unwrap();
             println!("App2 all msgs: {:?}", app2.get_all_message_ids().unwrap());
             println!("App2 update heads: {:?}", app2.get_update_heads());
