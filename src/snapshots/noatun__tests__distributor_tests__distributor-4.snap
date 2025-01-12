@@ -6,15 +6,15 @@ expression: app2.get_all_message_ids().unwrap()
     IndexEntry {
         message: "2021-01-01T00:00:00Z"-0-1-0,
         file_offset: FileOffset(
-            178,
+            192,
         ),
-        file_size: 41,
+        file_size: 48,
     },
     IndexEntry {
         message: "2021-01-01T00:00:00Z"-0-2-0,
         file_offset: FileOffset(
             0,
         ),
-        file_size: 41,
+        file_size: 48,
     },
 ]

@@ -1786,7 +1786,7 @@ mod tests {
     #[derive(Debug, Savefile)]
     struct CounterMessage {
         id: MessageId,
-        parent: Option<MessageId>,
+        parent: Vec<MessageId>,
         inc1: i32,
         set1: u32,
     }
@@ -1797,7 +1797,7 @@ mod tests {
         }
 
         fn parents(&self) -> impl ExactSizeIterator<Item = MessageId> {
-            self.parent.into_iter()
+            self.parent.iter().copied()
         }
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut CounterObject) {
@@ -1829,7 +1829,7 @@ mod tests {
             Database::create_new("test/msg_store.bin", CounterApplication, true, 10000, Duration::from_secs(1000)).unwrap();
 
         db.append_single(CounterMessage {
-            parent: None,
+            parent: vec![],
             id: MessageId::new_debug(0x100),
             inc1: 2,
             set1: 0,
@@ -1839,14 +1839,14 @@ mod tests {
         db.mark_transmitted(MessageId::new_debug(0x100));
 
         db.append_single(CounterMessage {
-            parent: Some(MessageId::new_debug(0x100)),
+            parent: vec!(MessageId::new_debug(0x100)),
             id: MessageId::new_debug(0x101),
             inc1: 0,
             set1: 42,
         }, true)
         .unwrap();
         db.append_single(CounterMessage {
-            parent: Some(MessageId::new_debug(0x101)),
+            parent: vec!(MessageId::new_debug(0x101)),
             id: MessageId::new_debug(0x102),
             inc1: 1,
             set1: 0,
@@ -1867,21 +1867,21 @@ mod tests {
             Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
 
         db.append_single(CounterMessage {
-            parent: None,
+            parent: vec![],
             id: MessageId::new_debug(0x100),
             inc1: 2,
             set1: 0,
         }, true)
         .unwrap();
         db.append_single(CounterMessage {
-            parent: Some(MessageId::new_debug(0x100)),
+            parent: vec!(MessageId::new_debug(0x100)),
             id: MessageId::new_debug(0x101),
             inc1: 0,
             set1: 42,
         }, true)
         .unwrap();
         db.append_single(CounterMessage {
-            parent: Some(MessageId::new_debug(0x101)),
+            parent: vec!(MessageId::new_debug(0x101)),
             id: MessageId::new_debug(0x102),
             inc1: 1,
             set1: 0,
@@ -1907,7 +1907,7 @@ mod tests {
 
         let m1 = MessageId::from_parts(datetime!(2024-01-01 Z), [0u8;10]).unwrap();
         db.append_single(CounterMessage {
-            parent: None,
+            parent: vec![],
             id: m1,
             inc1: 2,
             set1: 0,
@@ -1916,7 +1916,7 @@ mod tests {
         db.mark_transmitted(m1).unwrap();
         let m2 = MessageId::from_parts(datetime!(2024-01-01 Z), [1u8;10]).unwrap();
         db.append_single(CounterMessage {
-            parent: Some(MessageId::new_debug(0x100)),
+            parent: vec!(MessageId::new_debug(0x100)),
             id: m2,
             inc1: 0,
             set1: 42,
@@ -1927,7 +1927,7 @@ mod tests {
         println!("Appending 2nd");
         let m3 = MessageId::from_parts(datetime!(2024-01-10 Z), [2u8;10]).unwrap();
         db.append_single(CounterMessage {
-            parent: Some(MessageId::new_debug(0x101)),
+            parent: vec!(MessageId::new_debug(0x101)),
             id: m3,
             inc1: 1,
             set1: 0,
@@ -1949,21 +1949,21 @@ mod tests {
             Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), None).unwrap();
 
         db.append_single(CounterMessage {
-            parent: None,
+            parent: vec![],
             id: MessageId::new_debug(0x100),
             inc1: 2,
             set1: 0,
         }, true)
             .unwrap();
         db.append_single(CounterMessage {
-            parent: Some(MessageId::new_debug(0x100)),
+            parent: vec!(MessageId::new_debug(0x100)),
             id: MessageId::new_debug(0x101),
             inc1: 0,
             set1: 42,
         }, true)
             .unwrap();
         db.append_single(CounterMessage {
-            parent: Some(MessageId::new_debug(0x101)),
+            parent: vec!(MessageId::new_debug(0x101)),
             id: MessageId::new_debug(0x102),
             inc1: 1,
             set1: 0,
@@ -2221,31 +2221,49 @@ mod tests {
         use crate::distributor::{Distributor, DistributorMessage};
         use crate::tests::{CounterApplication, CounterMessage};
 
-        fn create_app(id: u64) -> Database<CounterApplication> {
+        fn create_app(id: u64,
+                      msgs: impl IntoIterator<Item=(MessageId,&'static [MessageId],i32,u32,bool/*local*/)>
+        ) -> Database<CounterApplication> {
             let mut db: Database<CounterApplication> =
                 Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
             let message_id = MessageId::from_parts_for_test(datetime!(2021-01-01 Z), id);
-            println!("id: {:?} from {}", message_id, id);
-            db.append_single(CounterMessage{
-                id:message_id,
-                parent: None,
-                inc1: 1,
-                set1: 0,
-            }, true);
+            for (id,parents,inc1,set1,local) in msgs {
+                db.append_single(CounterMessage{
+                    id:message_id,
+                    parent: parents.iter().copied().collect(),
+                    inc1,
+                    set1,
+                }, local);
+            }
             db
+        }
+
+        fn sync(db1: Database<CounterApplication>, db2: Database<CounterApplication>) {
+
+        }
+
+        #[test]
+        fn distributor1() {
+
         }
 
         #[test]
         fn test_distributor() {
-            let mut app1 = create_app(1);
-            let mut app2 = create_app(2);
+            let mut app1 = create_app(1,
+                                      [(MessageId::from_parts_for_test(datetime!(2021-01-01 Z), 1)
+                                        ,[].as_slice(),
+                                        1,0,true)]
+            );
+            let mut app2 = create_app(2,
+                                      [(MessageId::from_parts_for_test(datetime!(2021-01-01 Z), 2)
+                                          ,[].as_slice(),
+                                      1,0,true)]
+            );
 
             let dist1 = crate::distributor::Distributor {};
             let dist2 = crate::distributor::Distributor {};
 
             let msg1 = dist1.get_periodic_message(&app1);
-
-            compile_error!("Evolve the distributor! Test edge-cases. Automate tests. Chaos!")
 
             println!("dist1 sent: {:?}", msg1);
             let mut result = dist2.receive_message(&mut app2, msg1).unwrap();
