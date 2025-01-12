@@ -76,6 +76,15 @@ impl<'a> ReadonlyFileAccessor<'a> {
         self.seek_pos += bytes;
         Ok(ret)
     }
+    pub fn with_bytes_at<R>(&mut self, offset: usize, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
+        if offset + bytes > self.size {
+            bail!("requested number of bytes not available in file");
+        }
+        let data = &self.map()[offset..offset + bytes];
+        let ret = f(data);
+        Ok(ret)
+    }
+
 }
 impl<'a> Seek for ReadonlyFileAccessor<'a> {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
@@ -382,6 +391,14 @@ impl FileAccessor {
         let data = &self.map()[self.seek_pos..self.seek_pos + bytes];
         let ret = f(data);
         self.seek_pos += bytes;
+        Ok(ret)
+    }
+    pub fn with_bytes_at<R>(&mut self, offset: usize, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
+        if offset + bytes > self.used_space() {
+            bail!("requested number of bytes not available in file");
+        }
+        let data = &self.map()[offset..offset + bytes];
+        let ret = f(data);
         Ok(ret)
     }
 

@@ -213,7 +213,7 @@ pub mod sequence_nr {
     }
 }
 
-pub trait Message: Debug {
+pub trait MessagePayload: Debug {
     type Root: Object;
     fn id(&self) -> MessageId;
     fn parents(&self) -> impl ExactSizeIterator<Item = MessageId>;
@@ -224,6 +224,26 @@ pub trait Message: Debug {
     where
         Self: Sized;
     fn serialize<W: Write>(&self, writer: W) -> Result<()>;
+}
+
+
+#[derive(Debug)]
+pub struct MessageHeader {
+    pub id: MessageId,
+    pub parents: Vec<MessageId>,
+}
+
+#[derive(Debug)]
+pub struct Message<M:MessagePayload> {
+    pub header: MessageHeader,
+    pub payload: M,
+}
+
+impl<M:MessagePayload> Message<M> {
+
+    pub fn id(&self) -> MessageId {
+        self.header.id
+    }
 }
 
 /// A state-less object, mostly useful for testing
@@ -308,11 +328,11 @@ mod update_head_tracker {
 }
 
 // TODO: Do we need this?
-mod update_tail_tracker {
+/*mod update_tail_tracker {
     use crate::disk_abstraction::Disk;
     use crate::disk_access::FileAccessor;
     use crate::message_store::OnDiskMessageStore;
-    use crate::{Message, MessageId, Target};
+    use crate::{MessagePayload, MessageId, Target, Message};
     use anyhow::Result;
 
     pub(crate) struct UpdateTailTracker {
@@ -321,10 +341,10 @@ mod update_tail_tracker {
 
     /// Contains messages that cannot be applied to main store because we don't know
     /// their ancestors
-    pub(crate) struct Quarantine<M: Message> {
-        quarantine: OnDiskMessageStore<M>,
+    pub(crate) struct Quarantine<M: MessagePayload> {
+        quarantine: OnDiskMessageStore<Message<M>>,
     }
-    impl<M: Message> Quarantine<M> {
+    impl<M: MessagePayload> Quarantine<M> {
         pub(crate) fn add_new_update_tail(
             &mut self,
             message: &M,
@@ -347,7 +367,7 @@ mod update_tail_tracker {
             })
         }
     }
-}
+}*/
 
 mod projector {
     use crate::disk_abstraction::Disk;
@@ -355,7 +375,7 @@ mod projector {
     use crate::message_store::{IndexEntry, OnDiskMessageStore};
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
-    use crate::{Application, Database, DatabaseContext, Message, MessageId, Target};
+    use crate::{Application, Database, DatabaseContext, MessagePayload, MessageId, Target, Message, MessageHeader};
     use anyhow::Result;
     use chrono::{DateTime, Utc};
     use std::marker::PhantomData;
@@ -364,7 +384,7 @@ mod projector {
     pub(crate) struct Projector<APP: Application> {
         messages: OnDiskMessageStore<APP::Message>,
         head_tracker: UpdateHeadTracker,
-        phantom_data: PhantomData<(*const APP::Root, APP::Message)>,
+        phantom_data: PhantomData<(*const APP::Root)>,
         cutoff_interval: Duration,
     }
 
@@ -372,7 +392,7 @@ mod projector {
         pub fn get_upstream_of(
             &self,
             message_id: impl DoubleEndedIterator<Item=(MessageId, usize)>,
-        ) -> Result<impl Iterator<Item = (APP::Message,/*count*/usize)>> {
+        ) -> Result<impl Iterator<Item = (MessageHeader,/*count*/usize)>> {
             self.messages.get_upstream_of(message_id)
         }
 
@@ -384,7 +404,7 @@ mod projector {
             self.messages.contains_message(id)
         }
 
-        pub(crate) fn load_message(&self, id: MessageId) -> Result<APP::Message> {
+        pub(crate) fn load_message(&self, id: MessageId) -> Result<Message<APP::Message>> {
             Ok(self
                 .messages
                 .read_message(id)?
@@ -398,7 +418,7 @@ mod projector {
         pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
             self.messages.get_all_message_ids()
         }
-        pub fn get_all_messages(&self) -> Result<Vec<APP::Message>> {
+        pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
             self.messages.get_all_messages()
         }
 
@@ -424,7 +444,7 @@ mod projector {
         fn push_message(
             &mut self,
             context: &mut DatabaseContext,
-            message: APP::Message,
+            message: Message<APP::Message>,
             local: bool,
         ) -> Result<bool> {
             self.push_sorted_messages(context, std::iter::once(message), local)
@@ -434,10 +454,10 @@ mod projector {
         pub(crate) fn push_messages(
             &mut self,
             context: &mut DatabaseContext,
-            message: impl Iterator<Item = APP::Message>,
+            message: impl Iterator<Item = Message<APP::Message>>,
             local: bool,
         ) -> Result<bool> {
-            let mut messages: Vec<APP::Message> = message.collect();
+            let mut messages: Vec<Message<APP::Message>> = message.collect();
             messages.sort_unstable_by_key(|x| x.id());
 
             self.push_sorted_messages(context, messages.into_iter(), local)
@@ -445,7 +465,7 @@ mod projector {
         pub(crate) fn push_sorted_messages(
             &mut self,
             context: &mut DatabaseContext,
-            messages: impl ExactSizeIterator<Item = APP::Message>,
+            messages: impl ExactSizeIterator<Item = Message<APP::Message>>,
             local: bool,
         ) -> Result<bool> {
             if let Some(insert_point) = self.messages.append_many_sorted(
@@ -472,10 +492,10 @@ mod projector {
         fn apply_single_message(
             context: &mut DatabaseContext,
             root: &mut APP::Root,
-            msg: &APP::Message,
+            msg: &Message<APP::Message>,
             seqnr: SequenceNr,
         ) {
-            msg.apply(context, root); //TODO: Handle panics in apply gracefully
+            msg.payload.apply(context, root); //TODO: Handle panics in apply gracefully
             context.set_next_seqnr(seqnr.successor()); //TODO: Don't record a snapshot for _every_ message.
             context.finalize_message(seqnr);
         }
@@ -524,7 +544,7 @@ mod projector {
             fn do_run<APP: Application>(
                 context: &mut DatabaseContext,
                 root: &mut APP::Root,
-                items: impl Iterator<Item = (usize, APP::Message)>,
+                items: impl Iterator<Item = (usize, Message<APP::Message>)>,
                 cutoff: u64,
             ) -> Result<RunResult> {
                 let mut seen_before_cutoff = false;
@@ -615,7 +635,7 @@ impl<T: Object<Ptr = ThinPtr> + Sized + Copy + Pod> FixedSizeObject for T {}
 
 pub trait Application {
     type Root: Object + ?Sized;
-    type Message: Message<Root = Self::Root>;
+    type Message: MessagePayload<Root = Self::Root>;
 
     fn initialize_root(ctx: &mut DatabaseContext) -> <Self::Root as Object>::Ptr;
 }
@@ -1189,10 +1209,7 @@ pub mod database {
     use crate::projector::Projector;
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
-    use crate::{
-        Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Message, MessageComponent, MessageId,
-        Object, Pointer, Target,
-    };
+    use crate::{Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, MessagePayload, MessageComponent, MessageId, Object, Pointer, Target, Message, MessageHeader};
     use anyhow::{Context, Result};
     use chrono::{DateTime, Utc};
     use std::path::{Path, PathBuf};
@@ -1219,11 +1236,11 @@ pub mod database {
         pub fn get_upstream_of(
             &self,
             message_id: impl DoubleEndedIterator<Item=(MessageId, /*query count*/usize)>,
-        ) -> Result<impl Iterator<Item = (APP::Message,/*query count*/usize)>> {
+        ) -> Result<impl Iterator<Item = (MessageHeader,/*query count*/usize)>> {
             self.message_store.get_upstream_of(message_id)
         }
 
-        pub fn load_message(&self, message_id: MessageId) -> Result<APP::Message> {
+        pub fn load_message(&self, message_id: MessageId) -> Result<Message<APP::Message>> {
             self.message_store.load_message(message_id)
         }
 
@@ -1234,7 +1251,7 @@ pub mod database {
         pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
             self.message_store.get_all_message_ids()
         }
-        pub fn get_all_messages(&self) -> Result<Vec<APP::Message>> {
+        pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
             self.message_store.get_all_messages()
         }
         pub fn get_root(&self) -> (&APP::Root, &DatabaseContext) {
@@ -1357,7 +1374,9 @@ pub mod database {
         // Noatun provide message_id. It should be provided when adding the message, so that
         // we can be sure that all local messages are such that they haven't been observed
         // previously
-        pub fn append_single(&mut self, message: APP::Message, local: bool) -> Result<()> {
+        // TODO: Maybe change the signature of this, and some other public methods, to accept
+        // a raw message payload, and hide messageId-generation from user!
+        pub fn append_single(&mut self, message: Message<APP::Message>, local: bool) -> Result<()> {
             self.append_many(std::iter::once(message), local)
         }
 
@@ -1373,7 +1392,7 @@ pub mod database {
 
         pub fn append_many(
             &mut self,
-            messages: impl Iterator<Item = APP::Message>,
+            messages: impl Iterator<Item = Message<APP::Message>>,
             local: bool,
         ) -> Result<()> {
             let now = self.now();
@@ -1486,13 +1505,16 @@ pub mod database {
 }
 
 pub mod distributor {
-    use crate::{Application, Database, Message, MessageId};
+    use crate::{Application, Database, MessagePayload, MessageId, Message, MessageHeader};
     use anyhow::Result;
     use indexmap::{IndexMap, IndexSet};
     use libc::send;
     use savefile_derive::Savefile;
     use std::collections::{HashMap, HashSet};
     use std::hash::{Hash, Hasher};
+    use std::io::Cursor;
+    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+    use crate::message_store::{ReadPod, WritePod};
     // Principle
     // The node that is 'most ahead' (highest MessageId) has responsibility.
     // If knows all the heads of other node, just sends perfect updates.
@@ -1504,16 +1526,29 @@ pub mod distributor {
         /// TODO: The serialized part should be just the user-part of the message.
         /// Parents and id should be serialized by noatun directly.
         id: MessageId,
+        parents: Vec<MessageId>,
         data: Vec<u8>,
     }
     impl SerializedMessage {
-        pub fn to_message<M: Message>(&self) -> Result<M> {
-            M::deserialize(&self.data)
+        pub fn to_message<M: MessagePayload>(self) -> Result<Message<M>> {
+            let mut reader = Cursor::new(&self.data);
+            Ok(Message {
+                header: MessageHeader {
+                    id:self.id,
+                    parents:self.parents,
+                },
+                payload: M::deserialize(&self.data[reader.position() as usize..])?,
+            })
+
         }
-        pub fn new<M: Message>(m: M) -> Result<SerializedMessage> {
+        pub fn new<M: MessagePayload>(m: Message<M>) -> Result<SerializedMessage> {
             let mut data = vec![];
-            m.serialize(&mut data)?;
-            Ok(SerializedMessage { id: m.id(), data })
+            m.payload.serialize(&mut data)?;
+            Ok(SerializedMessage { id: m.header.id,
+                parents: m.header.parents,
+                data
+            }
+            )
         }
     }
 
@@ -1638,8 +1673,8 @@ pub mod distributor {
             let messages: Vec<MessageSubGraphNode> = database
                 .get_upstream_of(accumulated_heads.into_iter())?
                 .map(|(msg,query_count)| MessageSubGraphNode {
-                    id: msg.id(),
-                    parents: msg.parents().collect(),
+                    id: msg.id,
+                    parents: msg.parents,
                     query_count,
                 })
                 .collect();
@@ -1705,7 +1740,7 @@ pub mod distributor {
 
                 //TODO: Make smarter, this is super-inefficient
                 for child_msg in database.get_all_messages()? {
-                    if child_msg.parents().find(|x|*x == msg_id).is_some() {
+                    if child_msg.header.parents.iter().find(|x|**x == msg_id).is_some() {
                         message_list.insert(child_msg.id());
                     }
                 }
@@ -1822,7 +1857,7 @@ mod tests {
         }
     }
 
-    impl<T: Object> Message for DummyMessage<T> {
+    impl<T: Object> MessagePayload for DummyMessage<T> {
         type Root = T;
 
         fn id(&self) -> MessageId {
@@ -1900,7 +1935,7 @@ mod tests {
         increment_by: u32,
     }
 
-    impl Message for IncrementMessage {
+    impl MessagePayload for IncrementMessage {
         type Root = CounterObject;
 
         fn id(&self) -> MessageId {
@@ -1960,7 +1995,7 @@ mod tests {
         inc1: i32,
         set1: u32,
     }
-    impl Message for CounterMessage {
+    impl MessagePayload for CounterMessage {
         type Root = CounterObject;
         fn id(&self) -> MessageId {
             self.id

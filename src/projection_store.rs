@@ -6,7 +6,7 @@ use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 use crate::{
-    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, Target,
+    Application, FatPtr, FixedSizeObject, GenPtr, MessagePayload, MessageId, Object, Pointer, Target,
     ThinPtr,
 };
 use anyhow::{Context, Result, bail};
@@ -37,7 +37,7 @@ mod registrar_info {
 
     use crate::message_store::OnDiskMessageStore;
     use crate::sequence_nr::SequenceNr;
-    use crate::{DatabaseContext, Message, Target, ThinPtr};
+    use crate::{DatabaseContext, MessagePayload, Target, ThinPtr};
 
     #[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
     #[repr(C)]
@@ -702,7 +702,7 @@ impl DatabaseContext {
     }
     /// Call after a complete update, i.e, applying multiple messages
     /// Returns all messages that can now be removed.
-    pub(crate) fn calculate_stale_messages<MSG: Message + Debug>(
+    pub(crate) fn calculate_stale_messages<MSG: MessagePayload + Debug>(
         &mut self,
         message_store: &mut OnDiskMessageStore<MSG>,
         is_before_cutoff: bool,
@@ -783,7 +783,7 @@ impl DatabaseContext {
 
     */
 
-    pub(crate) fn rt_calculate_stale_messages<M: Message + Debug>(
+    pub(crate) fn rt_calculate_stale_messages<M: MessagePayload + Debug>(
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
         is_before_cutoff: bool,
@@ -832,8 +832,8 @@ impl DatabaseContext {
             let Some(msg) = messages.read_message_by_index(deleted.index())? else {
                 panic!("Attempt to delete already-deleted message.");
             };
-            for parent in msg.parents() {
-                let parent_index = SequenceNr::from_index(messages.get_index_of(parent)?
+            for parent in msg.header.parents.iter() {
+                let parent_index = SequenceNr::from_index(messages.get_index_of(*parent)?
                     .expect("Parent unknown. This is not supported like this - it needs to be cleansed before msg added to store."));
                 if let Some(remapping) = parent_remap.get(&parent_index) {
                     parent_list.extend(remapping);

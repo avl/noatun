@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use datetime_literal::datetime;
 use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::Database;
-use noatun::{Application, DatabaseContext, Message, MessageId, PodObject, ThinPtr};
+use noatun::{Application, DatabaseContext, MessagePayload, MessageId, PodObject, ThinPtr, Message, MessageHeader};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::time::Duration;
@@ -23,7 +23,7 @@ struct CounterMessage {
     delta: u32,
 }
 
-impl Message for CounterMessage {
+impl MessagePayload for CounterMessage {
     type Root = PodObject<CounterObject>;
 
     fn id(&self) -> MessageId {
@@ -88,23 +88,51 @@ fn test_counter_object_miri() {
     .unwrap();
 
     db.append_single(
-        CounterMessage {
-            id: 2,
-            counter: 0,
-            delta: 42,
-        },
+        Message {
+            header: MessageHeader {
+                id: MessageId::new_debug(1),
+                parents: vec![],
+            },
+            payload: CounterMessage {
+                id: 2,
+                counter: 0,
+                delta: 42,
+            },
+        }
+        ,
         true,
     )
     .unwrap();
 
+    compile_error!("
+
+Finish big refactoring:
+
+1: Message is now a new type, that carries parents and id,
+message payload is now the only user-changable part.
+
+2: The way we store parents in the db has changed, see the smallvec-like new datastructure
+in the store
+
+3: We have prepared to store child-info in db. This is needed to be able to actually send
+'Message + all descendants!'
+    
+
+    ")
     let (root, context) = db.get_root();
     assert_eq!(root.pod.counter.get(context), 42);
 
     db.append_single(
-        CounterMessage {
-            id: 1,
-            counter: 1,
-            delta: 43,
+        Message {
+            header: MessageHeader {
+                id: MessageId::new_debug(1),
+                parents: vec![],
+            },
+            payload: CounterMessage {
+                id: 1,
+                counter: 1,
+                delta: 43,
+            },
         },
         true,
     )
