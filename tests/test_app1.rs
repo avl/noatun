@@ -34,6 +34,9 @@ impl Message for CounterMessage {
         std::iter::empty()
     }
 
+    fn set_parents(&mut self, _parents: impl Iterator<Item=MessageId>) {
+    }
+
     fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
         println!(
             "Applying message {} {} {}",

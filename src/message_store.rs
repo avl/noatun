@@ -261,16 +261,20 @@ impl<M> OnDiskMessageStore<M> {
                 }
             }
         }
+        println!("Breadth: {:?}, index: {}", breadth, index);
 
         Ok(message_index[0..index]
             .iter()
             .rev()
             .map(move |x| {
+                println!("Inspecting {:?}", x);
                 if let Some((original_count, remaining_count)) = breadth.remove(&x.message) {
+                    println!("Remaining count {:?}, orig: {}", remaining_count, original_count);
                     if x.file_offset.is_deleted() {
+                        println!("Deleted!");
                         return (None, breadth.is_empty());
                     }
-                    let msg = match Self::read_msg(x, data_files) {
+                    let msg = match Self::read_msg(message_index, x, data_files) {
                         Ok(msg) => msg,
                         Err(err) => {
                             //TODO: Log
@@ -510,21 +514,20 @@ impl<M> OnDiskMessageStore<M> {
 
     /// Get all messages with index `index` or greater
     pub fn query_by_index(
-        &mut self,
+        &self,
         index: usize,
     ) -> Result<impl Iterator<Item = (usize /*seqnr/index*/, M)>>
     where
         M: Message,
     {
-        let (header, message_index) =
-            Self::header_and_index_mut(&mut self.index_mmap).context("opening index file")?;
+        let (header, message_index) = self.header_and_index().context("opening index file")?;
 
-        let mut data_files = &mut self.data_files;
+        let mut data_files = &self.data_files;
         Ok(message_index[index..]
             .iter()
             .enumerate()
             .filter(|(_sub_index, x)| !x.file_offset.is_deleted())
-            .map(move |(sub_index, x)| (index + sub_index, Self::read_msg(x, data_files)))
+            .map(move |(sub_index, x)| (index + sub_index, Self::read_msg(message_index, x, data_files)))
             .filter_map(|(index, x)| {
                 match x {
                     Ok(x) => Some((index, x)),
@@ -566,7 +569,9 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
-    fn read_msg(entry: &IndexEntry, data_files: &[DataFileInfo; 2]) -> Result<M>
+    fn read_msg(
+        indices: &[IndexEntry],
+        entry: &IndexEntry, data_files: &[DataFileInfo; 2]) -> Result<M>
     where
         M: Message,
     {
@@ -580,13 +585,26 @@ impl<M> OnDiskMessageStore<M> {
             .context("Seeking to message data")?;
         let header: FileHeaderEntry = file.read_pod()?;
 
-        let msg = file.with_bytes(header.msg_size as usize, |bytes| {
+
+        let mut msg = file.with_bytes(header.msg_size as usize, |bytes| {
             let sha2_bytes = sha2(bytes);
             if sha2_bytes != header.sha2 {
                 return Err(anyhow!("Message has been corrupted on disk"));
             }
             M::deserialize(bytes)
         })??;
+
+        let parents:Vec<_> = msg.parents().filter(|x|
+            {
+                if let Ok(msg) = indices.binary_search_by_key(x,|item|item.message) {
+                    indices[msg].file_offset.is_deleted() == false
+                } else {
+                    false
+                }
+            }
+        ).collect();
+        msg.set_parents(parents.into_iter());
+
         Ok(msg)
     }
 
@@ -618,7 +636,7 @@ impl<M> OnDiskMessageStore<M> {
         match message_index.binary_search_by_key(&id, |x| x.message) {
             Ok(index) => {
                 let entry = &message_index[index];
-                let msg = Self::read_msg(entry, data_files)?;
+                let msg = Self::read_msg(message_index, entry, data_files)?;
                 Ok(Some(msg))
             }
             Err(index) => Ok(None),
@@ -638,12 +656,12 @@ impl<M> OnDiskMessageStore<M> {
 
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
-        Ok(message_index.iter().map(|x|x.message).collect())
+        Ok(message_index.iter().filter(|x|!x.file_offset.is_deleted()).map(|x|x.message).collect())
     }
     pub fn get_all_messages(&self) -> Result<Vec<M>> where M: Message{
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
         let data_files = &self.data_files;
-        message_index.iter().map(|x|Self::read_msg(x, data_files)).collect()
+        message_index.iter().filter(|x|!x.file_offset.is_deleted()).map(|x|Self::read_msg(message_index, x, data_files)).collect()
     }
 
     /// Delete any message with the given index. Idempotent, does nothing if index is already
@@ -674,7 +692,7 @@ impl<M> OnDiskMessageStore<M> {
         let data_files = &mut self.data_files;
         match message_index.get(index) {
             Some(entry) => {
-                let msg = Self::read_msg(entry, data_files)?;
+                let msg = Self::read_msg(message_index, entry, data_files)?;
                 Ok(Some(msg))
             }
             None => Err(anyhow!("Invalid message index")),
@@ -1163,6 +1181,9 @@ mod tests {
 
         fn parents(&self) -> impl ExactSizeIterator<Item = MessageId> {
             std::iter::empty()
+        }
+
+        fn set_parents(&mut self, parents: impl Iterator<Item=MessageId>) {
         }
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {

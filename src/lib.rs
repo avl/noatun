@@ -217,6 +217,7 @@ pub trait Message: Debug {
     type Root: Object;
     fn id(&self) -> MessageId;
     fn parents(&self) -> impl ExactSizeIterator<Item = MessageId>;
+    fn set_parents(&mut self, parents: impl Iterator<Item = MessageId>);
     fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root);
 
     fn deserialize(buf: &[u8]) -> Result<Self>
@@ -1500,6 +1501,9 @@ pub mod distributor {
 
     #[derive(Debug, Savefile, Clone)]
     pub struct SerializedMessage {
+        /// TODO: The serialized part should be just the user-part of the message.
+        /// Parents and id should be serialized by noatun directly.
+        id: MessageId,
         data: Vec<u8>,
     }
     impl SerializedMessage {
@@ -1509,16 +1513,10 @@ pub mod distributor {
         pub fn new<M: Message>(m: M) -> Result<SerializedMessage> {
             let mut data = vec![];
             m.serialize(&mut data)?;
-            Ok(SerializedMessage { data })
+            Ok(SerializedMessage { id: m.id(), data })
         }
     }
 
-    /// NOTE!
-    /// Partial+Eq+Hash for this method _only_ looks at the 'id' field.
-    /// This should logically be enough, since the set of parents should
-    /// be unique for a particular MessageId, at any particular time.
-    /// Note however, that since parents can be deleted, this means
-    /// MessageSubGraphNode instances shouldn't be stored.
     #[derive(Debug, Savefile, Clone)]
     pub struct MessageSubGraphNode {
         id: MessageId,
@@ -1526,20 +1524,10 @@ pub mod distributor {
         query_count: usize,
     }
 
-    impl PartialEq for MessageSubGraphNode {
-        fn eq(&self, other: &Self) -> bool {
-            self.id == other.id
-        }
+    pub struct MessageSubGraphNodeValue {
+        parents: Vec<MessageId>,
+        query_count: usize,
     }
-    impl Eq for MessageSubGraphNode {
-    }
-    impl Hash for MessageSubGraphNode {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            self.id.hash(state)
-        }
-    }
-
-
 
 
     #[derive(Debug, Savefile, Clone)]
@@ -1589,7 +1577,7 @@ pub mod distributor {
         pub fn receive_message<APP: Application>(&mut self,  database: &mut Database<APP>, input: impl Iterator<Item=DistributorMessage>) -> Result<Vec<DistributorMessage>> {
             let mut accumulated_heads: IndexSet<MessageId> = IndexSet::new();
             let mut accumulated_upstream_queries = IndexMap::new();
-            let mut accumulated_responses = IndexSet::new();
+            let mut accumulated_responses = IndexMap::new();
             let mut accumulated_send_msg_and_descendants = IndexSet::new();
             let mut accumulated_serialized = vec![];
             for item in input {
@@ -1604,7 +1592,13 @@ pub mod distributor {
                         }
                     }
                     DistributorMessage::UpstreamResponse { messages } => {
-                        accumulated_responses.extend(messages);
+                        for msg in messages {
+                            let val = MessageSubGraphNodeValue {
+                                parents: msg.parents,
+                                query_count: msg.query_count,
+                            };
+                            accumulated_responses.insert(msg.id, val);
+                        }
                     }
                     DistributorMessage::SendMessageAndAllDescendants { message_id } => {
                         accumulated_send_msg_and_descendants.extend(message_id);
@@ -1656,29 +1650,38 @@ pub mod distributor {
             }
             Ok(())
         }
-        fn process_upstream_response<APP: Application>(&self, database: &mut Database<APP>, upstream_response: IndexSet<MessageSubGraphNode>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+        fn process_upstream_response<APP: Application>(&self, database: &mut Database<APP>, upstream_response: IndexMap<MessageId,/*parents*/MessageSubGraphNodeValue>, output: &mut Vec<DistributorMessage>) -> Result<()> {
             let mut unknowns: HashSet<(MessageId, usize)> = HashSet::new();
             let mut send_cmds = vec![];
-            for msg in upstream_response {
-                if database.contains_message(msg.id)? {
+            for (msg_id, msg_value) in upstream_response.iter() {
+                if database.contains_message(*msg_id)? {
                     continue; //We already have this one
                 }
                 let mut err = Ok(());
-                let have_all_parents = msg.parents.iter().all(|x| {
+                let have_all_parents = msg_value.parents.iter().all(|x| {
                     database
                         .contains_message(*x)
                         .map_err(|e| {
+                            eprintln!("Error: {:?}", e);
                             err = Err(e);
                         })
-                        .is_ok()
+                        .is_ok_and(|x|x)
                 });
+
                 err?;
                 if have_all_parents {
                     // We have all the parents, a perfect msg to request!
-                    send_cmds.push(msg.id);
+                    println!("Requesting msg.id={:?}, because we have all its parents: {:?}", msg_id, msg_value.parents);
+                    send_cmds.push(*msg_id);
                     continue;
                 }
-                unknowns.extend(msg.parents.iter().map(|x|(*x,msg.query_count)));
+
+                let all_parents_are_also_in_request = msg_value.parents.iter().all(|x| {
+                    upstream_response.contains_key(x)
+                });
+                if !all_parents_are_also_in_request {
+                    unknowns.extend(msg_value.parents.iter().map(|x|(*x, msg_value.query_count)));
+                }
             }
             if send_cmds.is_empty() == false {
                 output.push(DistributorMessage::SendMessageAndAllDescendants {
@@ -1693,11 +1696,21 @@ pub mod distributor {
 
             Ok(())
         }
-        fn process_send_message_all_descendants<APP: Application>(&self, database: &mut Database<APP>, message_list: IndexSet<MessageId>, output: &mut Vec<DistributorMessage>) -> Result<()> {
-            for msg in message_list.iter().map(|x| database.load_message(*x)) {
-                let msg = msg?;
+        fn process_send_message_all_descendants<APP: Application>(&self, database: &mut Database<APP>, mut message_list: IndexSet<MessageId>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+
+            while let Some(msg) = message_list.pop() {
+                let msg = database.load_message(msg)?;
+                let msg_id = msg.id();
                 output.push(DistributorMessage::Message(SerializedMessage::new(msg)?));
+
+                //TODO: Make smarter, this is super-inefficient
+                for child_msg in database.get_all_messages()? {
+                    if child_msg.parents().find(|x|*x == msg_id).is_some() {
+                        message_list.insert(child_msg.id());
+                    }
+                }
             }
+
             Ok(())
         }
 
@@ -1720,7 +1733,6 @@ pub mod distributor {
                 ;
 
             database.append_many(messages, false)?;
-            println!("All message ides: {:?}", database.get_all_message_ids());
             Ok(())
         }
 
@@ -1821,6 +1833,9 @@ mod tests {
             std::iter::empty()
         }
 
+        fn set_parents(&mut self, parents: impl Iterator<Item=MessageId>) {
+        }
+
         fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
             unimplemented!()
         }
@@ -1896,6 +1911,9 @@ mod tests {
             std::iter::empty()
         }
 
+        fn set_parents(&mut self, parents: impl Iterator<Item=MessageId>) {
+        }
+
         fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
             unimplemented!()
         }
@@ -1950,6 +1968,10 @@ mod tests {
 
         fn parents(&self) -> impl ExactSizeIterator<Item = MessageId> {
             self.parent.iter().copied()
+        }
+
+        fn set_parents(&mut self, parents: impl Iterator<Item=MessageId>) {
+            self.parent = parents.collect();
         }
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut CounterObject) {
@@ -2462,6 +2484,7 @@ mod tests {
         use chrono::Utc;
         use std::mem::swap;
         use std::iter::once;
+        use insta::assert_debug_snapshot;
 
         fn create_app(
             id: u64,
@@ -2501,12 +2524,21 @@ mod tests {
             db
         }
 
-        fn sync(dbs: Vec<Database<CounterApplication>>) {
+        #[derive(Debug)]
+        struct SyncReport {
+            num_messages: usize,
+        }
+
+        fn sync(dbs: Vec<Database<CounterApplication>>) -> SyncReport{
+            let mut report = SyncReport {
+                num_messages: 0,
+            };
             let mut dbs: Vec<(Distributor,Database<_>)> = dbs.into_iter().map(|x|(Distributor{},x)).collect();
             let mut ether = vec![];
             for (db_id, (distr,db)) in dbs.iter().enumerate() {
                 let sent = distr.get_periodic_message(db);
                 println!("db: {:?} sent initial {:?}", db_id, sent);
+                report.num_messages += 1;
                 ether.push((db_id,sent));
             }
             let mut next_ether = vec![];
@@ -2516,6 +2548,7 @@ mod tests {
                                                      ether.iter().filter(|(x_src_id,msg)|*x_src_id!=db_id)
                                                          .map(|(_src,x)|x.clone())
                     ).unwrap();
+                    report.num_messages += sent.len();
                     println!("db: {:?} sent {:?}", db_id, sent);
                     next_ether.extend(sent.into_iter().map(|x|(db_id,x)));
 
@@ -2531,6 +2564,24 @@ mod tests {
             for (distr,db) in dbs.iter().skip(1) {
                 assert_eq!(first_set, db.get_all_message_ids().unwrap());
             }
+            report
+        }
+        #[test]
+        #[rustfmt::skip]
+        fn distributor_simple_deleted() {
+            let dbs = vec![
+                create_app(1,
+                    [
+                        (datetime!(2021-01-02 00:00:00 Z),[].as_slice(),1,0,true),
+                        (datetime!(2021-01-03 00:00:00 Z),[datetime!(2021-01-02 00:00:00 Z)].as_slice(),0,7,true),
+                    ]),
+                create_app(2,
+                        [
+                        (datetime!(2021-01-04 00:00:00 Z),[].as_slice(),3,0,true),
+                    ]),
+            ];
+            let report = sync(dbs);
+            assert_eq!(report.num_messages, 10);
         }
 
         #[test]
@@ -2547,7 +2598,8 @@ mod tests {
                         (datetime!(2021-01-03 00:00:00 Z),[].as_slice(),3,0,true),
                     ]),
             ];
-            sync(dbs);
+            let report = sync(dbs);
+            &&assert_eq!(report.num_messages, 11);
         }
 
         #[test]
@@ -2563,7 +2615,8 @@ mod tests {
                         (datetime!(2021-01-01 00:00:00 Z),[].as_slice(),1,0,true),
                     ]),
             ];
-            sync(dbs);
+            let report = sync(dbs);
+            assert_eq!(report.num_messages, 2);
         }
 
         #[test]

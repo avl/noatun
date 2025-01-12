@@ -817,7 +817,7 @@ impl DatabaseContext {
                 continue 'outer;
             }
 
-            //println!("Deleting {:?}", msg);
+            println!("Deleting {:?}", msg);
 
             deleted.push(msg.seq);
         }
