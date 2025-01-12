@@ -1,11 +1,11 @@
 use bytemuck::{Pod, Zeroable};
+use datetime_literal::datetime;
 use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::Database;
 use noatun::{Application, DatabaseContext, Message, MessageId, PodObject, ThinPtr};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::time::Duration;
-use datetime_literal::datetime;
 
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
@@ -15,7 +15,6 @@ struct CounterObject {
 }
 
 struct CounterApplication;
-
 
 #[derive(Debug, Savefile)]
 struct CounterMessage {
@@ -41,7 +40,8 @@ impl Message for CounterMessage {
             self.id, self.counter, self.delta
         );
 
-        root.pod.counter
+        root.pod
+            .counter
             .set(context, root.pod.counter.get(context) + self.delta);
         let cell: &mut DatabaseCell<u32> = DatabaseCell::allocate(context);
         cell.set(context, self.delta);
@@ -76,24 +76,35 @@ impl Application for CounterApplication {
 
 #[test]
 fn test_counter_object_miri() {
-    let mut db: Database<CounterApplication> =
-        Database::create_in_memory(CounterApplication, 10_000, Duration::from_secs(1000), Some(datetime!(2023-01-01 Z))).unwrap();
+    let mut db: Database<CounterApplication> = Database::create_in_memory(
+        CounterApplication,
+        10_000,
+        Duration::from_secs(1000),
+        Some(datetime!(2023-01-01 Z)),
+    )
+    .unwrap();
 
-    db.append_single(CounterMessage {
-        id: 2,
-        counter: 0,
-        delta: 42,
-    }, true)
+    db.append_single(
+        CounterMessage {
+            id: 2,
+            counter: 0,
+            delta: 42,
+        },
+        true,
+    )
     .unwrap();
 
     let (root, context) = db.get_root();
     assert_eq!(root.pod.counter.get(context), 42);
 
-    db.append_single(CounterMessage {
-        id: 1,
-        counter: 1,
-        delta: 43,
-    }, true)
+    db.append_single(
+        CounterMessage {
+            id: 1,
+            counter: 1,
+            delta: 43,
+        },
+        true,
+    )
     .unwrap();
 
     let (root, context) = db.get_root();
@@ -102,8 +113,5 @@ fn test_counter_object_miri() {
     let vec_elem = root.pod.counter2.get(context, 0);
     let arr = vec_elem.get(context);
     let arr_item = &arr[0];
-    assert_eq!(
-        arr_item.get(context),
-        43u8
-    );
+    assert_eq!(arr_item.get(context), 43u8);
 }

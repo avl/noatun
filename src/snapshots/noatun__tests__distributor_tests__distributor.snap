@@ -5,7 +5,7 @@ expression: result
 [
     RequestUpstream {
         query: [
-            "2021-01-01T00:00:00Z"-0-1-0,
+            "2021-01-01T00:00:00Z"-0-0-0,
         ],
         count: 4,
     },

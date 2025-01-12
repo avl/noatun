@@ -16,11 +16,13 @@ use crate::sha2_helper::sha2;
 use anyhow::{Context, Result, bail};
 use bumpalo::Bump;
 use bytemuck::{Pod, Zeroable};
+use chrono::{DateTime, Utc};
 pub use database::Database;
 use fs2::FileExt;
 use indexmap::IndexMap;
 use memmap2::MmapMut;
 pub use projection_store::DatabaseContext;
+use rand::RngCore;
 #[cfg(feature = "savefile")]
 use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
@@ -38,8 +40,6 @@ use std::ptr::null_mut;
 use std::slice::SliceIndex;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
-use chrono::{DateTime, Utc};
-use rand::RngCore;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -69,12 +69,12 @@ pub struct MessageId {
 
 impl Display for MessageId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-
         let time_ms = self.timestamp();
         let unix_timestamp = (time_ms / 1000) as i64;
         let timestamp_ms = time_ms % 1000;
 
-        let time = OffsetDateTime::from_unix_timestamp(unix_timestamp).unwrap()
+        let time = OffsetDateTime::from_unix_timestamp(unix_timestamp)
+            .unwrap()
             .add(Duration::from_millis(timestamp_ms));
 
         let time_str = time.format(&Rfc3339).unwrap(); //All values representable should be formattable here
@@ -82,7 +82,7 @@ impl Display for MessageId {
             f,
             "{:?}-{:x}-{:x}-{:x}",
             time_str,
-            (self.data[1] & 0xffff0000)>>16,
+            (self.data[1] & 0xffff0000) >> 16,
             self.data[2],
             self.data[3]
         )
@@ -98,17 +98,12 @@ impl Debug for MessageId {
                 self.data[0], self.data[1], self.data[2]
             )
         } else {
-            write!(
-                f,
-                "{}",
-                self
-            )
+            write!(f, "{}", self)
         }
     }
 }
 
 impl MessageId {
-
     pub fn min(self, other: MessageId) -> MessageId {
         if self < other { self } else { other }
     }
@@ -119,7 +114,6 @@ impl MessageId {
         MessageId { data: [0, 0, 0, 0] }
     }
 
-
     /// Create an artificial MessageId, mostly useful for tests and possibly debugging.
     pub fn new_debug(nr: u32) -> Self {
         Self {
@@ -128,40 +122,41 @@ impl MessageId {
     }
 
     pub fn generate_for_time(time: DateTime<Utc>) -> Result<MessageId> {
-        let mut random_part = [0u8;10];
+        let mut random_part = [0u8; 10];
         rand::thread_rng().fill_bytes(&mut random_part);
         Self::from_parts(time, random_part)
     }
     pub fn from_parts_for_test(time: DateTime<Utc>, random: u64) -> MessageId {
-        let mut data = [0u8;10];
+        let mut data = [0u8; 10];
         data[2..10].copy_from_slice(&random.to_le_bytes());
 
         Self::from_parts(time, data).unwrap()
     }
     pub fn timestamp(&self) -> u64 {
-        let restes = ((self.data[0] as u64) ) + (((self.data[1]&0xffff) as u64) << 32) as u64;
+        let restes = (self.data[0] as u64) + (((self.data[1] & 0xffff) as u64) << 32) as u64;
         restes
     }
-    pub fn from_parts(time: DateTime<Utc>, random: [u8;10]) -> Result<MessageId> {
-        let t:u64 = time.timestamp_millis()
-            .try_into().context("Time value is out of range. Value must be ")?;
-        if t >= 1<<48 {
+    pub fn from_parts(time: DateTime<Utc>, random: [u8; 10]) -> Result<MessageId> {
+        let t: u64 = time
+            .timestamp_millis()
+            .try_into()
+            .context("Time value is out of range. Value must be ")?;
+        if t >= 1 << 48 {
             bail!("Time value is too large");
         }
-        let mut data = [0u8;16];
+        let mut data = [0u8; 16];
         data[0..6].copy_from_slice(&t.to_le_bytes()[0..6]);
         data[6..16].copy_from_slice(&random);
 
-        Ok(MessageId{
+        Ok(MessageId {
             data: bytemuck::cast(data),
         })
     }
-
 }
 
 pub mod sequence_nr {
-    use std::fmt::{Debug, Display, Formatter};
     use bytemuck::{Pod, Zeroable};
+    use std::fmt::{Debug, Display, Formatter};
 
     #[derive(Pod, Zeroable, Copy, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[repr(transparent)]
@@ -216,9 +211,7 @@ pub mod sequence_nr {
             Some(self.0 as usize - 1)
         }
     }
-
 }
-
 
 pub trait Message: Debug {
     type Root: Object;
@@ -231,7 +224,6 @@ pub trait Message: Debug {
         Self: Sized;
     fn serialize<W: Write>(&self, writer: W) -> Result<()>;
 }
-
 
 /// A state-less object, mostly useful for testing
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -252,23 +244,22 @@ impl Object for DummyUnitObject {
     }
 }
 
-
 mod update_head_tracker {
+    use crate::MessageId;
     use crate::disk_abstraction::Disk;
     use crate::disk_access::FileAccessor;
-    use crate::MessageId;
     use anyhow::Result;
 
     pub(crate) struct UpdateHeadTracker {
-        file: FileAccessor
+        file: FileAccessor,
     }
 
     impl UpdateHeadTracker {
-
-        pub(crate) fn add_new_update_head(&mut self,
-                                          new_message_id: MessageId,
-                                          subsumed: &[MessageId],
-                                          ) -> anyhow::Result<()> {
+        pub(crate) fn add_new_update_head(
+            &mut self,
+            new_message_id: MessageId,
+            subsumed: &[MessageId],
+        ) -> anyhow::Result<()> {
             let mapping = self.file.map_mut();
             let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
             let mut i = 0;
@@ -276,8 +267,8 @@ mod update_head_tracker {
             let mut maplen = id_mapping.len();
             while i < maplen {
                 if subsumed.contains(&id_mapping[i]) {
-                    if i != maplen-1 {
-                        id_mapping.swap(i, maplen-1);
+                    if i != maplen - 1 {
+                        id_mapping.swap(i, maplen - 1);
                     }
                     maplen -= 1;
                 } else {
@@ -285,8 +276,8 @@ mod update_head_tracker {
                 }
             }
             if maplen == file_len {
-                self.file.grow((file_len +1)*size_of::<MessageId>())?;
-                file_len = file_len +1;
+                self.file.grow((file_len + 1) * size_of::<MessageId>())?;
+                file_len = file_len + 1;
             }
 
             let mapping = self.file.map_mut();
@@ -304,9 +295,12 @@ mod update_head_tracker {
         pub(crate) fn get_update_heads(&self) -> &[MessageId] {
             bytemuck::cast_slice(self.file.map())
         }
-        pub(crate) fn new<D:Disk>(disk: &mut D, target: &crate::Target) -> Result<UpdateHeadTracker> {
+        pub(crate) fn new<D: Disk>(
+            disk: &mut D,
+            target: &crate::Target,
+        ) -> Result<UpdateHeadTracker> {
             Ok(Self {
-                file: disk.open_file(target,"update_head", 0, 10*1024*1024)?,
+                file: disk.open_file(target, "update_head", 0, 10 * 1024 * 1024)?,
             })
         }
     }
@@ -320,50 +314,51 @@ mod update_tail_tracker {
     use crate::{Message, MessageId, Target};
     use anyhow::Result;
 
-
     pub(crate) struct UpdateTailTracker {
-        file: FileAccessor
+        file: FileAccessor,
     }
 
     /// Contains messages that cannot be applied to main store because we don't know
     /// their ancestors
-    pub(crate) struct Quarantine<M:Message> {
-        quarantine: OnDiskMessageStore<M>
+    pub(crate) struct Quarantine<M: Message> {
+        quarantine: OnDiskMessageStore<M>,
     }
-    impl<M:Message> Quarantine<M> {
-        pub(crate) fn add_new_update_tail(&mut self,
-                                          message: &M,
-                                          existing: &OnDiskMessageStore<M>) -> Result<()> {
+    impl<M: Message> Quarantine<M> {
+        pub(crate) fn add_new_update_tail(
+            &mut self,
+            message: &M,
+            existing: &OnDiskMessageStore<M>,
+        ) -> Result<()> {
             for item in message.parents() {
-                if !existing.contains_message(item)? {
-
-                }
-
+                if !existing.contains_message(item)? {}
             }
             todo!()
         }
 
-        pub(crate) fn new<D:Disk>(disk: &mut D, target: &Target, max_file_size: usize) -> anyhow::Result<Self> {
+        pub(crate) fn new<D: Disk>(
+            disk: &mut D,
+            target: &Target,
+            max_file_size: usize,
+        ) -> anyhow::Result<Self> {
             let mut sub = target.append("tail");
             Ok(Self {
                 quarantine: OnDiskMessageStore::new(disk, &sub, max_file_size)?,
             })
         }
     }
-
 }
 
 mod projector {
     use crate::disk_abstraction::Disk;
-    use crate::message_store::{IndexEntry, OnDiskMessageStore};
-    use crate::{Application, Database, DatabaseContext, Message, MessageId, Target};
-    use anyhow::Result;
-    use std::marker::PhantomData;
-    use std::time::{Duration, SystemTime};
-    use chrono::{DateTime, Utc};
     use crate::disk_access::FileAccessor;
+    use crate::message_store::{IndexEntry, OnDiskMessageStore};
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
+    use crate::{Application, Database, DatabaseContext, Message, MessageId, Target};
+    use anyhow::Result;
+    use chrono::{DateTime, Utc};
+    use std::marker::PhantomData;
+    use std::time::{Duration, SystemTime};
 
     pub(crate) struct Projector<APP: Application> {
         messages: OnDiskMessageStore<APP::Message>,
@@ -373,8 +368,11 @@ mod projector {
     }
 
     impl<APP: Application> Projector<APP> {
-
-        pub fn get_upstream_of(&self, message_id: &[MessageId], count: usize) -> Result<impl Iterator<Item=APP::Message>> {
+        pub fn get_upstream_of(
+            &self,
+            message_id: &[MessageId],
+            count: usize,
+        ) -> Result<impl Iterator<Item = APP::Message>> {
             self.messages.get_upstream_of(message_id, count)
         }
 
@@ -387,18 +385,21 @@ mod projector {
         }
 
         pub(crate) fn load_message(&self, id: MessageId) -> Result<APP::Message> {
-            Ok(self.messages.read_message(id)?
-                .ok_or_else(|| anyhow::anyhow!("Message not found"))?
-            )
+            Ok(self
+                .messages
+                .read_message(id)?
+                .ok_or_else(|| anyhow::anyhow!("Message not found"))?)
         }
 
         pub fn recover(&mut self) -> Result<()> {
-            self.messages.recover(
-                                  |id,parents|self.head_tracker.add_new_update_head(id,parents)
-            )
+            self.messages
+                .recover(|id, parents| self.head_tracker.add_new_update_head(id, parents))
         }
-        pub fn get_all_message_ids(&self) -> Result<&[IndexEntry]> {
+        pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
             self.messages.get_all_message_ids()
+        }
+        pub fn get_all_messages(&self) -> Result<Vec<APP::Message>> {
+            self.messages.get_all_messages()
         }
 
         pub(crate) fn new<D: Disk>(
@@ -419,13 +420,12 @@ mod projector {
             self.messages.mark_transmitted(message_id)
         }
 
-
         /// Returns true if the message did not exist and was inserted
         fn push_message(
             &mut self,
             context: &mut DatabaseContext,
             message: APP::Message,
-            local: bool
+            local: bool,
         ) -> Result<bool> {
             self.push_sorted_messages(context, std::iter::once(message), local)
         }
@@ -448,8 +448,11 @@ mod projector {
             messages: impl ExactSizeIterator<Item = APP::Message>,
             local: bool,
         ) -> Result<bool> {
-            if let Some(insert_point) = self.messages.append_many_sorted(messages, |id,parents|self.head_tracker.add_new_update_head(id,parents), local)? {
-
+            if let Some(insert_point) = self.messages.append_many_sorted(
+                messages,
+                |id, parents| self.head_tracker.add_new_update_head(id, parents),
+                local,
+            )? {
                 if let Some(cur_main_db_next_index) = context.next_seqnr().try_index() {
                     if insert_point < cur_main_db_next_index {
                         self.rewind(context, insert_point)?;
@@ -481,16 +484,14 @@ mod projector {
             &mut self,
             root: &mut APP::Root,
             context: &mut DatabaseContext,
-            time_now: DateTime<Utc>
+            time_now: DateTime<Utc>,
         ) -> Result<()> {
-
-            let cutoff = (time_now.timestamp_millis() as u64).saturating_sub(self.cutoff_interval.as_millis().try_into()?);
-
+            let cutoff = (time_now.timestamp_millis() as u64)
+                .saturating_sub(self.cutoff_interval.as_millis().try_into()?);
 
             let cur_seqnr = context.next_seqnr();
 
             context.clear_unused_tracking();
-
 
             let first_run = self
                 .messages
@@ -499,10 +500,14 @@ mod projector {
             match do_run::<APP>(context, root, first_run, cutoff)? {
                 RunResult::NeedRunAfterCutoff(next_run_start) => {
                     remove_stale_messages(self, context, true);
-                    let second_run = self
-                        .messages
-                        .query_by_index(next_run_start)?;
-                    let RunResult::Finished(before_cutoff) = do_run::<APP>(context, root, second_run, cutoff)? else {unreachable!("Second run _also_ encountered both before and after cutoff elements!")};
+                    let second_run = self.messages.query_by_index(next_run_start)?;
+                    let RunResult::Finished(before_cutoff) =
+                        do_run::<APP>(context, root, second_run, cutoff)?
+                    else {
+                        unreachable!(
+                            "Second run _also_ encountered both before and after cutoff elements!"
+                        )
+                    };
                     remove_stale_messages(self, context, before_cutoff);
                 }
                 RunResult::Finished(before_cutoff) => {
@@ -512,21 +517,22 @@ mod projector {
 
             enum RunResult {
                 NeedRunAfterCutoff(usize),
-                Finished(bool/*before cutoff*/)
+                Finished(bool /*before cutoff*/),
             }
 
             /// If returns true, need to finalize before-cutoff-part, then continue at given index
-            fn do_run<APP:Application>(
+            fn do_run<APP: Application>(
                 context: &mut DatabaseContext,
                 root: &mut APP::Root,
-                items: impl Iterator<Item=(usize, APP::Message)>, cutoff: u64) -> Result<RunResult> {
+                items: impl Iterator<Item = (usize, APP::Message)>,
+                cutoff: u64,
+            ) -> Result<RunResult> {
                 let mut seen_before_cutoff = false;
                 let mut last_element_was_before_cutoff = false;
-                for (seq, msg) in items
-                {
+                for (seq, msg) in items {
                     let seqnr = SequenceNr::from_index(seq);
                     let is_before_cutoff = msg.id().timestamp() < cutoff;
-                    if  is_before_cutoff {
+                    if is_before_cutoff {
                         seen_before_cutoff = true;
                     }
                     if !is_before_cutoff && seen_before_cutoff {
@@ -538,9 +544,13 @@ mod projector {
                 Ok(RunResult::Finished(last_element_was_before_cutoff))
             }
 
-
-            fn remove_stale_messages<APP:Application>(tself: &mut Projector<APP>, context: &mut DatabaseContext, before_cutoff: bool) -> Result<()> {
-                let must_remove = context.calculate_stale_messages(&mut tself.messages, before_cutoff)?;
+            fn remove_stale_messages<APP: Application>(
+                tself: &mut Projector<APP>,
+                context: &mut DatabaseContext,
+                before_cutoff: bool,
+            ) -> Result<()> {
+                let must_remove =
+                    context.calculate_stale_messages(&mut tself.messages, before_cutoff)?;
                 for index in must_remove {
                     tself.messages.mark_deleted_by_index(index.index());
                     //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
@@ -581,14 +591,13 @@ pub trait Object {
     unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self;
 }
 
-
-#[derive(Clone,Debug,Copy,Pod,Zeroable)]
+#[derive(Clone, Debug, Copy, Pod, Zeroable)]
 #[repr(transparent)]
-pub struct PodObject<T:Pod> {
+pub struct PodObject<T: Pod> {
     pub pod: T,
 }
 
-impl<T:Pod> Object for PodObject<T> {
+impl<T: Pod> Object for PodObject<T> {
     type Ptr = ThinPtr;
 
     unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
@@ -600,12 +609,9 @@ impl<T:Pod> Object for PodObject<T> {
     }
 }
 
+pub trait FixedSizeObject: Object<Ptr = ThinPtr> + Sized + Pod {}
 
-pub trait FixedSizeObject: Object<Ptr = ThinPtr> + Sized + Pod {
-}
-
-impl<T: Object<Ptr = ThinPtr> + Sized + Copy + Pod> FixedSizeObject for T {
-}
+impl<T: Object<Ptr = ThinPtr> + Sized + Copy + Pod> FixedSizeObject for T {}
 
 pub trait Application {
     type Root: Object + ?Sized;
@@ -654,7 +660,7 @@ impl Pointer for ThinPtr {
 }
 
 impl ThinPtr {
-    pub fn null()  -> ThinPtr {
+    pub fn null() -> ThinPtr {
         ThinPtr(0)
     }
 }
@@ -664,7 +670,6 @@ impl Pointer for FatPtr {
         self.start
     }
     fn create<T: ?Sized>(addr: &T, buffer_start: *const u8) -> Self {
-
         assert_eq!(
             std::mem::size_of::<*const T>(),
             2 * std::mem::size_of::<usize>()
@@ -693,14 +698,14 @@ impl<T: FixedSizeObject> Object for [T] {
 }
 
 pub mod data_types {
-    use std::fmt::{Debug, Formatter};
+    use crate::sequence_nr::SequenceNr;
     use crate::{Database, DatabaseContext, FatPtr, FixedSizeObject, Object, Pointer, ThinPtr};
     use bytemuck::{Pod, Zeroable};
+    use sha2::digest::typenum::Zero;
+    use std::fmt::{Debug, Formatter};
     use std::marker::PhantomData;
     use std::mem::transmute_copy;
     use std::ops::{Deref, Index, Range};
-    use sha2::digest::typenum::Zero;
-    use crate::sequence_nr::SequenceNr;
 
     #[derive(Copy, Clone)]
     #[repr(C)]
@@ -720,19 +725,17 @@ pub mod data_types {
     // TODO: The below (and same for DatabaseCell) are probably not actually sound.
     // There could be padding needed. We could avoid this by making sure SequenceNr
     // has alignment 1.
-    unsafe impl<T:Pod> Zeroable for OpaqueCell<T> {}
-    unsafe impl<T:Pod> Pod for OpaqueCell<T> {}
+    unsafe impl<T: Pod> Zeroable for OpaqueCell<T> {}
+    unsafe impl<T: Pod> Pod for OpaqueCell<T> {}
 
-
-    pub trait DatabaseCellArrayExt<T:Pod> {
+    pub trait DatabaseCellArrayExt<T: Pod> {
         fn observe(&self, context: &DatabaseContext) -> Vec<T>;
     }
-    impl<T:Pod> DatabaseCellArrayExt<T> for &[DatabaseCell<T>] {
+    impl<T: Pod> DatabaseCellArrayExt<T> for &[DatabaseCell<T>] {
         fn observe(&self, context: &DatabaseContext) -> Vec<T> {
-            self.iter().map(|x|x.get(context)).collect()
+            self.iter().map(|x| x.get(context)).collect()
         }
     }
-
 
     impl<T: Copy> Deref for DatabaseCell<T> {
         type Target = T;
@@ -762,7 +765,7 @@ pub mod data_types {
         }
     }
 
-    impl<T:Pod> Object for OpaqueCell<T> {
+    impl<T: Pod> Object for OpaqueCell<T> {
         type Ptr = ThinPtr;
 
         unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
@@ -844,7 +847,7 @@ pub mod data_types {
     }
     unsafe impl<T> Pod for RawDatabaseVec<T> where T: 'static {}
 
-    impl<T:'static> RawDatabaseVec<T> {
+    impl<T: 'static> RawDatabaseVec<T> {
         fn realloc_add(&mut self, ctx: &DatabaseContext, new_capacity: usize, new_len: usize) {
             debug_assert!(new_capacity >= new_len);
             debug_assert!(new_capacity >= self.capacity);
@@ -878,7 +881,7 @@ pub mod data_types {
                 return;
             }
             if self.capacity < new_length {
-                self.realloc_add(ctx, 2*new_length, new_length);
+                self.realloc_add(ctx, 2 * new_length, new_length);
             } else {
                 ctx.write_pod(new_length, &mut self.length);
             }
@@ -888,7 +891,7 @@ pub mod data_types {
             unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
         }
     }
-    impl<T:Pod+'static> RawDatabaseVec<T> {
+    impl<T: Pod + 'static> RawDatabaseVec<T> {
         pub(crate) fn get_slice(&self, context: &DatabaseContext, range: Range<usize>) -> &[T] {
             let offset = self.data + range.start * size_of::<T>();
             let len = range.end - range.start;
@@ -903,7 +906,11 @@ pub mod data_types {
             let offset = self.data;
             unsafe { context.access_slice_at(offset, self.length) }
         }
-        pub(crate) fn get_slice_mut(&self, context: &DatabaseContext, range: Range<usize>) -> &mut [T] {
+        pub(crate) fn get_slice_mut(
+            &self,
+            context: &DatabaseContext,
+            range: Range<usize>,
+        ) -> &mut [T] {
             let offset = self.data + range.start * size_of::<T>();
             let len = range.end - range.start;
 
@@ -926,7 +933,10 @@ pub mod data_types {
                 ctx.write_pod(val, ctx.access_pod_mut(ThinPtr(offset)));
             };
         }
-        pub(crate) fn push_untracked<'a>(&'a mut self, ctx: &DatabaseContext, t: T) -> ThinPtr where T:Pod{
+        pub(crate) fn push_untracked<'a>(&'a mut self, ctx: &DatabaseContext, t: T) -> ThinPtr
+        where
+            T: Pod,
+        {
             if self.length >= self.capacity {
                 self.realloc_add(ctx, (self.capacity + 1) * 2, self.length + 1);
             } else {
@@ -951,7 +961,6 @@ pub mod data_types {
         }
     }
 
-
     #[repr(C)]
     pub struct DatabaseVec<T> {
         length: usize,
@@ -973,7 +982,7 @@ pub mod data_types {
 
     unsafe impl<T> Pod for DatabaseVec<T> where T: 'static {}
 
-    impl<T:'static> DatabaseVec<T> {
+    impl<T: 'static> DatabaseVec<T> {
         fn realloc_add(&mut self, ctx: &mut DatabaseContext, new_capacity: usize, new_len: usize) {
             debug_assert!(new_capacity >= new_len);
             debug_assert!(new_capacity >= self.capacity);
@@ -1175,16 +1184,19 @@ impl Target {
 
 pub mod database {
     use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
-    use crate::projector::Projector;
-    use crate::{Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Object, Pointer, Target, MessageId, MessageComponent, Message};
-    use anyhow::{Context, Result};
-    use std::path::{Path, PathBuf};
-    use std::time::{Duration, SystemTime};
-    use chrono::{DateTime, Utc};
     use crate::disk_access::FileAccessor;
     use crate::message_store::IndexEntry;
+    use crate::projector::Projector;
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
+    use crate::{
+        Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Message, MessageComponent, MessageId,
+        Object, Pointer, Target,
+    };
+    use anyhow::{Context, Result};
+    use chrono::{DateTime, Utc};
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
 
     pub struct Database<Base: Application> {
         context: DatabaseContext,
@@ -1204,7 +1216,11 @@ pub mod database {
             self.message_store.contains_message(message_id)
         }
 
-        pub fn get_upstream_of(&self, message_id: &[MessageId], count: usize) -> Result<impl Iterator<Item=APP::Message>> {
+        pub fn get_upstream_of(
+            &self,
+            message_id: &[MessageId],
+            count: usize,
+        ) -> Result<impl Iterator<Item = APP::Message>> {
             self.message_store.get_upstream_of(message_id, count)
         }
 
@@ -1216,10 +1232,12 @@ pub mod database {
             self.message_store.get_update_heads()
         }
 
-        pub fn get_all_message_ids(&self) -> Result<&[IndexEntry]> {
+        pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
             self.message_store.get_all_message_ids()
         }
-
+        pub fn get_all_messages(&self) -> Result<Vec<APP::Message>> {
+            self.message_store.get_all_messages()
+        }
         pub fn get_root(&self) -> (&APP::Root, &DatabaseContext) {
             let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
             let root = unsafe { <APP::Root as Object>::access(&self.context, root_ptr) };
@@ -1228,7 +1246,7 @@ pub mod database {
         }
 
         pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
-            self.time_override.unwrap_or_else(||Utc::now())
+            self.time_override.unwrap_or_else(|| Utc::now())
         }
 
         pub(crate) fn with_root_mut<R>(
@@ -1238,7 +1256,12 @@ pub mod database {
             let now = self.now();
             if !self.context.mark_dirty()? {
                 // Recovery needed
-                Self::recover(&mut self.app, &mut self.context, &mut self.message_store, now)?;
+                Self::recover(
+                    &mut self.app,
+                    &mut self.context,
+                    &mut self.message_store,
+                    now,
+                )?;
             }
 
             let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
@@ -1255,7 +1278,12 @@ pub mod database {
             // TODO: Reduce code duplication - mark_dirty etc exists in many methods
             if !self.context.mark_dirty()? {
                 // Recovery needed
-                Self::recover(&mut self.app, &mut self.context, &mut self.message_store, now)?;
+                Self::recover(
+                    &mut self.app,
+                    &mut self.context,
+                    &mut self.message_store,
+                    now,
+                )?;
             }
 
             self.message_store.rewind(&mut self.context, 0)?;
@@ -1274,7 +1302,7 @@ pub mod database {
             app: &mut APP,
             context: &mut DatabaseContext,
             message_store: &mut Projector<APP>,
-            time_now: chrono::DateTime<Utc>
+            time_now: chrono::DateTime<Utc>,
         ) -> Result<()> {
             context.clear()?;
 
@@ -1290,8 +1318,6 @@ pub mod database {
             //let root = context.access_pod(root_ptr);
             message_store.apply_missing_messages(root, context, time_now)?;
 
-
-
             Ok(())
         }
 
@@ -1301,7 +1327,7 @@ pub mod database {
             app: APP,
             overwrite_existing: bool,
             max_file_size: usize,
-            cutoff_interval: Duration
+            cutoff_interval: Duration,
         ) -> Result<Database<APP>> {
             Self::create(
                 app,
@@ -1311,20 +1337,20 @@ pub mod database {
                     Target::CreateNew(path.as_ref().to_path_buf())
                 },
                 max_file_size,
-                cutoff_interval
+                cutoff_interval,
             )
         }
         pub fn open(
             path: impl AsRef<Path>,
             app: APP,
             max_file_size: usize,
-            cutoff_interval: Duration
+            cutoff_interval: Duration,
         ) -> Result<Database<APP>> {
             Self::create(
                 app,
                 Target::OpenExisting(path.as_ref().to_path_buf()),
                 max_file_size,
-                cutoff_interval
+                cutoff_interval,
             )
         }
 
@@ -1346,11 +1372,20 @@ pub mod database {
             self.message_store.mark_transmitted(message_id)
         }
 
-        pub fn append_many(&mut self, messages: impl Iterator<Item = APP::Message>, local: bool) -> Result<()> {
+        pub fn append_many(
+            &mut self,
+            messages: impl Iterator<Item = APP::Message>,
+            local: bool,
+        ) -> Result<()> {
             let now = self.now();
             if !self.context.mark_dirty()? {
                 // Recovery needed
-                Self::recover(&mut self.app, &mut self.context, &mut self.message_store, now)?;
+                Self::recover(
+                    &mut self.app,
+                    &mut self.context,
+                    &mut self.message_store,
+                    now,
+                )?;
             }
 
             self.message_store
@@ -1386,7 +1421,12 @@ pub mod database {
         /// Create a database residing entirely in memory.
         /// This is mostly useful for tests
         // TODO: Use builder pattern?
-        pub fn create_in_memory(mut app: APP, max_size: usize, cutoff_interval: Duration, mock_time: Option<chrono::DateTime<Utc>>) -> Result<Database<APP>> {
+        pub fn create_in_memory(
+            mut app: APP,
+            max_size: usize,
+            cutoff_interval: Duration,
+            mock_time: Option<chrono::DateTime<Utc>>,
+        ) -> Result<Database<APP>> {
             Self::set_multi_instance_block();
             let mut disk = InMemoryDisk::default();
             let target = Target::CreateNew(PathBuf::default());
@@ -1394,7 +1434,12 @@ pub mod database {
                 .context("creating database in memory")?;
             let mut message_store = Projector::new(&mut disk, &target, max_size, cutoff_interval)?;
 
-            Self::recover(&mut app, &mut ctx, &mut message_store, mock_time.unwrap_or_else(||Utc::now()))?;
+            Self::recover(
+                &mut app,
+                &mut ctx,
+                &mut message_store,
+                mock_time.unwrap_or_else(|| Utc::now()),
+            )?;
             ctx.mark_clean()?;
 
             Ok(Database {
@@ -1405,7 +1450,12 @@ pub mod database {
             })
         }
 
-        fn create(mut app: APP, target: Target, max_file_size: usize, cutoff_interval: Duration) -> Result<Database<APP>> {
+        fn create(
+            mut app: APP,
+            target: Target,
+            max_file_size: usize,
+            cutoff_interval: Duration,
+        ) -> Result<Database<APP>> {
             Self::set_multi_instance_block();
             let mut disk = StandardDisk;
 
@@ -1414,8 +1464,9 @@ pub mod database {
 
             let is_dirty = ctx.is_dirty();
 
-            let mut message_store = Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
-            let mut update_heads = disk.open_file(&target, "update_heads", 0, 128*1024*1024)?;
+            let mut message_store =
+                Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
+            let mut update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
             if is_dirty {
                 Self::recover(&mut app, &mut ctx, &mut message_store, Utc::now())?;
                 ctx.mark_clean()?;
@@ -1424,7 +1475,7 @@ pub mod database {
                 context: ctx,
                 app,
                 message_store,
-                time_override: None
+                time_override: None,
             })
         }
     }
@@ -1435,14 +1486,13 @@ pub mod database {
     }
 }
 
-
 pub mod distributor {
-    use std::collections::HashSet;
+    use crate::{Application, Database, Message, MessageId};
+    use anyhow::Result;
     use indexmap::{IndexMap, IndexSet};
     use libc::send;
     use savefile_derive::Savefile;
-    use crate::{Application, Database, Message, MessageId};
-    use anyhow::Result;
+    use std::collections::HashSet;
 
     // Principle
     // The node that is 'most ahead' (highest MessageId) has responsibility.
@@ -1450,31 +1500,28 @@ pub mod distributor {
     // Otherwise:
     // Must request messages until it has complete picture
 
-    #[derive(Debug, Savefile)]
+    #[derive(Debug, Savefile, Clone)]
     pub struct SerializedMessage {
-        data: Vec<u8>
+        data: Vec<u8>,
     }
     impl SerializedMessage {
-        pub fn to_message<M:Message>(&self, data: &[u8]) -> Result<M> {
+        pub fn to_message<M: Message>(&self, data: &[u8]) -> Result<M> {
             M::deserialize(data)
         }
-        pub fn new<M:Message>(m: M) -> Result<SerializedMessage> {
+        pub fn new<M: Message>(m: M) -> Result<SerializedMessage> {
             let mut data = vec![];
             m.serialize(&mut data)?;
-            Ok(SerializedMessage {
-                data
-            })
+            Ok(SerializedMessage { data })
         }
     }
 
-
-    #[derive(Debug, Savefile)]
+    #[derive(Debug, Savefile, Clone)]
     pub struct MessageSubGraphNode {
         id: MessageId,
-        parents: Vec<MessageId>
+        parents: Vec<MessageId>,
     }
 
-    #[derive(Debug, Savefile)]
+    #[derive(Debug, Savefile, Clone)]
     pub enum DistributorMessage {
         /// Report all update heads for the sender
         ReportHeads(Vec<MessageId>),
@@ -1493,24 +1540,29 @@ pub mod distributor {
         SendMessageAndAllDescendants {
             message_id: Vec<MessageId>,
         },
-        Message(SerializedMessage)
+        Message(SerializedMessage),
     }
 
-    pub struct Distributor {
-
-    }
+    pub struct Distributor {}
 
     impl Distributor {
         /// Call this to retrieve a message that should be sent periodically
-        pub fn get_periodic_message<APP:Application>(&self, database: &Database<APP>) -> DistributorMessage {
+        pub fn get_periodic_message<APP: Application>(
+            &self,
+            database: &Database<APP>,
+        ) -> DistributorMessage {
             DistributorMessage::ReportHeads(
-                database.get_update_heads().into_iter().copied().collect()
+                database.get_update_heads().into_iter().copied().collect(),
             )
         }
 
         /// Call this with an incoming, received message.
         /// The return is a set of messages that must be sent as a result of the incoming message.
-        pub fn receive_message<APP:Application>(&self, database: &mut Database<APP>, message: DistributorMessage) -> Result<Vec<DistributorMessage>> {
+        pub fn receive_message<APP: Application>(
+            &self,
+            database: &mut Database<APP>,
+            message: DistributorMessage,
+        ) -> Result<Vec<DistributorMessage>> {
             let mut output = vec![];
             match message {
                 DistributorMessage::ReportHeads(messages) => {
@@ -1526,19 +1578,24 @@ pub mod distributor {
                 }
                 DistributorMessage::RequestUpstream { query, count } => {
                     let mut response: IndexMap<MessageId, APP::Message> = IndexMap::new();
-                    let messages: Vec<MessageSubGraphNode> = database.get_upstream_of(&query, count)?.map(|msg|{
-                        MessageSubGraphNode {
+                    let messages: Vec<MessageSubGraphNode> = database
+                        .get_upstream_of(&query, count)?
+                        .map(|msg| MessageSubGraphNode {
                             id: msg.id(),
-                            parents: msg.parents().collect()
-                        }
-                    }).collect();
+                            parents: msg.parents().collect(),
+                        })
+                        .collect();
                     output.push(DistributorMessage::UpstreamResponse {
                         query,
                         count,
                         messages,
                     })
                 }
-                DistributorMessage::UpstreamResponse { query, count, messages } => {
+                DistributorMessage::UpstreamResponse {
+                    query,
+                    count,
+                    messages,
+                } => {
                     let mut unknowns: HashSet<MessageId> = HashSet::new();
                     let mut send_cmds = vec![];
                     for msg in messages {
@@ -1546,11 +1603,16 @@ pub mod distributor {
                             continue; //We already have this one
                         }
                         let mut err = Ok(());
-                        let have_all_parents = msg.parents.iter().all(|x|
-                                                                          database.contains_message(*x).map_err(|e| {err=Err(e);}).is_ok());
+                        let have_all_parents = msg.parents.iter().all(|x| {
+                            database
+                                .contains_message(*x)
+                                .map_err(|e| {
+                                    err = Err(e);
+                                })
+                                .is_ok()
+                        });
                         err?;
-                        if have_all_parents
-                         {
+                        if have_all_parents {
                             // We have all the parents, a perfect msg to request!
                             send_cmds.push(msg.id);
                             continue;
@@ -1558,21 +1620,29 @@ pub mod distributor {
                         unknowns.extend(msg.parents);
                     }
                     if send_cmds.is_empty() == false {
-                        output.push(DistributorMessage::SendMessageAndAllDescendants { message_id: send_cmds});
+                        output.push(DistributorMessage::SendMessageAndAllDescendants {
+                            message_id: send_cmds,
+                        });
                     }
                     if unknowns.is_empty() == false {
-                        output.push(DistributorMessage::RequestUpstream {query: unknowns.into_iter().collect(), count: 2*count});
+                        output.push(DistributorMessage::RequestUpstream {
+                            query: unknowns.into_iter().collect(),
+                            count: 2 * count,
+                        });
                     }
                 }
                 DistributorMessage::SendMessageAndAllDescendants { message_id } => {
-                    for msg in message_id.iter().map(|x|database.load_message(*x)) {
+                    for msg in message_id.iter().map(|x| database.load_message(*x)) {
                         let msg = msg?;
                         output.push(DistributorMessage::Message(SerializedMessage::new(msg)?));
                     }
                 }
                 DistributorMessage::Message(msg) => {
                     let message = msg.to_message(&msg.data)?;
+
+                    println!("==========================================\nAppend message: {:?}", message);
                     database.append_many(std::iter::once(message), true)?;
+                    println!("All message ides: {:?}", database.get_all_message_ids());
                 }
             }
             Ok(output)
@@ -1580,28 +1650,26 @@ pub mod distributor {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use crate::sequence_nr::SequenceNr;
     use super::*;
+    use crate::data_types::DatabaseCellArrayExt;
     use crate::disk_access::FileAccessor;
+    use crate::distributor::DistributorMessage;
     use crate::projection_store::{MainDbAuxHeader, MainDbHeader};
+    use crate::sequence_nr::SequenceNr;
     use byteorder::{LittleEndian, WriteBytesExt};
+    use chrono::{NaiveDate, Utc};
     use data_types::DatabaseCell;
     use data_types::DatabaseObjectHandle;
     use data_types::DatabaseVec;
     use database::Database;
+    use datetime_literal::datetime;
     use savefile::{load_noschema, save_noschema};
     use savefile_derive::Savefile;
     use sha2::{Digest, Sha256};
     use std::io::{Cursor, SeekFrom};
     use test::Bencher;
-    use chrono::{NaiveDate, Utc};
-    use crate::data_types::DatabaseCellArrayExt;
-    use crate::distributor::DistributorMessage;
-    use datetime_literal::datetime;
-
 
     #[test]
     fn test_mmap_big() {
@@ -1768,8 +1836,14 @@ mod tests {
 
     #[test]
     fn test1() {
-        let mut db: Database<CounterApplication> =
-            Database::create_new("test/test1.bin", CounterApplication, true, 1000, Duration::from_secs(1000)).unwrap();
+        let mut db: Database<CounterApplication> = Database::create_new(
+            "test/test1.bin",
+            CounterApplication,
+            true,
+            1000,
+            Duration::from_secs(1000),
+        )
+        .unwrap();
 
         db.with_root_mut(|counter, context| {
             assert_eq!(counter.counter.get(context), 0);
@@ -1825,32 +1899,47 @@ mod tests {
 
     #[test]
     fn test_msg_store_real() {
-        let mut db: Database<CounterApplication> =
-            Database::create_new("test/msg_store.bin", CounterApplication, true, 10000, Duration::from_secs(1000)).unwrap();
+        let mut db: Database<CounterApplication> = Database::create_new(
+            "test/msg_store.bin",
+            CounterApplication,
+            true,
+            10000,
+            Duration::from_secs(1000),
+        )
+        .unwrap();
 
-        db.append_single(CounterMessage {
-            parent: vec![],
-            id: MessageId::new_debug(0x100),
-            inc1: 2,
-            set1: 0,
-        }, true)
+        db.append_single(
+            CounterMessage {
+                parent: vec![],
+                id: MessageId::new_debug(0x100),
+                inc1: 2,
+                set1: 0,
+            },
+            true,
+        )
         .unwrap();
 
         db.mark_transmitted(MessageId::new_debug(0x100));
 
-        db.append_single(CounterMessage {
-            parent: vec!(MessageId::new_debug(0x100)),
-            id: MessageId::new_debug(0x101),
-            inc1: 0,
-            set1: 42,
-        }, true)
+        db.append_single(
+            CounterMessage {
+                parent: vec![MessageId::new_debug(0x100)],
+                id: MessageId::new_debug(0x101),
+                inc1: 0,
+                set1: 42,
+            },
+            true,
+        )
         .unwrap();
-        db.append_single(CounterMessage {
-            parent: vec!(MessageId::new_debug(0x101)),
-            id: MessageId::new_debug(0x102),
-            inc1: 1,
-            set1: 0,
-        }, true)
+        db.append_single(
+            CounterMessage {
+                parent: vec![MessageId::new_debug(0x101)],
+                id: MessageId::new_debug(0x102),
+                inc1: 1,
+                set1: 0,
+            },
+            true,
+        )
         .unwrap();
 
         println!("Update heads: {:?}", db.get_update_heads());
@@ -1863,29 +1952,43 @@ mod tests {
 
     #[test]
     fn test_msg_store_inmem_miri() {
-        let mut db: Database<CounterApplication> =
-            Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
+        let mut db: Database<CounterApplication> = Database::create_in_memory(
+            CounterApplication,
+            10000,
+            Duration::from_secs(1000),
+            Some(datetime!(2021-01-01 Z)),
+        )
+        .unwrap();
 
-        db.append_single(CounterMessage {
-            parent: vec![],
-            id: MessageId::new_debug(0x100),
-            inc1: 2,
-            set1: 0,
-        }, true)
+        db.append_single(
+            CounterMessage {
+                parent: vec![],
+                id: MessageId::new_debug(0x100),
+                inc1: 2,
+                set1: 0,
+            },
+            true,
+        )
         .unwrap();
-        db.append_single(CounterMessage {
-            parent: vec!(MessageId::new_debug(0x100)),
-            id: MessageId::new_debug(0x101),
-            inc1: 0,
-            set1: 42,
-        }, true)
+        db.append_single(
+            CounterMessage {
+                parent: vec![MessageId::new_debug(0x100)],
+                id: MessageId::new_debug(0x101),
+                inc1: 0,
+                set1: 42,
+            },
+            true,
+        )
         .unwrap();
-        db.append_single(CounterMessage {
-            parent: vec!(MessageId::new_debug(0x101)),
-            id: MessageId::new_debug(0x102),
-            inc1: 1,
-            set1: 0,
-        }, true)
+        db.append_single(
+            CounterMessage {
+                parent: vec![MessageId::new_debug(0x101)],
+                id: MessageId::new_debug(0x102),
+                inc1: 1,
+                set1: 0,
+            },
+            true,
+        )
         .unwrap();
 
         // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
@@ -1900,39 +2003,51 @@ mod tests {
 
     #[test]
     fn test_msg_store_after_cutoff_inmem_miri() {
-        let mut db: Database<CounterApplication> =
-            Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000),
-                Some(datetime!(2024-01-01 Z))
-            ).unwrap();
+        let mut db: Database<CounterApplication> = Database::create_in_memory(
+            CounterApplication,
+            10000,
+            Duration::from_secs(1000),
+            Some(datetime!(2024-01-01 Z)),
+        )
+        .unwrap();
 
-        let m1 = MessageId::from_parts(datetime!(2024-01-01 Z), [0u8;10]).unwrap();
-        db.append_single(CounterMessage {
-            parent: vec![],
-            id: m1,
-            inc1: 2,
-            set1: 0,
-        }, true)
-            .unwrap();
+        let m1 = MessageId::from_parts(datetime!(2024-01-01 Z), [0u8; 10]).unwrap();
+        db.append_single(
+            CounterMessage {
+                parent: vec![],
+                id: m1,
+                inc1: 2,
+                set1: 0,
+            },
+            true,
+        )
+        .unwrap();
         db.mark_transmitted(m1).unwrap();
-        let m2 = MessageId::from_parts(datetime!(2024-01-01 Z), [1u8;10]).unwrap();
-        db.append_single(CounterMessage {
-            parent: vec!(MessageId::new_debug(0x100)),
-            id: m2,
-            inc1: 0,
-            set1: 42,
-        }, true)
-            .unwrap();
+        let m2 = MessageId::from_parts(datetime!(2024-01-01 Z), [1u8; 10]).unwrap();
+        db.append_single(
+            CounterMessage {
+                parent: vec![MessageId::new_debug(0x100)],
+                id: m2,
+                inc1: 0,
+                set1: 42,
+            },
+            true,
+        )
+        .unwrap();
         db.set_mock_time(datetime!(2024-01-10 Z));
         db.reproject().unwrap();
         println!("Appending 2nd");
-        let m3 = MessageId::from_parts(datetime!(2024-01-10 Z), [2u8;10]).unwrap();
-        db.append_single(CounterMessage {
-            parent: vec!(MessageId::new_debug(0x101)),
-            id: m3,
-            inc1: 1,
-            set1: 0,
-        }, true)
-            .unwrap();
+        let m3 = MessageId::from_parts(datetime!(2024-01-10 Z), [2u8; 10]).unwrap();
+        db.append_single(
+            CounterMessage {
+                parent: vec![MessageId::new_debug(0x101)],
+                id: m3,
+                inc1: 1,
+                set1: 0,
+            },
+            true,
+        )
+        .unwrap();
 
         assert!(!db.contains_message(m1).unwrap());
         assert!(db.contains_message(m2).unwrap());
@@ -1946,38 +2061,50 @@ mod tests {
     #[test]
     fn test_cutoff_handling() {
         let mut db: Database<CounterApplication> =
-            Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), None).unwrap();
+            Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), None)
+                .unwrap();
 
-        db.append_single(CounterMessage {
-            parent: vec![],
-            id: MessageId::new_debug(0x100),
-            inc1: 2,
-            set1: 0,
-        }, true)
-            .unwrap();
-        db.append_single(CounterMessage {
-            parent: vec!(MessageId::new_debug(0x100)),
-            id: MessageId::new_debug(0x101),
-            inc1: 0,
-            set1: 42,
-        }, true)
-            .unwrap();
-        db.append_single(CounterMessage {
-            parent: vec!(MessageId::new_debug(0x101)),
-            id: MessageId::new_debug(0x102),
-            inc1: 1,
-            set1: 0,
-        }, true)
-            .unwrap();
+        db.append_single(
+            CounterMessage {
+                parent: vec![],
+                id: MessageId::new_debug(0x100),
+                inc1: 2,
+                set1: 0,
+            },
+            true,
+        )
+        .unwrap();
+        db.append_single(
+            CounterMessage {
+                parent: vec![MessageId::new_debug(0x100)],
+                id: MessageId::new_debug(0x101),
+                inc1: 0,
+                set1: 42,
+            },
+            true,
+        )
+        .unwrap();
+        db.append_single(
+            CounterMessage {
+                parent: vec![MessageId::new_debug(0x101)],
+                id: MessageId::new_debug(0x102),
+                inc1: 1,
+                set1: 0,
+            },
+            true,
+        )
+        .unwrap();
 
         let mut d = distributor::Distributor {};
 
         println!("Heads: {:?}", d.get_periodic_message(&db));
 
-        let r = d.receive_message(&mut db, DistributorMessage::RequestUpstream {
-            query: vec![MessageId::new_debug(0x102)],
-            count: 2
-        }).unwrap();
+        let r = d
+            .receive_message(&mut db, DistributorMessage::RequestUpstream {
+                query: vec![MessageId::new_debug(0x102)],
+                count: 2,
+            })
+            .unwrap();
         println!("Clarify: {:?}", r);
 
         // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
@@ -1986,7 +2113,6 @@ mod tests {
             assert_eq!(root.counter.get(context), 43);
         });
     }
-
 
     #[test]
     fn test_handle() {
@@ -2003,8 +2129,14 @@ mod tests {
             }
         }
 
-        let mut db: Database<HandleApplication> =
-            Database::create_new("test/test_handle.bin", HandleApplication, true, 1000, Duration::from_secs(1000)).unwrap();
+        let mut db: Database<HandleApplication> = Database::create_new(
+            "test/test_handle.bin",
+            HandleApplication,
+            true,
+            1000,
+            Duration::from_secs(1000),
+        )
+        .unwrap();
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
@@ -2020,16 +2152,22 @@ mod tests {
             type Message = DummyMessage<DatabaseObjectHandle<[DatabaseCell<u8>]>>;
 
             fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
-                let obj = DatabaseObjectHandle::allocate_unsized(&ctx, [
-                    43u8, 45
-                ].map(|x|DatabaseCell::new(x)).as_slice());
+                let obj = DatabaseObjectHandle::allocate_unsized(
+                    &ctx,
+                    [43u8, 45].map(|x| DatabaseCell::new(x)).as_slice(),
+                );
 
                 ctx.index_of(obj)
             }
         }
 
-        let mut db: Database<HandleApplication> =
-            Database::create_in_memory(HandleApplication, 1000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
+        let mut db: Database<HandleApplication> = Database::create_in_memory(
+            HandleApplication,
+            1000,
+            Duration::from_secs(1000),
+            Some(datetime!(2021-01-01 Z)),
+        )
+        .unwrap();
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
@@ -2051,8 +2189,13 @@ mod tests {
             }
         }
 
-        let mut db: Database<HandleApplication> =
-            Database::create_in_memory(HandleApplication, 1000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
+        let mut db: Database<HandleApplication> = Database::create_in_memory(
+            HandleApplication,
+            1000,
+            Duration::from_secs(1000),
+            Some(datetime!(2021-01-01 Z)),
+        )
+        .unwrap();
 
         let app = HandleApplication;
         let (handle, context) = db.get_root();
@@ -2079,8 +2222,14 @@ mod tests {
             type Message = DummyMessage<DatabaseVec<CounterObject>>;
         }
 
-        let mut db: Database<CounterVecApplication> =
-            Database::create_new("test/test_vec0", CounterVecApplication, true, 10000, Duration::from_secs(1000)).unwrap();
+        let mut db: Database<CounterVecApplication> = Database::create_new(
+            "test/test_vec0",
+            CounterVecApplication,
+            true,
+            10000,
+            Duration::from_secs(1000),
+        )
+        .unwrap();
         db.with_root_mut(|counter_vec, context| {
             assert_eq!(counter_vec.len(context), 0);
 
@@ -2122,8 +2271,13 @@ mod tests {
             type Message = DummyMessage<DatabaseVec<CounterObject>>;
         }
 
-        let mut db: Database<CounterVecApplication> =
-            Database::create_in_memory(CounterVecApplication, 10000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
+        let mut db: Database<CounterVecApplication> = Database::create_in_memory(
+            CounterVecApplication,
+            10000,
+            Duration::from_secs(1000),
+            Some(datetime!(2021-01-01 Z)),
+        )
+        .unwrap();
         db.with_root_mut(|counter_vec, context| {
             assert_eq!(counter_vec.len(context), 0);
 
@@ -2165,8 +2319,14 @@ mod tests {
             type Message = DummyMessage<DatabaseVec<CounterObject>>;
         }
 
-        let mut db: Database<CounterVecApplication> =
-            Database::create_new("test/vec_undo", CounterVecApplication, true, 10000, Duration::from_secs(1000)).unwrap();
+        let mut db: Database<CounterVecApplication> = Database::create_new(
+            "test/vec_undo",
+            CounterVecApplication,
+            true,
+            10000,
+            Duration::from_secs(1000),
+        )
+        .unwrap();
 
         {
             db.with_root_mut(|counter_vec, context| {
@@ -2215,50 +2375,138 @@ mod tests {
     }
 
     mod distributor_tests {
-        use std::time::Duration;
-        use datetime_literal::datetime;
-        use crate::{Database, MessageId};
+        use crate::distributor::DistributorMessage::Message;
         use crate::distributor::{Distributor, DistributorMessage};
         use crate::tests::{CounterApplication, CounterMessage};
+        use crate::{Database, MessageId};
+        use datetime_literal::datetime;
+        use std::time::Duration;
+        use chrono::DateTime;
+        use chrono::Utc;
+        use std::mem::swap;
 
-        fn create_app(id: u64,
-                      msgs: impl IntoIterator<Item=(MessageId,&'static [MessageId],i32,u32,bool/*local*/)>
+        fn create_app(
+            id: u64,
+            msgs: impl IntoIterator<
+                Item = (
+                    DateTime<Utc>,
+                    &'static [DateTime<Utc>],
+                    i32,
+                    u32,
+                    bool, /*local*/
+                ),
+            >,
         ) -> Database<CounterApplication> {
-            let mut db: Database<CounterApplication> =
-                Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), Some(datetime!(2021-01-01 Z))).unwrap();
-            let message_id = MessageId::from_parts_for_test(datetime!(2021-01-01 Z), id);
-            for (id,parents,inc1,set1,local) in msgs {
-                db.append_single(CounterMessage{
-                    id:message_id,
-                    parent: parents.iter().copied().collect(),
-                    inc1,
-                    set1,
-                }, local);
+            let mut db: Database<CounterApplication> = Database::create_in_memory(
+                CounterApplication,
+                10000,
+                Duration::from_secs(1000),
+                Some(datetime!(2021-01-01 Z)),
+            )
+            .unwrap();
+            for (id, parents, inc1, set1, local) in msgs {
+                db.append_single(
+                    CounterMessage {
+                        id: MessageId::from_parts_for_test(id, 0),
+                        parent: parents
+                            .iter()
+                            .copied()
+                            .map(|x| MessageId::from_parts_for_test(x, 0))
+                            .collect(),
+                        inc1,
+                        set1,
+                    },
+                    local,
+                );
             }
+            println!("Messages present: {:?}", db.get_all_message_ids());
             db
         }
 
-        fn sync(db1: Database<CounterApplication>, db2: Database<CounterApplication>) {
+        fn sync(dbs: Vec<Database<CounterApplication>>) {
+            let mut dbs: Vec<(Distributor,Database<_>)> = dbs.into_iter().map(|x|(Distributor{},x)).collect();
+            let mut ether = vec![];
+            for (db_id, (distr,db)) in dbs.iter().enumerate() {
+                let sent = distr.get_periodic_message(db);
+                println!("db: {:?} sent initial {:?}", db_id, sent);
+                ether.push((db_id,sent));
+            }
+            let mut next_ether = vec![];
+            loop {
+                for (db_id,(distr,db)) in dbs.iter_mut().enumerate() {
+                    for (src_id,msg) in ether.iter() {
+                        if *src_id == db_id { continue; }
+                        let sent = distr.receive_message(db, (*msg).clone()).unwrap();
+                        println!("db: {:?} sent {:?}", db_id, sent);
+                        next_ether.extend(sent.into_iter().map(|x|(db_id,x)));
+                    }
+                }
+                if next_ether.is_empty() {
+                    break;
+                }
+                swap(&mut ether, &mut next_ether);
+                next_ether.clear();
+            }
 
+            let first_set:Vec<_> = dbs[0].1.get_all_message_ids().unwrap();
+            for (distr,db) in dbs.iter().skip(1) {
+                assert_eq!(first_set, db.get_all_message_ids().unwrap());
+            }
         }
 
         #[test]
-        fn distributor1() {
-
+        #[rustfmt::skip]
+        fn distributor_simple_unsync() {
+            let dbs = vec![
+                create_app(1,
+                    [
+                        (datetime!(2021-01-01 00:00:00 Z),[].as_slice(),1,0,true),
+                        (datetime!(2021-01-02 00:00:00 Z),[datetime!(2021-01-01 00:00:00 Z)].as_slice(),2,0,true),
+                    ]),
+                create_app(2,
+                    [
+                        (datetime!(2021-01-03 00:00:00 Z),[].as_slice(),3,0,true),
+                    ]),
+            ];
+            sync(dbs);
         }
 
+        #[test]
+        #[rustfmt::skip]
+        fn distributor_simple_in_sync() {
+            let dbs = vec![
+                create_app(1,
+                    [
+                        (datetime!(2021-01-01 00:00:00 Z),[].as_slice(),1,0,true),
+                    ]),
+                create_app(2,
+                    [
+                        (datetime!(2021-01-01 00:00:00 Z),[].as_slice(),1,0,true),
+                    ]),
+            ];
+            sync(dbs);
+        }
+
+        #[test]
+        #[rustfmt::skip]
+        fn distributor_simple_almost_sync() {
+            let dbs = vec![
+                create_app(1,
+                    [
+                        (datetime!(2021-01-01 00:00:00 Z),[].as_slice(),1,0,true),
+                        (datetime!(2021-01-02 00:00:00 Z),[datetime!(2021-01-01 00:00:00 Z)].as_slice(),2,0,true),
+                    ]),
+                create_app(2,
+                    [
+                        (datetime!(2021-01-01 00:00:00 Z),[].as_slice(),1,0,true),
+                    ]),
+            ];
+            sync(dbs);
+        }
         #[test]
         fn test_distributor() {
-            let mut app1 = create_app(1,
-                                      [(MessageId::from_parts_for_test(datetime!(2021-01-01 Z), 1)
-                                        ,[].as_slice(),
-                                        1,0,true)]
-            );
-            let mut app2 = create_app(2,
-                                      [(MessageId::from_parts_for_test(datetime!(2021-01-01 Z), 2)
-                                          ,[].as_slice(),
-                                      1,0,true)]
-            );
+            let mut app1 = create_app(1, [(datetime!(2021-01-01 Z), [].as_slice(), 1, 0, true)]);
+            let mut app2 = create_app(2, [(datetime!(2021-01-02 Z), [].as_slice(), 1, 0, true)]);
 
             let dist1 = crate::distributor::Distributor {};
             let dist2 = crate::distributor::Distributor {};
@@ -2273,29 +2521,34 @@ mod tests {
             insta::assert_debug_snapshot!(result);
             assert_eq!(result.len(), 1);
 
-            let mut result = dist1.receive_message(&mut app1, result.pop().unwrap()).unwrap();
+            let mut result = dist1
+                .receive_message(&mut app1, result.pop().unwrap())
+                .unwrap();
             println!("dist1 sent: {:?}", result);
             insta::assert_debug_snapshot!(result);
             assert_eq!(result.len(), 1);
 
-            let mut result = dist2.receive_message(&mut app2, result.pop().unwrap()).unwrap();
+            let mut result = dist2
+                .receive_message(&mut app2, result.pop().unwrap())
+                .unwrap();
             println!("dist2 sent: {:?}", result);
             insta::assert_debug_snapshot!(result);
 
-            let mut result = dist1.receive_message(&mut app1, result.pop().unwrap()).unwrap();
+            let mut result = dist1
+                .receive_message(&mut app1, result.pop().unwrap())
+                .unwrap();
             println!("dist1 sent: {:?}", result);
             assert!(matches!(&result[0], DistributorMessage::Message(_)));
             assert_eq!(result.len(), 1);
 
-            let mut result = dist2.receive_message(&mut app2, result.pop().unwrap()).unwrap();
+            let mut result = dist2
+                .receive_message(&mut app2, result.pop().unwrap())
+                .unwrap();
             println!("App2 all msgs: {:?}", app2.get_all_message_ids().unwrap());
             println!("App2 update heads: {:?}", app2.get_update_heads());
 
             insta::assert_debug_snapshot!(app2.get_all_message_ids().unwrap());
             insta::assert_debug_snapshot!(app2.get_update_heads());
-
-
         }
     }
-
 }

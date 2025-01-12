@@ -1,5 +1,6 @@
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
+use crate::sequence_nr::SequenceNr;
 use crate::{MessageId, Target};
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
@@ -7,7 +8,7 @@ use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
 use std::io::{Seek, SeekFrom, Write};
-use crate::sequence_nr::SequenceNr;
+use libc::epoll_params;
 
 #[derive(Debug)]
 pub enum UndoLogEntry<'a> {
@@ -23,6 +24,12 @@ pub enum UndoLogEntry<'a> {
         start: usize,
         data: &'a [u8],
     },
+    /// This entry is emitted in the undo-log _prior_ to SequenceNr.
+    /// I.e, if you rewind to this, the event that happened at SequenceNr will not
+    /// be present in the database. I.e, this should be considered the 'next' SequenceNr
+    /// In all nominal situations, the last entry in the undo-log is a SequenceNr.
+    /// Rewinding to a specific SequenceNr leaves its UndoLogEntry::Rewind in the undo-log, but
+    /// not the event.
     Rewind(SequenceNr),
 }
 
@@ -37,7 +44,10 @@ impl UndoLog {
 }
 
 pub enum HowToProceed {
-    PopAndStop,
+    /// Leave the current entry in the undo log, and stop traversal.
+    /// Used for Rewind-entries, which we should let remain.
+    DontPopAndStop,
+    /// Pop the current element from the undo log, and proceed
     PopAndContinue,
     Error,
 }
@@ -68,10 +78,10 @@ impl UndoLog {
             while let Some((new_len, item)) = Self::parse1(mmap.map()) {
                 match cb(item) {
                     HowToProceed::Error => {
+                        eprintln!("HowToProceed::Error");
                         return false;
                     }
-                    HowToProceed::PopAndStop => {
-                        mmap.fast_truncate(new_len);
+                    HowToProceed::DontPopAndStop => {
                         return true;
                     }
                     HowToProceed::PopAndContinue => {
@@ -79,6 +89,7 @@ impl UndoLog {
                     }
                 }
             }
+            eprintln!("Rewind failed - couldn't reach desired time!");
             false
         })
     }

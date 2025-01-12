@@ -1,5 +1,6 @@
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
+use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::sha2;
 use crate::{Database, Message, MessageId, Target};
 use anyhow::{Context, Result, anyhow, bail};
@@ -15,7 +16,6 @@ use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::{MaybeUninit, offset_of};
 use std::path::Path;
-use crate::sequence_nr::SequenceNr;
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 #[repr(transparent)]
@@ -34,7 +34,7 @@ struct FileHeaderEntry {
     has_been_transmitted: u8,
     padding1: u8,
     padding2: u16,
-    padding4: u32
+    padding4: u32,
 }
 
 impl FileHeaderEntry {
@@ -187,8 +187,6 @@ struct DataFileInfo {
     file_number: U1,
 }
 
-
-
 const STATUS_OK: u32 = 1;
 /// Not ok
 const STATUS_NOK: u32 = 0;
@@ -213,20 +211,22 @@ pub(crate) struct OnDiskMessageStore<M> {
     update_heads: FileAccessor,
 }
 
-
-
 //compile_error!("When a message is deleted, make sure to delete it from the parent-list of all its children!")
 impl<M> OnDiskMessageStore<M> {
-
-
-
     // TODO: This doesn't need to return full Message-instances. It could just return
     // message-id + parents
-    pub fn get_upstream_of(&self, message_ids: &[MessageId], count: usize) -> Result<impl Iterator<Item=M>> where M:Message {
-
+    pub fn get_upstream_of(
+        &self,
+        message_ids: &[MessageId],
+        count: usize,
+    ) -> Result<impl Iterator<Item = M>>
+    where
+        M: Message,
+    {
         debug_assert!(!message_ids.is_empty());
         debug_assert!(message_ids.is_sorted());
-        #[cfg(debug_assertions)]{
+        #[cfg(debug_assertions)]
+        {
             // Check no duplicates
             for window in message_ids.windows(2) {
                 assert_ne!(window[0], window[1]);
@@ -241,21 +241,25 @@ impl<M> OnDiskMessageStore<M> {
         let mut breadth = HashSet::new();
         for message_id in message_ids.iter().rev() {
             breadth.insert(*message_id);
-            if let Ok(cand) = message_index.binary_search_by_key(message_ids.last().unwrap(), |x| x.message) {
-                index = index.max(cand+1);
+            if let Ok(cand) =
+                message_index.binary_search_by_key(message_ids.last().unwrap(), |x| x.message)
+            {
+                index = index.max(cand + 1);
                 break;
             }
         }
 
-        Ok(message_index[0..index].iter().rev()
-            .map(move |x|{
+        Ok(message_index[0..index]
+            .iter()
+            .rev()
+            .map(move |x| {
                 if breadth.remove(&x.message) {
                     if x.file_offset.is_deleted() {
                         return (None, breadth.is_empty());
                     }
                     let msg = match Self::read_msg(x, data_files) {
                         Ok(msg) => msg,
-                        Err(err ) => {
+                        Err(err) => {
                             //TODO: Log
                             eprintln!("Failed to parse message: {:?}", err);
                             return (None, false);
@@ -268,11 +272,10 @@ impl<M> OnDiskMessageStore<M> {
                     (None, breadth.is_empty())
                 }
             })
-            .take_while(|(_,done)|!*done)
-            .filter_map(|(msg, _)|msg)
+            .take_while(|(_, done)| !*done)
+            .filter_map(|(msg, _)| msg)
             .take(count))
     }
-
 
     fn provide_index_map(
         map: &mut FileAccessor,
@@ -315,7 +318,6 @@ impl<M> OnDiskMessageStore<M> {
             bytemuck::from_bytes_mut(&mut slice[0..size_of::<StoreHeader>()]);
         // We're currently updating, so status should be 'NOK'. But we haven't failed,
         // so as soon as the transaction is complete, this will be set to OK again.
-
 
         Ok(())
     }
@@ -375,11 +377,13 @@ impl<M> OnDiskMessageStore<M> {
         Ok((header, &rest[0..header.entries as usize]))
     }
 
-
     /// Recover from index corruption.
     /// You should never need to call this explicitly, it will be called automatically
     /// whenever a transaction is attempted and database is in a corrupted state
-    pub fn recover(&mut self, mut report_inserted: impl FnMut(MessageId, &[MessageId]) -> Result<()>) -> Result<()>
+    pub fn recover(
+        &mut self,
+        mut report_inserted: impl FnMut(MessageId, &[MessageId]) -> Result<()>,
+    ) -> Result<()>
     where
         M: Message,
     {
@@ -459,20 +463,14 @@ impl<M> OnDiskMessageStore<M> {
 
         index[0..index_header.entries as usize].sort();
 
-
-
         Ok(())
     }
 
     pub fn contains_message(&self, start: MessageId) -> Result<bool> {
         let (header, message_index) = self.header_and_index().context("opening index file")?;
-        match message_index.binary_search_by_key(&start, |x| x.message){
-            Ok(index) => {
-                Ok(!message_index[index].file_offset.is_deleted())
-            }
-            Err(err) => {
-                Ok(false)
-            }
+        match message_index.binary_search_by_key(&start, |x| x.message) {
+            Ok(index) => Ok(!message_index[index].file_offset.is_deleted()),
+            Err(err) => Ok(false),
         }
     }
     /// Get all messages with id start or greater
@@ -536,12 +534,12 @@ impl<M> OnDiskMessageStore<M> {
         let (header, message_index) = self.header_and_index().context("opening index file")?;
 
         if let Some(index) = message_index.get(msg.index()) {
-            if let Some((file,offset)) = index.file_offset.file_and_offset() {
+            if let Some((file, offset)) = index.file_offset.file_and_offset() {
                 let mut file = self.data_files[file.index()].file.readonly();
                 file.seek(SeekFrom::Start(offset))
                     .context("Seeking to message data")?;
                 let header: FileHeaderEntry = file.read_pod()?;
-                return Ok(header.has_been_transmitted!=0);
+                return Ok(header.has_been_transmitted != 0);
             }
             Ok(true)
         } else {
@@ -595,8 +593,7 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message,
     {
-        let (header, message_index) =
-            self.header_and_index().context("Reading index file")?;
+        let (header, message_index) = self.header_and_index().context("Reading index file")?;
 
         let data_files = &self.data_files;
         match message_index.binary_search_by_key(&id, |x| x.message) {
@@ -620,9 +617,14 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
-    pub fn get_all_message_ids(&self) -> Result<&[IndexEntry]> {
+    pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
-        Ok(message_index)
+        Ok(message_index.iter().map(|x|x.message).collect())
+    }
+    pub fn get_all_messages(&self) -> Result<Vec<M>> where M: Message{
+        let (_header, message_index) = self.header_and_index().context("opening index file")?;
+        let data_files = &self.data_files;
+        message_index.iter().map(|x|Self::read_msg(x, data_files)).collect()
     }
 
     /// Delete any message with the given index. Idempotent, does nothing if index is already
@@ -635,8 +637,6 @@ impl<M> OnDiskMessageStore<M> {
             //TODO: Trace log
             return Ok(()); //Idempotency,
         };
-
-
 
         Self::delete_msg(entry, &mut self.data_files)?;
         message_index[delete_index].file_offset.set_deleted();
@@ -672,7 +672,9 @@ impl<M> OnDiskMessageStore<M> {
         let index_entry = &message_index[index];
 
         if let Some((file, offset)) = index_entry.file_offset.file_and_offset() {
-            let file_header: &mut FileHeaderEntry = self.data_files[file.index()].file.mutate_pod(offset as usize)?;
+            let file_header: &mut FileHeaderEntry = self.data_files[file.index()]
+                .file
+                .mutate_pod(offset as usize)?;
             file_header.has_been_transmitted = 1;
         } else {
             // Deleted
@@ -690,15 +692,14 @@ impl<M> OnDiskMessageStore<M> {
     pub fn append_many_sorted(
         &mut self,
         messages: impl ExactSizeIterator<Item = M>,
-        message_inserted: impl FnMut(MessageId, /*parents*/&[MessageId]) -> Result<()>,
-        local: bool
+        message_inserted: impl FnMut(MessageId, /*parents*/ &[MessageId]) -> Result<()>,
+        local: bool,
     ) -> Result<Option<usize>>
     where
         M: Message + Debug,
     {
         self.do_append_many_sorted(messages, message_inserted, local)
     }
-
 
     /// Marks the db as dirty
     /// Find all the given messages, and mark their entries in their data files as unused.
@@ -752,7 +753,7 @@ impl<M> OnDiskMessageStore<M> {
     fn do_append_many_sorted(
         &mut self,
         mut messages: impl ExactSizeIterator<Item = M>,
-        mut message_inserted: impl FnMut(MessageId, &[MessageId]/*parents*/) -> Result<()>,
+        mut message_inserted: impl FnMut(MessageId, &[MessageId] /*parents*/) -> Result<()>,
         local: bool,
     ) -> Result<Option<usize>>
     where
@@ -775,11 +776,12 @@ impl<M> OnDiskMessageStore<M> {
 
         let first_input_message: M = (messages.next().unwrap());
 
+        let initial_index_entries = index_header.entries as usize;
         let (Ok(first_index) | Err(first_index)) = index[0..index_header.entries as usize]
             .binary_search_by_key(&first_input_message.id(), |x| x.message);
         let mut cur_index = first_index;
 
-        let mut parents : Vec<MessageId> = vec![];
+        let mut parents: Vec<MessageId> = vec![];
 
         let mut cur_input_message = Some(first_input_message);
         let mut actual_inserted_entries = 0;
@@ -896,8 +898,11 @@ impl<M> OnDiskMessageStore<M> {
                     actual_inserted_entries += 1;
                 }
                 Cases::NextFromCarry => {
-                    *cur_index_entry = carry_buffer.pop_front().unwrap();
-
+                    let temp = carry_buffer.pop_front().unwrap();;
+                    if cur_index < initial_index_entries {
+                        carry_buffer.push_front(*cur_index_entry);
+                    }
+                    *cur_index_entry = temp;
                     cur_index += 1;
                 }
             }
@@ -924,11 +929,9 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message,
     {
-
         self.do_compact(|wasted_space, total_space| {
             (100 * wasted_space) / total_space > tolerated_fragmentation_percent as u64
         })
-
     }
 
     /// Compact all files
@@ -1099,7 +1102,7 @@ impl<M> OnDiskMessageStore<M> {
             })
             .unwrap()
             .0;
-        let mut update_heads = d.open_file(&target, "update_heads", 0, 128*1024*1024)?;
+        let mut update_heads = d.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
 
         let mut this = Self {
             target: target.clone(),
@@ -1108,7 +1111,6 @@ impl<M> OnDiskMessageStore<M> {
             active_file: U1::from_index(active),
             phantom: Default::default(),
             update_heads,
-
         };
 
         Ok(this)
@@ -1189,14 +1191,16 @@ mod tests {
             data: vec![42u8; 4],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
+        store
+            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .unwrap();
 
         {
             let header =
                 OnDiskMessageStore::<OnDiskMessage>::header(&mut store.index_mmap).unwrap();
             //header.dirty_status = STATUS_NOK;
         }
-        store.recover(|_,_|{Ok(())}).unwrap();
+        store.recover(|_, _| Ok(())).unwrap();
 
         let msg = store
             .read_message(MessageId::new_debug(2))
@@ -1227,7 +1231,9 @@ mod tests {
         });
 
         let prev = Instant::now();
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
+        store
+            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .unwrap();
         println!("Add time: {:?}", prev.elapsed());
 
         let prev = Instant::now();
@@ -1257,14 +1263,18 @@ mod tests {
             data: vec![42u8; 4],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
+        store
+            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .unwrap();
         let msgs = (0..COUNT).map(|i| OnDiskMessage {
             id: 2 * i as u64 + 1,
             seq: 2 * i as u64 + 1,
             data: vec![43u8; 4],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
+        store
+            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .unwrap();
 
         let msg = store
             .read_message(MessageId::new_debug(2))
@@ -1291,7 +1301,9 @@ mod tests {
             data: vec![42u8; 4],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
+        store
+            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .unwrap();
 
         store
             .delete_many(
@@ -1327,7 +1339,9 @@ mod tests {
             data: vec![42u8; 1024],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
+        store
+            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .unwrap();
 
         println!("Init: {:?}", init.elapsed());
         let mut count = 0;
@@ -1358,7 +1372,9 @@ mod tests {
             data: vec![42u8; 4],
         });
 
-        store.append_many_sorted(msgs.into_iter(), |_,_|{Ok(())}, true).unwrap();
+        store
+            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .unwrap();
 
         println!("Init: {:?}", init.elapsed());
         let mut count = 0;

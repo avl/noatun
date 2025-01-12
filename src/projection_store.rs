@@ -1,12 +1,13 @@
 use crate::boot_checksum::get_boot_checksum;
+use crate::data_types::{DatabaseVec, RawDatabaseVec};
 use crate::disk_abstraction::{Disk, StandardDisk};
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 use crate::{
-    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer,
-    Target, ThinPtr,
+    Application, FatPtr, FixedSizeObject, GenPtr, Message, MessageId, Object, Pointer, Target,
+    ThinPtr,
 };
 use anyhow::{Context, Result, bail};
 use bumpalo::Bump;
@@ -21,23 +22,22 @@ use std::marker::PhantomData;
 use std::mem::{offset_of, transmute_copy};
 use std::ops::Range;
 use std::path::Path;
-use std::{iter, slice};
 use std::slice::SliceIndex;
-use crate::data_types::{DatabaseVec, RawDatabaseVec};
+use std::{iter, slice};
 
-use crate::projection_store::registrar_info::{RegistrarInfo,  UnusedInfo};
+use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
 use crate::sequence_nr::SequenceNr;
 
 mod registrar_info {
-    use std::fmt::Debug;
+    use crate::disk_abstraction::Disk;
     use bumpalo::Bump;
     use bytemuck::{Pod, Zeroable};
     use indexmap::IndexMap;
-    use crate::disk_abstraction::Disk;
+    use std::fmt::Debug;
 
-    use crate::{DatabaseContext, Message, Target, ThinPtr};
     use crate::message_store::OnDiskMessageStore;
     use crate::sequence_nr::SequenceNr;
+    use crate::{DatabaseContext, Message, Target, ThinPtr};
 
     #[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
     #[repr(C)]
@@ -82,8 +82,6 @@ mod registrar_info {
     }
 }
 
-
-
 const DEFAULT_SIZE: usize = 10000;
 
 const MAIN_DB_STATUS_CLEAN: u8 = 1;
@@ -115,15 +113,12 @@ pub struct MainDbHeader {
     last_boot: [u8; 16],
 }
 
-
-#[derive(Debug, Clone, Copy, Default,Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
 #[repr(C)]
 pub struct MainDbAuxHeader {
     deptrack_keys: RawDatabaseVec<ThinPtr>,
     uses: RawDatabaseVec<RegistrarInfo>,
 }
-
-
 
 pub struct DatabaseContext {
     main_db_mmap: FileAccessor,
@@ -140,7 +135,6 @@ pub struct DatabaseContext {
     // Starts at 0. When a message is being applied, this field
     // will have the seqnr of the message being applied, not the next one.
     //next_seqnr: SequenceNr,
-
 }
 
 // This has been shamelessly lifted from the rust std
@@ -180,10 +174,7 @@ pub(crate) struct DepTrackLinkedListEntry {
     pub padding: u32,
 }
 
-
 impl DatabaseContext {
-
-
     fn record_dependency(&self, observee: SequenceNr, observer: SequenceNr) {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
@@ -194,7 +185,7 @@ impl DatabaseContext {
         let keys = unsafe { self.get_deptrack_keys() };
 
         if observee.index() >= keys.len() {
-            keys.grow(self, observee.index()+1);
+            keys.grow(self, observee.index() + 1);
         }
 
         //let (val_len, vals): (_, &mut [crate::projection_store::message_dependency_tracker::linked_list_entry::DepTrackLinkedListEntry]) = Self::access(&mut self.deptrack_vals);
@@ -206,14 +197,11 @@ impl DatabaseContext {
 
         let mut new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod();
 
-
         self.write_pod(*key_place, &mut new_entry.next);
         self.write_pod(observer, &mut new_entry.seq);
 
         let new_entry_index = self.index_of_sized(new_entry);
         self.write_pod(new_entry_index, key_place);
-
-
     }
     fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> {
         let keys: &RawDatabaseVec<ThinPtr> = &self.get_aux_header().deptrack_keys;
@@ -309,7 +297,8 @@ impl DatabaseContext {
     }
     pub fn clear(&mut self) -> Result<()> {
         self.main_db_mmap.truncate(0);
-        self.main_db_mmap.grow(size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>())?;
+        self.main_db_mmap
+            .grow(size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>())?;
         Self::write_initial_header(&mut self.main_db_mmap);
         self.write_initial_aux_header();
         self.undo_log.clear();
@@ -323,33 +312,45 @@ impl DatabaseContext {
     }
 
     pub(crate) fn get_aux_header(&self) -> &MainDbAuxHeader {
-        let slice = self.main_db_mmap.map_const_ptr().wrapping_add(size_of::<MainDbHeader>());
+        let slice = self
+            .main_db_mmap
+            .map_const_ptr()
+            .wrapping_add(size_of::<MainDbHeader>());
         let slice = unsafe { std::slice::from_raw_parts(slice, size_of::<MainDbAuxHeader>()) };
-        let aux_header: &MainDbAuxHeader =
-            bytemuck::from_bytes(slice);
+        let aux_header: &MainDbAuxHeader = bytemuck::from_bytes(slice);
         aux_header
     }
     unsafe fn get_deptrack_keys<'a>(&self) -> &'a mut RawDatabaseVec<ThinPtr> {
-        unsafe { &mut *(self.main_db_mmap.map_mut_ptr()
-            .wrapping_add(size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, deptrack_keys))
-            as *mut RawDatabaseVec<ThinPtr>) }
+        unsafe {
+            &mut *(self.main_db_mmap.map_mut_ptr().wrapping_add(
+                size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, deptrack_keys),
+            ) as *mut RawDatabaseVec<ThinPtr>)
+        }
     }
     unsafe fn get_uses<'a>(&self) -> &'a mut RawDatabaseVec<RegistrarInfo> {
-        unsafe { &mut *(self.main_db_mmap.map_mut_ptr()
-            .wrapping_add(size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, uses))
-            as *mut RawDatabaseVec<RegistrarInfo>) }
+        unsafe {
+            &mut *(self
+                .main_db_mmap
+                .map_mut_ptr()
+                .wrapping_add(size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, uses))
+                as *mut RawDatabaseVec<RegistrarInfo>)
+        }
     }
 
-
     pub(crate) fn write_initial_aux_header(&mut self) {
-        let aux_header: &mut MainDbAuxHeader =
-            bytemuck::from_bytes_mut(&mut self.main_db_mmap.map_mut()[size_of::<MainDbHeader>()..size_of::<MainDbHeader>()+size_of::<MainDbAuxHeader>()]);
+        let aux_header: &mut MainDbAuxHeader = bytemuck::from_bytes_mut(
+            &mut self.main_db_mmap.map_mut()[size_of::<MainDbHeader>()
+                ..size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>()],
+        );
         *aux_header = MainDbAuxHeader::default();
-        assert!(self.pointer() >= size_of::<MainDbHeader>()+size_of::<MainDbAuxHeader>());
+        assert!(self.pointer() >= size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>());
     }
 
     fn write_initial_header(mmap: &mut FileAccessor) {
-        assert_eq!(mmap.used_space(), size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>());
+        assert_eq!(
+            mmap.used_space(),
+            size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>()
+        );
         let header: &mut MainDbHeader =
             bytemuck::from_bytes_mut(&mut mmap.map_mut()[0..size_of::<MainDbHeader>()]);
         header.next_seqnr = SequenceNr::INVALID;
@@ -360,7 +361,6 @@ impl DatabaseContext {
             .expect("The size of an 'usize' must be less than 256 bytes");
 
         header.last_boot = get_boot_checksum();
-
     }
 
     pub(crate) fn new<S: Disk>(s: &mut S, name: &Target, max_size: usize) -> Result<Self> {
@@ -423,7 +423,7 @@ impl DatabaseContext {
                     It is not allowed to rewind time before/while constructing the root object."
             )
         }
-        println!("Rewinding to {:?}", new_time);
+        //println!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
 
         let result = self.undo_log.rewind(|entry| match entry {
             UndoLogEntry::SetPointer(new_pointer) => {
@@ -451,7 +451,7 @@ impl DatabaseContext {
             UndoLogEntry::Rewind(time) => {
                 if time == new_time {
                     Self::raw_set_next_seqnr_of(&self.main_db_mmap, new_time);
-                    HowToProceed::PopAndStop
+                    HowToProceed::DontPopAndStop
                 } else if time > new_time {
                     HowToProceed::PopAndContinue
                 } else {
@@ -583,7 +583,11 @@ impl DatabaseContext {
     /// # Safety
     /// The returned range must not overlap any reference.
     /// Alignment must be right.
-    pub unsafe fn access_slice_at_mut<'a, T: Pod>(&self, offset: usize, size: usize) -> &'a mut [T] {
+    pub unsafe fn access_slice_at_mut<'a, T: Pod>(
+        &self,
+        offset: usize,
+        size: usize,
+    ) -> &'a mut [T] {
         assert!(offset + size * size_of::<T>() <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts_mut(
@@ -701,7 +705,7 @@ impl DatabaseContext {
     pub(crate) fn calculate_stale_messages<MSG: Message + Debug>(
         &mut self,
         message_store: &mut OnDiskMessageStore<MSG>,
-        is_before_cutoff: bool
+        is_before_cutoff: bool,
     ) -> Result<Vec<SequenceNr>> {
         Ok(self
             .rt_calculate_stale_messages(message_store, is_before_cutoff)?
@@ -737,7 +741,6 @@ impl DatabaseContext {
         }
     }
 
-
     pub(crate) fn rt_finalize_message(&self, message_id: SequenceNr) {
         debug_assert!(message_id.is_valid());
         let aux_header = self.get_aux_header();
@@ -768,22 +771,22 @@ impl DatabaseContext {
     }
 
     /*
-About deletions:
+    About deletions:
 
-We can delete messages that no longer have any effect on the state, but only in these
-circumstances:
+    We can delete messages that no longer have any effect on the state, but only in these
+    circumstances:
 
- 1: Messages that only update OpaqueData
- 2: Messages that have never been transmitted, and upon which no existing message depends
- 3: Messages that are older than MAX_PARTITION_TIME, and have no trace in the state at
-    MAX_PARTITION_TIME, and upon which no message depends
+     1: Messages that only update OpaqueData
+     2: Messages that have never been transmitted, and upon which no existing message depends
+     3: Messages that are older than MAX_PARTITION_TIME, and have no trace in the state at
+        MAX_PARTITION_TIME, and upon which no message depends
 
-*/
+    */
 
     pub(crate) fn rt_calculate_stale_messages<M: Message + Debug>(
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
-        is_before_cutoff: bool
+        is_before_cutoff: bool,
     ) -> anyhow::Result<Vec<SequenceNr>> {
         let mut unused_messages = self.unused_messages.borrow_mut();
         unused_messages.sort(); //Sort in seq-nr order
@@ -792,32 +795,29 @@ circumstances:
 
         //println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
         'outer: for msg in unused_messages.iter().rev() {
-
             if msg.opaque {
                 // This can be deleted
             } else if !messages.may_have_been_transmitted(msg.seq)? || is_before_cutoff {
-
                 for observer in self.read_dependency(msg.seq) {
                     if !deleted.contains(&observer) {
                         // 'msg' can't be deleted, because it's observed by
                         // 'observer' - i.e a later message that has not been deleted.
-                        println!(
+                        /*println!(
                             "Can't delete {:?} because it's observed by {:?}",
                             msg, observer
-                        );
+                        );*/
                         continue 'outer;
                     }
                 }
             } else {
-                println!(
+                /*println!(
                     "Can't delete {:?}, because we can't know if someone will use its output",
                     msg
-                );
+                );*/
                 continue 'outer;
             }
 
-
-            println!("Deleting {:?}", msg);
+            //println!("Deleting {:?}", msg);
 
             deleted.push(msg.seq);
         }
@@ -853,7 +853,7 @@ circumstances:
         if uses.len() <= registrar.index() {
             uses.grow(self, registrar.index() + 1);
         }
-        uses.get_mut(self,registrar.index()).increase_use();
+        uses.get_mut(self, registrar.index()).increase_use();
     }
     pub(crate) fn rt_set_non_opaque(&self, registrar: SequenceNr) {
         let uses = unsafe { self.get_uses() };
@@ -881,16 +881,15 @@ circumstances:
 
 #[cfg(test)]
 mod tests {
-    use crate::{DatabaseContext, Target};
     use crate::disk_abstraction::InMemoryDisk;
     use crate::sequence_nr::SequenceNr;
+    use crate::{DatabaseContext, Target};
     use std::time::Instant;
     #[test]
     fn smoke_deptrack() {
         let mut disk = InMemoryDisk::default();
-        let mut tracker = DatabaseContext::new(&mut disk,
-            &Target::CreateNew("ctx".into()), 10000).unwrap();
-
+        let mut tracker =
+            DatabaseContext::new(&mut disk, &Target::CreateNew("ctx".into()), 10000).unwrap();
 
         tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
 
@@ -901,8 +900,8 @@ mod tests {
     #[test]
     fn smoke_deptrack_many() {
         let mut disk = InMemoryDisk::default();
-        let mut tracker = DatabaseContext::new(&mut disk,
-                                               &Target::CreateNew("ctx".into()), 10000).unwrap();
+        let mut tracker =
+            DatabaseContext::new(&mut disk, &Target::CreateNew("ctx".into()), 10000).unwrap();
 
         let t = Instant::now();
         for i in 0..100_usize {
