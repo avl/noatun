@@ -237,8 +237,9 @@ impl FileAccessor {
         }
     }
 
+    /// Does _not_ use or update seek position
     pub fn access_pod<R:Pod>(&self, offset: usize) -> Result<&R> {
-        if self.seek_pos + size_of::<R>() > self.used_space() {
+        if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");
         }
         let raw = unsafe{
@@ -246,8 +247,9 @@ impl FileAccessor {
         };
         Ok(bytemuck::from_bytes(raw))
     }
-    pub fn access_pod_mut<R:Pod>(&self, offset: usize) -> Result<&R> {
-        if self.seek_pos + size_of::<R>() > self.used_space() {
+    /// Does _not_ use or update seek position
+    pub fn access_pod_mut<R:Pod>(&self, offset: usize) -> Result<&mut R> {
+        if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");
         }
         let raw = unsafe{
@@ -434,16 +436,6 @@ impl FileAccessor {
         Ok(ret)
     }
 
-    /// Does _not_ use or update seek position
-    pub fn mutate_pod<P: Pod>(&mut self, offset: usize) -> Result<&mut P> {
-        let bytes = size_of::<P>();
-
-        if offset + bytes > self.used_space() {
-            bail!("requested number of bytes not available in file");
-        }
-        let data = &mut self.map_mut()[offset..offset + bytes];
-        Ok(bytemuck::from_bytes_mut(data))
-    }
 
     pub(crate) fn grow(&self, new_size: usize) -> Result<()> {
         if new_size + Self::HEADER_SIZE > self.committed_size.get() {

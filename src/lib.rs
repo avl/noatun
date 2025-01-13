@@ -95,7 +95,7 @@ impl Debug for MessageId {
             write!(
                 f,
                 "#{:x}_{:x}_{:x}",
-                self.data[0], self.data[1], self.data[2]
+                self.data[1], self.data[2], self.data[3]
             )
         } else {
             write!(f, "{}", self)
@@ -430,6 +430,9 @@ mod projector {
         pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
             self.messages.get_all_messages()
         }
+        pub fn get_all_messages_with_children(&self) -> Result<Vec<(Message<APP::Message>,Vec<MessageId>)>> {
+            self.messages.get_all_messages_with_children()
+        }
 
         pub(crate) fn new<D: Disk>(
             s: &mut D,
@@ -581,7 +584,7 @@ mod projector {
                 let must_remove =
                     context.calculate_stale_messages(&mut tself.messages, before_cutoff)?;
                 for index in must_remove {
-                    tself.messages.mark_deleted_by_index(index.index());
+                    tself.messages.mark_deleted_by_index(index);
                     //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
                 }
                 Ok(())
@@ -1263,6 +1266,10 @@ pub mod database {
         pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
             self.message_store.get_all_messages()
         }
+        pub fn get_all_messages_with_children(&self) -> Result<Vec<(Message<APP::Message>, Vec<MessageId>)>> {
+            self.message_store.get_all_messages_with_children()
+        }
+
         pub fn get_root(&self) -> (&APP::Root, &DatabaseContext) {
             let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
             let root = unsafe { <APP::Root as Object>::access(&self.context, root_ptr) };
@@ -1417,6 +1424,10 @@ pub mod database {
 
             self.message_store
                 .push_messages(&mut self.context, messages, local)?;
+
+            println!("Append-many, halfways, present messages are: {:#?}",
+                self.get_all_messages_with_children()
+            );
 
             let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
             let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
@@ -2573,7 +2584,7 @@ mod tests {
                     local,
                 );
             }
-            println!("Messages present: {:?}", db.get_all_message_ids());
+            //println!("Messages present: {:?}", db.get_all_message_ids());
             db
         }
 

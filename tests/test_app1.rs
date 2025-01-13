@@ -90,7 +90,7 @@ fn test_counter_object_miri() {
     db.append_single(
         Message {
             header: MessageHeader {
-                id: MessageId::new_debug(1),
+                id: MessageId::new_debug(2),
                 parents: vec![],
             },
             payload: CounterMessage {

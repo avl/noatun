@@ -825,7 +825,7 @@ impl DatabaseContext {
 
         // 'deleted' ends up in reverse seqnr-order
         // iterate in seq-nr order.
-        let mut parent_remap: IndexMap<SequenceNr, Vec<SequenceNr>> = IndexMap::new();
+        /*let mut parent_remap: IndexMap<SequenceNr, Vec<SequenceNr>> = IndexMap::new();
         for deleted in deleted.iter().rev() {
             let mut parent_list = vec![];
 
@@ -845,7 +845,8 @@ impl DatabaseContext {
             parent_list.sort();
             parent_list.dedup();
             parent_remap.insert(*deleted, parent_list);
-        }
+        }*/
+
         Ok(deleted)
     }
     pub(crate) fn rt_increase_use(&self, registrar: SequenceNr) {
