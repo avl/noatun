@@ -67,6 +67,15 @@ impl<'a> ReadonlyFileAccessor<'a> {
         unsafe { slice::from_raw_parts(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE), used) }
     }
 
+    pub fn access_pod<R:Pod>(&self, offset: usize) -> Result<&R> {
+        if self.seek_pos + size_of::<R>() > self.size {
+            bail!("requested number of bytes not available in file");
+        }
+        let raw = unsafe{
+            slice::from_raw_parts(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset), size_of::<R>())
+        };
+        Ok(bytemuck::from_bytes(raw))
+    }
     pub fn with_bytes<R>(&mut self, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
         if self.seek_pos + bytes > self.size {
             bail!("requested number of bytes not available in file");
@@ -228,6 +237,25 @@ impl FileAccessor {
         }
     }
 
+    pub fn access_pod<R:Pod>(&self, offset: usize) -> Result<&R> {
+        if self.seek_pos + size_of::<R>() > self.used_space() {
+            bail!("requested number of bytes not available in file");
+        }
+        let raw = unsafe{
+            slice::from_raw_parts(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset), size_of::<R>())
+        };
+        Ok(bytemuck::from_bytes(raw))
+    }
+    pub fn access_pod_mut<R:Pod>(&self, offset: usize) -> Result<&R> {
+        if self.seek_pos + size_of::<R>() > self.used_space() {
+            bail!("requested number of bytes not available in file");
+        }
+        let raw = unsafe{
+            slice::from_raw_parts_mut(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset), size_of::<R>())
+        };
+        Ok(bytemuck::from_bytes_mut(raw))
+    }
+
     #[inline(always)]
     pub(crate) fn used_space(&self) -> usize {
         unsafe { *(self.ptr as *const usize) }
@@ -386,7 +414,9 @@ impl FileAccessor {
     /// This does advance the file pointer (like all other read methods)
     pub fn with_bytes<R>(&mut self, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
         if self.seek_pos + bytes > self.used_space() {
-            bail!("requested number of bytes not available in file");
+            bail!("requested number of bytes not available in file. Requested: {}, had: {} (seek pos: {})",
+                bytes, self.used_space().saturating_sub(self.seek_pos), self.seek_pos
+            );
         }
         let data = &self.map()[self.seek_pos..self.seek_pos + bytes];
         let ret = f(data);
@@ -395,7 +425,9 @@ impl FileAccessor {
     }
     pub fn with_bytes_at<R>(&mut self, offset: usize, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
         if offset + bytes > self.used_space() {
-            bail!("requested number of bytes not available in file");
+            bail!("requested number of bytes not available in file. Requested: {}, had: {} (seek pos: {})",
+                bytes, self.used_space().saturating_sub(self.seek_pos), self.seek_pos
+            );
         }
         let data = &self.map()[offset..offset + bytes];
         let ret = f(data);

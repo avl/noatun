@@ -233,6 +233,7 @@ pub struct MessageHeader {
     pub parents: Vec<MessageId>,
 }
 
+
 #[derive(Debug)]
 pub struct Message<M:MessagePayload> {
     pub header: MessageHeader,
@@ -240,7 +241,15 @@ pub struct Message<M:MessagePayload> {
 }
 
 impl<M:MessagePayload> Message<M> {
-
+    pub fn new(id: MessageId, parents: Vec<MessageId>, payload: M) -> Self {
+        Self {
+            header: MessageHeader {
+                id,
+                parents,
+            },
+            payload,
+        }
+    }
     pub fn id(&self) -> MessageId {
         self.header.id
     }
@@ -1988,12 +1997,21 @@ mod tests {
         });
     }
 
-    #[derive(Debug, Savefile)]
+    #[derive(Debug,Clone, Savefile)]
     struct CounterMessage {
         id: MessageId,
         parent: Vec<MessageId>,
         inc1: i32,
         set1: u32,
+    }
+    impl CounterMessage {
+        fn wrap(&self) -> Message<CounterMessage> {
+            Message::new(
+                self.id,
+                self.parent.clone(),
+                self.clone()
+            )
+        }
     }
     impl MessagePayload for CounterMessage {
         type Root = CounterObject;
@@ -2049,7 +2067,7 @@ mod tests {
                 id: MessageId::new_debug(0x100),
                 inc1: 2,
                 set1: 0,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2062,7 +2080,7 @@ mod tests {
                 id: MessageId::new_debug(0x101),
                 inc1: 0,
                 set1: 42,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2072,7 +2090,7 @@ mod tests {
                 id: MessageId::new_debug(0x102),
                 inc1: 1,
                 set1: 0,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2101,7 +2119,7 @@ mod tests {
                 id: MessageId::new_debug(0x100),
                 inc1: 2,
                 set1: 0,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2111,7 +2129,7 @@ mod tests {
                 id: MessageId::new_debug(0x101),
                 inc1: 0,
                 set1: 42,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2121,7 +2139,7 @@ mod tests {
                 id: MessageId::new_debug(0x102),
                 inc1: 1,
                 set1: 0,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2153,7 +2171,7 @@ mod tests {
                 id: m1,
                 inc1: 2,
                 set1: 0,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2165,7 +2183,7 @@ mod tests {
                 id: m2,
                 inc1: 0,
                 set1: 42,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2179,7 +2197,7 @@ mod tests {
                 id: m3,
                 inc1: 1,
                 set1: 0,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2205,7 +2223,7 @@ mod tests {
                 id: MessageId::new_debug(0x100),
                 inc1: 2,
                 set1: 0,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2215,7 +2233,7 @@ mod tests {
                 id: MessageId::new_debug(0x101),
                 inc1: 0,
                 set1: 42,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2225,7 +2243,7 @@ mod tests {
                 id: MessageId::new_debug(0x102),
                 inc1: 1,
                 set1: 0,
-            },
+            }.wrap(),
             true,
         )
         .unwrap();
@@ -2551,7 +2569,7 @@ mod tests {
                             .collect(),
                         inc1,
                         set1,
-                    },
+                    }.wrap(),
                     local,
                 );
             }

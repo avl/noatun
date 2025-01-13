@@ -104,8 +104,8 @@ fn test_counter_object_miri() {
     )
     .unwrap();
 
-    compile_error!("
-
+/*
+TODO
 Finish big refactoring:
 
 1: Message is now a new type, that carries parents and id,
@@ -116,9 +116,9 @@ in the store
 
 3: We have prepared to store child-info in db. This is needed to be able to actually send
 'Message + all descendants!'
-    
 
-    ")
+ */
+
     let (root, context) = db.get_root();
     assert_eq!(root.pod.counter.get(context), 42);
 
