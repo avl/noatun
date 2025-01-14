@@ -67,6 +67,12 @@ pub struct MessageId {
     data: [u32; 4],
 }
 
+const ASSURE_SUPPORTED_USIZE : () = const {
+    if size_of::<usize>() != 8 {
+        panic!("noatun currently only supports 64 bit platforms with 64 bit usize");
+    }
+};
+
 impl Display for MessageId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let time_ms = self.timestamp();
@@ -104,6 +110,9 @@ impl Debug for MessageId {
 }
 
 impl MessageId {
+    pub const ZERO: MessageId = MessageId {
+        data: [0u32;4],
+    };
     pub fn min(self, other: MessageId) -> MessageId {
         if self < other { self } else { other }
     }
@@ -390,6 +399,170 @@ mod update_head_tracker {
     }
 }*/
 
+pub(crate) mod cutoff {
+    use bytemuck::{Pod, Zeroable};
+    use chrono::{DateTime, Utc};
+    use savefile_derive::Savefile;
+    use crate::message_store::IndexEntry;
+    use crate::MessageId;
+
+    pub(crate) struct CutOffConfig {
+        /// The approximate time in history at which all nodes must have been in sync.
+        /// I.e, all nodes are expected to eventually sync up. I.e, all nodes are expected
+        /// to have all messages created prior to (now - interval_ms).next_multiple_of(grace_period_ms)
+        age: u64,
+        stride: u64,
+    }
+
+    impl Default for CutOffConfig {
+        fn default() -> Self {
+            Self {
+                age: 86400_000,
+                stride: 3600_000,
+            }
+        }
+    }
+    impl CutOffConfig {
+        pub fn nominal_cutoff(&self, time_now: DateTime<Utc>) -> u64 {
+
+            CutOffState::nominal_now(time_now.timestamp_millis() as u64, self) //TODO: Try_into
+        }
+
+    }
+
+
+    #[derive(Savefile, Clone,Copy,Debug,Pod,Zeroable, PartialEq, Eq, Default)]
+    #[repr(C)]
+    pub struct CutoffHash {
+        values: [u64;2],
+    }
+
+    impl CutoffHash {
+        pub(crate) fn from_all(msg: &[MessageId]) -> CutoffHash {
+            let mut temp = CutoffHash::default();
+            for m in msg {
+                temp.xor_with_msg(*m);
+            }
+            temp
+        }
+        fn from(msg: MessageId) -> CutoffHash {
+            bytemuck::cast(msg)
+        }
+        fn xor_with(&mut self, other: CutoffHash) {
+            self.values[0] ^= other.values[0];
+            self.values[1] ^= other.values[1];
+        }
+        fn xor_with_msg(&mut self, other: MessageId) {
+            self.xor_with(CutoffHash::from(other));
+        }
+    }
+
+    #[derive(Clone,Copy,Debug,Pod,Zeroable)]
+    #[repr(C)]
+    struct CutOffHashPos {
+        hash: CutoffHash,
+        before_time: u64,
+    }
+
+    impl CutOffHashPos {
+        fn adjust_forward_to(&mut self, time: u64, messages: &[IndexEntry]) {
+            assert!(self.before_time <= time);
+            if self.before_time ==time {
+                return; //Nothing to do
+            }
+            let prior = MessageId::from_parts_raw(self.before_time, [0u8;10]).unwrap();
+            let mut cur_index = match messages.binary_search_by_key(&prior, |x|x.message) {
+                Ok(hit) => {hit}
+                Err(insloc) => { insloc}
+            };
+            while cur_index < messages.len() {
+                let cur = &messages[cur_index];
+                if cur.message.timestamp() >= time {
+                    // Done
+                    return;
+                }
+                self.hash.xor_with_msg(cur.message);
+                cur_index += 1;
+            }
+            self.before_time = time;
+        }
+    }
+
+
+    #[derive(Clone,Copy,Debug,Pod,Zeroable)]
+    #[repr(C)]
+    pub(crate) struct CutOffState {
+        /// The prior, the current, and the upcoming,
+        stamps: [CutOffHashPos;3],
+    }
+
+
+    impl CutOffState {
+        pub fn is_acceptable_cutoff_hash(&self, hash: CutoffHash) -> bool {
+            self.stamps.iter().any(|x|x.hash == hash)
+        }
+        pub fn nominal_hash(&self) -> CutoffHash {
+            self.stamps[1].hash
+        }
+        /// Now rounded to the nearest multiple of stride
+        fn nominal_now(now: u64, config: &CutOffConfig) -> u64 {
+            now.saturating_sub(config.stride/2).next_multiple_of(config.stride)
+        }
+        pub fn advance_time(&mut self, now: u64, config: &CutOffConfig, messages: &[IndexEntry]) {
+            let nominal_now = Self::nominal_now(now, config);
+            let prior = nominal_now.saturating_sub(config.stride);
+            let next = nominal_now.saturating_add(config.stride);
+
+
+            self.stamps[0].adjust_forward_to(prior, messages);
+            self.stamps[1].adjust_forward_to(nominal_now, messages);
+            self.stamps[2].adjust_forward_to(next, messages);
+
+        }
+
+        pub fn report_add(&mut self, message_id: MessageId) {
+            self.apply(message_id);
+        }
+        pub fn report_delete(&mut self, message_id: MessageId) {
+            self.apply(message_id);
+        }
+
+        /// Add and delete are logically identical ops (because xor)
+        fn apply(&mut self, message_id: MessageId) {
+            let t = message_id.timestamp();
+            for pos in &mut self.stamps {
+                if t < pos.before_time {
+                    pos.hash.xor_with_msg(message_id);
+                }
+            }
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use crate::message_store::IndexEntry;
+        use crate::MessageId;
+        use super::{CutoffHash,CutOffHashPos};
+
+        #[test]
+        fn test_advance_pos() {
+            let mut pos = CutOffHashPos {
+                hash: CutoffHash::from(MessageId::new_debug(0)),
+                before_time: 100,
+            };
+
+            pos.adjust_forward_to(201, &[
+                IndexEntry {
+                    message: MessageId::from_parts_raw(200, [0u8;10]).unwrap(),
+                    file_offset: crate::message_store::FileOffset::deleted(),
+                    file_total_size: 0,
+                }
+            ]);
+
+            assert_eq!(pos.hash, CutoffHash::from(MessageId::from_parts_raw(200, [0u8;10]).unwrap()));
+        }
+    }
+
+}
 mod projector {
     use crate::disk_abstraction::Disk;
     use crate::disk_access::FileAccessor;
@@ -402,157 +575,7 @@ mod projector {
     use std::marker::PhantomData;
     use std::time::{Duration, SystemTime};
     use bytemuck::{Pod, Zeroable};
-    use crate::projector::cutoff::CutOffConfig;
-
-    mod cutoff {
-        use bytemuck::{Pod, Zeroable};
-        use chrono::{DateTime, Utc};
-        use crate::message_store::IndexEntry;
-        use crate::MessageId;
-
-        pub(crate) struct CutOffConfig {
-            /// The approximate time in history at which all nodes must have been in sync.
-            /// I.e, all nodes are expected to eventually sync up. I.e, all nodes are expected
-            /// to have all messages created prior to (now - interval_ms).next_multiple_of(grace_period_ms)
-            interval_ms: u64,
-            grace_period_ms: u64,
-        }
-
-        impl Default for CutOffConfig {
-            fn default() -> Self {
-                Self {
-                    interval_ms: 86400_000,
-                    grace_period_ms: 3600_000,
-                }
-            }
-        }
-        impl CutOffConfig {
-            pub fn nominal_cutoff(&self, time_now: DateTime<Utc>) -> u64 {
-
-                CutOffState::nominal_now(time_now.timestamp_millis() as u64, self) //TODO: Try_into
-            }
-
-        }
-
-
-        #[derive(Clone,Copy,Debug,Pod,Zeroable, PartialEq, Eq)]
-        #[repr(C)]
-        struct CutoffHash {
-            values: [u64;2],
-        }
-
-        impl CutoffHash {
-            fn from(msg: MessageId) -> CutoffHash {
-                bytemuck::cast(msg)
-            }
-            fn xor_with(&mut self, other: CutoffHash) {
-                self.values[0] ^= other.values[0];
-                self.values[1] ^= other.values[1];
-            }
-            fn xor_with_msg(&mut self, other: MessageId) {
-                 self.xor_with(CutoffHash::from(other));
-            }
-        }
-
-        #[derive(Clone,Copy,Debug,Pod,Zeroable)]
-        #[repr(C)]
-        struct CutOffHashPos {
-            hash: CutoffHash,
-            at_time_and_before: u64,
-        }
-
-        impl CutOffHashPos {
-            fn adjust_forward_to(&mut self, time: u64, messages: &[IndexEntry]) {
-                assert!(self.at_time_and_before <= time);
-                if self.at_time_and_before==time {
-                    return; //Nothing to do
-                }
-                let prior = MessageId::from_parts_raw(self.at_time_and_before, [0u8;10]).unwrap();
-                let mut cur_index = match messages.binary_search_by_key(&prior, |x|x.message) {
-                    Ok(hit) => {hit + 1}
-                    Err(insloc) => { insloc}
-                };
-                while cur_index < messages.len() {
-                    let cur = &messages[cur_index];
-                    if cur.message.timestamp() > time {
-                        // Done
-                        return;
-                    }
-                    self.hash.xor_with_msg(cur.message);
-                    cur_index += 1;
-                }
-            }
-        }
-
-
-        #[derive(Clone,Copy,Debug,Pod,Zeroable)]
-        #[repr(C)]
-        struct CutOffState {
-            /// The prior, the current, and the upcoming,
-            stamps: [CutOffHashPos;3],
-        }
-
-
-        impl CutOffState {
-            fn nominal_now(now: u64, config: &CutOffConfig) -> u64 {
-                now.saturating_sub(config.grace_period_ms).next_multiple_of(config.grace_period_ms)
-            }
-            pub fn advance_time(&mut self, now: u64, config: &CutOffConfig, messages: &[IndexEntry]) {
-                let nominal_now = Self::nominal_now(now, config);
-                let prior = nominal_now.saturating_sub(config.grace_period_ms);
-                let next = nominal_now.saturating_add(config.grace_period_ms);
-
-
-                self.stamps[0].adjust_forward_to(prior, messages);
-                self.stamps[1].adjust_forward_to(nominal_now, messages);
-                self.stamps[2].adjust_forward_to(next, messages);
-
-            }
-
-            pub fn report_add(&mut self, message_id: MessageId) {
-                self.apply(message_id);
-            }
-            pub fn report_delete(&mut self, message_id: MessageId) {
-                self.apply(message_id);
-            }
-
-            /// Add and delete are logically identical ops (because xor)
-            fn apply(&mut self, message_id: MessageId) {
-                let t = message_id.timestamp();
-                for pos in &mut self.stamps {
-                    if t <= pos.at_time_and_before {
-                        pos.hash.xor_with_msg(message_id);
-                    }
-                }
-            }
-        }
-        #[cfg(test)]
-        mod tests {
-            use crate::message_store::IndexEntry;
-            use crate::MessageId;
-            use crate::projector::cutoff::{CutOffHashPos, CutoffHash};
-
-            #[test]
-            fn test_advance_pos() {
-                let mut pos = CutOffHashPos {
-                    hash: CutoffHash::from(MessageId::new_debug(0)),
-                    at_time_and_before: 100,
-                };
-
-                pos.adjust_forward_to(200, &[
-                    IndexEntry {
-                        message: MessageId::from_parts_raw(200, [0u8;10]).unwrap(),
-                        file_offset: crate::message_store::FileOffset::deleted(),
-                        file_total_size: 0,
-                    }
-                ]);
-
-                assert_eq!(pos.hash, CutoffHash::from(MessageId::from_parts_raw(200, [0u8;10]).unwrap()));
-            }
-        }
-
-    }
-
+    use crate::cutoff::{CutOffConfig, CutoffHash};
 
     pub(crate) struct Projector<APP: Application> {
         messages: OnDiskMessageStore<APP::Message>,
@@ -571,6 +594,17 @@ mod projector {
 
         pub(crate) fn get_update_heads(&self) -> &[MessageId] {
             self.head_tracker.get_update_heads()
+        }
+        pub(crate) fn get_messages_after(&self, message: MessageId, count: usize) -> Result<Vec<MessageId>> {
+            self.messages.get_messages_at_or_after(message, count)
+        }
+
+        pub fn nominal_cutoffhash(&self) -> Result<CutoffHash> {
+            self.messages.nominal_cutoffhash()
+        }
+
+        pub fn is_acceptable_cutoff_hash(&self, hash: CutoffHash) -> Result<bool> {
+            self.messages.is_acceptable_cutoff_hash(hash)
         }
 
         pub(crate) fn contains_message(&self, id: MessageId) -> Result<bool> {
@@ -1397,6 +1431,7 @@ pub mod database {
     use chrono::{DateTime, Utc};
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};
+    use crate::cutoff::CutoffHash;
 
     pub struct Database<Base: Application> {
         context: DatabaseContext,
@@ -1430,6 +1465,18 @@ pub mod database {
         pub(crate) fn get_update_heads(&self) -> &[MessageId] {
             self.message_store.get_update_heads()
         }
+
+        pub(crate) fn get_messages_at_or_after(&self, message: MessageId, count: usize) -> Result<Vec<MessageId>> {
+            self.message_store.get_messages_after(message, count)
+        }
+
+        pub fn is_acceptable_cutoff_hash(&self, hash: CutoffHash) -> Result<bool> {
+            self.message_store.is_acceptable_cutoff_hash(hash)
+        }
+        pub fn nominal_cutoffhash(&self) -> Result<CutoffHash> {
+            self.message_store.nominal_cutoffhash()
+        }
+
 
         pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
             self.message_store.get_all_message_ids()
@@ -1704,7 +1751,9 @@ pub mod distributor {
     use std::collections::{HashMap, HashSet};
     use std::hash::{Hash, Hasher};
     use std::io::Cursor;
+    use std::ops::Range;
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+    use crate::cutoff::CutoffHash;
     use crate::message_store::{ReadPod, WritePod};
     // Principle
     // The node that is 'most ahead' (highest MessageId) has responsibility.
@@ -1759,7 +1808,16 @@ pub mod distributor {
     #[derive(Debug, Savefile, Clone)]
     pub enum DistributorMessage {
         /// Report all update heads for the sender
-        ReportHeads(Vec<MessageId>),
+        ReportHeads(CutoffHash, Vec<MessageId>),
+        /// A query if the listed messages are known.
+        /// If they are, they should be requested by SyncAllRequest.
+        /// The id of this query is the xor of all these message ids
+        SyncAllQuery(Vec<MessageId>),
+        /// The given messages should be sent.
+        /// CutoffHash is xor of all messages in query
+        SyncAllRequest(Vec<MessageId>),
+        /// Sent only when doing a full sync
+        SyncAllAck(Vec<MessageId>),
         /// Report a cut in the source node message graph
         RequestUpstream {
             /// the usize is How many levels to ascend from message
@@ -1773,7 +1831,7 @@ pub mod distributor {
         SendMessageAndAllDescendants {
             message_id: Vec<MessageId>,
         },
-        Message(SerializedMessage),
+        Message(SerializedMessage, bool /*demand ack*/),
     }
 
     struct MergedDistributorMessages {
@@ -1784,20 +1842,77 @@ pub mod distributor {
         actual_messages: Vec<SerializedMessage>,
     }
 
-    pub struct Distributor {}
+    enum SyncAllState {
+        NotActive,
+        Starting,
+        BeginQuery(MessageId),
+        QueryActive(MessageId, MessageId, IndexSet<MessageId>),
+    }
 
+    pub struct Distributor {
+        // A sync-all request is in progress.
+        // It sends all Messages in MessageId-order (which guarantees that all
+        // parents will be sent before any children.
+        sync_all_inprogress: SyncAllState,
+    }
+
+    impl Default for Distributor {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
     impl Distributor {
 
+        const BATCH_SIZE: usize = 20;
+        pub fn new() -> Distributor {
+            Self {
+                sync_all_inprogress: SyncAllState::NotActive,
+            }
+        }
 
 
         /// Call this to retrieve a message that should be sent periodically
         pub fn get_periodic_message<APP: Application>(
-            &self,
+            &mut self,
             database: &Database<APP>,
-        ) -> DistributorMessage {
-            DistributorMessage::ReportHeads(
-                database.get_update_heads().into_iter().copied().collect(),
-            )
+        ) -> Result<Vec<DistributorMessage>> {
+            let mut temp = vec![
+                DistributorMessage::ReportHeads(
+                    database.nominal_cutoffhash()?,
+                    database.get_update_heads().into_iter().copied().collect(),
+                )
+            ];
+            let sync_from = match &self.sync_all_inprogress {
+                SyncAllState::NotActive => {
+                    None
+                }
+                SyncAllState::Starting => {
+                    Some(MessageId::ZERO)
+                }
+                SyncAllState::BeginQuery(start) => {
+                    Some(*start)
+                }
+                SyncAllState::QueryActive(from,to, request_identity) => {
+                    Some(*from)
+                }
+            };
+            if let Some(sync_from) = sync_from {
+                let cur_batch = database.get_messages_at_or_after(sync_from, Self::BATCH_SIZE)?;
+                if cur_batch.is_empty()  {
+                    self.sync_all_inprogress = SyncAllState::NotActive;
+                } else {
+                    self.sync_all_inprogress = SyncAllState::QueryActive(
+                        *cur_batch.first().unwrap(),*cur_batch.last().unwrap(),
+                        cur_batch.iter().copied().collect()
+                    );
+                    temp.push(DistributorMessage::SyncAllQuery(
+                        cur_batch
+                    ));
+                }
+            }
+
+
+            Ok(temp)
         }
 
         pub fn receive_message<APP: Application>(&mut self,  database: &mut Database<APP>, input: impl Iterator<Item=DistributorMessage>) -> Result<Vec<DistributorMessage>> {
@@ -1806,10 +1921,23 @@ pub mod distributor {
             let mut accumulated_responses = IndexMap::new();
             let mut accumulated_send_msg_and_descendants = IndexSet::new();
             let mut accumulated_serialized = vec![];
+            let mut accumulated_sync_all_queries = IndexSet::new();
+            let mut accumulated_sync_all_requests = IndexSet::new();
             for item in input {
                 match item {
-                    DistributorMessage::ReportHeads(heads) => {
-                        accumulated_heads.extend(heads);
+                    DistributorMessage::SyncAllQuery(query) => {
+                        accumulated_sync_all_queries.extend(query);
+                    }
+                    DistributorMessage::SyncAllRequest(requests) => {
+                        accumulated_sync_all_requests.extend(requests);
+                    }
+
+                    DistributorMessage::ReportHeads(cutoff_hash, heads) => {
+                        if database.is_acceptable_cutoff_hash(cutoff_hash)? {
+                            accumulated_heads.extend(heads);
+                        } else {
+                            self.sync_all_inprogress = SyncAllState::Starting;
+                        }
                     }
                     DistributorMessage::RequestUpstream { query } => {
                         for (msg,count) in query {
@@ -1829,8 +1957,23 @@ pub mod distributor {
                     DistributorMessage::SendMessageAndAllDescendants { message_id } => {
                         accumulated_send_msg_and_descendants.extend(message_id);
                     }
-                    DistributorMessage::Message(msg) => {
-                        accumulated_serialized.push(msg);
+                    DistributorMessage::Message(msg, need_ack) => {
+                        accumulated_serialized.push((msg, need_ack));
+                    }
+                    DistributorMessage::SyncAllAck(acked) => {
+                        match &mut self.sync_all_inprogress {
+                            SyncAllState::QueryActive(from,to, items) => {
+                                for ack in acked {
+                                    items.swap_remove(&ack);
+                                }
+                                if items.is_empty() {
+                                    self.sync_all_inprogress = SyncAllState::BeginQuery(*to);
+                                }
+                            }
+                            SyncAllState::NotActive => {}
+                            SyncAllState::Starting => {}
+                            SyncAllState::BeginQuery(_) => {}
+                        }
                     }
                 }
             }
@@ -1841,8 +1984,38 @@ pub mod distributor {
             self.process_upstream_response(database, accumulated_responses, &mut output);
             self.process_send_message_all_descendants(database, accumulated_send_msg_and_descendants, &mut output);
             self.process_received_messages(database, accumulated_serialized, &mut output);
+            self.process_sync_all_queries(database, accumulated_sync_all_queries, &mut output);
+            self.process_sync_all_requests(database, accumulated_sync_all_requests, &mut output);
             Ok(output)
         }
+
+        fn process_sync_all_queries<APP: Application>(&self, database: &mut Database<APP>, accumulated_sync_all_queries: IndexSet<MessageId>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+            let mut request = vec![];
+            let mut acks = vec![];
+            for query in accumulated_sync_all_queries {
+                if !database.contains_message(query)? {
+                    request.push(query);
+                } else {
+                    acks.push(query);
+                }
+            }
+            if !request.is_empty() {
+                output.push(DistributorMessage::SyncAllRequest(request));
+            }
+            if !acks.is_empty() {
+                output.push(DistributorMessage::SyncAllAck(acks));
+            }
+            Ok(())
+        }
+
+        fn process_sync_all_requests<APP: Application>(&self, database: &mut Database<APP>, accumulated_sync_all_requests: IndexSet<MessageId>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+            for request in accumulated_sync_all_requests {
+                let msg = database.load_message(request)?;
+                output.push(DistributorMessage::Message(SerializedMessage::new(msg)?, true));
+            }
+            Ok(())
+        }
+
 
         fn process_reported_heads<APP: Application>(&self, database: &mut Database<APP>, accumulated_heads: IndexSet<MessageId>, output: &mut Vec<DistributorMessage>) -> Result<()> {
             let mut messages_to_request = vec![];
@@ -1927,7 +2100,7 @@ pub mod distributor {
             while let Some(msg) = message_list.pop() {
                 let msg = database.load_message(msg)?;
                 let msg_id = msg.id();
-                output.push(DistributorMessage::Message(SerializedMessage::new(msg)?));
+                output.push(DistributorMessage::Message(SerializedMessage::new(msg)?, false));
 
                 //TODO: Make smarter, this is super-inefficient
                 for child_msg in database.get_all_messages()? {
@@ -1940,12 +2113,18 @@ pub mod distributor {
             Ok(())
         }
 
-        fn process_received_messages<APP: Application>(&self, database: &mut Database<APP>, message_list: Vec<SerializedMessage>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+        fn process_received_messages<APP: Application>(&self, database: &mut Database<APP>, message_list: Vec<(SerializedMessage, /*need ack*/bool)>, output: &mut Vec<DistributorMessage>) -> Result<()> {
 
-            let messages = message_list.into_iter().map(|x|x.to_message())
-                .filter_map(|x|{
+            let mut to_ack = vec![];
+            let messages = message_list.into_iter().map(|(x, need_ack)|(x.to_message(),need_ack))
+                .filter_map(|(x,need_ack)|{
                     match x {
-                        Ok(x) => Some(x),
+                        Ok(x) => {
+                            if need_ack {
+                                to_ack.push(x.header.id);
+                            }
+                            Some(x)
+                        },
                         Err(x) => {
                             eprintln!("Message could not be deserialized: {:?}", x);
                             None
@@ -1959,6 +2138,9 @@ pub mod distributor {
                 ;
 
             database.append_many(messages, false)?;
+            if !to_ack.is_empty() {
+                output.push(DistributorMessage::SyncAllAck(to_ack));
+            }
             Ok(())
         }
 
@@ -2430,7 +2612,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut d = distributor::Distributor {};
+        let mut d = distributor::Distributor::new();
 
         println!("Heads: {:?}", d.get_periodic_message(&db));
 
@@ -2768,10 +2950,13 @@ mod tests {
             let mut report = SyncReport {
                 num_messages: 0,
             };
-            let mut dbs: Vec<(Distributor,Database<_>)> = dbs.into_iter().map(|x|(Distributor{},x)).collect();
+            let mut dbs: Vec<(Distributor,Database<_>)> = dbs.into_iter().map(|x|(Distributor::new(),x)).collect();
             let mut ether = vec![];
-            for (db_id, (distr,db)) in dbs.iter().enumerate() {
-                let sent = distr.get_periodic_message(db);
+            for (db_id, (distr,db)) in dbs.iter_mut().enumerate() {
+                let mut sent = distr.get_periodic_message(db).unwrap();
+                assert_eq!(sent.len(), 1, "no resync is active");
+                let sent = sent.pop().unwrap();
+
                 println!("db: {:?} sent initial {:?}", db_id, sent);
                 report.num_messages += 1;
                 ether.push((db_id,sent));
@@ -2834,7 +3019,7 @@ mod tests {
                     ]),
             ];
             let report = sync(dbs);
-            &&assert_eq!(report.num_messages, 11);
+            assert_eq!(report.num_messages, 11);
         }
 
         #[test]
@@ -2875,10 +3060,12 @@ mod tests {
             let mut app1 = create_app(1, [(datetime!(2021-01-01 Z), [].as_slice(), 1, 0, true)]);
             let mut app2 = create_app(2, [(datetime!(2021-01-02 Z), [].as_slice(), 1, 0, true)]);
 
-            let mut dist1 = crate::distributor::Distributor {};
-            let mut dist2 = crate::distributor::Distributor {};
+            let mut dist1 = crate::distributor::Distributor::new();
+            let mut dist2 = crate::distributor::Distributor::new();
 
-            let msg1 = dist1.get_periodic_message(&app1);
+            let mut msg1 = dist1.get_periodic_message(&app1).unwrap();
+            assert_eq!(msg1.len(), 1, "no resync is in progress");
+            let msg1 = msg1.pop().unwrap();
 
             println!("dist1 sent: {:?}", msg1);
             let mut result = dist2.receive_message(&mut app2, once(msg1)).unwrap();
@@ -2905,7 +3092,7 @@ mod tests {
                 .receive_message(&mut app1, once(result.pop().unwrap()))
                 .unwrap();
             println!("dist1 sent: {:?}", result);
-            assert!(matches!(&result[0], DistributorMessage::Message(_)));
+            assert!(matches!(&result[0], DistributorMessage::Message(_, false)));
             assert_eq!(result.len(), 1);
 
             let mut result = dist2

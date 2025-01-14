@@ -16,6 +16,7 @@ use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::{MaybeUninit, offset_of};
 use std::path::Path;
+use crate::cutoff::{CutOffState, CutoffHash};
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 #[repr(transparent)]
@@ -60,7 +61,6 @@ impl<T:Read+Seek> EmbVecAccessor<T> {
 
         let mut np = Self::new_parents(handle, offset);
         let parent_capacity = np.capacity()?;
-        println!("Parents capacity: {}", parent_capacity);
 
         let EmbVecAccessor { handle,..} = np;
 
@@ -347,6 +347,7 @@ struct StoreHeader {
     padding: u32,
     // Compact file=1 + old file being compacted=0
     data_files: [DataFileEntry; 2],
+    cutoff: CutOffState,
 }
 
 pub(crate) struct OnDiskMessageStore<M> {
@@ -942,10 +943,14 @@ impl<M> OnDiskMessageStore<M> {
 
         let Some(entry) = message_index.get_mut(delete_index.index()) else {
             //TODO: Trace log
-            return Ok(()); //Idempotency,
+            return Ok(());
         };
 
+
+
         if let Some((file,offset)) = entry.file_offset.file_and_offset() {
+
+            header.cutoff.report_delete(entry.message);
 
             let id = entry.message;
             header.data_files[file.index()].bytes_used -= entry.file_total_size;
@@ -1117,7 +1122,7 @@ impl<M> OnDiskMessageStore<M> {
 
 
     // If remaining_child_assignments is None, don't rewrite parents by adding new children to them
-    fn do_write_message(files: &mut [DataFileInfo;2], file_index: U1, search_index: &[IndexEntry], msg: &Message<M>, children: &[MessageId], local: bool, remaining_child_assignments: Option<&mut RemainingChildAssignments>) -> Result<MessageWriteReport> where M:MessagePayload{
+    fn do_write_message(files: &mut [DataFileInfo;2], file_index: U1, msg: &Message<M>, children: &[MessageId], local: bool, remaining_child_assignments: Option<&mut RemainingChildAssignments>) -> Result<MessageWriteReport> where M:MessagePayload{
         for parent in msg.header.parents.iter() {
             if *parent >= msg.id() {
                 bail!("parent must be temporally before child")
@@ -1201,7 +1206,7 @@ impl<M> OnDiskMessageStore<M> {
                                        removed_child: Option<MessageId>
     ) -> Result<()> where M: MessagePayload{
 
-        dbg!(id,new_parents,new_children, removed_parent, removed_child);
+        //dbg!(id,new_parents,new_children, removed_parent, removed_child);
         let (header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
         let Ok(index) = search_index.binary_search_by_key(&id,|x|x.message) else {
             eprintln!("Message did not exist");
@@ -1232,7 +1237,7 @@ impl<M> OnDiskMessageStore<M> {
     }
 
     fn slow_add_parents_and_children(&mut self, id: MessageId, new_parents: &[MessageId], new_children: &[MessageId]) -> Result<()>  where M: MessagePayload{
-        dbg!(new_parents, new_children);
+        //dbg!(new_parents, new_children);
         // TODO: Maybe add fast apth, where caller can supply index
         let Some((mut msg, mut children)) = self.read_message_and_children(id)? else {
             eprintln!("Message not found");
@@ -1254,7 +1259,7 @@ impl<M> OnDiskMessageStore<M> {
         }
 
         // TODO: Preserve 'local' flag in this case!!
-        let write_report = Self::do_write_message(&mut self.data_files, self.active_file, search_index, &msg, &children, false, None)?;
+        let write_report = Self::do_write_message(&mut self.data_files, self.active_file, &msg, &children, false, None)?;
 
         // TODO: This can be optimized - we've already looked this up when we did `read_message` above.
         if let Ok(index) = search_index.binary_search_by_key(&msg.header.id, |x|x.message) {
@@ -1298,6 +1303,7 @@ impl<M> OnDiskMessageStore<M> {
         let initial_file_position = info.file.stream_position()?;
 
         let (index_header, index) = Self::header_and_index_mut_uninit(&mut self.index_mmap, len)?;
+
 
         let mut last_msg_id = None;
         let mut carry_buffer: VecDeque<IndexEntry> = VecDeque::with_capacity(len);
@@ -1374,6 +1380,7 @@ impl<M> OnDiskMessageStore<M> {
                 Cases::NextFromInput => {
                     let msg = cur_input_message.take().unwrap();
 
+                    index_header.cutoff.report_add(msg.header.id);
                     message_inserted(msg.id(), &msg.header.parents)?;
                     //Self::register_heads_and_tails(&mut self.update_heads, &parents, &msg.id())?;
                     if let Some(last_msg_id) = last_msg_id {
@@ -1383,7 +1390,7 @@ impl<M> OnDiskMessageStore<M> {
                     }
                     last_msg_id = Some(msg.id());
 
-                    let MessageWriteReport { total_size, start_pos } = Self::do_write_message(&mut self.data_files, self.active_file, index, &msg, &[], local, Some(&mut remaining_child_assignments))?;
+                    let MessageWriteReport { total_size, start_pos } = Self::do_write_message(&mut self.data_files, self.active_file, &msg, &[], local, Some(&mut remaining_child_assignments))?;
 
 
                     let cur_index_entry = &mut index[cur_index];
@@ -1627,6 +1634,29 @@ impl<M> OnDiskMessageStore<M> {
 
         Ok(this)
     }
+    pub fn nominal_cutoffhash(&self) -> Result<CutoffHash> {
+        let (header,_index) = self.header_and_index()?;
+        Ok(header.cutoff.nominal_hash())
+    }
+
+
+    pub(crate) fn get_messages_at_or_after(&self, message: MessageId, count: usize) -> Result<Vec<MessageId>> {
+        let (header, search_index) = self.header_and_index()?;
+        let (Ok(index) |
+            Err(index)) = search_index.binary_search_by_key(&message, |x|x.message);
+        let mut result = Vec::with_capacity(count);
+        for message in search_index[index..].iter().take(count) {
+            result.push(message.message);
+        }
+        Ok(result)
+    }
+
+
+    pub fn is_acceptable_cutoff_hash(&self, hash: CutoffHash) -> Result<bool> {
+        let (header,_index) = self.header_and_index()?;
+        Ok(header.cutoff.is_acceptable_cutoff_hash(hash))
+    }
+
 }
 
 #[cfg(test)]
