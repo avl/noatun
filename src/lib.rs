@@ -152,6 +152,18 @@ impl MessageId {
             data: bytemuck::cast(data),
         })
     }
+    pub fn from_parts_raw(time: u64, random: [u8; 10]) -> Result<MessageId> {
+        if time >= 1 << 48 {
+            bail!("Time value is too large");
+        }
+        let mut data = [0u8; 16];
+        data[0..6].copy_from_slice(&time.to_le_bytes()[0..6]);
+        data[6..16].copy_from_slice(&random);
+
+        Ok(MessageId {
+            data: bytemuck::cast(data),
+        })
+    }
 }
 
 pub mod sequence_nr {
@@ -389,12 +401,164 @@ mod projector {
     use chrono::{DateTime, Utc};
     use std::marker::PhantomData;
     use std::time::{Duration, SystemTime};
+    use bytemuck::{Pod, Zeroable};
+    use crate::projector::cutoff::CutOffConfig;
+
+    mod cutoff {
+        use bytemuck::{Pod, Zeroable};
+        use chrono::{DateTime, Utc};
+        use crate::message_store::IndexEntry;
+        use crate::MessageId;
+
+        pub(crate) struct CutOffConfig {
+            /// The approximate time in history at which all nodes must have been in sync.
+            /// I.e, all nodes are expected to eventually sync up. I.e, all nodes are expected
+            /// to have all messages created prior to (now - interval_ms).next_multiple_of(grace_period_ms)
+            interval_ms: u64,
+            grace_period_ms: u64,
+        }
+
+        impl Default for CutOffConfig {
+            fn default() -> Self {
+                Self {
+                    interval_ms: 86400_000,
+                    grace_period_ms: 3600_000,
+                }
+            }
+        }
+        impl CutOffConfig {
+            pub fn nominal_cutoff(&self, time_now: DateTime<Utc>) -> u64 {
+
+                CutOffState::nominal_now(time_now.timestamp_millis() as u64, self) //TODO: Try_into
+            }
+
+        }
+
+
+        #[derive(Clone,Copy,Debug,Pod,Zeroable, PartialEq, Eq)]
+        #[repr(C)]
+        struct CutoffHash {
+            values: [u64;2],
+        }
+
+        impl CutoffHash {
+            fn from(msg: MessageId) -> CutoffHash {
+                bytemuck::cast(msg)
+            }
+            fn xor_with(&mut self, other: CutoffHash) {
+                self.values[0] ^= other.values[0];
+                self.values[1] ^= other.values[1];
+            }
+            fn xor_with_msg(&mut self, other: MessageId) {
+                 self.xor_with(CutoffHash::from(other));
+            }
+        }
+
+        #[derive(Clone,Copy,Debug,Pod,Zeroable)]
+        #[repr(C)]
+        struct CutOffHashPos {
+            hash: CutoffHash,
+            at_time_and_before: u64,
+        }
+
+        impl CutOffHashPos {
+            fn adjust_forward_to(&mut self, time: u64, messages: &[IndexEntry]) {
+                assert!(self.at_time_and_before <= time);
+                if self.at_time_and_before==time {
+                    return; //Nothing to do
+                }
+                let prior = MessageId::from_parts_raw(self.at_time_and_before, [0u8;10]).unwrap();
+                let mut cur_index = match messages.binary_search_by_key(&prior, |x|x.message) {
+                    Ok(hit) => {hit + 1}
+                    Err(insloc) => { insloc}
+                };
+                while cur_index < messages.len() {
+                    let cur = &messages[cur_index];
+                    if cur.message.timestamp() > time {
+                        // Done
+                        return;
+                    }
+                    self.hash.xor_with_msg(cur.message);
+                    cur_index += 1;
+                }
+            }
+        }
+
+
+        #[derive(Clone,Copy,Debug,Pod,Zeroable)]
+        #[repr(C)]
+        struct CutOffState {
+            /// The prior, the current, and the upcoming,
+            stamps: [CutOffHashPos;3],
+        }
+
+
+        impl CutOffState {
+            fn nominal_now(now: u64, config: &CutOffConfig) -> u64 {
+                now.saturating_sub(config.grace_period_ms).next_multiple_of(config.grace_period_ms)
+            }
+            pub fn advance_time(&mut self, now: u64, config: &CutOffConfig, messages: &[IndexEntry]) {
+                let nominal_now = Self::nominal_now(now, config);
+                let prior = nominal_now.saturating_sub(config.grace_period_ms);
+                let next = nominal_now.saturating_add(config.grace_period_ms);
+
+
+                self.stamps[0].adjust_forward_to(prior, messages);
+                self.stamps[1].adjust_forward_to(nominal_now, messages);
+                self.stamps[2].adjust_forward_to(next, messages);
+
+            }
+
+            pub fn report_add(&mut self, message_id: MessageId) {
+                self.apply(message_id);
+            }
+            pub fn report_delete(&mut self, message_id: MessageId) {
+                self.apply(message_id);
+            }
+
+            /// Add and delete are logically identical ops (because xor)
+            fn apply(&mut self, message_id: MessageId) {
+                let t = message_id.timestamp();
+                for pos in &mut self.stamps {
+                    if t <= pos.at_time_and_before {
+                        pos.hash.xor_with_msg(message_id);
+                    }
+                }
+            }
+        }
+        #[cfg(test)]
+        mod tests {
+            use crate::message_store::IndexEntry;
+            use crate::MessageId;
+            use crate::projector::cutoff::{CutOffHashPos, CutoffHash};
+
+            #[test]
+            fn test_advance_pos() {
+                let mut pos = CutOffHashPos {
+                    hash: CutoffHash::from(MessageId::new_debug(0)),
+                    at_time_and_before: 100,
+                };
+
+                pos.adjust_forward_to(200, &[
+                    IndexEntry {
+                        message: MessageId::from_parts_raw(200, [0u8;10]).unwrap(),
+                        file_offset: crate::message_store::FileOffset::deleted(),
+                        file_total_size: 0,
+                    }
+                ]);
+
+                assert_eq!(pos.hash, CutoffHash::from(MessageId::from_parts_raw(200, [0u8;10]).unwrap()));
+            }
+        }
+
+    }
+
 
     pub(crate) struct Projector<APP: Application> {
         messages: OnDiskMessageStore<APP::Message>,
         head_tracker: UpdateHeadTracker,
         phantom_data: PhantomData<(*const APP::Root)>,
-        cutoff_interval: Duration,
+        cut_off_config: CutOffConfig
     }
 
     impl<APP: Application> Projector<APP> {
@@ -444,7 +608,7 @@ mod projector {
                 messages: OnDiskMessageStore::new(s, target, max_size)?,
                 head_tracker: UpdateHeadTracker::new(s, target)?,
                 phantom_data: PhantomData,
-                cutoff_interval,
+                cut_off_config: CutOffConfig::default()
             })
         }
 
@@ -512,14 +676,21 @@ mod projector {
             context.finalize_message(seqnr);
         }
 
+
+
         pub(crate) fn apply_missing_messages(
             &mut self,
             root: &mut APP::Root,
             context: &mut DatabaseContext,
             time_now: DateTime<Utc>,
         ) -> Result<()> {
-            let cutoff = (time_now.timestamp_millis() as u64)
-                .saturating_sub(self.cutoff_interval.as_millis().try_into()?);
+
+
+
+
+            let cutoff = self.cut_off_config.nominal_cutoff(time_now);
+
+
 
             let cur_seqnr = context.next_seqnr();
 

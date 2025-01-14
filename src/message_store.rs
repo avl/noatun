@@ -19,7 +19,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 #[repr(transparent)]
-struct FileOffset(u64);
+pub struct FileOffset(u64);
 
 /// Size of header for each individual message in store
 const MSG_HEADER_SIZE: usize = size_of::<FileHeaderEntry>();
@@ -259,7 +259,7 @@ impl FileOffset {
     fn set_deleted(&mut self) {
         self.0 = u64::MAX;
     }
-    fn deleted() -> Self {
+    pub(crate) fn deleted() -> Self {
         Self(u64::MAX)
     }
     fn is_deleted(self) -> bool {
@@ -288,11 +288,11 @@ impl FileOffset {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct IndexEntry {
-    message: MessageId,
+    pub(crate) message: MessageId,
     /// Offset into the logical file-area, or deletion-marker
-    file_offset: FileOffset,
+    pub(crate) file_offset: FileOffset,
     /// This is the size with header, parents and payload.
-    file_total_size: u64,
+    pub(crate) file_total_size: u64,
 }
 
 const DEFAULT_MAX_COUNT: usize = 1024;
