@@ -67,12 +67,15 @@ impl<'a> ReadonlyFileAccessor<'a> {
         unsafe { slice::from_raw_parts(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE), used) }
     }
 
-    pub fn access_pod<R:Pod>(&self, offset: usize) -> Result<&R> {
+    pub fn access_pod<R: Pod>(&self, offset: usize) -> Result<&R> {
         if self.seek_pos + size_of::<R>() > self.size {
             bail!("requested number of bytes not available in file");
         }
-        let raw = unsafe{
-            slice::from_raw_parts(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset), size_of::<R>())
+        let raw = unsafe {
+            slice::from_raw_parts(
+                self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset),
+                size_of::<R>(),
+            )
         };
         Ok(bytemuck::from_bytes(raw))
     }
@@ -85,7 +88,12 @@ impl<'a> ReadonlyFileAccessor<'a> {
         self.seek_pos += bytes;
         Ok(ret)
     }
-    pub fn with_bytes_at<R>(&mut self, offset: usize, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
+    pub fn with_bytes_at<R>(
+        &mut self,
+        offset: usize,
+        bytes: usize,
+        mut f: impl FnMut(&[u8]) -> R,
+    ) -> Result<R> {
         if offset + bytes > self.size {
             bail!("requested number of bytes not available in file");
         }
@@ -93,7 +101,6 @@ impl<'a> ReadonlyFileAccessor<'a> {
         let ret = f(data);
         Ok(ret)
     }
-
 }
 impl<'a> Seek for ReadonlyFileAccessor<'a> {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
@@ -238,22 +245,28 @@ impl FileAccessor {
     }
 
     /// Does _not_ use or update seek position
-    pub fn access_pod<R:Pod>(&self, offset: usize) -> Result<&R> {
+    pub fn access_pod<R: Pod>(&self, offset: usize) -> Result<&R> {
         if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");
         }
-        let raw = unsafe{
-            slice::from_raw_parts(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset), size_of::<R>())
+        let raw = unsafe {
+            slice::from_raw_parts(
+                self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset),
+                size_of::<R>(),
+            )
         };
         Ok(bytemuck::from_bytes(raw))
     }
     /// Does _not_ use or update seek position
-    pub fn access_pod_mut<R:Pod>(&self, offset: usize) -> Result<&mut R> {
+    pub fn access_pod_mut<R: Pod>(&self, offset: usize) -> Result<&mut R> {
         if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");
         }
-        let raw = unsafe{
-            slice::from_raw_parts_mut(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset), size_of::<R>())
+        let raw = unsafe {
+            slice::from_raw_parts_mut(
+                self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset),
+                size_of::<R>(),
+            )
         };
         Ok(bytemuck::from_bytes_mut(raw))
     }
@@ -416,8 +429,11 @@ impl FileAccessor {
     /// This does advance the file pointer (like all other read methods)
     pub fn with_bytes<R>(&mut self, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
         if self.seek_pos + bytes > self.used_space() {
-            bail!("requested number of bytes not available in file. Requested: {}, had: {} (seek pos: {})",
-                bytes, self.used_space().saturating_sub(self.seek_pos), self.seek_pos
+            bail!(
+                "requested number of bytes not available in file. Requested: {}, had: {} (seek pos: {})",
+                bytes,
+                self.used_space().saturating_sub(self.seek_pos),
+                self.seek_pos
             );
         }
         let data = &self.map()[self.seek_pos..self.seek_pos + bytes];
@@ -425,17 +441,24 @@ impl FileAccessor {
         self.seek_pos += bytes;
         Ok(ret)
     }
-    pub fn with_bytes_at<R>(&mut self, offset: usize, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
+    pub fn with_bytes_at<R>(
+        &mut self,
+        offset: usize,
+        bytes: usize,
+        mut f: impl FnMut(&[u8]) -> R,
+    ) -> Result<R> {
         if offset + bytes > self.used_space() {
-            bail!("requested number of bytes not available in file. Requested: {}, had: {} (seek pos: {})",
-                bytes, self.used_space().saturating_sub(self.seek_pos), self.seek_pos
+            bail!(
+                "requested number of bytes not available in file. Requested: {}, had: {} (seek pos: {})",
+                bytes,
+                self.used_space().saturating_sub(self.seek_pos),
+                self.seek_pos
             );
         }
         let data = &self.map()[offset..offset + bytes];
         let ret = f(data);
         Ok(ret)
     }
-
 
     pub(crate) fn grow(&self, new_size: usize) -> Result<()> {
         if new_size + Self::HEADER_SIZE > self.committed_size.get() {

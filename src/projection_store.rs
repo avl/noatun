@@ -6,8 +6,8 @@ use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 use crate::{
-    Application, FatPtr, FixedSizeObject, GenPtr, MessagePayload, MessageId, Object, Pointer, Target,
-    ThinPtr,
+    Application, FatPtr, FixedSizeObject, GenPtr, MessageId, MessagePayload, Object, Pointer,
+    Target, ThinPtr,
 };
 use anyhow::{Context, Result, bail};
 use bumpalo::Bump;

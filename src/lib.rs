@@ -23,7 +23,6 @@ use indexmap::IndexMap;
 use memmap2::MmapMut;
 pub use projection_store::DatabaseContext;
 use rand::RngCore;
-#[cfg(feature = "savefile")]
 use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
 use serde_derive::{Deserialize, Serialize};
@@ -58,16 +57,315 @@ mod boot_checksum;
 pub(crate) mod disk_access;
 mod sha2_helper;
 
+#[cfg(feature = "tokio")]
+mod multicast {
+    use anyhow::{bail, Result};
+    use indexmap::IndexMap;
+    use savefile::{Deserialize, Deserializer, Packed, Serialize, Serializer, WithSchema};
+    use savefile_derive::Savefile;
+    use std::collections::VecDeque;
+    use std::io::{Cursor, Read, Seek, SeekFrom};
+    use std::net::{IpAddr, SocketAddr};
+    use std::time::Instant;
+    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+    use tokio::net::UdpSocket;
+    use tokio::select;
+    use tokio::sync::mpsc::{Receiver, Sender};
+
+    #[derive(Savefile)]
+    enum NetworkPacket {
+        Data(TransmittedEntity),
+        Retransmit {
+            who: IpAddr,
+            what: Vec<u64>
+        },
+    }
+    const APPROX_HEADER_SIZE: usize = 4+8+2 + 8 + 20;
+
+    #[derive(Savefile)]
+    struct TransmittedEntity {
+        seq: u64,
+        data: Vec<u8>,
+        // Note, u16::MAX signifies "no boundary"
+        first_boundary: u16,
+    }
+
+    impl TransmittedEntity {
+        fn free(&self, max_payload: usize) -> usize {
+            max_payload.saturating_sub(self.data.len())
+        }
+    }
+    #[derive(Default)]
+    struct ReceiveTrack {
+        accum: VecDeque<u8>,
+        expected_next: u64,
+        sorted_packets: VecDeque<TransmittedEntity>,
+    }
+
+    impl ReceiveTrack {
+        async fn process(&mut self, packet: TransmittedEntity, tx: &mut Sender<Vec<u8>>) -> Result<()> {
+            let Err(insert_point) = self.sorted_packets.binary_search_by_key(&packet.seq, |x|x.seq) else {
+                // Already existed
+                return Ok(());
+            };
+            while let Some(first) = self.sorted_packets.front() {
+                if first.seq != self.expected_next {
+                    return Ok(());
+                }
+                if packet.first_boundary == u16::MAX {
+                    self.accum.extend(&packet.data);
+                    self.expected_next += 1;
+                    self.sorted_packets.pop_front();
+                } else {
+                    self.accum.extend(&packet.data[0..packet.first_boundary as usize]);
+                    tx.send(self.accum.iter().copied().collect());
+                    self.accum.clear();
+                    let mut cur_boundary = packet.first_boundary as usize;
+                    let mut reader = Cursor::new(&packet.data);
+                    reader.seek(SeekFrom::Start(cur_boundary as u64));
+                    while cur_boundary < packet.data.len() {
+                        let next_size = reader.read_u16::<LittleEndian>()? as usize;
+                        cur_boundary += 2;
+                        if next_size == u16::MAX as usize {
+                            break;
+                        }
+                        let mut temp = Vec::with_capacity(next_size);
+                        temp.resize(next_size, 0);
+                        reader.read_exact(&mut temp)?;
+                        tx.send(temp);
+                        cur_boundary += next_size;
+                    }
+                    self.accum.extend(&packet.data[cur_boundary..]);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    struct MulticasterSenderLoop {
+        send_socket: UdpSocket,
+        receive_socket: UdpSocket,
+        bind_address: IpAddr,
+        multicast_group: SocketAddr,
+        history: VecDeque<TransmittedEntity>,
+        queue: VecDeque<TransmittedEntity>,
+        receive_track: IndexMap<SocketAddr, ReceiveTrack>,
+        /// Sent to net
+        message_rx: Receiver<Vec<u8>>,
+        /// Received from net
+        message_tx: Sender<Vec<u8>>,
+        last_send: Instant,
+        last_send_size: usize,
+        recvbuf: Vec<u8>,
+        max_payload_per_packet: usize,
+        next_send_seq: u64,
+    }
+
+    impl MulticasterSenderLoop {
+        pub async fn new(
+            bind_address: SocketAddr,
+            multicast_group: SocketAddr,
+            message_tx: Sender<Vec<u8>>,
+            message_rx: Receiver<Vec<u8>>,
+            bandwidth_bytes_per_second: u64,
+            mtu: usize,
+        ) -> Result<MulticasterSenderLoop> {
+            let send_socket = UdpSocket::bind(bind_address).await?;
+            let receive_socket = UdpSocket::bind(multicast_group).await?;
+            let max_payload_per_packet = mtu.saturating_sub(APPROX_HEADER_SIZE);
+            if max_payload_per_packet < 100 {
+                bail!("Unreasonably small MTU specified: {}", mtu);
+            }
+            Ok(Self {
+                send_socket,
+                bind_address: bind_address.ip(),
+                receive_socket,
+                history: Default::default(),
+                queue: Default::default(),
+                receive_track: Default::default(),
+                message_rx,
+                message_tx,
+                last_send: Instant::now(),
+                last_send_size: 0,
+                recvbuf: Vec::with_capacity(mtu),
+                max_payload_per_packet,
+                next_send_seq: 0,
+                multicast_group: multicast_group,
+            })
+        }
+        pub fn send_buf(
+            queue: &mut VecDeque<TransmittedEntity>,
+            max_payload_per_packet: usize,
+            next_send_seq: &mut u64,
+            buffer: Vec<u8>) {
+
+            let mut is_first;
+            let buffer:&[u8] = if let Some(last) = queue.back_mut() {
+                if last.first_boundary != u16::MAX {
+                    if last.free(max_payload_per_packet) >= 2 + buffer.len() {
+                        last.data.write_u16::<LittleEndian>(buffer.len().try_into().unwrap());
+                        last.data.extend(buffer);
+                        return;
+                    }
+                    last.data.write_u16::<LittleEndian>(u16::MAX);
+                    let free_now = last.free(max_payload_per_packet);
+                    last.data.extend(&buffer[0..free_now]);
+                    is_first = false;
+                    &buffer[free_now..]
+                } else {
+                    is_first = true;
+                    &buffer
+                }
+            } else {
+                is_first = true;
+                &buffer
+            };
+
+            for (i,buf) in buffer.chunks(max_payload_per_packet).enumerate() {
+
+                queue.push_back(TransmittedEntity {
+                    seq: *next_send_seq,
+                    data: buf.iter().copied().collect(),
+                    first_boundary: if is_first {0} else {u16::MAX},
+                });
+                is_first = false;
+                *next_send_seq += 1;
+            }
+            if let Some(last) = queue.back_mut() {
+                last.first_boundary = last.data.len().try_into().unwrap();
+            }
+        }
+        pub fn queue_retransmits(&mut self, what: &[u64]) {
+            for what in what {
+                let Ok(index) = self.history.binary_search_by_key(what,|x|x.seq) else {
+                    return;
+                };
+                let Some(history_item) = self.history.remove(index) else {return};
+                self.queue.push_front(history_item);
+            }
+        }
+        pub async fn run(mut self) {
+            let mut cursend : Option<Vec<u8>>= None;
+            loop {
+                let receive = self.send_socket.recv_buf_from(&mut self.recvbuf);
+
+                if cursend.is_none() {
+                    cursend =
+                        self.queue.pop_front().map(|x| {
+                            let mut temp = vec![];
+                            // Consider if savefile really is the best here. Some more efficiency
+                            // woudln't hurt!
+                            Serializer::bare_serialize(&mut temp, 0, &x).unwrap();
+                            temp
+                        }
+                        );
+                }
+
+
+                let mut send = async {
+                    if let Some(tosend) = cursend.as_mut() {
+                        match self.send_socket.send_to(&tosend,&self.multicast_group).await {
+                            Ok(sent) => {
+                                cursend.take();
+                            },
+                            Err(err) => {
+                                eprintln!("Send error: {:?}", err);
+                            }
+                        }
+                    } else {
+                        std::future::pending().await
+                    }
+                };
+                let get_cmd = self.message_rx.recv();
+                select! {
+                        buf = get_cmd => {
+                            if let Some(buf) = buf {
+                                Self::send_buf(
+                                    &mut self.queue,
+                                self.max_payload_per_packet,
+                                &mut self.next_send_seq,
+                                buf);
+                            } else {
+                                eprintln!("Has ended");
+                                return;
+                            }
+                        }
+                        _ = send => {
+                        }
+                        msg = receive => {
+                            let (size, addr) = msg.expect("network should not fail");
+                            assert_eq!(size, self.recvbuf.len());
+                            let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0)  else {
+                                eprintln!("Invalid packet received");
+                                continue;
+                            };
+                            match packet {
+                                NetworkPacket::Data(entity) => {
+                                    self.receive_track.entry(addr).or_default()
+                                        .process(entity, &mut self.message_tx);
+                                }
+                                NetworkPacket::Retransmit{who, what  } => {
+                                    if who == self.bind_address {
+                                        self.queue_retransmits(&what);
+                                    }
+                                }
+                            }
+                        }
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use tokio::spawn;
+        use crate::multicast::MulticasterSenderLoop;
+
+        #[tokio::test]
+        async fn test_sender() {
+
+            let (sender_tx,  mut sender_rx) = tokio::sync::mpsc::channel(1000);
+            let (receiver_tx, mut receiver_rx) = tokio::sync::mpsc::channel(1000);
+
+            let mloop = MulticasterSenderLoop::new(
+                "127.0.0.1:7777".parse().unwrap(),
+                "230.230.230.230:7777".parse().unwrap(),
+                receiver_tx,
+                sender_rx,
+                1000,
+                1000
+            ).await.unwrap();
+
+            let jh = spawn(mloop.run());
+
+            sender_tx.send(vec![1, 2, 3, 4]).await.unwrap();
+            receiver_rx.recv().await.unwrap();
+            jh.await.unwrap();
+        }
+
+    }
+}
+
 #[derive(
-    Pod, Zeroable, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+    Pod,
+    Zeroable,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    Savefile,
 )]
-#[cfg_attr(feature = "savefile", derive(Savefile))]
 #[repr(transparent)]
 pub struct MessageId {
     data: [u32; 4],
 }
 
-const ASSURE_SUPPORTED_USIZE : () = const {
+const ASSURE_SUPPORTED_USIZE: () = const {
     if size_of::<usize>() != 8 {
         panic!("noatun currently only supports 64 bit platforms with 64 bit usize");
     }
@@ -110,9 +408,7 @@ impl Debug for MessageId {
 }
 
 impl MessageId {
-    pub const ZERO: MessageId = MessageId {
-        data: [0u32;4],
-    };
+    pub const ZERO: MessageId = MessageId { data: [0u32; 4] };
     pub fn min(self, other: MessageId) -> MessageId {
         if self < other { self } else { other }
     }
@@ -247,27 +543,22 @@ pub trait MessagePayload: Debug {
     fn serialize<W: Write>(&self, writer: W) -> Result<()>;
 }
 
-
 #[derive(Debug)]
 pub struct MessageHeader {
     pub id: MessageId,
     pub parents: Vec<MessageId>,
 }
 
-
 #[derive(Debug)]
-pub struct Message<M:MessagePayload> {
+pub struct Message<M: MessagePayload> {
     pub header: MessageHeader,
     pub payload: M,
 }
 
-impl<M:MessagePayload> Message<M> {
+impl<M: MessagePayload> Message<M> {
     pub fn new(id: MessageId, parents: Vec<MessageId>, payload: M) -> Self {
         Self {
-            header: MessageHeader {
-                id,
-                parents,
-            },
+            header: MessageHeader { id, parents },
             payload,
         }
     }
@@ -400,11 +691,11 @@ mod update_head_tracker {
 }*/
 
 pub(crate) mod cutoff {
+    use crate::MessageId;
+    use crate::message_store::IndexEntry;
     use bytemuck::{Pod, Zeroable};
     use chrono::{DateTime, Utc};
     use savefile_derive::Savefile;
-    use crate::message_store::IndexEntry;
-    use crate::MessageId;
 
     pub(crate) struct CutOffConfig {
         /// The approximate time in history at which all nodes must have been in sync.
@@ -424,17 +715,14 @@ pub(crate) mod cutoff {
     }
     impl CutOffConfig {
         pub fn nominal_cutoff(&self, time_now: DateTime<Utc>) -> u64 {
-
             CutOffState::nominal_now(time_now.timestamp_millis() as u64, self) //TODO: Try_into
         }
-
     }
 
-
-    #[derive(Savefile, Clone,Copy,Debug,Pod,Zeroable, PartialEq, Eq, Default)]
+    #[derive(Savefile, Clone, Copy, Debug, Pod, Zeroable, PartialEq, Eq, Default)]
     #[repr(C)]
     pub struct CutoffHash {
-        values: [u64;2],
+        values: [u64; 2],
     }
 
     impl CutoffHash {
@@ -457,7 +745,7 @@ pub(crate) mod cutoff {
         }
     }
 
-    #[derive(Clone,Copy,Debug,Pod,Zeroable)]
+    #[derive(Clone, Copy, Debug, Pod, Zeroable)]
     #[repr(C)]
     struct CutOffHashPos {
         hash: CutoffHash,
@@ -467,13 +755,13 @@ pub(crate) mod cutoff {
     impl CutOffHashPos {
         fn adjust_forward_to(&mut self, time: u64, messages: &[IndexEntry]) {
             assert!(self.before_time <= time);
-            if self.before_time ==time {
+            if self.before_time == time {
                 return; //Nothing to do
             }
-            let prior = MessageId::from_parts_raw(self.before_time, [0u8;10]).unwrap();
-            let mut cur_index = match messages.binary_search_by_key(&prior, |x|x.message) {
-                Ok(hit) => {hit}
-                Err(insloc) => { insloc}
+            let prior = MessageId::from_parts_raw(self.before_time, [0u8; 10]).unwrap();
+            let mut cur_index = match messages.binary_search_by_key(&prior, |x| x.message) {
+                Ok(hit) => hit,
+                Err(insloc) => insloc,
             };
             while cur_index < messages.len() {
                 let cur = &messages[cur_index];
@@ -488,36 +776,33 @@ pub(crate) mod cutoff {
         }
     }
 
-
-    #[derive(Clone,Copy,Debug,Pod,Zeroable)]
+    #[derive(Clone, Copy, Debug, Pod, Zeroable)]
     #[repr(C)]
     pub(crate) struct CutOffState {
         /// The prior, the current, and the upcoming,
-        stamps: [CutOffHashPos;3],
+        stamps: [CutOffHashPos; 3],
     }
-
 
     impl CutOffState {
         pub fn is_acceptable_cutoff_hash(&self, hash: CutoffHash) -> bool {
-            self.stamps.iter().any(|x|x.hash == hash)
+            self.stamps.iter().any(|x| x.hash == hash)
         }
         pub fn nominal_hash(&self) -> CutoffHash {
             self.stamps[1].hash
         }
         /// Now rounded to the nearest multiple of stride
         fn nominal_now(now: u64, config: &CutOffConfig) -> u64 {
-            now.saturating_sub(config.stride/2).next_multiple_of(config.stride)
+            now.saturating_sub(config.stride / 2)
+                .next_multiple_of(config.stride)
         }
         pub fn advance_time(&mut self, now: u64, config: &CutOffConfig, messages: &[IndexEntry]) {
             let nominal_now = Self::nominal_now(now, config);
             let prior = nominal_now.saturating_sub(config.stride);
             let next = nominal_now.saturating_add(config.stride);
 
-
             self.stamps[0].adjust_forward_to(prior, messages);
             self.stamps[1].adjust_forward_to(nominal_now, messages);
             self.stamps[2].adjust_forward_to(next, messages);
-
         }
 
         pub fn report_add(&mut self, message_id: MessageId) {
@@ -539,9 +824,9 @@ pub(crate) mod cutoff {
     }
     #[cfg(test)]
     mod tests {
-        use crate::message_store::IndexEntry;
+        use super::{CutOffHashPos, CutoffHash};
         use crate::MessageId;
-        use super::{CutoffHash,CutOffHashPos};
+        use crate::message_store::IndexEntry;
 
         #[test]
         fn test_advance_pos() {
@@ -550,52 +835,59 @@ pub(crate) mod cutoff {
                 before_time: 100,
             };
 
-            pos.adjust_forward_to(201, &[
-                IndexEntry {
-                    message: MessageId::from_parts_raw(200, [0u8;10]).unwrap(),
-                    file_offset: crate::message_store::FileOffset::deleted(),
-                    file_total_size: 0,
-                }
-            ]);
+            pos.adjust_forward_to(201, &[IndexEntry {
+                message: MessageId::from_parts_raw(200, [0u8; 10]).unwrap(),
+                file_offset: crate::message_store::FileOffset::deleted(),
+                file_total_size: 0,
+            }]);
 
-            assert_eq!(pos.hash, CutoffHash::from(MessageId::from_parts_raw(200, [0u8;10]).unwrap()));
+            assert_eq!(
+                pos.hash,
+                CutoffHash::from(MessageId::from_parts_raw(200, [0u8; 10]).unwrap())
+            );
         }
     }
-
 }
 mod projector {
+    use crate::cutoff::{CutOffConfig, CutoffHash};
     use crate::disk_abstraction::Disk;
     use crate::disk_access::FileAccessor;
     use crate::message_store::{IndexEntry, OnDiskMessageStore};
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
-    use crate::{Application, Database, DatabaseContext, MessagePayload, MessageId, Target, Message, MessageHeader};
+    use crate::{
+        Application, Database, DatabaseContext, Message, MessageHeader, MessageId, MessagePayload,
+        Target,
+    };
     use anyhow::Result;
+    use bytemuck::{Pod, Zeroable};
     use chrono::{DateTime, Utc};
     use std::marker::PhantomData;
     use std::time::{Duration, SystemTime};
-    use bytemuck::{Pod, Zeroable};
-    use crate::cutoff::{CutOffConfig, CutoffHash};
 
     pub(crate) struct Projector<APP: Application> {
         messages: OnDiskMessageStore<APP::Message>,
         head_tracker: UpdateHeadTracker,
         phantom_data: PhantomData<(*const APP::Root)>,
-        cut_off_config: CutOffConfig
+        cut_off_config: CutOffConfig,
     }
 
     impl<APP: Application> Projector<APP> {
         pub fn get_upstream_of(
             &self,
-            message_id: impl DoubleEndedIterator<Item=(MessageId, usize)>,
-        ) -> Result<impl Iterator<Item = (MessageHeader,/*count*/usize)>> {
+            message_id: impl DoubleEndedIterator<Item = (MessageId, usize)>,
+        ) -> Result<impl Iterator<Item = (MessageHeader, /*count*/ usize)>> {
             self.messages.get_upstream_of(message_id)
         }
 
         pub(crate) fn get_update_heads(&self) -> &[MessageId] {
             self.head_tracker.get_update_heads()
         }
-        pub(crate) fn get_messages_after(&self, message: MessageId, count: usize) -> Result<Vec<MessageId>> {
+        pub(crate) fn get_messages_after(
+            &self,
+            message: MessageId,
+            count: usize,
+        ) -> Result<Vec<MessageId>> {
             self.messages.get_messages_at_or_after(message, count)
         }
 
@@ -628,7 +920,9 @@ mod projector {
         pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
             self.messages.get_all_messages()
         }
-        pub fn get_all_messages_with_children(&self) -> Result<Vec<(Message<APP::Message>,Vec<MessageId>)>> {
+        pub fn get_all_messages_with_children(
+            &self,
+        ) -> Result<Vec<(Message<APP::Message>, Vec<MessageId>)>> {
             self.messages.get_all_messages_with_children()
         }
 
@@ -642,7 +936,7 @@ mod projector {
                 messages: OnDiskMessageStore::new(s, target, max_size)?,
                 head_tracker: UpdateHeadTracker::new(s, target)?,
                 phantom_data: PhantomData,
-                cut_off_config: CutOffConfig::default()
+                cut_off_config: CutOffConfig::default(),
             })
         }
 
@@ -710,21 +1004,13 @@ mod projector {
             context.finalize_message(seqnr);
         }
 
-
-
         pub(crate) fn apply_missing_messages(
             &mut self,
             root: &mut APP::Root,
             context: &mut DatabaseContext,
             time_now: DateTime<Utc>,
         ) -> Result<()> {
-
-
-
-
             let cutoff = self.cut_off_config.nominal_cutoff(time_now);
-
-
 
             let cur_seqnr = context.next_seqnr();
 
@@ -1420,18 +1706,21 @@ impl Target {
 }
 
 pub mod database {
+    use crate::cutoff::CutoffHash;
     use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
     use crate::disk_access::FileAccessor;
     use crate::message_store::IndexEntry;
     use crate::projector::Projector;
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
-    use crate::{Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, MessagePayload, MessageComponent, MessageId, Object, Pointer, Target, Message, MessageHeader};
+    use crate::{
+        Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Message, MessageComponent,
+        MessageHeader, MessageId, MessagePayload, Object, Pointer, Target,
+    };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Utc};
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};
-    use crate::cutoff::CutoffHash;
 
     pub struct Database<Base: Application> {
         context: DatabaseContext,
@@ -1453,8 +1742,8 @@ pub mod database {
 
         pub fn get_upstream_of(
             &self,
-            message_id: impl DoubleEndedIterator<Item=(MessageId, /*query count*/usize)>,
-        ) -> Result<impl Iterator<Item = (MessageHeader,/*query count*/usize)>> {
+            message_id: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
+        ) -> Result<impl Iterator<Item = (MessageHeader, /*query count*/ usize)>> {
             self.message_store.get_upstream_of(message_id)
         }
 
@@ -1466,7 +1755,11 @@ pub mod database {
             self.message_store.get_update_heads()
         }
 
-        pub(crate) fn get_messages_at_or_after(&self, message: MessageId, count: usize) -> Result<Vec<MessageId>> {
+        pub(crate) fn get_messages_at_or_after(
+            &self,
+            message: MessageId,
+            count: usize,
+        ) -> Result<Vec<MessageId>> {
             self.message_store.get_messages_after(message, count)
         }
 
@@ -1477,14 +1770,15 @@ pub mod database {
             self.message_store.nominal_cutoffhash()
         }
 
-
         pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
             self.message_store.get_all_message_ids()
         }
         pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
             self.message_store.get_all_messages()
         }
-        pub fn get_all_messages_with_children(&self) -> Result<Vec<(Message<APP::Message>, Vec<MessageId>)>> {
+        pub fn get_all_messages_with_children(
+            &self,
+        ) -> Result<Vec<(Message<APP::Message>, Vec<MessageId>)>> {
             self.message_store.get_all_messages_with_children()
         }
 
@@ -1643,7 +1937,8 @@ pub mod database {
             self.message_store
                 .push_messages(&mut self.context, messages, local)?;
 
-            println!("Append-many, halfways, present messages are: {:#?}",
+            println!(
+                "Append-many, halfways, present messages are: {:#?}",
                 self.get_all_messages_with_children()
             );
 
@@ -1743,8 +2038,11 @@ pub mod database {
 }
 
 pub mod distributor {
-    use crate::{Application, Database, MessagePayload, MessageId, Message, MessageHeader};
+    use crate::cutoff::CutoffHash;
+    use crate::message_store::{ReadPod, WritePod};
+    use crate::{Application, Database, Message, MessageHeader, MessageId, MessagePayload};
     use anyhow::Result;
+    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use indexmap::{IndexMap, IndexSet};
     use libc::send;
     use savefile_derive::Savefile;
@@ -1752,9 +2050,6 @@ pub mod distributor {
     use std::hash::{Hash, Hasher};
     use std::io::Cursor;
     use std::ops::Range;
-    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-    use crate::cutoff::CutoffHash;
-    use crate::message_store::{ReadPod, WritePod};
     // Principle
     // The node that is 'most ahead' (highest MessageId) has responsibility.
     // If knows all the heads of other node, just sends perfect updates.
@@ -1774,21 +2069,20 @@ pub mod distributor {
             let mut reader = Cursor::new(&self.data);
             Ok(Message {
                 header: MessageHeader {
-                    id:self.id,
-                    parents:self.parents,
+                    id: self.id,
+                    parents: self.parents,
                 },
                 payload: M::deserialize(&self.data[reader.position() as usize..])?,
             })
-
         }
         pub fn new<M: MessagePayload>(m: Message<M>) -> Result<SerializedMessage> {
             let mut data = vec![];
             m.payload.serialize(&mut data)?;
-            Ok(SerializedMessage { id: m.header.id,
+            Ok(SerializedMessage {
+                id: m.header.id,
                 parents: m.header.parents,
-                data
-            }
-            )
+                data,
+            })
         }
     }
 
@@ -1803,7 +2097,6 @@ pub mod distributor {
         parents: Vec<MessageId>,
         query_count: usize,
     }
-
 
     #[derive(Debug, Savefile, Clone)]
     pub enum DistributorMessage {
@@ -1821,8 +2114,7 @@ pub mod distributor {
         /// Report a cut in the source node message graph
         RequestUpstream {
             /// the usize is How many levels to ascend from message
-            query: Vec<(MessageId,usize)>,
-
+            query: Vec<(MessageId, usize)>,
         },
         UpstreamResponse {
             messages: Vec<MessageSubGraphNode>,
@@ -1836,7 +2128,7 @@ pub mod distributor {
 
     struct MergedDistributorMessages {
         report_heads: IndexSet<MessageId>,
-        requests: IndexMap<MessageId,/*count*/usize>,
+        requests: IndexMap<MessageId, /*count*/ usize>,
         responses: IndexSet<MessageSubGraphNode>,
         send_msg_and_descendants: IndexSet<MessageId>,
         actual_messages: Vec<SerializedMessage>,
@@ -1862,7 +2154,6 @@ pub mod distributor {
         }
     }
     impl Distributor {
-
         const BATCH_SIZE: usize = 20;
         pub fn new() -> Distributor {
             Self {
@@ -1870,52 +2161,43 @@ pub mod distributor {
             }
         }
 
-
         /// Call this to retrieve a message that should be sent periodically
         pub fn get_periodic_message<APP: Application>(
             &mut self,
             database: &Database<APP>,
         ) -> Result<Vec<DistributorMessage>> {
-            let mut temp = vec![
-                DistributorMessage::ReportHeads(
-                    database.nominal_cutoffhash()?,
-                    database.get_update_heads().into_iter().copied().collect(),
-                )
-            ];
+            let mut temp = vec![DistributorMessage::ReportHeads(
+                database.nominal_cutoffhash()?,
+                database.get_update_heads().into_iter().copied().collect(),
+            )];
             let sync_from = match &self.sync_all_inprogress {
-                SyncAllState::NotActive => {
-                    None
-                }
-                SyncAllState::Starting => {
-                    Some(MessageId::ZERO)
-                }
-                SyncAllState::BeginQuery(start) => {
-                    Some(*start)
-                }
-                SyncAllState::QueryActive(from,to, request_identity) => {
-                    Some(*from)
-                }
+                SyncAllState::NotActive => None,
+                SyncAllState::Starting => Some(MessageId::ZERO),
+                SyncAllState::BeginQuery(start) => Some(*start),
+                SyncAllState::QueryActive(from, to, request_identity) => Some(*from),
             };
             if let Some(sync_from) = sync_from {
                 let cur_batch = database.get_messages_at_or_after(sync_from, Self::BATCH_SIZE)?;
-                if cur_batch.is_empty()  {
+                if cur_batch.is_empty() {
                     self.sync_all_inprogress = SyncAllState::NotActive;
                 } else {
                     self.sync_all_inprogress = SyncAllState::QueryActive(
-                        *cur_batch.first().unwrap(),*cur_batch.last().unwrap(),
-                        cur_batch.iter().copied().collect()
+                        *cur_batch.first().unwrap(),
+                        *cur_batch.last().unwrap(),
+                        cur_batch.iter().copied().collect(),
                     );
-                    temp.push(DistributorMessage::SyncAllQuery(
-                        cur_batch
-                    ));
+                    temp.push(DistributorMessage::SyncAllQuery(cur_batch));
                 }
             }
-
 
             Ok(temp)
         }
 
-        pub fn receive_message<APP: Application>(&mut self,  database: &mut Database<APP>, input: impl Iterator<Item=DistributorMessage>) -> Result<Vec<DistributorMessage>> {
+        pub fn receive_message<APP: Application>(
+            &mut self,
+            database: &mut Database<APP>,
+            input: impl Iterator<Item = DistributorMessage>,
+        ) -> Result<Vec<DistributorMessage>> {
             let mut accumulated_heads: IndexSet<MessageId> = IndexSet::new();
             let mut accumulated_upstream_queries = IndexMap::new();
             let mut accumulated_responses = IndexMap::new();
@@ -1940,8 +2222,9 @@ pub mod distributor {
                         }
                     }
                     DistributorMessage::RequestUpstream { query } => {
-                        for (msg,count) in query {
-                            let accum_count = accumulated_upstream_queries.entry(msg).or_insert(0usize);
+                        for (msg, count) in query {
+                            let accum_count =
+                                accumulated_upstream_queries.entry(msg).or_insert(0usize);
                             *accum_count = (*accum_count).max(count);
                         }
                     }
@@ -1960,21 +2243,19 @@ pub mod distributor {
                     DistributorMessage::Message(msg, need_ack) => {
                         accumulated_serialized.push((msg, need_ack));
                     }
-                    DistributorMessage::SyncAllAck(acked) => {
-                        match &mut self.sync_all_inprogress {
-                            SyncAllState::QueryActive(from,to, items) => {
-                                for ack in acked {
-                                    items.swap_remove(&ack);
-                                }
-                                if items.is_empty() {
-                                    self.sync_all_inprogress = SyncAllState::BeginQuery(*to);
-                                }
+                    DistributorMessage::SyncAllAck(acked) => match &mut self.sync_all_inprogress {
+                        SyncAllState::QueryActive(from, to, items) => {
+                            for ack in acked {
+                                items.swap_remove(&ack);
                             }
-                            SyncAllState::NotActive => {}
-                            SyncAllState::Starting => {}
-                            SyncAllState::BeginQuery(_) => {}
+                            if items.is_empty() {
+                                self.sync_all_inprogress = SyncAllState::BeginQuery(*to);
+                            }
                         }
-                    }
+                        SyncAllState::NotActive => {}
+                        SyncAllState::Starting => {}
+                        SyncAllState::BeginQuery(_) => {}
+                    },
                 }
             }
             let mut output = Vec::new();
@@ -1982,14 +2263,23 @@ pub mod distributor {
             self.process_reported_heads(database, accumulated_heads, &mut output);
             self.process_request_upstream(database, accumulated_upstream_queries, &mut output);
             self.process_upstream_response(database, accumulated_responses, &mut output);
-            self.process_send_message_all_descendants(database, accumulated_send_msg_and_descendants, &mut output);
+            self.process_send_message_all_descendants(
+                database,
+                accumulated_send_msg_and_descendants,
+                &mut output,
+            );
             self.process_received_messages(database, accumulated_serialized, &mut output);
             self.process_sync_all_queries(database, accumulated_sync_all_queries, &mut output);
             self.process_sync_all_requests(database, accumulated_sync_all_requests, &mut output);
             Ok(output)
         }
 
-        fn process_sync_all_queries<APP: Application>(&self, database: &mut Database<APP>, accumulated_sync_all_queries: IndexSet<MessageId>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+        fn process_sync_all_queries<APP: Application>(
+            &self,
+            database: &mut Database<APP>,
+            accumulated_sync_all_queries: IndexSet<MessageId>,
+            output: &mut Vec<DistributorMessage>,
+        ) -> Result<()> {
             let mut request = vec![];
             let mut acks = vec![];
             for query in accumulated_sync_all_queries {
@@ -2008,16 +2298,28 @@ pub mod distributor {
             Ok(())
         }
 
-        fn process_sync_all_requests<APP: Application>(&self, database: &mut Database<APP>, accumulated_sync_all_requests: IndexSet<MessageId>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+        fn process_sync_all_requests<APP: Application>(
+            &self,
+            database: &mut Database<APP>,
+            accumulated_sync_all_requests: IndexSet<MessageId>,
+            output: &mut Vec<DistributorMessage>,
+        ) -> Result<()> {
             for request in accumulated_sync_all_requests {
                 let msg = database.load_message(request)?;
-                output.push(DistributorMessage::Message(SerializedMessage::new(msg)?, true));
+                output.push(DistributorMessage::Message(
+                    SerializedMessage::new(msg)?,
+                    true,
+                ));
             }
             Ok(())
         }
 
-
-        fn process_reported_heads<APP: Application>(&self, database: &mut Database<APP>, accumulated_heads: IndexSet<MessageId>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+        fn process_reported_heads<APP: Application>(
+            &self,
+            database: &mut Database<APP>,
+            accumulated_heads: IndexSet<MessageId>,
+            output: &mut Vec<DistributorMessage>,
+        ) -> Result<()> {
             let mut messages_to_request = vec![];
             for message in accumulated_heads {
                 if database.contains_message(message)? {
@@ -2032,24 +2334,32 @@ pub mod distributor {
             }
             Ok(())
         }
-        fn process_request_upstream<APP: Application>(&self, database: &mut Database<APP>, accumulated_heads: IndexMap<MessageId, usize>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+        fn process_request_upstream<APP: Application>(
+            &self,
+            database: &mut Database<APP>,
+            accumulated_heads: IndexMap<MessageId, usize>,
+            output: &mut Vec<DistributorMessage>,
+        ) -> Result<()> {
             let mut response: IndexMap<MessageId, APP::Message> = IndexMap::new();
             let messages: Vec<MessageSubGraphNode> = database
                 .get_upstream_of(accumulated_heads.into_iter())?
-                .map(|(msg,query_count)| MessageSubGraphNode {
+                .map(|(msg, query_count)| MessageSubGraphNode {
                     id: msg.id,
                     parents: msg.parents,
                     query_count,
                 })
                 .collect();
             if !messages.is_empty() {
-                output.push(DistributorMessage::UpstreamResponse {
-                    messages,
-                });
+                output.push(DistributorMessage::UpstreamResponse { messages });
             }
             Ok(())
         }
-        fn process_upstream_response<APP: Application>(&self, database: &mut Database<APP>, upstream_response: IndexMap<MessageId,/*parents*/MessageSubGraphNodeValue>, output: &mut Vec<DistributorMessage>) -> Result<()> {
+        fn process_upstream_response<APP: Application>(
+            &self,
+            database: &mut Database<APP>,
+            upstream_response: IndexMap<MessageId, /*parents*/ MessageSubGraphNodeValue>,
+            output: &mut Vec<DistributorMessage>,
+        ) -> Result<()> {
             let mut unknowns: HashSet<(MessageId, usize)> = HashSet::new();
             let mut send_cmds = vec![];
             for (msg_id, msg_value) in upstream_response.iter() {
@@ -2064,22 +2374,31 @@ pub mod distributor {
                             eprintln!("Error: {:?}", e);
                             err = Err(e);
                         })
-                        .is_ok_and(|x|x)
+                        .is_ok_and(|x| x)
                 });
 
                 err?;
                 if have_all_parents {
                     // We have all the parents, a perfect msg to request!
-                    println!("Requesting msg.id={:?}, because we have all its parents: {:?}", msg_id, msg_value.parents);
+                    println!(
+                        "Requesting msg.id={:?}, because we have all its parents: {:?}",
+                        msg_id, msg_value.parents
+                    );
                     send_cmds.push(*msg_id);
                     continue;
                 }
 
-                let all_parents_are_also_in_request = msg_value.parents.iter().all(|x| {
-                    upstream_response.contains_key(x)
-                });
+                let all_parents_are_also_in_request = msg_value
+                    .parents
+                    .iter()
+                    .all(|x| upstream_response.contains_key(x));
                 if !all_parents_are_also_in_request {
-                    unknowns.extend(msg_value.parents.iter().map(|x|(*x, msg_value.query_count)));
+                    unknowns.extend(
+                        msg_value
+                            .parents
+                            .iter()
+                            .map(|x| (*x, msg_value.query_count)),
+                    );
                 }
             }
             if send_cmds.is_empty() == false {
@@ -2095,16 +2414,29 @@ pub mod distributor {
 
             Ok(())
         }
-        fn process_send_message_all_descendants<APP: Application>(&self, database: &mut Database<APP>, mut message_list: IndexSet<MessageId>, output: &mut Vec<DistributorMessage>) -> Result<()> {
-
+        fn process_send_message_all_descendants<APP: Application>(
+            &self,
+            database: &mut Database<APP>,
+            mut message_list: IndexSet<MessageId>,
+            output: &mut Vec<DistributorMessage>,
+        ) -> Result<()> {
             while let Some(msg) = message_list.pop() {
                 let msg = database.load_message(msg)?;
                 let msg_id = msg.id();
-                output.push(DistributorMessage::Message(SerializedMessage::new(msg)?, false));
+                output.push(DistributorMessage::Message(
+                    SerializedMessage::new(msg)?,
+                    false,
+                ));
 
                 //TODO: Make smarter, this is super-inefficient
                 for child_msg in database.get_all_messages()? {
-                    if child_msg.header.parents.iter().find(|x|**x == msg_id).is_some() {
+                    if child_msg
+                        .header
+                        .parents
+                        .iter()
+                        .find(|x| **x == msg_id)
+                        .is_some()
+                    {
                         message_list.insert(child_msg.id());
                     }
                 }
@@ -2113,29 +2445,34 @@ pub mod distributor {
             Ok(())
         }
 
-        fn process_received_messages<APP: Application>(&self, database: &mut Database<APP>, message_list: Vec<(SerializedMessage, /*need ack*/bool)>, output: &mut Vec<DistributorMessage>) -> Result<()> {
-
+        fn process_received_messages<APP: Application>(
+            &self,
+            database: &mut Database<APP>,
+            message_list: Vec<(SerializedMessage, /*need ack*/ bool)>,
+            output: &mut Vec<DistributorMessage>,
+        ) -> Result<()> {
             let mut to_ack = vec![];
-            let messages = message_list.into_iter().map(|(x, need_ack)|(x.to_message(),need_ack))
-                .filter_map(|(x,need_ack)|{
-                    match x {
-                        Ok(x) => {
-                            if need_ack {
-                                to_ack.push(x.header.id);
-                            }
-                            Some(x)
-                        },
-                        Err(x) => {
-                            eprintln!("Message could not be deserialized: {:?}", x);
-                            None
+            let messages = message_list
+                .into_iter()
+                .map(|(x, need_ack)| (x.to_message(), need_ack))
+                .filter_map(|(x, need_ack)| match x {
+                    Ok(x) => {
+                        if need_ack {
+                            to_ack.push(x.header.id);
                         }
+                        Some(x)
+                    }
+                    Err(x) => {
+                        eprintln!("Message could not be deserialized: {:?}", x);
+                        None
                     }
                 })
-                .inspect(|x|
-                    {
-                        println!("==========================================\nAppend message: {:?}", x);
-                    })
-                ;
+                .inspect(|x| {
+                    println!(
+                        "==========================================\nAppend message: {:?}",
+                        x
+                    );
+                });
 
             database.append_many(messages, false)?;
             if !to_ack.is_empty() {
@@ -2143,7 +2480,6 @@ pub mod distributor {
             }
             Ok(())
         }
-
     }
 }
 
@@ -2166,8 +2502,8 @@ mod tests {
     use savefile_derive::Savefile;
     use sha2::{Digest, Sha256};
     use std::io::{Cursor, SeekFrom};
-    use test::Bencher;
     use std::iter::once;
+    use test::Bencher;
 
     #[test]
     fn test_mmap_big() {
@@ -2241,8 +2577,7 @@ mod tests {
             std::iter::empty()
         }
 
-        fn set_parents(&mut self, parents: impl Iterator<Item=MessageId>) {
-        }
+        fn set_parents(&mut self, parents: impl Iterator<Item = MessageId>) {}
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
             unimplemented!()
@@ -2319,8 +2654,7 @@ mod tests {
             std::iter::empty()
         }
 
-        fn set_parents(&mut self, parents: impl Iterator<Item=MessageId>) {
-        }
+        fn set_parents(&mut self, parents: impl Iterator<Item = MessageId>) {}
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
             unimplemented!()
@@ -2361,7 +2695,7 @@ mod tests {
         });
     }
 
-    #[derive(Debug,Clone, Savefile)]
+    #[derive(Debug, Clone, Savefile)]
     struct CounterMessage {
         id: MessageId,
         parent: Vec<MessageId>,
@@ -2370,11 +2704,7 @@ mod tests {
     }
     impl CounterMessage {
         fn wrap(&self) -> Message<CounterMessage> {
-            Message::new(
-                self.id,
-                self.parent.clone(),
-                self.clone()
-            )
+            Message::new(self.id, self.parent.clone(), self.clone())
         }
     }
     impl MessagePayload for CounterMessage {
@@ -2387,7 +2717,7 @@ mod tests {
             self.parent.iter().copied()
         }
 
-        fn set_parents(&mut self, parents: impl Iterator<Item=MessageId>) {
+        fn set_parents(&mut self, parents: impl Iterator<Item = MessageId>) {
             self.parent = parents.collect();
         }
 
@@ -2431,7 +2761,8 @@ mod tests {
                 id: MessageId::new_debug(0x100),
                 inc1: 2,
                 set1: 0,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2444,7 +2775,8 @@ mod tests {
                 id: MessageId::new_debug(0x101),
                 inc1: 0,
                 set1: 42,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2454,7 +2786,8 @@ mod tests {
                 id: MessageId::new_debug(0x102),
                 inc1: 1,
                 set1: 0,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2483,7 +2816,8 @@ mod tests {
                 id: MessageId::new_debug(0x100),
                 inc1: 2,
                 set1: 0,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2493,7 +2827,8 @@ mod tests {
                 id: MessageId::new_debug(0x101),
                 inc1: 0,
                 set1: 42,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2503,7 +2838,8 @@ mod tests {
                 id: MessageId::new_debug(0x102),
                 inc1: 1,
                 set1: 0,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2535,7 +2871,8 @@ mod tests {
                 id: m1,
                 inc1: 2,
                 set1: 0,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2547,7 +2884,8 @@ mod tests {
                 id: m2,
                 inc1: 0,
                 set1: 42,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2561,7 +2899,8 @@ mod tests {
                 id: m3,
                 inc1: 1,
                 set1: 0,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2587,7 +2926,8 @@ mod tests {
                 id: MessageId::new_debug(0x100),
                 inc1: 2,
                 set1: 0,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2597,7 +2937,8 @@ mod tests {
                 id: MessageId::new_debug(0x101),
                 inc1: 0,
                 set1: 42,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2607,7 +2948,8 @@ mod tests {
                 id: MessageId::new_debug(0x102),
                 inc1: 1,
                 set1: 0,
-            }.wrap(),
+            }
+            .wrap(),
             true,
         )
         .unwrap();
@@ -2617,9 +2959,12 @@ mod tests {
         println!("Heads: {:?}", d.get_periodic_message(&db));
 
         let r = d
-            .receive_message(&mut db, std::iter::once(DistributorMessage::RequestUpstream {
-                query: vec![(MessageId::new_debug(0x102),2)],
-            }))
+            .receive_message(
+                &mut db,
+                std::iter::once(DistributorMessage::RequestUpstream {
+                    query: vec![(MessageId::new_debug(0x102), 2)],
+                }),
+            )
             .unwrap();
         println!("Clarify: {:?}", r);
 
@@ -2895,13 +3240,13 @@ mod tests {
         use crate::distributor::{Distributor, DistributorMessage};
         use crate::tests::{CounterApplication, CounterMessage};
         use crate::{Database, MessageId};
-        use datetime_literal::datetime;
-        use std::time::Duration;
         use chrono::DateTime;
         use chrono::Utc;
-        use std::mem::swap;
-        use std::iter::once;
+        use datetime_literal::datetime;
         use insta::assert_debug_snapshot;
+        use std::iter::once;
+        use std::mem::swap;
+        use std::time::Duration;
 
         fn create_app(
             id: u64,
@@ -2933,7 +3278,8 @@ mod tests {
                             .collect(),
                         inc1,
                         set1,
-                    }.wrap(),
+                    }
+                    .wrap(),
                     local,
                 );
             }
@@ -2946,32 +3292,35 @@ mod tests {
             num_messages: usize,
         }
 
-        fn sync(dbs: Vec<Database<CounterApplication>>) -> SyncReport{
-            let mut report = SyncReport {
-                num_messages: 0,
-            };
-            let mut dbs: Vec<(Distributor,Database<_>)> = dbs.into_iter().map(|x|(Distributor::new(),x)).collect();
+        fn sync(dbs: Vec<Database<CounterApplication>>) -> SyncReport {
+            let mut report = SyncReport { num_messages: 0 };
+            let mut dbs: Vec<(Distributor, Database<_>)> =
+                dbs.into_iter().map(|x| (Distributor::new(), x)).collect();
             let mut ether = vec![];
-            for (db_id, (distr,db)) in dbs.iter_mut().enumerate() {
+            for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
                 let mut sent = distr.get_periodic_message(db).unwrap();
                 assert_eq!(sent.len(), 1, "no resync is active");
                 let sent = sent.pop().unwrap();
 
                 println!("db: {:?} sent initial {:?}", db_id, sent);
                 report.num_messages += 1;
-                ether.push((db_id,sent));
+                ether.push((db_id, sent));
             }
             let mut next_ether = vec![];
             loop {
-                for (db_id,(distr,db)) in dbs.iter_mut().enumerate() {
-                    let sent = distr.receive_message(db,
-                                                     ether.iter().filter(|(x_src_id,msg)|*x_src_id!=db_id)
-                                                         .map(|(_src,x)|x.clone())
-                    ).unwrap();
+                for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
+                    let sent = distr
+                        .receive_message(
+                            db,
+                            ether
+                                .iter()
+                                .filter(|(x_src_id, msg)| *x_src_id != db_id)
+                                .map(|(_src, x)| x.clone()),
+                        )
+                        .unwrap();
                     report.num_messages += sent.len();
                     println!("db: {:?} sent {:?}", db_id, sent);
-                    next_ether.extend(sent.into_iter().map(|x|(db_id,x)));
-
+                    next_ether.extend(sent.into_iter().map(|x| (db_id, x)));
                 }
                 if next_ether.is_empty() {
                     break;
@@ -2980,8 +3329,8 @@ mod tests {
                 next_ether.clear();
             }
 
-            let first_set:Vec<_> = dbs[0].1.get_all_message_ids().unwrap();
-            for (distr,db) in dbs.iter().skip(1) {
+            let first_set: Vec<_> = dbs[0].1.get_all_message_ids().unwrap();
+            for (distr, db) in dbs.iter().skip(1) {
                 assert_eq!(first_set, db.get_all_message_ids().unwrap());
             }
             report

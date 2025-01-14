@@ -5,25 +5,19 @@ use crate::{MessageId, Target};
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
+use libc::epoll_params;
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
 use std::io::{Seek, SeekFrom, Write};
-use libc::epoll_params;
 
 #[derive(Debug)]
 pub enum UndoLogEntry<'a> {
     /// Set the database pointer to the given value (and clear all bytes after)
     SetPointer(usize),
     /// Zero out the values in start..end
-    ZeroOut {
-        start: usize,
-        len: usize,
-    },
+    ZeroOut { start: usize, len: usize },
     /// Restore memory at start, with the contents of the slice
-    Restore {
-        start: usize,
-        data: &'a [u8],
-    },
+    Restore { start: usize, data: &'a [u8] },
     /// This entry is emitted in the undo-log _prior_ to SequenceNr.
     /// I.e, if you rewind to this, the event that happened at SequenceNr will not
     /// be present in the database. I.e, this should be considered the 'next' SequenceNr

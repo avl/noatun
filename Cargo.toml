@@ -12,9 +12,6 @@ opt-level = 3
 [profile.dev.package.byteorder]
 opt-level = 3
 
-[features]
-savefile = ["dep:savefile",  "savefile-derive"]
-
 [dependencies]
 byteorder = "1.5"
 bytemuck = { version = "1.20", features = ["derive"] }
@@ -25,17 +22,19 @@ time = { version = "0.3", features = ["formatting"] }
 memmap2 = {version ="0.9"}
 anyhow = "1.0"
 fs2 = "0.4"
-savefile = {  version = "0.18", optional = true }
-savefile-derive = { version = "0.18", optional = true }
+savefile = {  version = "0.18", path ="../savefile/savefile"}
+savefile-derive = { version = "0.18"}
 serde_derive = "1.0"
 serde = "1.0"
 libc = "0.2.169"
 rand = "0.8.5"
 chrono = "0.4.39"
+tokio = { version = "1.43", features = ["full", "sync"], optional = true }
+
 
 [dev-dependencies]
-savefile="0.18"
+savefile = {  version = "0.18", path ="../savefile/savefile"}
 savefile-derive = "0.18"
-noatun = { path = ".", features = ["savefile"] }
+noatun = { path = ".", features = ["tokio"] }
 datetime_literal = "0.1"
 insta = "1.42"
