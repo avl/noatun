@@ -59,17 +59,17 @@ mod sha2_helper;
 
 #[cfg(feature = "tokio")]
 mod multicast {
-    use anyhow::{bail, Result};
+    use anyhow::{Result, bail};
+    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use indexmap::IndexMap;
+    use libc::newlocale;
     use savefile::{Deserialize, Deserializer, Packed, Serialize, Serializer, WithSchema};
     use savefile_derive::Savefile;
+    use socket2::{Domain, Protocol, SockRef, Type};
     use std::collections::VecDeque;
     use std::io::{Cursor, Read, Seek, SeekFrom, Write};
     use std::net::{IpAddr, SocketAddr};
     use std::time::Instant;
-    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-    use libc::newlocale;
-    use socket2::{Domain, Protocol, SockRef, Type};
     use tokio::net::UdpSocket;
     use tokio::select;
     use tokio::sync::mpsc::{Receiver, Sender};
@@ -77,12 +77,9 @@ mod multicast {
     #[derive(Savefile, Debug)]
     enum NetworkPacket {
         Data(TransmittedEntity),
-        Retransmit {
-            who: IpAddr,
-            what: Vec<u64>
-        },
+        Retransmit { who: IpAddr, what: Vec<u64> },
     }
-    const APPROX_HEADER_SIZE: usize = 4+8+2 + 8 + 20;
+    const APPROX_HEADER_SIZE: usize = 4 + 8 + 2 + 8 + 20;
 
     #[derive(Savefile, Debug)]
     struct TransmittedEntity {
@@ -105,9 +102,16 @@ mod multicast {
     }
 
     impl ReceiveTrack {
-        async fn process(&mut self, packet: TransmittedEntity, tx: &mut Sender<Vec<u8>>) -> Result<()> {
+        async fn process(
+            &mut self,
+            packet: TransmittedEntity,
+            tx: &mut Sender<Vec<u8>>,
+        ) -> Result<()> {
             println!("Processing {:?}", packet);
-            let Err(insert_point) = self.sorted_packets.binary_search_by_key(&packet.seq, |x|x.seq) else {
+            let Err(insert_point) = self
+                .sorted_packets
+                .binary_search_by_key(&packet.seq, |x| x.seq)
+            else {
                 // Already existed
                 println!("Already had packet: {:?}", &packet);
                 return Ok(());
@@ -115,27 +119,25 @@ mod multicast {
 
             self.sorted_packets.insert(insert_point, packet);
             while let Some(first) = self.sorted_packets.front() {
-                println!("Processing seq {}, expected: {}", first.seq, self.expected_next);
+                println!("sorted...");
                 if first.seq != self.expected_next {
                     return Ok(());
                 }
-                println!("1");
                 if first.first_boundary == u16::MAX {
-                    println!("2");
                     self.accum.extend(&first.data);
                 } else {
-                    println!("3");
-
-                    self.accum.extend(&first.data[0..first.first_boundary as usize]);
+                    self.accum
+                        .extend(&first.data[0..first.first_boundary as usize]);
                     if !self.accum.is_empty() {
                         println!("Sending out {:?}", self.accum);
-                        tx.try_send(self.accum.iter().copied().collect());
+                        tx.try_send(self.accum.iter().copied().collect()).unwrap();
+                        println!("Send done");
                         self.accum.clear();
                     }
                     let mut cur_boundary = first.first_boundary as usize;
                     let mut reader = Cursor::new(&first.data);
                     reader.seek(SeekFrom::Start(cur_boundary as u64));
-                    println!("Cur boundary: {} of size {}", cur_boundary, first.data.len());
+
                     while cur_boundary < first.data.len() {
                         let next_size = reader.read_u16::<LittleEndian>()? as usize;
                         println!("Next size: {}", next_size);
@@ -148,7 +150,8 @@ mod multicast {
                         reader.read_exact(&mut temp)?;
                         if !temp.is_empty() {
                             println!("Sending out {:?}", temp);
-                            tx.try_send(temp);
+                            tx.try_send(temp).unwrap();
+                            println!("Send done");
                         }
 
                         println!("cur boundary step {} {}", cur_boundary, next_size);
@@ -192,26 +195,28 @@ mod multicast {
             bandwidth_bytes_per_second: u64,
             mtu: usize,
         ) -> Result<MulticasterSenderLoop> {
-
             let send_socket = UdpSocket::bind(bind_address).await?;
             let udp = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
             udp.set_reuse_address(true)?;
             udp.set_multicast_loop_v4(true);
             udp.bind(&multicast_group.into())?;
+            udp.set_nonblocking(true);
             let receive_socket = UdpSocket::from_std(udp.into())?;
 
             let max_payload_per_packet = mtu.saturating_sub(APPROX_HEADER_SIZE);
             match (multicast_group.ip(), bind_address.ip()) {
-                (IpAddr::V4(multicast_ipv4),IpAddr::V4(bind_ipv4)) => {
-                    receive_socket.join_multicast_v4(multicast_ipv4,bind_ipv4);
+                (IpAddr::V4(multicast_ipv4), IpAddr::V4(bind_ipv4)) => {
+                    receive_socket.join_multicast_v4(multicast_ipv4, bind_ipv4);
                     receive_socket.set_multicast_loop_v4(true);
                 }
-                (IpAddr::V6(multicast_ipv6),IpAddr::V6(bind_ipv6)) => {
-                    receive_socket.join_multicast_v6(&multicast_ipv6,0);
+                (IpAddr::V6(multicast_ipv6), IpAddr::V6(bind_ipv6)) => {
+                    receive_socket.join_multicast_v6(&multicast_ipv6, 0);
                     receive_socket.set_multicast_loop_v6(true);
                 }
                 _ => {
-                    panic!("Bind address and multicast group used different address family. They must both be ipv4 or both ipv6.");
+                    panic!(
+                        "Bind address and multicast group used different address family. They must both be ipv4 or both ipv6."
+                    );
                 }
             }
             if max_payload_per_packet < 100 {
@@ -238,13 +243,14 @@ mod multicast {
             queue: &mut VecDeque<TransmittedEntity>,
             max_payload_per_packet: usize,
             next_send_seq: &mut u64,
-            buffer: Vec<u8>) {
-
+            buffer: Vec<u8>,
+        ) {
             let mut is_first;
-            let buffer:&[u8] = if let Some(last) = queue.back_mut() {
+            let buffer: &[u8] = if let Some(last) = queue.back_mut() {
                 if last.first_boundary != u16::MAX {
                     if last.free(max_payload_per_packet) >= 2 + buffer.len() {
-                        last.data.write_u16::<LittleEndian>(buffer.len().try_into().unwrap());
+                        last.data
+                            .write_u16::<LittleEndian>(buffer.len().try_into().unwrap());
                         last.data.extend(buffer);
                         return;
                     }
@@ -262,26 +268,32 @@ mod multicast {
                 &buffer
             };
 
-            let mut reader_pos=0;
+            let mut reader_pos = 0;
             loop {
+                println!("sending...");
                 let remaining = buffer.len() - reader_pos;
                 if remaining == 0 {
                     break;
                 }
-                let overhead = if is_first {2} else {0};
+                let overhead = if is_first { 2 } else { 0 };
                 let max_payload_this_packet = max_payload_per_packet - overhead;
                 let chunk = remaining.min(max_payload_this_packet);
-                let mut data = Vec::with_capacity(chunk+overhead);
+                let mut data = Vec::with_capacity(chunk + overhead);
                 if is_first {
-                    data.write_u16::<LittleEndian>(if buffer.len()<=max_payload_this_packet {buffer.len().try_into().unwrap()} else {u16::MAX}).unwrap();
+                    data.write_u16::<LittleEndian>(if buffer.len() <= max_payload_this_packet {
+                        buffer.len().try_into().unwrap()
+                    } else {
+                        u16::MAX
+                    })
+                    .unwrap();
                 }
-                data.write_all(&buffer[reader_pos..reader_pos+chunk]);
+                data.write_all(&buffer[reader_pos..reader_pos + chunk]);
                 reader_pos += chunk;
 
                 queue.push_back(TransmittedEntity {
                     seq: *next_send_seq,
                     data,
-                    first_boundary: if is_first {0} else {u16::MAX},
+                    first_boundary: if is_first { 0 } else { u16::MAX },
                 });
                 is_first = false;
                 *next_send_seq += 1;
@@ -292,39 +304,44 @@ mod multicast {
         }
         pub fn queue_retransmits(&mut self, what: &[u64]) {
             for what in what {
-                let Ok(index) = self.history.binary_search_by_key(what,|x|x.seq) else {
+                println!("queueing");
+                let Ok(index) = self.history.binary_search_by_key(what, |x| x.seq) else {
                     return;
                 };
-                let Some(history_item) = self.history.remove(index) else {return};
+                let Some(history_item) = self.history.remove(index) else {
+                    return;
+                };
                 self.queue.push_front(history_item);
             }
         }
         pub async fn run(mut self) {
-            let mut cursend : Option<Vec<u8>>= None;
+            let mut cursend: Option<Vec<u8>> = None;
             loop {
+                println!("Looping...");
                 self.recvbuf.clear();
                 let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
 
                 if cursend.is_none() {
-                    cursend =
-                        self.queue.pop_front().map(|x| {
-                            let mut temp = vec![];
-                            // Consider if savefile really is the best here. Some more efficiency
-                            // woudln't hurt!
-                            Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::Data(x)).unwrap();
-                            temp
-                        }
-                        );
+                    cursend = self.queue.pop_front().map(|x| {
+                        let mut temp = vec![];
+                        // Consider if savefile really is the best here. Some more efficiency
+                        // woudln't hurt!
+                        Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::Data(x)).unwrap();
+                        temp
+                    });
                 }
-
 
                 let mut send = async {
                     if let Some(tosend) = cursend.as_mut() {
-                        match self.send_socket.send_to(&tosend,&self.multicast_group).await {
+                        match self
+                            .send_socket
+                            .send_to(&tosend, &self.multicast_group)
+                            .await
+                        {
                             Ok(sent) => {
                                 println!("Sent {} byte packet:     {:?}", sent, tosend);
                                 cursend.take();
-                            },
+                            }
                             Err(err) => {
                                 eprintln!("Send error: {:?}", err);
                             }
@@ -358,17 +375,17 @@ mod multicast {
                                 eprintln!("Invalid packet received");
                                 continue;
                             };
-                        println!("Deserialized into {:?}", packet);
+                            println!("Deserialized into {:?}", packet);
                             match packet {
                                 NetworkPacket::Data(entity) => {
                                     println!("TransmittedEntity");
                                     match self.receive_track.entry(addr).or_default()
                                         .process(entity, &mut self.message_tx).await {
-                                        Ok(()) => {}
-                                        Err(err) => {
-                                            eprintln!("Receive error: {:?}", err);
+                                            Ok(()) => {}
+                                            Err(err) => {
+                                                eprintln!("Receive error: {:?}", err);
+                                        }
                                     }
-                                }
                                 }
                                 NetworkPacket::Retransmit{who, what  } => {
                                     if who == self.bind_address {
@@ -384,13 +401,12 @@ mod multicast {
 
     #[cfg(test)]
     mod tests {
-        use tokio::spawn;
         use crate::multicast::MulticasterSenderLoop;
+        use tokio::spawn;
 
         #[tokio::test]
         async fn test_sender() {
-
-            let (sender_tx,  mut sender_rx) = tokio::sync::mpsc::channel(1000);
+            let (sender_tx, mut sender_rx) = tokio::sync::mpsc::channel(1000);
             let (receiver_tx, mut receiver_rx) = tokio::sync::mpsc::channel(1000);
 
             let mloop = MulticasterSenderLoop::new(
@@ -399,16 +415,21 @@ mod multicast {
                 receiver_tx,
                 sender_rx,
                 1000,
-                200
-            ).await.unwrap();
+                200,
+            )
+            .await
+            .unwrap();
 
             let jh = spawn(mloop.run());
 
-            sender_tx.send(vec![3u8;250]).await.unwrap();
+            println!("About to send");
+            sender_tx.send(vec![3u8; 250]).await.unwrap();
+            println!("About to recv");
             receiver_rx.recv().await.unwrap();
+            println!("Aborting");
+            jh.abort();
             jh.await.unwrap();
         }
-
     }
 }
 
