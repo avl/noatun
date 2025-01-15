@@ -452,6 +452,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "sha2",
+ "socket2",
  "time",
  "tokio",
 ]
