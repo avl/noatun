@@ -63,7 +63,7 @@ mod multicast {
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use indexmap::IndexMap;
     use libc::newlocale;
-    use savefile::{Deserialize, Deserializer, Packed, Serialize, Serializer, WithSchema};
+    use savefile::{Deserialize, Deserializer, Field, Introspect, IntrospectItem, Packed, SavefileError, Schema, SchemaPrimitive, SchemaStruct, Serialize, Serializer, WithSchema, WithSchemaContext};
     use savefile_derive::Savefile;
     use socket2::{Domain, Protocol, SockRef, Type};
     use std::collections::VecDeque;
@@ -79,38 +79,124 @@ mod multicast {
         Data(TransmittedEntity),
         Retransmit { who: IpAddr, what: Vec<u64> },
     }
-    const APPROX_HEADER_SIZE: usize = 4 + 8 + 2 + 8 + 20;
 
-    #[derive(Savefile, Debug)]
+    const IP_HEADER_SIZE: usize = 20;
+    const UDP_HEADER_SIZE: usize = 8;
+    const NOATUN_NETWORK_PACKET_OVERHEAD: usize = 1;
+    const NOATUN_TRANSMITTED_ENTITY_OVERHEAD: usize = 6;
+    const APPROX_HEADER_SIZE: usize =
+        IP_HEADER_SIZE + UDP_HEADER_SIZE+NOATUN_NETWORK_PACKET_OVERHEAD+NOATUN_TRANSMITTED_ENTITY_OVERHEAD;
+
+    #[derive(Debug)]
     struct TransmittedEntity {
-        seq: u64,
+        seq: u16,
         data: Vec<u8>,
         // Note, u16::MAX signifies "no boundary"
         first_boundary: u16,
     }
+
+    impl Introspect for TransmittedEntity {
+        fn introspect_value(&self) -> String {
+            format!("TransmittedEntity(#{},first_boundary={},len={})",
+                self.seq, self.first_boundary, self.data.len()
+            )
+        }
+
+        fn introspect_child<'a>(&'a self, index: usize) -> Option<Box<dyn IntrospectItem<'a> + 'a>> {
+            None
+        }
+    }
+
+    impl WithSchema for TransmittedEntity {
+        fn schema(version: u32, context: &mut WithSchemaContext) -> Schema {
+            Schema::Custom("TransmittedEntity".into())
+        }
+    }
+    impl Packed for TransmittedEntity {}
+    impl Serialize for TransmittedEntity {
+        fn serialize(&self, serializer: &mut Serializer<impl Write>) -> std::result::Result<(), SavefileError> {
+            serializer.write_u16(self.seq)?;
+            assert!(self.data.len() <= u16::MAX as usize);
+            serializer.write_u16(self.data.len() as u16)?;
+            serializer.write_bytes(&self.data);
+            serializer.write_u16(self.first_boundary)?;
+            Ok(())
+        }
+    }
+    impl Deserialize for TransmittedEntity {
+        fn deserialize(deserializer: &mut Deserializer<impl Read>) -> std::result::Result<Self, SavefileError> {
+            let seq = deserializer.read_u16()?;
+            let datalen = deserializer.read_u16()?;
+            let data = deserializer.read_bytes(datalen as usize)?;
+            let first_boundary = deserializer.read_u16()?;
+            Ok(Self {
+                seq,
+                data,
+                first_boundary,
+            })
+        }
+    }
+
+
 
     impl TransmittedEntity {
         fn free(&self, max_payload: usize) -> usize {
             max_payload.saturating_sub(self.data.len())
         }
     }
+
+    #[derive(Debug)]
+    struct SortableTransmittedEntity {
+        reconstructed_seq: u64,
+        entity: TransmittedEntity,
+    }
+
     #[derive(Default)]
     struct ReceiveTrack {
         accum: VecDeque<u8>,
         expected_next: u64,
-        sorted_packets: VecDeque<TransmittedEntity>,
+        sorted_packets: VecDeque<SortableTransmittedEntity>,
     }
 
     impl ReceiveTrack {
+        /// How long are packets kept in the retransmit window.
+        /// I.e, after this has passed, they're lost forever.
+        pub const RETRANSMIT_WINDOW: usize = 1000;
+        pub const RETRANSMIT_WINDOW_U16: u16 =
+            if Self::RETRANSMIT_WINDOW > u16::MAX as usize {
+                panic!("RETRANSMIT_WINDOW constant value too large")
+            } else {
+                Self::RETRANSMIT_WINDOW as u16
+            };
+
+        pub(crate) fn reconstruct_seq(&self, seq:u16) -> u64 {
+            Self::reconstruct_seq_impl(self.expected_next, seq)
+        }
+        pub(crate) fn reconstruct_seq_impl(expected_next: u64, seq:u16) -> u64 {
+            let short_delta = seq - (expected_next as u16);
+
+            if short_delta < 65535 - Self::RETRANSMIT_WINDOW_U16 {
+                // Interpret as future value
+                expected_next + short_delta as u64
+            } else {
+                // A retransmission, that we don't actually need
+                expected_next + short_delta as u64
+            }
+        }
+
         async fn process(
             &mut self,
             packet: TransmittedEntity,
             tx: &mut Sender<Vec<u8>>,
         ) -> Result<()> {
             println!("Processing {:?}", packet);
+            let packet = SortableTransmittedEntity {
+                reconstructed_seq: self.reconstruct_seq(packet.seq),
+                entity: packet,
+            };
             let Err(insert_point) = self
                 .sorted_packets
-                .binary_search_by_key(&packet.seq, |x| x.seq)
+                .binary_search_by_key(&packet.reconstructed_seq, |x| x.reconstructed_seq)
             else {
                 // Already existed
                 println!("Already had packet: {:?}", &packet);
@@ -120,25 +206,25 @@ mod multicast {
             self.sorted_packets.insert(insert_point, packet);
             while let Some(first) = self.sorted_packets.front() {
                 println!("sorted...");
-                if first.seq != self.expected_next {
+                if first.reconstructed_seq != self.expected_next {
                     return Ok(());
                 }
-                if first.first_boundary == u16::MAX {
-                    self.accum.extend(&first.data);
+                if first.entity.first_boundary == u16::MAX {
+                    self.accum.extend(&first.entity.data);
                 } else {
                     self.accum
-                        .extend(&first.data[0..first.first_boundary as usize]);
+                        .extend(&first.entity.data[0..first.entity.first_boundary as usize]);
                     if !self.accum.is_empty() {
-                        println!("Sending out {:?}", self.accum);
+                        //println!("Sending out {:?}", self.accum);
                         tx.try_send(self.accum.iter().copied().collect()).unwrap();
-                        println!("Send done");
+                        //println!("Send done");
                         self.accum.clear();
                     }
-                    let mut cur_boundary = first.first_boundary as usize;
-                    let mut reader = Cursor::new(&first.data);
+                    let mut cur_boundary = first.entity.first_boundary as usize;
+                    let mut reader = Cursor::new(&first.entity.data);
                     reader.seek(SeekFrom::Start(cur_boundary as u64));
 
-                    while cur_boundary < first.data.len() {
+                    while cur_boundary < first.entity.data.len() {
                         let next_size = reader.read_u16::<LittleEndian>()? as usize;
                         println!("Next size: {}", next_size);
                         cur_boundary += 2;
@@ -149,18 +235,18 @@ mod multicast {
                         temp.resize(next_size, 0);
                         reader.read_exact(&mut temp)?;
                         if !temp.is_empty() {
-                            println!("Sending out {:?}", temp);
+                            //println!("Sending out {:?}", temp);
                             tx.try_send(temp).unwrap();
-                            println!("Send done");
+                            //println!("Send done");
                         }
 
                         println!("cur boundary step {} {}", cur_boundary, next_size);
                         cur_boundary += next_size;
                     }
-                    self.accum.extend(&first.data[cur_boundary..]);
+                    self.accum.extend(&first.entity.data[cur_boundary..]);
                 }
                 println!("Increasing next: {}", self.expected_next);
-                self.expected_next += 1;
+                self.expected_next = self.expected_next.wrapping_add(1);
                 self.sorted_packets.pop_front();
             }
             Ok(())
@@ -172,8 +258,8 @@ mod multicast {
         receive_socket: UdpSocket,
         bind_address: IpAddr,
         multicast_group: SocketAddr,
-        history: VecDeque<TransmittedEntity>,
-        queue: VecDeque<TransmittedEntity>,
+        history: VecDeque<SortableTransmittedEntity>,
+        queue: VecDeque<SortableTransmittedEntity>,
         receive_track: IndexMap<SocketAddr, ReceiveTrack>,
         /// Sent to net
         message_rx: Receiver<Vec<u8>>,
@@ -197,6 +283,9 @@ mod multicast {
         ) -> Result<MulticasterSenderLoop> {
             let send_socket = UdpSocket::bind(bind_address).await?;
             let udp = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+            if mtu >= u16::MAX as usize {
+                bail!("Maximum MTU supported by noatun is 65534");
+            }
             udp.set_reuse_address(true)?;
             udp.set_multicast_loop_v4(true);
             udp.bind(&multicast_group.into())?;
@@ -240,23 +329,23 @@ mod multicast {
             })
         }
         pub fn send_buf(
-            queue: &mut VecDeque<TransmittedEntity>,
+            queue: &mut VecDeque<SortableTransmittedEntity>,
             max_payload_per_packet: usize,
             next_send_seq: &mut u64,
             buffer: Vec<u8>,
         ) {
             let mut is_first;
             let buffer: &[u8] = if let Some(last) = queue.back_mut() {
-                if last.first_boundary != u16::MAX {
-                    if last.free(max_payload_per_packet) >= 2 + buffer.len() {
-                        last.data
+                if last.entity.first_boundary != u16::MAX {
+                    if last.entity.free(max_payload_per_packet) >= 2 + buffer.len() {
+                        last.entity.data
                             .write_u16::<LittleEndian>(buffer.len().try_into().unwrap());
-                        last.data.extend(buffer);
+                        last.entity.data.extend(buffer);
                         return;
                     }
-                    last.data.write_u16::<LittleEndian>(u16::MAX);
-                    let free_now = last.free(max_payload_per_packet);
-                    last.data.extend(&buffer[0..free_now]);
+                    last.entity.data.write_u16::<LittleEndian>(u16::MAX);
+                    let free_now = last.entity.free(max_payload_per_packet);
+                    last.entity.data.extend(&buffer[0..free_now]);
                     is_first = false;
                     &buffer[free_now..]
                 } else {
@@ -289,23 +378,30 @@ mod multicast {
                 }
                 data.write_all(&buffer[reader_pos..reader_pos + chunk]);
                 reader_pos += chunk;
-
-                queue.push_back(TransmittedEntity {
-                    seq: *next_send_seq,
-                    data,
-                    first_boundary: if is_first { 0 } else { u16::MAX },
-                });
+                println!("Filled packet {}/{}",data.len(),max_payload_per_packet);
+                queue.push_back(
+                    SortableTransmittedEntity {
+                        reconstructed_seq: *next_send_seq,
+                        entity: TransmittedEntity {
+                            seq: *next_send_seq as u16,
+                            data,
+                            first_boundary: if is_first { 0 } else { u16::MAX },
+                        },
+                    }
+                    );
                 is_first = false;
                 *next_send_seq += 1;
             }
             if let Some(last) = queue.back_mut() {
-                last.first_boundary = last.data.len().try_into().unwrap();
+                if last.entity.first_boundary == u16::MAX {
+                    last.entity.first_boundary = last.entity.data.len().try_into().unwrap();
+                }
             }
         }
         pub fn queue_retransmits(&mut self, what: &[u64]) {
             for what in what {
                 println!("queueing");
-                let Ok(index) = self.history.binary_search_by_key(what, |x| x.seq) else {
+                let Ok(index) = self.history.binary_search_by_key(what, |x| x.reconstructed_seq) else {
                     return;
                 };
                 let Some(history_item) = self.history.remove(index) else {
@@ -325,14 +421,15 @@ mod multicast {
                     cursend = self.queue.pop_front().map(|x| {
                         let mut temp = vec![];
                         // Consider if savefile really is the best here. Some more efficiency
-                        // woudln't hurt!
-                        Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::Data(x)).unwrap();
+                        // wouldn't hurt!
+                        Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::Data(x.entity)).unwrap();
                         temp
                     });
                 }
 
                 let mut send = async {
                     if let Some(tosend) = cursend.as_mut() {
+                        println!("Sending {} bytes on wire", tosend.len());
                         match self
                             .send_socket
                             .send_to(&tosend, &self.multicast_group)
@@ -401,8 +498,28 @@ mod multicast {
 
     #[cfg(test)]
     mod tests {
-        use crate::multicast::MulticasterSenderLoop;
+        use crate::multicast::{MulticasterSenderLoop, ReceiveTrack};
         use tokio::spawn;
+
+        #[test]
+        fn reconstruct_seq_logic() {
+            assert_eq!(
+                ReceiveTrack::reconstruct_seq_impl(10, 9),
+                9);
+            assert_eq!(
+                ReceiveTrack::reconstruct_seq_impl(10, 7),
+                7);
+            assert_eq!(
+                ReceiveTrack::reconstruct_seq_impl(65536, 0),
+                65536);
+            assert_eq!(
+                ReceiveTrack::reconstruct_seq_impl(65535, 1),
+                65537);
+            assert_eq!(
+                ReceiveTrack::reconstruct_seq_impl(65536+65535, 1),
+                65536+65537);
+
+        }
 
         #[tokio::test]
         async fn test_sender() {
@@ -423,11 +540,20 @@ mod multicast {
             let jh = spawn(mloop.run());
 
             println!("About to send");
-            sender_tx.send(vec![3u8; 250]).await.unwrap();
-            println!("About to recv");
-            receiver_rx.recv().await.unwrap();
-            println!("Aborting");
-            jh.abort();
+            for packet in [
+                vec![1u8;1],
+                vec![2u8;10],
+                vec![3u8;250],
+                vec![4u8;1000],
+                vec![5u8;10000],
+            ] {
+                sender_tx.send(packet.clone()).await.unwrap();
+                println!("About to recv");
+                let got = receiver_rx.recv().await.unwrap();
+                assert_eq!(got, packet);
+            }
+            println!("quitting");
+            drop(sender_tx);
             jh.await.unwrap();
         }
     }
