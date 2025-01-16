@@ -664,7 +664,7 @@ impl<M> OnDiskMessageStore<M> {
                     .file
                     .seek(SeekFrom::Start(file_offset + tot_size as u64))?;
 
-                report_inserted(msg.id(), &parents)?;
+                report_inserted(header.message_id, &parents)?;
 
                 file_entry.bytes_used += tot_size as u64;
                 index[index_ptr] = IndexEntry {
@@ -1408,6 +1408,7 @@ impl<M> OnDiskMessageStore<M> {
         let (Ok(first_index) | Err(first_index)) = index[0..index_header.entries as usize]
             .binary_search_by_key(&first_input_message.id(), |x| x.message);
         let mut cur_index = first_index;
+        let mut first_index_actually_inserted=None;
 
         let mut parents: Vec<MessageId> = vec![];
 
@@ -1435,7 +1436,7 @@ impl<M> OnDiskMessageStore<M> {
             #[allow(clippy::enum_variant_names)]
             enum Cases {
                 /// The next value that should be written to the output is the one that is already
-                /// present. I.e, a no-op.
+                /// present. I.e, a no-op. If multiple match, this matches first.
                 NextFromCurrent,
                 /// The next that should be written is the current input message
                 NextFromInput,
@@ -1474,6 +1475,7 @@ impl<M> OnDiskMessageStore<M> {
 
                     index_header.cutoff.report_add(msg.header.id);
                     message_inserted(msg.id(), &msg.header.parents)?;
+                    first_index_actually_inserted = Some(cur_index);
                     //Self::register_heads_and_tails(&mut self.update_heads, &parents, &msg.id())?;
                     if let Some(last_msg_id) = last_msg_id {
                         if last_msg_id >= msg.id() {
@@ -1539,7 +1541,7 @@ impl<M> OnDiskMessageStore<M> {
 
         self.handle_remaining_child_assignments(remaining_child_assignments);
 
-        Ok(Some(first_index))
+        Ok(first_index_actually_inserted)
     }
 
     /// Compact all files to the given maximum degree of fragmentation.
@@ -1780,16 +1782,6 @@ mod tests {
     impl MessagePayload for OnDiskMessage {
         type Root = DummyUnitObject;
 
-        fn id(&self) -> MessageId {
-            assert!(self.id < u32::MAX as u64);
-            MessageId::new_debug(self.id as u32)
-        }
-
-        fn parents(&self) -> impl ExactSizeIterator<Item = MessageId> {
-            std::iter::empty()
-        }
-
-        fn set_parents(&mut self, parents: impl Iterator<Item = MessageId>) {}
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
             unimplemented!()

@@ -39,8 +39,6 @@ use std::ptr::null_mut;
 use std::slice::SliceIndex;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 
 mod disk_abstraction;
 mod message_store;
@@ -58,7 +56,7 @@ pub(crate) mod disk_access;
 mod sha2_helper;
 
 #[cfg(feature = "tokio")]
-mod multicast {
+pub mod communication {
     use anyhow::{Result, bail};
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use indexmap::IndexMap;
@@ -69,10 +67,18 @@ mod multicast {
     use std::collections::VecDeque;
     use std::io::{Cursor, Read, Seek, SeekFrom, Write};
     use std::net::{IpAddr, SocketAddr};
-    use std::time::Instant;
+    use std::ops::Deref;
+    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::thread::JoinHandle;
+    use std::time::{Duration, Instant};
     use tokio::net::UdpSocket;
-    use tokio::select;
+    use tokio::{select, spawn};
     use tokio::sync::mpsc::{Receiver, Sender};
+    use tokio::sync::mpsc::error::SendError;
+    use tokio::sync::oneshot;
+    use tokio::task::spawn_local;
+    use crate::{Application, Database};
+    use crate::distributor::{Distributor, DistributorMessage};
 
     #[derive(Savefile, Debug)]
     enum NetworkPacket {
@@ -189,7 +195,6 @@ mod multicast {
             packet: TransmittedEntity,
             tx: &mut Sender<Vec<u8>>,
         ) -> Result<()> {
-            println!("Processing {:?}", packet);
             let packet = SortableTransmittedEntity {
                 reconstructed_seq: self.reconstruct_seq(packet.seq),
                 entity: packet,
@@ -205,7 +210,6 @@ mod multicast {
 
             self.sorted_packets.insert(insert_point, packet);
             while let Some(first) = self.sorted_packets.front() {
-                println!("sorted...");
                 if first.reconstructed_seq != self.expected_next {
                     return Ok(());
                 }
@@ -226,7 +230,6 @@ mod multicast {
 
                     while cur_boundary < first.entity.data.len() {
                         let next_size = reader.read_u16::<LittleEndian>()? as usize;
-                        println!("Next size: {}", next_size);
                         cur_boundary += 2;
                         if next_size == u16::MAX as usize {
                             break;
@@ -240,12 +243,10 @@ mod multicast {
                             //println!("Send done");
                         }
 
-                        println!("cur boundary step {} {}", cur_boundary, next_size);
                         cur_boundary += next_size;
                     }
                     self.accum.extend(&first.entity.data[cur_boundary..]);
                 }
-                println!("Increasing next: {}", self.expected_next);
                 self.expected_next = self.expected_next.wrapping_add(1);
                 self.sorted_packets.pop_front();
             }
@@ -359,7 +360,6 @@ mod multicast {
 
             let mut reader_pos = 0;
             loop {
-                println!("sending...");
                 let remaining = buffer.len() - reader_pos;
                 if remaining == 0 {
                     break;
@@ -378,7 +378,6 @@ mod multicast {
                 }
                 data.write_all(&buffer[reader_pos..reader_pos + chunk]);
                 reader_pos += chunk;
-                println!("Filled packet {}/{}",data.len(),max_payload_per_packet);
                 queue.push_back(
                     SortableTransmittedEntity {
                         reconstructed_seq: *next_send_seq,
@@ -400,7 +399,6 @@ mod multicast {
         }
         pub fn queue_retransmits(&mut self, what: &[u64]) {
             for what in what {
-                println!("queueing");
                 let Ok(index) = self.history.binary_search_by_key(what, |x| x.reconstructed_seq) else {
                     return;
                 };
@@ -413,7 +411,6 @@ mod multicast {
         pub async fn run(mut self) {
             let mut cursend: Option<Vec<u8>> = None;
             loop {
-                println!("Looping...");
                 self.recvbuf.clear();
                 let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
 
@@ -429,14 +426,14 @@ mod multicast {
 
                 let mut send = async {
                     if let Some(tosend) = cursend.as_mut() {
-                        println!("Sending {} bytes on wire", tosend.len());
+                        //println!("Sending {} bytes on wire", tosend.len());
                         match self
                             .send_socket
                             .send_to(&tosend, &self.multicast_group)
                             .await
                         {
                             Ok(sent) => {
-                                println!("Sent {} byte packet:     {:?}", sent, tosend);
+                                //println!("Sent {} byte packet:     {:?}", sent, tosend);
                                 cursend.take();
                             }
                             Err(err) => {
@@ -466,16 +463,16 @@ mod multicast {
                         }
                         msg = receive => {
                             let (size, addr) = msg.expect("network should not fail");
-                            println!("Received {} byte packet: {:?}", size, self.recvbuf);
+                            //println!("Received {} byte packet: {:?}", size, self.recvbuf);
                             assert_eq!(size, self.recvbuf.len());
                             let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0)  else {
                                 eprintln!("Invalid packet received");
                                 continue;
                             };
-                            println!("Deserialized into {:?}", packet);
+                            //println!("Deserialized into {:?}", packet);
                             match packet {
                                 NetworkPacket::Data(entity) => {
-                                    println!("TransmittedEntity");
+                                    //println!("TransmittedEntity");
                                     match self.receive_track.entry(addr).or_default()
                                         .process(entity, &mut self.message_tx).await {
                                             Ok(()) => {}
@@ -496,10 +493,213 @@ mod multicast {
         }
     }
 
+
+    enum Cmd<APP:Application> {
+        AddMessage(APP::Message, oneshot::Sender<Result<()>>)
+    }
+
+    struct DatabaseCommunicationLoop<APP:Application> {
+        database: Arc<Mutex<Database<APP>>>,
+        jh: tokio::task::JoinHandle<()>,
+        sender_tx: Sender<Vec<u8>>,
+        receiver_rx: Receiver<Vec<u8>>,
+        distributor: Distributor,
+        cmd_rx: Receiver<Cmd<APP>>,
+
+        /// When the first item was put into the buffer
+        buffer_life_start: Instant,
+        next_periodic: tokio::time::Instant,
+        bufferd_incoming_messages: Vec<DistributorMessage>,
+        outbuf: VecDeque<DistributorMessage>,
+    }
+
+    pub struct DatabaseCommunicationConfig {
+        pub listen_address: String,
+        pub multicast_address: String,
+        pub mtu: usize,
+        pub bandwidth_limit_bytes_per_second: u64,
+    }
+
+    impl Default for DatabaseCommunicationConfig {
+        fn default() -> Self {
+            Self {
+                listen_address: "127.0.0.1:0".to_string(),
+                multicast_address: "230.230.230.230:7777".to_string(),
+                mtu: 1000,
+                bandwidth_limit_bytes_per_second: 1000,
+            }
+        }
+    }
+
+    pub struct DatabaseCommunication<APP:Application> {
+        database: Arc<Mutex<Database<APP>>>,
+        cmd_tx: Sender<Cmd<APP>>
+    }
+
+    pub struct RootRef<'a, APP:Application> {
+        guard : MutexGuard<'a, Database<APP>>
+    }
+
+    impl<'a, APP:Application> Deref for RootRef<'a, APP> {
+        type Target = APP::Root;
+
+        fn deref(&self) -> &Self::Target {
+            self.guard.get_root().0
+        }
+    }
+
+    impl<APP:Application+'static> DatabaseCommunicationLoop<APP> {
+        const PERIODIC_MSG_INTERVAL: Duration = Duration::from_secs(5);
+
+
+
+        pub fn process_packet(&mut self, packet: Vec<u8>) -> Result<()> {
+            let msg: DistributorMessage = Deserializer::bare_deserialize(&mut Cursor::new(&packet), 0)?;
+            println!("Received {:?}", msg);
+            self.bufferd_incoming_messages.push(msg);
+            Ok(())
+        }
+        pub fn process_messages(&mut self) -> Result<()> {
+            {}
+            let mut database = self.database.lock().unwrap();
+            let new_msgs = self.distributor.receive_message(
+                &mut *database,
+                self.bufferd_incoming_messages.drain(..))?;
+            drop(database);
+            self.outbuf.extend(new_msgs);
+            Ok(())
+        }
+
+        pub async fn run(mut self) -> Result<()> {
+            let mut nextsend = vec![];
+            loop {
+                // For buffered incoming messages
+                let buffer_len = self.bufferd_incoming_messages.len();
+                let buffer_life_start = self.buffer_life_start;
+                let mut buffering_timer = async move {
+                    if buffer_len > 0 {
+                        if buffer_len > 1000 || buffer_life_start.elapsed() > Duration::from_secs(2) {} else {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    } else {
+                        std::future::pending().await
+                    }
+                };
+
+                if nextsend.is_empty() && !self.outbuf.is_empty() {
+                    let msg = self.outbuf.pop_front().unwrap();
+                    println!("Sending {:?}", msg);
+                    Serializer::bare_serialize(&mut nextsend, 0, &msg)?;
+                }
+                let sendtask = async {
+                    if !nextsend.is_empty() {
+                        let permit = self.sender_tx.reserve().await?;
+                        permit.send(std::mem::take(&mut nextsend));
+                    } else {
+                        std::future::pending().await
+                    }
+                    Ok::<(),SendError<()>>(())
+                };
+
+                select!(
+                    res = sendtask => {
+                        res?;
+                    }
+                    periodic = tokio::time::sleep_until(self.next_periodic) => {
+                        let database = self.database.lock().unwrap();
+                        self.outbuf.extend(self.distributor.get_periodic_message(&*database)?);
+                        self.next_periodic = self.next_periodic + Self::PERIODIC_MSG_INTERVAL;
+                    }
+                    cmd = self.cmd_rx.recv() => {
+                        println!("Cmd received");
+                        let Some(cmd) = cmd else {
+                            eprintln!("Done"); //TODO
+                            return Ok(()); //Done
+                        };
+                        match cmd {
+                            Cmd::AddMessage(msg,result) => {
+                                let mut database = self.database.lock().unwrap();
+                                _ = result.send(database.append_local(msg));
+                            }
+                        }
+                    }
+                    recv_pkt = self.receiver_rx.recv() => {
+                        let Some(recv_pkt) = recv_pkt else {
+                            bail!("sender loop quit");
+                        };
+                        self.process_packet(recv_pkt)?;
+                    }
+                    process_incoming = buffering_timer => {
+                        self.process_messages()?;
+                    }
+
+                )
+            }
+        }
+    }
+    impl<APP:Application+'static> DatabaseCommunication<APP> {
+
+        pub async fn add_message(&self, msg: APP::Message) -> Result<()> {
+            let (response_tx, response_rx) = oneshot::channel();
+            match self.cmd_tx.send(Cmd::AddMessage(msg, response_tx)).await {
+                Ok(()) => {}
+                Err(err) => {
+                    bail!("Failed to AddMessage");
+                }
+            }
+            response_rx.await??;
+            Ok(())
+        }
+        pub fn get_root(&self) -> RootRef<APP> {
+            RootRef {
+                guard: self.database.lock().unwrap()
+            }
+        }
+        pub async fn new(database: Database<APP>, config: DatabaseCommunicationConfig) -> DatabaseCommunication<APP> {
+            let (sender_tx, mut sender_rx) = tokio::sync::mpsc::channel(1000);
+            let (receiver_tx, mut receiver_rx) = tokio::sync::mpsc::channel(1000);
+            let sender_loop = MulticasterSenderLoop::new(
+                config.listen_address.parse().unwrap(),
+                config.multicast_address.parse().unwrap(),
+                receiver_tx,
+                sender_rx,
+                config.bandwidth_limit_bytes_per_second,
+                config.mtu,
+            )
+                .await
+                .unwrap();
+            let jh = spawn(sender_loop.run());
+
+            let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(100);
+
+            let database = Arc::new(Mutex::new(database));
+            let main = DatabaseCommunicationLoop {
+                database:database.clone(),
+                jh,
+                sender_tx,
+                receiver_rx,
+                distributor: Default::default(),
+                cmd_rx,
+                buffer_life_start: Instant::now(),
+                next_periodic: tokio::time::Instant::now(),
+                bufferd_incoming_messages: vec![],
+                outbuf: Default::default(),
+            };
+            spawn_local(main.run());
+
+            DatabaseCommunication {
+                database,
+                cmd_tx
+            }
+        }
+
+    }
+
     #[cfg(test)]
     mod tests {
-        use crate::multicast::{MulticasterSenderLoop, ReceiveTrack};
+
         use tokio::spawn;
+        use crate::communication::{MulticasterSenderLoop,ReceiveTrack};
 
         #[test]
         fn reconstruct_seq_logic() {
@@ -520,6 +720,10 @@ mod multicast {
                 65536+65537);
 
         }
+
+
+
+
 
         #[tokio::test]
         async fn test_sender() {
@@ -559,6 +763,9 @@ mod multicast {
     }
 }
 
+
+
+
 #[derive(
     Pod,
     Zeroable,
@@ -587,14 +794,11 @@ const ASSURE_SUPPORTED_USIZE: () = const {
 impl Display for MessageId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let time_ms = self.timestamp();
-        let unix_timestamp = (time_ms / 1000) as i64;
-        let timestamp_ms = time_ms % 1000;
 
-        let time = OffsetDateTime::from_unix_timestamp(unix_timestamp)
-            .unwrap()
-            .add(Duration::from_millis(timestamp_ms));
+        let time = chrono::DateTime::from_timestamp_millis(time_ms as i64)
+            .unwrap();
 
-        let time_str = time.format(&Rfc3339).unwrap(); //All values representable should be formattable here
+        let time_str = time.to_rfc3339();
         write!(
             f,
             "{:?}-{:x}-{:x}-{:x}",
@@ -745,9 +949,6 @@ pub mod sequence_nr {
 
 pub trait MessagePayload: Debug {
     type Root: Object;
-    fn id(&self) -> MessageId;
-    fn parents(&self) -> impl ExactSizeIterator<Item = MessageId>;
-    fn set_parents(&mut self, parents: impl Iterator<Item = MessageId>);
     fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root);
 
     fn deserialize(buf: &[u8]) -> Result<Self>
@@ -1315,11 +1516,24 @@ pub trait Object {
     /// This is meant to be either ThinPtr for sized objects, or
     /// FatPtr for dynamically sized objects. Other types are likely to not make sense.
     type Ptr: Pointer;
+    /// Access a shared instance of Self at the given pointer address.
+    ///
     /// # Safety
     /// The caller must ensure that the accessed object is not aliased with a mutable
     /// reference to the same object.
     // TODO: Don't expose these methods. Too hard to use correctly!
     unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self;
+    /// Access a mutable instance of Self at the given pointer address.
+    /// NOTE!
+    /// Self must not allow direct access to any of its fields. Self must
+    /// provide methods that can be used to mutate the fields, and those methods
+    /// must report all writes to the DatabaseContext.
+    ///
+    /// NOTE!
+    /// The above holds for all places that may be reachable through Self, not only direct
+    /// fields on Self. It also holds for collections or any other data. I.e, if Self
+    /// is a collection type, it cannot give direct mutable access to a u8 element, or similar.
+    ///
     /// # Safety
     /// The caller must ensure that the accessed object is not aliased with any other
     /// reference to the same object.
@@ -1327,6 +1541,10 @@ pub trait Object {
     unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self;
 }
 
+
+// TODO: Remove this! It's not safe.
+// You can't provide noatun-features for any POD, since POD can be updated
+// without tracking the updates in the noatun database!
 #[derive(Clone, Debug, Copy, Pod, Zeroable)]
 #[repr(transparent)]
 pub struct PodObject<T: Pod> {
@@ -1353,7 +1571,7 @@ pub trait Application {
     type Root: Object + ?Sized;
     type Message: MessagePayload<Root = Self::Root>;
 
-    fn initialize_root(ctx: &mut DatabaseContext) -> <Self::Root as Object>::Ptr;
+    fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self::Root;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1448,6 +1666,12 @@ pub mod data_types {
     pub struct DatabaseCell<T: Copy> {
         value: T,
         registrar: SequenceNr,
+    }
+
+    impl<T:Copy+Debug> Debug for DatabaseCell<T> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            self.value.fmt(f)
+        }
     }
 
     //TODO: Document. Also rename this or DatabaseCell, the names should harmonize.
@@ -1883,8 +2107,20 @@ pub mod data_types {
     }
 }
 
+#[derive(Clone,Copy)]
+enum MultiInstanceThreadBlocker {
+    Idle,
+    InstanceActive,
+    Disabled
+}
+
+
 thread_local! {
-    pub(crate) static MULTI_INSTANCE_BLOCKER: Cell<bool> = const { Cell::new(false) };
+    pub(crate) static MULTI_INSTANCE_BLOCKER: Cell<MultiInstanceThreadBlocker> = const { Cell::new(MultiInstanceThreadBlocker::Idle) };
+}
+
+pub unsafe  fn disable_multi_instance_blocker() {
+    MULTI_INSTANCE_BLOCKER.set(MultiInstanceThreadBlocker::Disabled);
 }
 
 #[derive(Clone)]
@@ -1926,10 +2162,7 @@ pub mod database {
     use crate::projector::Projector;
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
-    use crate::{
-        Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Message, MessageComponent,
-        MessageHeader, MessageId, MessagePayload, Object, Pointer, Target,
-    };
+    use crate::{Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Message, MessageComponent, MessageHeader, MessageId, MessagePayload, Object, Pointer, Target, MultiInstanceThreadBlocker};
     use anyhow::{Context, Result};
     use chrono::{DateTime, Utc};
     use std::path::{Path, PathBuf};
@@ -2064,7 +2297,9 @@ pub mod database {
             context.clear()?;
 
             message_store.recover();
-            let root_ptr = APP::initialize_root(context);
+            let mmap_ptr = context.start_ptr();
+            let root_obj_ref = APP::initialize_root(context);
+            let root_ptr = DatabaseContext::index_of_rel(mmap_ptr, root_obj_ref);
             context.set_root_ptr(root_ptr.as_generic());
 
             context.set_next_seqnr(SequenceNr::from_index(0));
@@ -2131,10 +2366,23 @@ pub mod database {
             self.message_store.mark_transmitted(message_id)
         }
 
+        pub fn append_local(&mut self, message: APP::Message) -> Result<()> {
+            let now = self.now();
+            println!("Now: {:?}", now);
+            let new_id = MessageId::generate_for_time(now)?;
+            println!("New id: {:?}", new_id);
+            let t = Message::new(
+                new_id,self.get_update_heads().to_vec(),
+                message
+            );
+            self.append_single(t, true)?;
+            Ok(())
+        }
+
         pub fn append_many(
             &mut self,
             messages: impl Iterator<Item = Message<APP::Message>>,
-            local: bool,
+            local: bool
         ) -> Result<()> {
             let now = self.now();
             if !self.context.mark_dirty()? {
@@ -2147,13 +2395,10 @@ pub mod database {
                 )?;
             }
 
-            self.message_store
-                .push_messages(&mut self.context, messages, local)?;
 
-            println!(
-                "Append-many, halfways, present messages are: {:#?}",
-                self.get_all_messages_with_children()
-            );
+            self.message_store
+                .push_messages(&mut self.context, messages, local);
+
 
             let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
             let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
@@ -2168,17 +2413,20 @@ pub mod database {
         fn set_multi_instance_block() {
             #[cfg(not(test))]
             {
-                if MULTI_INSTANCE_BLOCKER.get() {
-                    if std::env::var("NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE").is_err() {
+                match MULTI_INSTANCE_BLOCKER.get() {
+                    MultiInstanceThreadBlocker::Idle => {
+                        MULTI_INSTANCE_BLOCKER.set(MultiInstanceThreadBlocker::InstanceActive);
+                    }
+                    MultiInstanceThreadBlocker::InstanceActive => {
                         panic!(
-                            "Noatun: Multiple active DB-roots in the same thread are not allowed.\
-                        You can disable this diagnostic by setting env-var NOATUN_UNSAFE_ALLOW_MULTI_INSTANCE.\
-                        Note, unsoundness can occur if DatabaseContext from one instance is used by data \
+                            "Noatun: Multiple active DB-roots in the same thread are not allowed.\n\
+                        You can disable this diagnostic by calling the unsafe method disable_multi_instance_blocker().\n\
+                        Note, unsoundness can then occur if DatabaseContext from one instance is used by data \
                         for other."
                         );
                     }
+                    MultiInstanceThreadBlocker::Disabled => {}
                 }
-                MULTI_INSTANCE_BLOCKER.set(true);
             }
         }
 
@@ -2245,7 +2493,15 @@ pub mod database {
     }
     impl<APP: Application> Drop for Database<APP> {
         fn drop(&mut self) {
-            MULTI_INSTANCE_BLOCKER.set(false);
+            match MULTI_INSTANCE_BLOCKER.get() {
+                MultiInstanceThreadBlocker::InstanceActive => {
+                    MULTI_INSTANCE_BLOCKER.set(MultiInstanceThreadBlocker::Idle);
+                }
+                MultiInstanceThreadBlocker::Idle => {
+                    eprintln!("Unexpected condition: MultiInstanceThreadBlocker was Idle, though we were running.");
+                }
+                MultiInstanceThreadBlocker::Disabled => {}
+            }
         }
     }
 }
@@ -2782,15 +3038,6 @@ mod tests {
     impl<T: Object> MessagePayload for DummyMessage<T> {
         type Root = T;
 
-        fn id(&self) -> MessageId {
-            unimplemented!()
-        }
-
-        fn parents(&self) -> impl ExactSizeIterator<Item = MessageId> {
-            std::iter::empty()
-        }
-
-        fn set_parents(&mut self, parents: impl Iterator<Item = MessageId>) {}
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
             unimplemented!()
@@ -2843,11 +3090,9 @@ mod tests {
         type Root = CounterObject;
         type Message = CounterMessage;
 
-        fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
-            let new_obj = CounterObject::new(&ctx);
-            //assert_eq!(ctx.index_of(&new_obj.counter), 0);
-            ctx.index_of(new_obj)
-            //new_obj
+        fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self::Root {
+            let new_obj = CounterObject::new(ctx);
+            new_obj
         }
     }
 
@@ -2859,15 +3104,6 @@ mod tests {
     impl MessagePayload for IncrementMessage {
         type Root = CounterObject;
 
-        fn id(&self) -> MessageId {
-            MessageId::new_debug(self.increment_by)
-        }
-
-        fn parents(&self) -> impl ExactSizeIterator<Item = MessageId> {
-            std::iter::empty()
-        }
-
-        fn set_parents(&mut self, parents: impl Iterator<Item = MessageId>) {}
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
             unimplemented!()
@@ -2922,17 +3158,6 @@ mod tests {
     }
     impl MessagePayload for CounterMessage {
         type Root = CounterObject;
-        fn id(&self) -> MessageId {
-            self.id
-        }
-
-        fn parents(&self) -> impl ExactSizeIterator<Item = MessageId> {
-            self.parent.iter().copied()
-        }
-
-        fn set_parents(&mut self, parents: impl Iterator<Item = MessageId>) {
-            self.parent = parents.collect();
-        }
 
         fn apply(&self, context: &mut DatabaseContext, root: &mut CounterObject) {
             if self.inc1 != 0 {
@@ -3196,10 +3421,9 @@ mod tests {
             type Root = DatabaseObjectHandle<DatabaseCell<u32>>;
             type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
 
-            fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
-                let obj = DatabaseObjectHandle::allocate(&ctx, DatabaseCell::new(43u32));
-
-                ctx.index_of(obj)
+            fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self::Root {
+                let obj = DatabaseObjectHandle::allocate(ctx, DatabaseCell::new(43u32));
+                obj
             }
         }
 
@@ -3225,13 +3449,12 @@ mod tests {
             type Root = DatabaseObjectHandle<[DatabaseCell<u8>]>;
             type Message = DummyMessage<DatabaseObjectHandle<[DatabaseCell<u8>]>>;
 
-            fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
+            fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self::Root {
                 let obj = DatabaseObjectHandle::allocate_unsized(
-                    &ctx,
+                    ctx,
                     [43u8, 45].map(|x| DatabaseCell::new(x)).as_slice(),
                 );
-
-                ctx.index_of(obj)
+                obj
             }
         }
 
@@ -3256,10 +3479,9 @@ mod tests {
             type Root = DatabaseObjectHandle<DatabaseCell<u32>>;
             type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
 
-            fn initialize_root(mut ctx: &mut DatabaseContext) -> ThinPtr {
-                let obj = DatabaseObjectHandle::allocate(&ctx, DatabaseCell::new(43u32));
-
-                ctx.index_of(obj)
+            fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self::Root {
+                let obj = DatabaseObjectHandle::allocate(ctx, DatabaseCell::new(43u32));
+                obj
             }
         }
 
@@ -3288,9 +3510,9 @@ mod tests {
         impl Application for CounterVecApplication {
             type Root = DatabaseVec<CounterObject>;
 
-            fn initialize_root(ctx: &mut DatabaseContext) -> ThinPtr {
+            fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self::Root {
                 let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new(ctx);
-                ctx.index_of(obj)
+                obj
             }
 
             type Message = DummyMessage<DatabaseVec<CounterObject>>;
@@ -3337,9 +3559,9 @@ mod tests {
         impl Application for CounterVecApplication {
             type Root = DatabaseVec<CounterObject>;
 
-            fn initialize_root(ctx: &mut DatabaseContext) -> ThinPtr {
+            fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self::Root {
                 let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new(ctx);
-                ctx.index_of(obj)
+                obj
             }
 
             type Message = DummyMessage<DatabaseVec<CounterObject>>;
@@ -3384,10 +3606,9 @@ mod tests {
         impl Application for CounterVecApplication {
             type Root = DatabaseVec<CounterObject>;
 
-            fn initialize_root(ctx: &mut DatabaseContext) -> ThinPtr {
+            fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self::Root {
                 let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new(ctx);
-                let index = ctx.index_of(obj);
-                index
+                obj
             }
 
             type Message = DummyMessage<DatabaseVec<CounterObject>>;

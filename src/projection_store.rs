@@ -692,6 +692,9 @@ impl DatabaseContext {
     pub fn index_of<T: Object + ?Sized>(&self, t: &T) -> T::Ptr {
         T::Ptr::create(t, self.main_db_mmap.map_const_ptr())
     }
+    pub(crate) fn index_of_rel<T: Object + ?Sized>(mmap_ptr: *const u8, t: &T) -> T::Ptr {
+        T::Ptr::create(t, mmap_ptr)
+    }
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {
         ThinPtr((t as *const u8 as usize) - (self.main_db_mmap.map_const_ptr() as usize))
     }

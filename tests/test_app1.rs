@@ -4,7 +4,6 @@ use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::Database;
 use noatun::{
     Application, DatabaseContext, Message, MessageHeader, MessageId, MessagePayload, PodObject,
-    ThinPtr,
 };
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
@@ -29,15 +28,6 @@ struct CounterMessage {
 impl MessagePayload for CounterMessage {
     type Root = PodObject<CounterObject>;
 
-    fn id(&self) -> MessageId {
-        MessageId::new_debug(self.id)
-    }
-
-    fn parents(&self) -> impl ExactSizeIterator<Item = MessageId> {
-        std::iter::empty()
-    }
-
-    fn set_parents(&mut self, _parents: impl Iterator<Item = MessageId>) {}
 
     fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
         println!(
@@ -73,9 +63,9 @@ impl Application for CounterApplication {
     type Root = PodObject<CounterObject>;
     type Message = CounterMessage;
 
-    fn initialize_root(ctx: &mut DatabaseContext) -> ThinPtr {
+    fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self::Root {
         let ctr = ctx.allocate_pod::<PodObject<CounterObject>>();
-        ctx.index_of(ctr)
+        ctr
     }
 }
 
