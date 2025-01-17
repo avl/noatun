@@ -33,7 +33,7 @@ impl Object for Maze {
     }
 }
 
-compile_error!("COnsider introducing a thread local DatabaseContext!")
+//compile_error!("COnsider introducing a thread local DatabaseContext!")
 
 impl MessagePayload for MazeMessage {
     type Root = Maze;
@@ -99,8 +99,9 @@ async fn test_sync_app() {
         loop {
             for (i,comm) in comms.iter_mut().enumerate() {
                 println!("State of db #{}:", i);
-                let root = comm.get_root();
-                println!("Root: {:#?}", &*root);
+                comm.with_root(|root,db|{
+                    println!("Root: {:#?}", &*root);
+                });
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
 

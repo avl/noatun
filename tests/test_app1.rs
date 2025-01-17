@@ -117,8 +117,9 @@ fn test_counter_object_miri() {
 
      */
 
-    let (root, context) = db.get_root();
-    assert_eq!(root.counter.get(context), 42);
+    db.with_root(|root, context|  {
+        assert_eq!(root.counter.get(context), 42);
+    });
 
     db.append_single(
         Message {
@@ -136,11 +137,12 @@ fn test_counter_object_miri() {
     )
     .unwrap();
 
-    let (root, context) = db.get_root();
-    assert_eq!(root.counter.get(context), 85);
-    assert_eq!(root.counter2.len(context), 2);
-    let vec_elem = root.counter2.get(context, 0);
-    let arr = vec_elem.get(context);
-    let arr_item = &arr[0];
-    assert_eq!(arr_item.get(context), 43u8);
+    db.with_root(|root, context|{
+        assert_eq!(root.counter.get(context), 85);
+        assert_eq!(root.counter2.len(context), 2);
+        let vec_elem = root.counter2.get(context, 0);
+        let arr = vec_elem.get(context);
+        let arr_item = &arr[0];
+        assert_eq!(arr_item.get(context), 43u8);
+    });
 }

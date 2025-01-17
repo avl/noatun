@@ -26,6 +26,7 @@ use rand::RngCore;
 use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, OnceCell};
+use std::ffi::c_void;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -44,6 +45,7 @@ mod message_store;
 mod projection_store;
 mod undo_store;
 
+
 struct MessageComponent<const ID: u32, T> {
     value: Option<T>,
 }
@@ -53,6 +55,11 @@ pub(crate) mod platform_specific;
 mod boot_checksum;
 pub(crate) mod disk_access;
 mod sha2_helper;
+
+thread_local! {
+    pub static CONTEXT: Cell<*mut DatabaseContext> = const { Cell::new(null_mut()) };
+}
+
 
 #[cfg(feature = "tokio")]
 pub mod communication {
@@ -76,7 +83,7 @@ pub mod communication {
     use tokio::sync::mpsc::error::SendError;
     use tokio::sync::oneshot;
     use tokio::task::spawn_local;
-    use crate::{Application, Database};
+    use crate::{Application, Database, DatabaseContext};
     use crate::distributor::{Distributor, DistributorMessage};
 
     #[derive(Savefile, Debug)]
@@ -537,17 +544,6 @@ pub mod communication {
         cmd_tx: Sender<Cmd<APP>>
     }
 
-    pub struct RootRef<'a, APP:Application> {
-        guard : MutexGuard<'a, Database<APP>>
-    }
-
-    impl<'a, APP:Application> Deref for RootRef<'a, APP> {
-        type Target = APP;
-
-        fn deref(&self) -> &Self::Target {
-            self.guard.get_root().0
-        }
-    }
 
     impl<APP:Application+'static> DatabaseCommunicationLoop<APP> {
         const PERIODIC_MSG_INTERVAL: Duration = Duration::from_secs(5);
@@ -651,10 +647,9 @@ pub mod communication {
             response_rx.await??;
             Ok(())
         }
-        pub fn get_root(&self) -> RootRef<APP> {
-            RootRef {
-                guard: self.database.lock().unwrap()
-            }
+        pub fn with_root<R>(&self, f: impl FnOnce(&APP, &DatabaseContext) -> R) -> R {
+            let db = self.database.lock().unwrap();
+            db.with_root(f)
         }
         pub async fn new(database: Database<APP>, config: DatabaseCommunicationConfig) -> DatabaseCommunication<APP> {
             let (sender_tx, mut sender_rx) = tokio::sync::mpsc::channel(1000);
@@ -2170,6 +2165,27 @@ impl Target {
     }
 }
 
+struct ContextGuard;
+
+impl ContextGuard {
+    fn new(context: &mut DatabaseContext) -> ContextGuard {
+        if !CONTEXT.get().is_null() {
+            panic!("'with_root' must not be called within an existing database access context.
+                         For example, it cannot be called within a 'with_root', 'with_root_mut' or
+                         message apply operation.
+                ");
+        }
+        CONTEXT.set(context as *mut _);
+        ContextGuard
+    }
+}
+
+impl Drop for ContextGuard {
+    fn drop(&mut self) {
+        CONTEXT.set(null_mut());
+    }
+}
+
 pub mod database {
     use crate::cutoff::CutoffHash;
     use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
@@ -2178,7 +2194,7 @@ pub mod database {
     use crate::projector::Projector;
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
-    use crate::{Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Message, MessageComponent, MessageHeader, MessageId, MessagePayload, Object, Pointer, Target, MultiInstanceThreadBlocker};
+    use crate::{Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Message, MessageComponent, MessageHeader, MessageId, MessagePayload, Object, Pointer, Target, MultiInstanceThreadBlocker, CONTEXT, ContextGuard};
     use anyhow::{Context, Result};
     use chrono::{DateTime, Utc};
     use std::path::{Path, PathBuf};
@@ -2243,11 +2259,14 @@ pub mod database {
             self.message_store.get_all_messages_with_children()
         }
 
-        pub fn get_root(&self) -> (&APP, &DatabaseContext) {
+        pub fn with_root<R>(&self, f: impl FnOnce(&APP, &DatabaseContext) -> R) -> R {
             let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
             let root = unsafe { <APP as Object>::access(&self.context, root_ptr) };
-            //let root = self.context.access_pod(root_ptr);
-            (root, &self.context)
+
+
+            //let guard = ContextGuard::new(&mut self.context);
+            let ret = f(root, &self.context);
+            ret
         }
 
         pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
@@ -2954,6 +2973,7 @@ pub mod distributor {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3421,8 +3441,9 @@ mod tests {
         )
         .unwrap();
 
-        let (handle, context) = db.get_root();
-        assert_eq!(handle.get(context).get(context), 43);
+        db.with_root(|handle, context|{
+            assert_eq!(handle.get(context).get(context), 43);
+        });
     }
 
     impl Application for DatabaseObjectHandle<DatabaseCell<u32>> {
@@ -3456,8 +3477,10 @@ mod tests {
         )
         .unwrap();
 
-        let (handle, context) = db.get_root();
-        assert_eq!(handle.get(context).observe(context), &[43, 45]);
+        db.with_root(|handle, context| {
+            assert_eq!(handle.get(context).observe(context), &[43, 45]);
+        });
+
     }
 
     #[test]
@@ -3471,8 +3494,9 @@ mod tests {
         )
         .unwrap();
 
-        let (handle, context) = db.get_root();
-        assert_eq!(handle.get(context).get(context), 43);
+        db.with_root(|handle, context|{
+            assert_eq!(handle.get(context).get(context), 43);
+        });
 
         db.with_root_mut(|root, context| {
             let a1 = root.get_mut(context);
@@ -3837,4 +3861,5 @@ mod tests {
             insta::assert_debug_snapshot!(app2.get_update_heads());
         }
     }
+
 }
