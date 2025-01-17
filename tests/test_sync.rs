@@ -3,9 +3,8 @@ use std::time::Duration;
 use bytemuck::{Pod, Zeroable};
 use savefile::{Deserializer, Serializer};
 use savefile_derive::Savefile;
-use serde::de::DeserializeOwned;
+use noatun::{disable_multi_instance_blocker, Application, Database, DatabaseContextData, MessagePayload, NoatunContext, Object, ThinPtr};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
-use noatun::{disable_multi_instance_blocker, Application, Database, DatabaseContext, MessageId, MessagePayload, Object, ThinPtr};
 use noatun::data_types::DatabaseCell;
 
 #[derive(Savefile, Debug)]
@@ -24,12 +23,12 @@ struct Maze {
 impl Object for Maze {
     type Ptr = ThinPtr;
 
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        context.access_pod(index)
+    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
+        unsafe { NoatunContext.access_pod(index) }
     }
 
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        context.access_pod_mut(index)
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+        unsafe { NoatunContext.access_pod_mut(index) }
     }
 }
 
@@ -39,9 +38,9 @@ impl MessagePayload for MazeMessage {
     type Root = Maze;
 
 
-    fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
-        root.player_pos_x.set(context, root.player_pos_x.get(context).saturating_add_signed(self.delta_x));
-        root.player_pos_y.set(context, root.player_pos_y.get(context).saturating_add_signed(self.delta_y));
+    fn apply(&self, root: &mut Self::Root) {
+        root.player_pos_x.set(root.player_pos_x.get().saturating_add_signed(self.delta_x));
+        root.player_pos_y.set(root.player_pos_y.get().saturating_add_signed(self.delta_y));
     }
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
@@ -59,7 +58,7 @@ impl MessagePayload for MazeMessage {
 impl Application for Maze {
     type Message = MazeMessage;
 
-    fn initialize_root(ctx: &mut DatabaseContext) -> &mut Maze {
+    fn initialize_root(ctx: &mut DatabaseContextData) -> &mut Maze {
         let maze = ctx.allocate_pod();
 
         maze
@@ -99,7 +98,7 @@ async fn test_sync_app() {
         loop {
             for (i,comm) in comms.iter_mut().enumerate() {
                 println!("State of db #{}:", i);
-                comm.with_root(|root,db|{
+                comm.with_root(|root|{
                     println!("Root: {:#?}", &*root);
                 });
             }

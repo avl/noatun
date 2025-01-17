@@ -21,7 +21,7 @@ pub use database::Database;
 use fs2::FileExt;
 use indexmap::IndexMap;
 use memmap2::MmapMut;
-pub use projection_store::DatabaseContext;
+pub use projection_store::DatabaseContextData;
 use rand::RngCore;
 use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
@@ -35,15 +35,22 @@ use std::mem::{transmute, transmute_copy};
 use std::ops::{Add, Deref, Range};
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
-use std::ptr::null_mut;
+use std::ptr::{null, null_mut};
 use std::slice::SliceIndex;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
+use crate::sequence_nr::SequenceNr;
 
 mod disk_abstraction;
 mod message_store;
 mod projection_store;
 mod undo_store;
+
+pub mod prelude {
+
+}
+
+
 
 
 struct MessageComponent<const ID: u32, T> {
@@ -57,8 +64,126 @@ pub(crate) mod disk_access;
 mod sha2_helper;
 
 thread_local! {
-    pub static CONTEXT: Cell<*mut DatabaseContext> = const { Cell::new(null_mut()) };
+    pub static CONTEXT: Cell<*const DatabaseContextData> = const { Cell::new(null()) };
+    pub static CONTEXT_MUT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
 }
+
+
+#[derive(Clone, Copy)]
+pub struct NoatunContext;
+
+impl NoatunContext {
+
+    pub fn index_of<T: Object + ?Sized>(self, t: &T) -> T::Ptr {
+        let context_ptr = CONTEXT.get();
+        if context_ptr.is_null() {
+            panic!("No NoatunContext available");
+        }
+        unsafe { (*context_ptr).index_of(t) }
+    }
+
+    // TODO: This should almost certainly NOT exist here.
+    // It's used in a very early test, from before we had the architecture down
+    #[doc(hidden)]
+    pub(crate) unsafe fn rewind(self, new_time: SequenceNr) {
+        let context_ptr = CONTEXT_MUT.get();
+        if context_ptr.is_null() {
+            panic!("No mutable NoatunContext available");
+        }
+        unsafe { (*context_ptr).rewind(new_time) }
+    }
+
+    pub(crate) fn set_next_seqnr(self, seqnr: SequenceNr) {
+        let context_ptr = CONTEXT_MUT.get();
+        if context_ptr.is_null() {
+            panic!("No mutable NoatunContext available");
+        }
+        unsafe { (*context_ptr).set_next_seqnr(seqnr) }
+    }
+    pub(crate) fn copy(&self, src: FatPtr, dest_index: ThinPtr)  {
+        let context_ptr = CONTEXT_MUT.get();
+        if context_ptr.is_null() {
+            panic!("No mutable NoatunContext available");
+        }
+        unsafe { (*context_ptr).copy(src, dest_index) }
+
+    }
+    pub(crate) fn index_of_ptr(&self, ptr: *const u8) -> ThinPtr {
+        let context_ptr = CONTEXT.get();
+        if context_ptr.is_null() {
+            panic!("No NoatunContext available");
+        }
+        unsafe { (*context_ptr).index_of_ptr(ptr) }
+
+    }
+    pub(crate) fn allocate_raw(&self, size: usize, align: usize) -> *mut u8 {
+        let context_ptr = CONTEXT_MUT.get();
+        if context_ptr.is_null() {
+            panic!("No mutable NoatunContext available");
+        }
+        unsafe { (*context_ptr).allocate_raw(size, align) }
+    }
+    pub(crate) fn update_registrar(&self, registrar: &mut SequenceNr, value: bool) {
+        let context_ptr = CONTEXT_MUT.get();
+        if context_ptr.is_null() {
+            panic!("No mutable NoatunContext available");
+        }
+        unsafe { (*context_ptr).update_registrar(registrar, value); }
+    }
+    pub(crate) fn write_pod<T:Pod>(&self, value: T, dest: &mut T)  {
+        let context_ptr = CONTEXT_MUT.get();
+        if context_ptr.is_null() {
+            panic!("No mutable NoatunContext available");
+        }
+        unsafe { (*context_ptr).write_pod(value, dest) }
+    }
+    pub(crate) fn allocate_pod<'a, T:Pod>(&self) -> &'a mut T {
+        let context_ptr = CONTEXT_MUT.get();
+        if context_ptr.is_null() {
+            panic!("No mutable NoatunContext available");
+        }
+        unsafe { (*context_ptr).allocate_pod() }
+    }
+    pub unsafe fn access_pod_mut<'a, T:Pod>(&mut self, ptr: ThinPtr) -> &'a mut T {
+        let context_ptr = CONTEXT_MUT.get();
+        if context_ptr.is_null() {
+            panic!("No mutable NoatunContext available");
+        }
+        unsafe { (*context_ptr).access_pod_mut(ptr) }
+    }
+    pub unsafe fn access_pod<'a, T:Pod>(&self, ptr: ThinPtr) -> &'a T {
+        let context_ptr = CONTEXT.get();
+        if context_ptr.is_null() {
+            panic!("No NoatunContext available");
+        }
+        unsafe { (*context_ptr).access_pod(ptr) }
+    }
+
+    pub fn observe_registrar(self, registrar: SequenceNr) {
+        let p = CONTEXT_MUT.get();
+        if p.is_null() {
+            return;
+        }
+        unsafe { (*p).observe_registrar(registrar) }
+    }
+    pub unsafe fn access_slice<'a, T: Pod>(self, range: FatPtr) -> &'a [T] {
+        let p = CONTEXT.get();
+        if p.is_null() {
+            panic!("No NoatunContext available");
+        }
+        unsafe { (*p).access_slice(range) }
+    }
+    pub unsafe fn access_slice_mut<'a, T: Pod>(self, range: FatPtr) -> &'a mut [T] {
+        let p = CONTEXT_MUT.get();
+        if p.is_null() {
+            panic!("No mutable NoatunContext available");
+        }
+        unsafe { (*p).access_slice_mut(range) }
+
+    }
+}
+
+
 
 
 #[cfg(feature = "tokio")]
@@ -83,8 +208,9 @@ pub mod communication {
     use tokio::sync::mpsc::error::SendError;
     use tokio::sync::oneshot;
     use tokio::task::spawn_local;
-    use crate::{Application, Database, DatabaseContext};
+    use crate::{Application, ContextGuard, Database, DatabaseContextData};
     use crate::distributor::{Distributor, DistributorMessage};
+    use crate::projection_store::DatabaseContextHandle;
 
     #[derive(Savefile, Debug)]
     enum NetworkPacket {
@@ -647,7 +773,7 @@ pub mod communication {
             response_rx.await??;
             Ok(())
         }
-        pub fn with_root<R>(&self, f: impl FnOnce(&APP, &DatabaseContext) -> R) -> R {
+        pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
             let db = self.database.lock().unwrap();
             db.with_root(f)
         }
@@ -956,7 +1082,7 @@ pub mod sequence_nr {
 
 pub trait MessagePayload: Debug {
     type Root: Object;
-    fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root);
+    fn apply(&self, root: &mut Self::Root);
 
     fn deserialize(buf: &[u8]) -> Result<Self>
     where
@@ -996,11 +1122,11 @@ pub struct DummyUnitObject;
 impl Object for DummyUnitObject {
     type Ptr = ThinPtr;
 
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
+    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
         &DummyUnitObject
     }
 
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
         // # SAFETY
         // Any dangling pointer is a valid pointer to a zero-sized type
         unsafe { &mut *(std::ptr::dangling_mut()) }
@@ -1276,10 +1402,7 @@ mod projector {
     use crate::message_store::{IndexEntry, OnDiskMessageStore};
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
-    use crate::{
-        Application, Database, DatabaseContext, Message, MessageHeader, MessageId, MessagePayload,
-        Target,
-    };
+    use crate::{Application, ContextGuardMut, Database, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, Target, CONTEXT_MUT};
     use anyhow::Result;
     use bytemuck::{Pod, Zeroable};
     use chrono::{DateTime, Utc};
@@ -1368,7 +1491,7 @@ mod projector {
         /// Returns true if the message did not exist and was inserted
         fn push_message(
             &mut self,
-            context: &mut DatabaseContext,
+            context: &mut DatabaseContextData,
             message: Message<APP::Message>,
             local: bool,
         ) -> Result<bool> {
@@ -1378,7 +1501,7 @@ mod projector {
         /// Returns true if any of the messages were not previously present
         pub(crate) fn push_messages(
             &mut self,
-            context: &mut DatabaseContext,
+            context: &mut DatabaseContextData,
             message: impl Iterator<Item = Message<APP::Message>>,
             local: bool,
         ) -> Result<bool> {
@@ -1389,7 +1512,7 @@ mod projector {
         }
         pub(crate) fn push_sorted_messages(
             &mut self,
-            context: &mut DatabaseContext,
+            context: &mut DatabaseContextData,
             messages: impl ExactSizeIterator<Item = Message<APP::Message>>,
             local: bool,
         ) -> Result<bool> {
@@ -1409,29 +1532,30 @@ mod projector {
                 Ok(false)
             }
         }
-        pub(crate) fn rewind(&mut self, context: &mut DatabaseContext, point: usize) -> Result<()> {
+        pub(crate) fn rewind(&mut self, context: &mut DatabaseContextData, point: usize) -> Result<()> {
             context.rewind(SequenceNr::from_index(point));
             Ok(())
         }
 
         fn apply_single_message(
-            context: &mut DatabaseContext,
+            context: &mut DatabaseContextData,
             root: &mut APP,
             msg: &Message<APP::Message>,
             seqnr: SequenceNr,
         ) {
-            msg.payload.apply(context, root); //TODO: Handle panics in apply gracefully
+            msg.payload.apply(root); //TODO: Handle panics in apply gracefully
             context.set_next_seqnr(seqnr.successor()); //TODO: Don't record a snapshot for _every_ message.
             context.finalize_message(seqnr);
         }
 
         pub(crate) fn apply_missing_messages(
             &mut self,
+            context: &mut DatabaseContextData,
             root: &mut APP,
-            context: &mut DatabaseContext,
             time_now: DateTime<Utc>,
         ) -> Result<()> {
             let cutoff = self.cut_off_config.nominal_cutoff(time_now);
+
 
             let cur_seqnr = context.next_seqnr();
 
@@ -1466,7 +1590,7 @@ mod projector {
 
             /// If returns true, need to finalize before-cutoff-part, then continue at given index
             fn do_run<APP: Application>(
-                context: &mut DatabaseContext,
+                context: &mut DatabaseContextData,
                 root: &mut APP,
                 items: impl Iterator<Item = (usize, Message<APP::Message>)>,
                 cutoff: u64,
@@ -1490,7 +1614,7 @@ mod projector {
 
             fn remove_stale_messages<APP: Application>(
                 tself: &mut Projector<APP>,
-                context: &mut DatabaseContext,
+                context: &mut DatabaseContextData,
                 before_cutoff: bool,
             ) -> Result<()> {
                 let must_remove =
@@ -1528,8 +1652,13 @@ pub trait Object {
     /// # Safety
     /// The caller must ensure that the accessed object is not aliased with a mutable
     /// reference to the same object.
+    ///
+    /// Note! Instances of Object must only be created inside the database, and
+    /// carefully shepherded so that they do not escape! All callers must ensure that
+    /// the lifetime 'a' ends up bound to that of the Object that owns the returned instance,
+    /// which must ultimately be bounded by the lifetime of the root object!
     // TODO: Don't expose these methods. Too hard to use correctly!
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self;
+    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self;
     /// Access a mutable instance of Self at the given pointer address.
     /// NOTE!
     /// Self must not allow direct access to any of its fields. Self must
@@ -1544,8 +1673,13 @@ pub trait Object {
     /// # Safety
     /// The caller must ensure that the accessed object is not aliased with any other
     /// reference to the same object.
+    ///
+    /// Note! Instances of Object must only be created inside the database, and
+    /// carefully shepherded so that they do not escape! All callers must ensure that
+    /// the lifetime 'a' ends up bound to that of the Object that owns the returned instance,
+    /// which must ultimately be bounded by the lifetime of the root object!
     // TODO: Don't expose these methods. Too hard to use correctly!
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self;
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self;
 }
 
 pub trait FixedSizeObject: Object<Ptr = ThinPtr> + Sized + Pod {}
@@ -1555,7 +1689,7 @@ impl<T: Object<Ptr = ThinPtr> + Sized + Copy + Pod> FixedSizeObject for T {}
 pub trait Application : Object {
     type Message: MessagePayload<Root = Self>;
 
-    fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self;
+    fn initialize_root(ctx: &mut DatabaseContextData) -> &mut Self;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1626,24 +1760,26 @@ impl Pointer for FatPtr {
 impl<T: FixedSizeObject> Object for [T] {
     type Ptr = FatPtr;
 
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        unsafe { context.access_slice(index) }
+    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
+        unsafe { NoatunContext.access_slice(index) }
     }
 
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        unsafe { context.access_slice_mut(index) }
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+        unsafe { NoatunContext.access_slice_mut(index) }
     }
 }
 
+
 pub mod data_types {
     use crate::sequence_nr::SequenceNr;
-    use crate::{Database, DatabaseContext, FatPtr, FixedSizeObject, Object, Pointer, ThinPtr};
+    use crate::{Database, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, Object, Pointer, ThinPtr, CONTEXT, CONTEXT_MUT};
     use bytemuck::{Pod, Zeroable};
     use sha2::digest::typenum::Zero;
     use std::fmt::{Debug, Formatter};
     use std::marker::PhantomData;
     use std::mem::transmute_copy;
     use std::ops::{Deref, Index, Range};
+
 
     #[derive(Copy, Clone)]
     #[repr(C)]
@@ -1673,11 +1809,11 @@ pub mod data_types {
     unsafe impl<T: Pod> Pod for OpaqueCell<T> {}
 
     pub trait DatabaseCellArrayExt<T: Pod> {
-        fn observe(&self, context: &DatabaseContext) -> Vec<T>;
+        fn observe(&self) -> Vec<T>;
     }
     impl<T: Pod> DatabaseCellArrayExt<T> for &[DatabaseCell<T>] {
-        fn observe(&self, context: &DatabaseContext) -> Vec<T> {
-            self.iter().map(|x| x.get(context)).collect()
+        fn observe(&self) -> Vec<T> { //TODO: Rename
+            self.iter().map(|x| x.get()).collect()
         }
     }
 
@@ -1686,36 +1822,41 @@ pub mod data_types {
 
     unsafe impl<T> Pod for DatabaseCell<T> where T: Pod {}
     impl<T: Pod> DatabaseCell<T> {
-        pub fn get(&self, context: &DatabaseContext) -> T {
-            context.observe_registrar(self.registrar);
+        pub fn get(&self) -> T {
+            NoatunContext.observe_registrar(self.registrar);
             self.value
         }
-        pub fn get_ref(&self, context: &DatabaseContext) -> &T {
+        pub fn get_ref(&self, context: &DatabaseContextData) -> &T {
             context.observe_registrar(self.registrar);
             &self.value
         }
-        pub fn set<'a>(&'a mut self, context: &'a DatabaseContext, new_value: T) {
-            let index = context.index_of(self);
+        pub fn set<'a>(&'a mut self, new_value: T) {
+            let c = CONTEXT_MUT.get();
+            if c.is_null() {
+                unreachable!("Attempt to modify DatabaseCell without a mutable context.");
+            }
+            let c = unsafe {&mut *c};
+            let index = c.index_of(self);
             //context.write(index, bytes_of(&new_value));
-            context.write_pod(new_value, &mut self.value);
-            context.update_registrar(&mut self.registrar, false);
+            c.write_pod(new_value, &mut self.value);
+            c.update_registrar(&mut self.registrar, false);
         }
     }
 
     impl<T: Pod> Object for OpaqueCell<T> {
         type Ptr = ThinPtr;
 
-        unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-            unsafe { context.access_pod(index) }
+        unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
+            unsafe { NoatunContext.access_pod(index) }
         }
 
-        unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-            unsafe { context.access_pod_mut(index) }
+        unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+            unsafe { NoatunContext.access_pod_mut(index) }
         }
     }
 
     impl<T: Pod> OpaqueCell<T> {
-        pub fn set<'a>(&'a mut self, context: &'a DatabaseContext, new_value: T) {
+        pub fn set<'a>(&'a mut self, context: &'a DatabaseContextData, new_value: T) {
             let index = context.index_of(self);
             //context.write(index, bytes_of(&new_value));
             context.write_pod(new_value, &mut self.value);
@@ -1725,8 +1866,8 @@ pub mod data_types {
 
     impl<T: Pod> DatabaseCell<T> {
         #[allow(clippy::mut_from_ref)]
-        pub fn allocate(context: &DatabaseContext) -> &mut Self {
-            let memory = unsafe { context.allocate_pod::<DatabaseCell<T>>() };
+        pub fn allocate<'a>() -> &'a mut Self {
+            let memory = unsafe { NoatunContext.allocate_pod::<DatabaseCell<T>>() };
             unsafe { &mut *(memory as *mut _ as *mut DatabaseCell<T>) }
         }
         pub fn new(value: T) -> DatabaseCell<T> {
@@ -1740,12 +1881,12 @@ pub mod data_types {
     impl<T: Pod> Object for DatabaseCell<T> {
         type Ptr = ThinPtr;
 
-        unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-            unsafe { context.access_pod(index) }
+        unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
+            unsafe { NoatunContext.access_pod(index) }
         }
 
-        unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-            unsafe { context.access_pod_mut(index) }
+        unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+            unsafe { NoatunContext.access_pod_mut(index) }
         }
     }
     #[repr(C)]
@@ -1785,7 +1926,7 @@ pub mod data_types {
     unsafe impl<T> Pod for RawDatabaseVec<T> where T: 'static {}
 
     impl<T: 'static> RawDatabaseVec<T> {
-        fn realloc_add(&mut self, ctx: &DatabaseContext, new_capacity: usize, new_len: usize) {
+        fn realloc_add(&mut self, ctx: &DatabaseContextData, new_capacity: usize, new_len: usize) {
             debug_assert!(new_capacity >= new_len);
             debug_assert!(new_capacity >= self.capacity);
             debug_assert!(new_len >= self.length);
@@ -1795,7 +1936,7 @@ pub mod data_types {
 
             if self.length > 0 {
                 let old_ptr = FatPtr::from(self.data, size_of::<T>() * self.length);
-                ctx.copy(old_ptr, dest_index.0);
+                ctx.copy(old_ptr, dest_index);
             }
 
             let new_len = new_len;
@@ -1813,7 +1954,7 @@ pub mod data_types {
         pub fn len(&self) -> usize {
             self.length
         }
-        pub fn grow(&mut self, ctx: &DatabaseContext, new_length: usize) {
+        pub fn grow(&mut self, ctx: &DatabaseContextData, new_length: usize) {
             if new_length <= self.length {
                 return;
             }
@@ -1824,28 +1965,28 @@ pub mod data_types {
             }
         }
         #[allow(clippy::mut_from_ref)]
-        pub fn new(ctx: &DatabaseContext) -> &mut DatabaseVec<T> {
+        pub fn new(ctx: &DatabaseContextData) -> &mut DatabaseVec<T> {
             unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
         }
     }
     impl<T: Pod + 'static> RawDatabaseVec<T> {
-        pub(crate) fn get_slice(&self, context: &DatabaseContext, range: Range<usize>) -> &[T] {
+        pub(crate) fn get_slice(&self, context: &DatabaseContextData, range: Range<usize>) -> &[T] {
             let offset = self.data + range.start * size_of::<T>();
             let len = range.end - range.start;
 
             unsafe { context.access_slice_at(offset, len) }
         }
-        pub(crate) fn get_full_slice_mut(&self, context: &DatabaseContext) -> &mut [T] {
+        pub(crate) fn get_full_slice_mut(&self, context: &DatabaseContextData) -> &mut [T] {
             let offset = self.data;
             unsafe { context.access_slice_at_mut(offset, self.length) }
         }
-        pub(crate) fn get_full_slice(&self, context: &DatabaseContext) -> &[T] {
+        pub(crate) fn get_full_slice(&self, context: &DatabaseContextData) -> &[T] {
             let offset = self.data;
             unsafe { context.access_slice_at(offset, self.length) }
         }
         pub(crate) fn get_slice_mut(
             &self,
-            context: &DatabaseContext,
+            context: &DatabaseContextData,
             range: Range<usize>,
         ) -> &mut [T] {
             let offset = self.data + range.start * size_of::<T>();
@@ -1853,24 +1994,24 @@ pub mod data_types {
 
             unsafe { context.access_slice_at_mut(offset, len) }
         }
-        pub(crate) fn get(&self, ctx: &DatabaseContext, index: usize) -> &T {
+        pub(crate) fn get(&self, ctx: &DatabaseContextData, index: usize) -> &T {
             assert!(index < self.length);
             let offset = self.data + index * size_of::<T>();
             unsafe { ctx.access_pod(ThinPtr(offset)) }
         }
-        pub(crate) fn get_mut(&self, ctx: &DatabaseContext, index: usize) -> &mut T {
+        pub(crate) fn get_mut(&self, ctx: &DatabaseContextData, index: usize) -> &mut T {
             assert!(index < self.length);
             let offset = self.data + index * size_of::<T>();
             let t = unsafe { ctx.access_pod_mut(ThinPtr(offset)) };
             t
         }
-        pub(crate) fn write_untracked(&mut self, ctx: &DatabaseContext, index: usize, val: T) {
+        pub(crate) fn write_untracked(&mut self, ctx: &DatabaseContextData, index: usize, val: T) {
             let offset = self.data + index * size_of::<T>();
             unsafe {
                 ctx.write_pod(val, ctx.access_pod_mut(ThinPtr(offset)));
             };
         }
-        pub(crate) fn push_untracked<'a>(&'a mut self, ctx: &DatabaseContext, t: T) -> ThinPtr
+        pub(crate) fn push_untracked<'a>(&'a mut self, ctx: &DatabaseContextData, t: T) -> ThinPtr
         where
             T: Pod,
         {
@@ -1890,11 +2031,11 @@ pub mod data_types {
         T: FixedSizeObject + 'static,
     {
         type Ptr = ThinPtr;
-        unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-            unsafe { context.access_pod(index) }
+        unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
+            unsafe { NoatunContext.access_pod(index) }
         }
-        unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-            unsafe { context.access_pod_mut(index) }
+        unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+            unsafe { NoatunContext.access_pod_mut(index) }
         }
     }
 
@@ -1927,7 +2068,7 @@ pub mod data_types {
 
     pub struct DatabaseVecIterator<'a,T> {
         vec: &'a DatabaseVec<T>,
-        context: &'a DatabaseContext,
+        context: &'a DatabaseContextData,
         index: usize,
     }
 
@@ -1940,13 +2081,13 @@ pub mod data_types {
             }
             let index = self.index;
             self.index += 1;
-            Some(self.vec.get(self.context, index))
+            Some(self.vec.get(index))
         }
     }
 
     impl<T: 'static> DatabaseVec<T> {
 
-        pub fn iter<'a>(&'a self, context: &'a DatabaseContext) -> DatabaseVecIterator<'a, T> {
+        pub fn iter<'a>(&'a self, context: &'a DatabaseContextData) -> DatabaseVecIterator<'a, T> {
             DatabaseVecIterator {
                 vec: self,
                 context,
@@ -1954,19 +2095,19 @@ pub mod data_types {
             }
         }
 
-        fn realloc_add(&mut self, ctx: &mut DatabaseContext, new_capacity: usize, new_len: usize) {
+        fn realloc_add(&mut self, new_capacity: usize, new_len: usize) {
             debug_assert!(new_capacity >= new_len);
             debug_assert!(new_capacity >= self.capacity);
             debug_assert!(new_len >= self.length);
-            let dest = ctx.allocate_raw(new_capacity * size_of::<T>(), align_of::<T>());
-            let dest_index = ctx.index_of_ptr(dest);
+            let dest = NoatunContext.allocate_raw(new_capacity * size_of::<T>(), align_of::<T>());
+            let dest_index = NoatunContext.index_of_ptr(dest);
 
             if self.length > 0 {
                 let old_ptr = FatPtr::from(self.data, size_of::<T>() * self.length);
-                ctx.copy(old_ptr, dest_index.0);
+                NoatunContext.copy(old_ptr, dest_index);
             }
 
-            ctx.write_pod(
+            NoatunContext.write_pod(
                 DatabaseVec {
                     length: new_len,
                     capacity: new_capacity,
@@ -1978,7 +2119,7 @@ pub mod data_types {
             )
         }
         #[allow(clippy::mut_from_ref)]
-        pub fn new(ctx: &DatabaseContext) -> &mut DatabaseVec<T> {
+        pub fn new(ctx: &DatabaseContextData) -> &mut DatabaseVec<T> {
             unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
         }
     }
@@ -1987,42 +2128,43 @@ pub mod data_types {
     where
         T: FixedSizeObject + 'static,
     {
-        pub fn len(&self, ctx: &DatabaseContext) -> usize {
-            ctx.observe_registrar(self.length_registrar);
+        pub fn len(&self) -> usize {
+            NoatunContext.observe_registrar(self.length_registrar);
             self.length
         }
-        pub fn get(&self, ctx: &DatabaseContext, index: usize) -> &T {
+        pub fn get(&self, index: usize) -> &T {
             assert!(index < self.length);
             let offset = self.data + index * size_of::<T>();
-            unsafe { T::access(ctx, ThinPtr(offset)) }
+            unsafe { T::access(ThinPtr(offset)) }
         }
-        pub fn get_mut(&mut self, ctx: &mut DatabaseContext, index: usize) -> &mut T {
+        pub fn get_mut(&mut self, index: usize) -> &mut T {
             assert!(index < self.length);
             let offset = self.data + index * size_of::<T>();
-            let t = unsafe { T::access_mut(ctx, ThinPtr(offset)) };
+            let t = unsafe { T::access_mut(ThinPtr(offset)) };
             t
         }
-        pub(crate) fn write(&mut self, ctx: &mut DatabaseContext, index: usize, val: T) {
+        pub(crate) fn write(&mut self, index: usize, val: T) {
             let offset = self.data + index * size_of::<T>();
             unsafe {
-                let dest = T::access_mut(ctx, ThinPtr(offset));
-                ctx.write_pod(val, dest);
+                let dest = T::access_mut(ThinPtr(offset));
+                NoatunContext.write_pod(val, dest);
             };
         }
 
-        pub fn push_zeroed(&mut self, context: &mut DatabaseContext) -> &mut T {
-            self.push(context, T::zeroed());
-            self.get_mut(context, self.length - 1)
-        }
-        pub fn push<'a>(&'a mut self, ctx: &mut DatabaseContext, t: T) {
-            if self.length >= self.capacity {
-                self.realloc_add(ctx, (self.capacity + 1) * 2, self.length + 1);
-            } else {
-                ctx.write_pod(self.length + 1, &mut self.length);
-            }
-            ctx.update_registrar(&mut self.length_registrar, false);
+        pub fn push_zeroed(&mut self) -> &mut T {
 
-            self.write(ctx, self.length - 1, t)
+            self.push(T::zeroed());
+            self.get_mut( self.length - 1)
+        }
+        pub fn push<'a>(&'a mut self, t: T) {
+            if self.length >= self.capacity {
+                self.realloc_add((self.capacity + 1) * 2, self.length + 1);
+            } else {
+                NoatunContext.write_pod(self.length + 1, &mut self.length);
+            }
+            NoatunContext.update_registrar(&mut self.length_registrar, false);
+
+            self.write(self.length - 1, t)
         }
     }
 
@@ -2031,11 +2173,11 @@ pub mod data_types {
         T: FixedSizeObject + 'static,
     {
         type Ptr = ThinPtr;
-        unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-            unsafe { context.access_pod(index) }
+        unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
+            unsafe { NoatunContext.access_pod(index) }
         }
-        unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-            unsafe { context.access_pod_mut(index) }
+        unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+            unsafe { NoatunContext.access_pod_mut(index) }
         }
     }
 
@@ -2059,20 +2201,20 @@ pub mod data_types {
     impl<T: Object + ?Sized + 'static> Object for DatabaseObjectHandle<T> {
         type Ptr = ThinPtr;
 
-        unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-            unsafe { context.access_pod(index) }
+        unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
+            unsafe { NoatunContext.access_pod(index) }
         }
-        unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-            unsafe { context.access_pod_mut(index) }
+        unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+            unsafe { NoatunContext.access_pod_mut(index) }
         }
     }
 
     impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
-        pub fn get(&self, context: &DatabaseContext) -> &T {
-            unsafe { T::access(context, self.object_index) }
+        pub fn get(&self) -> &T {
+            unsafe { T::access(self.object_index) }
         }
-        pub fn get_mut(&mut self, context: &mut DatabaseContext) -> &mut T {
-            unsafe { T::access_mut(context, self.object_index) }
+        pub fn get_mut(&mut self) -> &mut T {
+            unsafe { T::access_mut(self.object_index) }
         }
 
         pub fn new(value: T::Ptr) -> Self {
@@ -2083,7 +2225,7 @@ pub mod data_types {
         }
 
         #[allow(clippy::mut_from_ref)]
-        pub fn allocate(context: &DatabaseContext, value: T) -> &mut Self
+        pub fn allocate(context: &DatabaseContextData, value: T) -> &mut Self
         where
             T: Object<Ptr = ThinPtr>,
             T: Pod,
@@ -2096,7 +2238,7 @@ pub mod data_types {
         }
 
         #[allow(clippy::mut_from_ref)]
-        pub fn allocate_unsized<'a>(context: &'a DatabaseContext, value: &T) -> &'a mut Self
+        pub fn allocate_unsized<'a>(context: &'a DatabaseContextData, value: &T) -> &'a mut Self
         where
             T: Object<Ptr = FatPtr> + 'static,
         {
@@ -2168,21 +2310,43 @@ impl Target {
 struct ContextGuard;
 
 impl ContextGuard {
-    fn new(context: &mut DatabaseContext) -> ContextGuard {
-        if !CONTEXT.get().is_null() {
+    fn new(context: &DatabaseContextData) -> ContextGuard {
+        if !CONTEXT_MUT.get().is_null() || !CONTEXT.get().is_null() {
             panic!("'with_root' must not be called within an existing database access context.
                          For example, it cannot be called within a 'with_root', 'with_root_mut' or
                          message apply operation.
                 ");
         }
-        CONTEXT.set(context as *mut _);
+        CONTEXT.set(context as *const _);
         ContextGuard
     }
 }
 
 impl Drop for ContextGuard {
     fn drop(&mut self) {
-        CONTEXT.set(null_mut());
+        CONTEXT.set(null());
+    }
+}
+struct ContextGuardMut;
+
+impl ContextGuardMut {
+    fn new(context: &mut DatabaseContextData) -> ContextGuardMut {
+        if !CONTEXT_MUT.get().is_null() || !CONTEXT.get().is_null() {
+            panic!("'with_root' must not be called within an existing database access context.
+                         For example, it cannot be called within a 'with_root', 'with_root_mut' or
+                         message apply operation.
+                ");
+        }
+        CONTEXT_MUT.set(context as *mut _);
+        CONTEXT.set(context as *const _);
+        ContextGuardMut
+    }
+}
+
+impl Drop for ContextGuardMut {
+    fn drop(&mut self) {
+        CONTEXT.set(null());
+        CONTEXT_MUT.set(null_mut());
     }
 }
 
@@ -2194,14 +2358,14 @@ pub mod database {
     use crate::projector::Projector;
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
-    use crate::{Application, DatabaseContext, MULTI_INSTANCE_BLOCKER, Message, MessageComponent, MessageHeader, MessageId, MessagePayload, Object, Pointer, Target, MultiInstanceThreadBlocker, CONTEXT, ContextGuard};
+    use crate::{Application, DatabaseContextData, MULTI_INSTANCE_BLOCKER, Message, MessageComponent, MessageHeader, MessageId, MessagePayload, Object, Pointer, Target, MultiInstanceThreadBlocker, CONTEXT, ContextGuard, ContextGuardMut, CONTEXT_MUT};
     use anyhow::{Context, Result};
     use chrono::{DateTime, Utc};
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};
 
     pub struct Database<Base: Application> {
-        context: DatabaseContext,
+        context: DatabaseContextData,
         message_store: Projector<Base>,
         time_override: Option<DateTime<Utc>>,
     }
@@ -2259,13 +2423,12 @@ pub mod database {
             self.message_store.get_all_messages_with_children()
         }
 
-        pub fn with_root<R>(&self, f: impl FnOnce(&APP, &DatabaseContext) -> R) -> R {
+        pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
             let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
-            let root = unsafe { <APP as Object>::access(&self.context, root_ptr) };
+            let guard = ContextGuard::new(&self.context);
+            let root = unsafe { <APP as Object>::access(root_ptr) };
 
-
-            //let guard = ContextGuard::new(&mut self.context);
-            let ret = f(root, &self.context);
+            let ret = f(root);
             ret
         }
 
@@ -2275,7 +2438,7 @@ pub mod database {
 
         pub(crate) fn with_root_mut<R>(
             &mut self,
-            f: impl FnOnce(&mut APP, &mut DatabaseContext) -> R,
+            f: impl FnOnce(&mut APP) -> R,
         ) -> Result<R> {
             let now = self.now();
             if !self.context.mark_dirty()? {
@@ -2288,11 +2451,12 @@ pub mod database {
             }
 
             let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
-            let root = unsafe { <APP as Object>::access_mut(&mut self.context, root_ptr) };
+            let guard = ContextGuardMut::new(&mut self.context);
+            let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
-            let t = f(root, &mut self.context);
-
+            let t = f(root);
             self.context.mark_clean()?;
+
             Ok(t)
         }
 
@@ -2311,17 +2475,19 @@ pub mod database {
             self.message_store.rewind(&mut self.context, 0)?;
 
             let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
-            let root = unsafe { <APP as Object>::access_mut(&mut self.context, root_ptr) };
+            let guard = ContextGuardMut::new(&mut self.context);
+            let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
+            let context = unsafe { &mut *CONTEXT_MUT.get() };
             self.message_store
-                .apply_missing_messages(root, &mut self.context, now)?;
+                .apply_missing_messages(context, root, now)?;
 
             self.context.mark_clean()?;
             Ok(())
         }
 
         fn recover(
-            context: &mut DatabaseContext,
+            context: &mut DatabaseContextData,
             message_store: &mut Projector<APP>,
             time_now: chrono::DateTime<Utc>,
         ) -> Result<()> {
@@ -2329,17 +2495,19 @@ pub mod database {
 
             message_store.recover();
             let mmap_ptr = context.start_ptr();
+            let guard = ContextGuardMut::new(context);
             let root_obj_ref = APP::initialize_root(context);
-            let root_ptr = DatabaseContext::index_of_rel(mmap_ptr, root_obj_ref);
+            let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, root_obj_ref);
             context.set_root_ptr(root_ptr.as_generic());
 
             context.set_next_seqnr(SequenceNr::from_index(0));
 
             // Safety:
             // Recover is only called when the db is not used
-            let root = unsafe { <APP as Object>::access_mut(context, root_ptr) };
+            let root = unsafe { <APP as Object>::access_mut(root_ptr) };
+            let context = unsafe { &mut *CONTEXT_MUT.get() };
             //let root = context.access_pod(root_ptr);
-            message_store.apply_missing_messages(root, context, time_now)?;
+            message_store.apply_missing_messages(context, root, time_now)?;
 
             Ok(())
         }
@@ -2427,10 +2595,12 @@ pub mod database {
 
 
             let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
-            let root = unsafe { <APP as Object>::access_mut(&mut self.context, root_ptr) };
+            let guard = ContextGuardMut::new(&mut self.context);
+            let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
+            let context = unsafe { &mut *CONTEXT_MUT.get() };
             self.message_store
-                .apply_missing_messages(root, &mut self.context, now)?;
+                .apply_missing_messages(context, root, now)?;
 
             self.context.mark_clean();
             Ok(())
@@ -2467,7 +2637,7 @@ pub mod database {
             Self::set_multi_instance_block();
             let mut disk = InMemoryDisk::default();
             let target = Target::CreateNew(PathBuf::default());
-            let mut ctx = DatabaseContext::new(&mut disk, &target, max_size)
+            let mut ctx = DatabaseContextData::new(&mut disk, &target, max_size)
                 .context("creating database in memory")?;
             let mut message_store = Projector::new(&mut disk, &target, max_size, cutoff_interval)?;
 
@@ -2493,7 +2663,7 @@ pub mod database {
             Self::set_multi_instance_block();
             let mut disk = StandardDisk;
 
-            let mut ctx = DatabaseContext::new(&mut disk, &target, max_file_size)
+            let mut ctx = DatabaseContextData::new(&mut disk, &target, max_file_size)
                 .context("opening database")?;
 
             let is_dirty = ctx.is_dirty();
@@ -2995,6 +3165,7 @@ mod tests {
     use std::io::{Cursor, SeekFrom};
     use std::iter::once;
     use test::Bencher;
+    use tokio::io::AsyncSeekExt;
 
     #[test]
     fn test_mmap_big() {
@@ -3061,7 +3232,7 @@ mod tests {
         type Root = T;
 
 
-        fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
+        fn apply(&self, root: &mut Self::Root) {
             unimplemented!()
         }
 
@@ -3087,22 +3258,22 @@ mod tests {
     impl Object for CounterObject {
         type Ptr = ThinPtr;
 
-        unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-            unsafe { context.access_pod(index) }
+        unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
+            unsafe { NoatunContext.access_pod(index) }
         }
 
-        unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-            unsafe { context.access_pod_mut(index) }
+        unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+            unsafe { NoatunContext.access_pod_mut(index) }
         }
     }
 
     impl CounterObject {
-        fn set_counter(&mut self, ctx: &mut DatabaseContext, value1: u32, value2: u32) {
-            self.counter.set(ctx, value1);
-            self.counter2.set(ctx, value2);
+        fn set_counter(&mut self,value1: u32, value2: u32) {
+            self.counter.set(value1);
+            self.counter2.set(value2);
         }
-        fn new(ctx: &DatabaseContext) -> &mut CounterObject {
-            ctx.allocate_pod()
+        fn new<'a>() -> &'a mut CounterObject {
+            NoatunContext.allocate_pod()
         }
     }
 
@@ -3110,8 +3281,8 @@ mod tests {
     impl Application for CounterObject {
         type Message = CounterMessage;
 
-        fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self {
-            let new_obj = CounterObject::new(ctx);
+        fn initialize_root(mut ctx: &mut DatabaseContextData) -> &mut Self {
+            let new_obj = CounterObject::new();
             new_obj
         }
     }
@@ -3125,7 +3296,7 @@ mod tests {
         type Root = CounterObject;
 
 
-        fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
+        fn apply(&self, root: &mut Self::Root) {
             unimplemented!()
         }
 
@@ -3151,15 +3322,15 @@ mod tests {
         )
         .unwrap();
 
-        db.with_root_mut(|counter, context| {
-            assert_eq!(counter.counter.get(context), 0);
-            counter.counter.set(context, 42);
-            counter.counter2.set(context, 43);
-            counter.counter.set(context, 44);
+        db.with_root_mut(|counter| {
+            assert_eq!(counter.counter.get(), 0);
+            counter.counter.set(42);
+            counter.counter2.set(43);
+            counter.counter.set(44);
 
-            assert_eq!(counter.counter.get(context), 44);
-            assert_eq!(counter.counter.get(context), 44);
-            assert_eq!(counter.counter2.get(context), 43);
+            assert_eq!(counter.counter.get(), 44);
+            assert_eq!(counter.counter.get(), 44);
+            assert_eq!(counter.counter2.get(), 43);
         });
     }
 
@@ -3178,14 +3349,13 @@ mod tests {
     impl MessagePayload for CounterMessage {
         type Root = CounterObject;
 
-        fn apply(&self, context: &mut DatabaseContext, root: &mut CounterObject) {
+        fn apply(&self, root: &mut CounterObject) {
             if self.inc1 != 0 {
                 root.counter.set(
-                    context,
-                    root.counter.get(context).saturating_add_signed(self.inc1),
+                    root.counter.get().saturating_add_signed(self.inc1),
                 );
             } else {
-                root.counter.set(context, self.set1);
+                root.counter.set(self.set1);
             }
         }
 
@@ -3251,8 +3421,8 @@ mod tests {
         println!("Update heads: {:?}", db.get_update_heads());
         // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
 
-        db.with_root_mut(|root, context| {
-            assert_eq!(root.counter.get(context), 43);
+        db.with_root_mut(|root| {
+            assert_eq!(root.counter.get(), 43);
         });
     }
 
@@ -3304,8 +3474,8 @@ mod tests {
         assert!(db.contains_message(MessageId::new_debug(0x101)).unwrap());
         assert!(db.contains_message(MessageId::new_debug(0x102)).unwrap());
 
-        db.with_root_mut(|root, context| {
-            assert_eq!(root.counter.get(context), 43);
+        db.with_root_mut(|root| {
+            assert_eq!(root.counter.get(), 43);
         });
     }
 
@@ -3363,8 +3533,8 @@ mod tests {
         assert!(db.contains_message(m2).unwrap());
         assert!(db.contains_message(m3).unwrap());
 
-        db.with_root_mut(|root, context| {
-            assert_eq!(root.counter.get(context), 43);
+        db.with_root_mut(|root| {
+            assert_eq!(root.counter.get(), 43);
         });
     }
 
@@ -3424,8 +3594,8 @@ mod tests {
 
         // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
 
-        db.with_root_mut(|root, context| {
-            assert_eq!(root.counter.get(context), 43);
+        db.with_root_mut(|root| {
+            assert_eq!(root.counter.get(), 43);
         });
     }
 
@@ -3441,15 +3611,15 @@ mod tests {
         )
         .unwrap();
 
-        db.with_root(|handle, context|{
-            assert_eq!(handle.get(context).get(context), 43);
+        db.with_root(|handle|{
+            assert_eq!(handle.get().get(), 43);
         });
     }
 
     impl Application for DatabaseObjectHandle<DatabaseCell<u32>> {
         type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
 
-        fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self {
+        fn initialize_root(mut ctx: &mut DatabaseContextData) -> &mut Self {
             let obj = DatabaseObjectHandle::allocate(ctx, DatabaseCell::new(43u32));
             obj
         }
@@ -3457,7 +3627,7 @@ mod tests {
     impl Application for DatabaseObjectHandle<[DatabaseCell<u8>]> {
         type Message = DummyMessage<DatabaseObjectHandle<[DatabaseCell<u8>]>>;
 
-        fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self {
+        fn initialize_root(mut ctx: &mut DatabaseContextData) -> &mut Self {
             let obj = DatabaseObjectHandle::allocate_unsized(
                 ctx,
                 [43u8, 45].map(|x| DatabaseCell::new(x)).as_slice(),
@@ -3477,8 +3647,8 @@ mod tests {
         )
         .unwrap();
 
-        db.with_root(|handle, context| {
-            assert_eq!(handle.get(context).observe(context), &[43, 45]);
+        db.with_root(|handle| {
+            assert_eq!(handle.get().observe(), &[43, 45]);
         });
 
     }
@@ -3494,18 +3664,18 @@ mod tests {
         )
         .unwrap();
 
-        db.with_root(|handle, context|{
-            assert_eq!(handle.get(context).get(context), 43);
+        db.with_root(|handle|{
+            assert_eq!(handle.get().get(), 43);
         });
 
-        db.with_root_mut(|root, context| {
-            let a1 = root.get_mut(context);
-            assert_eq!(a1.get(context), 43);
+        db.with_root_mut(|root| {
+            let a1 = root.get_mut();
+            assert_eq!(a1.get(), 43);
         });
     }
     impl Application for DatabaseVec<CounterObject> {
 
-        fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self {
+        fn initialize_root(ctx: &mut DatabaseContextData) -> &mut Self {
             let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new(ctx);
             obj
         }
@@ -3524,29 +3694,29 @@ mod tests {
             Duration::from_secs(1000),
         )
         .unwrap();
-        db.with_root_mut(|counter_vec, context| {
-            assert_eq!(counter_vec.len(context), 0);
+        db.with_root_mut(|counter_vec| {
+            assert_eq!(counter_vec.len(), 0);
 
-            let new_element = counter_vec.push_zeroed(context);
-            let new_element = counter_vec.get_mut(context, 0);
+            let new_element = counter_vec.push_zeroed();
+            let new_element = counter_vec.get_mut(0);
 
-            new_element.counter.set(context, 47);
-            let new_element = counter_vec.push_zeroed(context);
-            new_element.counter.set(context, 48);
+            new_element.counter.set(47);
+            let new_element = counter_vec.push_zeroed();
+            new_element.counter.set(48);
 
-            assert_eq!(counter_vec.len(context), 2);
+            assert_eq!(counter_vec.len(), 2);
 
-            let item = counter_vec.get_mut(context, 1);
+            let item = counter_vec.get_mut(1);
             //let item2 = counter_vec.get_mut(context, 1);
-            assert_eq!(item.counter.get(context), 48);
+            assert_eq!(item.counter.get(), 48);
             //assert_eq!(*item2.counter, 48);
 
             for _ in 0..10 {
-                let new_element = counter_vec.push_zeroed(context);
+                let new_element = counter_vec.push_zeroed();
             }
 
-            let item = counter_vec.get_mut(context, 1);
-            assert_eq!(item.counter.get(context), 48);
+            let item = counter_vec.get_mut(1);
+            assert_eq!(item.counter.get(), 48);
         });
     }
 
@@ -3560,29 +3730,29 @@ mod tests {
             Some(datetime!(2021-01-01 Z)),
         )
         .unwrap();
-        db.with_root_mut(|counter_vec, context| {
-            assert_eq!(counter_vec.len(context), 0);
+        db.with_root_mut(|counter_vec| {
+            assert_eq!(counter_vec.len(), 0);
 
-            let new_element = counter_vec.push_zeroed(context);
-            let new_element = counter_vec.get_mut(context, 0);
+            let new_element = counter_vec.push_zeroed();
+            let new_element = counter_vec.get_mut( 0);
 
-            new_element.counter.set(context, 47);
-            let new_element = counter_vec.push_zeroed(context);
-            new_element.counter.set(context, 48);
+            new_element.counter.set( 47);
+            let new_element = counter_vec.push_zeroed();
+            new_element.counter.set( 48);
 
-            assert_eq!(counter_vec.len(context), 2);
+            assert_eq!(counter_vec.len(), 2);
 
-            let item = counter_vec.get_mut(context, 1);
+            let item = counter_vec.get_mut( 1);
             //let item2 = counter_vec.get_mut(context, 1);
-            assert_eq!(item.counter.get(context), 48);
+            assert_eq!(item.counter.get(), 48);
             //assert_eq!(*item2.counter, 48);
 
             for _ in 0..10 {
-                let new_element = counter_vec.push_zeroed(context);
+                let new_element = counter_vec.push_zeroed();
             }
 
-            let item = counter_vec.get_mut(context, 1);
-            assert_eq!(item.counter.get(context), 48);
+            let item = counter_vec.get_mut( 1);
+            assert_eq!(item.counter.get(), 48);
         });
     }
     #[test]
@@ -3598,34 +3768,36 @@ mod tests {
         .unwrap();
 
         {
-            db.with_root_mut(|counter_vec, context| {
-                context.set_next_seqnr(SequenceNr::from_index(1));
-                assert_eq!(counter_vec.len(context), 0);
+            db.with_root_mut(|counter_vec| {
+                NoatunContext.set_next_seqnr(SequenceNr::from_index(1));
+                assert_eq!(counter_vec.len(), 0);
 
-                let new_element = counter_vec.push_zeroed(context);
-                new_element.counter.set(context, 47);
-                new_element.counter2.set(context, 48);
+                let new_element = counter_vec.push_zeroed();
+                new_element.counter.set( 47);
+                new_element.counter2.set( 48);
 
-                context.set_next_seqnr(SequenceNr::from_index(2));
-                assert_eq!(counter_vec.len(context), 1);
-                context.set_next_seqnr(SequenceNr::from_index(3));
+                NoatunContext.set_next_seqnr(SequenceNr::from_index(2));
+                assert_eq!(counter_vec.len(), 1);
+                NoatunContext.set_next_seqnr(SequenceNr::from_index(3));
             });
         }
 
         {
-            db.with_root_mut(|counter_vec, context| {
-                let counter = counter_vec.get_mut(context, 0);
-                counter.counter.set(context, 50);
-                context.rewind(SequenceNr::from_index(2));
-                assert_eq!(counter.counter.get(context), 47);
+            db.with_root_mut(|counter_vec| {
+                let counter = counter_vec.get_mut(0);
+                counter.counter.set( 50);
+                unsafe {
+                    NoatunContext.rewind(SequenceNr::from_index(2));
+                }
+                assert_eq!(counter.counter.get(), 47);
             });
         }
 
         db.force_rewind(SequenceNr::from_index(1));
 
         {
-            db.with_root_mut(|counter_vec, context| {
-                assert_eq!(counter_vec.len(context), 0);
+            db.with_root_mut(|counter_vec| {
+                assert_eq!(counter_vec.len(), 0);
             });
         }
     }

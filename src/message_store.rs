@@ -1770,7 +1770,7 @@ impl<M> OnDiskMessageStore<M> {
 mod tests {
     use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
     use crate::message_store::{FileOffset, OnDiskMessageStore, STATUS_NOK, STATUS_OK, U1};
-    use crate::{DatabaseContext, DummyUnitObject, Message, MessageId, MessagePayload, Target};
+    use crate::{DatabaseContextData, DummyUnitObject, Message, MessageId, MessagePayload, Target};
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use std::io::{Cursor, Read, Write};
     use std::path::Path;
@@ -1787,7 +1787,7 @@ mod tests {
         type Root = DummyUnitObject;
 
 
-        fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
+        fn apply(&self, root: &mut Self::Root) {
             unimplemented!()
         }
 

@@ -1,14 +1,11 @@
 use crate::boot_checksum::get_boot_checksum;
-use crate::data_types::{DatabaseVec, RawDatabaseVec};
+use crate::data_types::{DatabaseCell, DatabaseVec, RawDatabaseVec};
 use crate::disk_abstraction::{Disk, StandardDisk};
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{
-    Application, FatPtr, FixedSizeObject, GenPtr, MessageId, MessagePayload, Object, Pointer,
-    Target, ThinPtr,
-};
+use crate::{Application, FatPtr, FixedSizeObject, GenPtr, MessageId, MessagePayload, Object, Pointer, Target, ThinPtr, CONTEXT, CONTEXT_MUT};
 use anyhow::{Context, Result, bail};
 use bumpalo::Bump;
 use bytemuck::{Pod, Zeroable, bytes_of, from_bytes, from_bytes_mut};
@@ -37,7 +34,7 @@ mod registrar_info {
 
     use crate::message_store::OnDiskMessageStore;
     use crate::sequence_nr::SequenceNr;
-    use crate::{DatabaseContext, MessagePayload, Target, ThinPtr};
+    use crate::{DatabaseContextData, MessagePayload, Target, ThinPtr};
 
     #[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
     #[repr(C)]
@@ -120,7 +117,7 @@ pub struct MainDbAuxHeader {
     uses: RawDatabaseVec<RegistrarInfo>,
 }
 
-pub struct DatabaseContext {
+pub struct DatabaseContextData {
     main_db_mmap: FileAccessor,
     //pointer: Cell<usize>,
     root_index: Option<GenPtr>,
@@ -136,6 +133,56 @@ pub struct DatabaseContext {
     // will have the seqnr of the message being applied, not the next one.
     //next_seqnr: SequenceNr,
 }
+
+
+pub struct DatabaseContextHandle<'a> {
+    d: Cell<*const DatabaseContextData>,
+    phantom: PhantomData<&'a ()>,
+}
+
+impl<'a> DatabaseContextHandle<'a> {
+    pub fn new(x: &DatabaseContextData) -> DatabaseContextHandle<'a> {
+        DatabaseContextHandle {
+            d: Cell::new(x as *const DatabaseContextData),
+            phantom: Default::default(),
+        }
+    }
+    // # Safety
+    // This is of course unsafe as hell, but it's only used responsibly.
+    // Jokes aside: The safety comes from us never recursing, and never storing
+    // the &'a mut DatabaseContextData. Thus there's no aliasing.
+    // The DatabaseContext is always valid, because it's only used from within a callback
+    // where the callee of the callback owns the actual DatabaseContextData.
+    pub(crate) fn d(self) -> &'a DatabaseContextData {
+        let t = self.d.get();
+        unsafe { &*t }
+    }
+}
+
+pub struct DatabaseContextHandleMut<'a> {
+    d: Cell<*mut DatabaseContextData>,
+    phantom: PhantomData<&'a mut ()>,
+}
+
+impl<'a> DatabaseContextHandleMut<'a> {
+    pub fn new(x: &mut DatabaseContextData) -> DatabaseContextHandleMut<'a> {
+        DatabaseContextHandleMut {
+            d: Cell::new(x as *mut DatabaseContextData),
+            phantom: Default::default(),
+        }
+    }
+    // # Safety
+    // This is of course unsafe as hell, but it's only used responsibly.
+    // Jokes aside: The safety comes from us never recursing, and never storing
+    // the &'a mut DatabaseContextData. Thus there's no aliasing.
+    // The DatabaseContext is always valid, because it's only used from within a callback
+    // where the callee of the callback owns the actual DatabaseContextData.
+    pub(crate) fn d(self) -> &'a mut DatabaseContextData {
+        let t = self.d.get();
+        unsafe { &mut *t }
+    }
+}
+
 
 // This has been shamelessly lifted from the rust std
 #[inline]
@@ -174,7 +221,7 @@ pub(crate) struct DepTrackLinkedListEntry {
     pub padding: u32,
 }
 
-impl DatabaseContext {
+impl DatabaseContextData {
     fn record_dependency(&self, observee: SequenceNr, observer: SequenceNr) {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
@@ -516,17 +563,17 @@ impl DatabaseContext {
         }
     }
 
-    pub fn copy(&self, source: FatPtr, dest_index: usize) {
+    pub fn copy(&self, source: FatPtr, dest_index: ThinPtr) {
         unsafe {
             //dbg!(&source, &dest_index);
 
             self.undo_log.record(UndoLogEntry::Restore {
-                start: dest_index,
-                data: self.access_slice(FatPtr::from(dest_index, source.len)),
+                start: dest_index.0,
+                data: self.access_slice(FatPtr::from(dest_index.0, source.len)),
             });
 
             let dest = self.access_slice_mut::<u8>(FatPtr {
-                start: dest_index,
+                start: dest_index.0,
                 len: source.len,
             });
 
@@ -887,13 +934,13 @@ impl DatabaseContext {
 mod tests {
     use crate::disk_abstraction::InMemoryDisk;
     use crate::sequence_nr::SequenceNr;
-    use crate::{DatabaseContext, Target};
+    use crate::{DatabaseContextData, Target};
     use std::time::Instant;
     #[test]
     fn smoke_deptrack() {
         let mut disk = InMemoryDisk::default();
         let mut tracker =
-            DatabaseContext::new(&mut disk, &Target::CreateNew("ctx".into()), 10000).unwrap();
+            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 10000).unwrap();
 
         tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
 
@@ -905,7 +952,7 @@ mod tests {
     fn smoke_deptrack_many() {
         let mut disk = InMemoryDisk::default();
         let mut tracker =
-            DatabaseContext::new(&mut disk, &Target::CreateNew("ctx".into()), 10000).unwrap();
+            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 10000).unwrap();
 
         let t = Instant::now();
         for i in 0..100_usize {
