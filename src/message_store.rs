@@ -991,6 +991,10 @@ impl<M> OnDiskMessageStore<M> {
     /// Delete any message with the given index. Idempotent, does nothing if index is already
     /// deleted or does not exist.
     /// If the call itself fails, returns Err.
+    // TODO: Consider if there's a risk of inefficiency when two severely desynced instances meet.
+    // They might have completely different messages, even before the cutoff time.
+    // When they start bringing each other up-to-date, their before-cutoff timestamp will change.
+    // Will this cause them to restart the sync-process? Make sure it doesn't.
     pub fn mark_deleted_by_index(&mut self, delete_index: SequenceNr) -> Result<()>
     where
         M: MessagePayload,

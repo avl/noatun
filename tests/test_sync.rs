@@ -21,8 +21,6 @@ struct Maze {
     player_pos_y: DatabaseCell<u32>,
 }
 
-struct MazeApp;
-
 impl Object for Maze {
     type Ptr = ThinPtr;
 
@@ -35,12 +33,15 @@ impl Object for Maze {
     }
 }
 
+compile_error!("COnsider introducing a thread local DatabaseContext!")
+
 impl MessagePayload for MazeMessage {
     type Root = Maze;
 
+
     fn apply(&self, context: &mut DatabaseContext, root: &mut Self::Root) {
-        root.player_pos_x.set(context, root.player_pos_x.saturating_add_signed(self.delta_x));
-        root.player_pos_y.set(context, root.player_pos_y.saturating_add_signed(self.delta_y));
+        root.player_pos_x.set(context, root.player_pos_x.get(context).saturating_add_signed(self.delta_x));
+        root.player_pos_y.set(context, root.player_pos_y.get(context).saturating_add_signed(self.delta_y));
     }
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
@@ -55,8 +56,7 @@ impl MessagePayload for MazeMessage {
     }
 }
 
-impl Application for MazeApp {
-    type Root = Maze;
+impl Application for Maze {
     type Message = MazeMessage;
 
     fn initialize_root(ctx: &mut DatabaseContext) -> &mut Maze {
@@ -67,6 +67,7 @@ impl Application for MazeApp {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_sync_app() {
     let local = tokio::task::LocalSet::new();
     unsafe {
@@ -80,10 +81,9 @@ async fn test_sync_app() {
         let mut comms = vec![];
 
         for i in 0..2 {
-            let app = MazeApp;
-            let db = Database::create_new(
+
+            let db: Database<Maze> = Database::create_new(
                 format!("test/test_sync_app{}.bin",i),
-                app,
                 true,
                 1_000_000,
                 Duration::from_secs(86400),

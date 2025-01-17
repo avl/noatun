@@ -16,7 +16,7 @@ use crate::sha2_helper::sha2;
 use anyhow::{Context, Result, bail};
 use bumpalo::Bump;
 use bytemuck::{Pod, Zeroable};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 pub use database::Database;
 use fs2::FileExt;
 use indexmap::IndexMap;
@@ -25,7 +25,6 @@ pub use projection_store::DatabaseContext;
 use rand::RngCore;
 use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
-use serde_derive::{Deserialize, Serialize};
 use std::cell::{Cell, OnceCell};
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
@@ -179,15 +178,17 @@ pub mod communication {
             Self::reconstruct_seq_impl(self.expected_next, seq)
         }
         pub(crate) fn reconstruct_seq_impl(expected_next: u64, seq:u16) -> u64 {
-            let short_delta = seq - (expected_next as u16);
+            let short_delta = seq.wrapping_sub(expected_next as u16);
 
-            if short_delta < 65535 - Self::RETRANSMIT_WINDOW_U16 {
-                // Interpret as future value
-                expected_next + short_delta as u64
-            } else {
+            if short_delta >= 65535 - Self::RETRANSMIT_WINDOW_U16 {
                 // A retransmission, that we don't actually need
-                expected_next + short_delta as u64
+                let diff = (-(short_delta as i64 - 65536)) as u64;
+                if diff <= expected_next {
+                    return expected_next - diff;
+                }
             }
+            // Interpret as future value
+            expected_next + short_delta as u64
         }
 
         async fn process(
@@ -541,7 +542,7 @@ pub mod communication {
     }
 
     impl<'a, APP:Application> Deref for RootRef<'a, APP> {
-        type Target = APP::Root;
+        type Target = APP;
 
         fn deref(&self) -> &Self::Target {
             self.guard.get_root().0
@@ -704,6 +705,19 @@ pub mod communication {
         #[test]
         fn reconstruct_seq_logic() {
             assert_eq!(
+                ReceiveTrack::reconstruct_seq_impl(0, 0),
+                0);
+            assert_eq!(
+                ReceiveTrack::reconstruct_seq_impl(1, 0),
+                0);
+            assert_eq!(
+                ReceiveTrack::reconstruct_seq_impl(0, 1),
+                1);
+            assert_eq!(
+                ReceiveTrack::reconstruct_seq_impl(1500, 0),
+                65536);
+
+            assert_eq!(
                 ReceiveTrack::reconstruct_seq_impl(10, 9),
                 9);
             assert_eq!(
@@ -776,8 +790,6 @@ pub mod communication {
     Hash,
     PartialOrd,
     Ord,
-    Serialize,
-    Deserialize,
     Savefile,
 )]
 #[repr(transparent)]
@@ -798,7 +810,7 @@ impl Display for MessageId {
         let time = chrono::DateTime::from_timestamp_millis(time_ms as i64)
             .unwrap();
 
-        let time_str = time.to_rfc3339();
+        let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
         write!(
             f,
             "{:?}-{:x}-{:x}-{:x}",
@@ -1282,7 +1294,7 @@ mod projector {
     pub(crate) struct Projector<APP: Application> {
         messages: OnDiskMessageStore<APP::Message>,
         head_tracker: UpdateHeadTracker,
-        phantom_data: PhantomData<(*const APP::Root)>,
+        phantom_data: PhantomData<(*const APP)>,
         cut_off_config: CutOffConfig,
     }
 
@@ -1409,7 +1421,7 @@ mod projector {
 
         fn apply_single_message(
             context: &mut DatabaseContext,
-            root: &mut APP::Root,
+            root: &mut APP,
             msg: &Message<APP::Message>,
             seqnr: SequenceNr,
         ) {
@@ -1420,7 +1432,7 @@ mod projector {
 
         pub(crate) fn apply_missing_messages(
             &mut self,
-            root: &mut APP::Root,
+            root: &mut APP,
             context: &mut DatabaseContext,
             time_now: DateTime<Utc>,
         ) -> Result<()> {
@@ -1460,7 +1472,7 @@ mod projector {
             /// If returns true, need to finalize before-cutoff-part, then continue at given index
             fn do_run<APP: Application>(
                 context: &mut DatabaseContext,
-                root: &mut APP::Root,
+                root: &mut APP,
                 items: impl Iterator<Item = (usize, Message<APP::Message>)>,
                 cutoff: u64,
             ) -> Result<RunResult> {
@@ -1541,37 +1553,14 @@ pub trait Object {
     unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self;
 }
 
-
-// TODO: Remove this! It's not safe.
-// You can't provide noatun-features for any POD, since POD can be updated
-// without tracking the updates in the noatun database!
-#[derive(Clone, Debug, Copy, Pod, Zeroable)]
-#[repr(transparent)]
-pub struct PodObject<T: Pod> {
-    pub pod: T,
-}
-
-impl<T: Pod> Object for PodObject<T> {
-    type Ptr = ThinPtr;
-
-    unsafe fn access<'a>(context: &DatabaseContext, index: Self::Ptr) -> &'a Self {
-        unsafe { context.access_pod(index) }
-    }
-
-    unsafe fn access_mut<'a>(context: &mut DatabaseContext, index: Self::Ptr) -> &'a mut Self {
-        unsafe { context.access_pod_mut(index) }
-    }
-}
-
 pub trait FixedSizeObject: Object<Ptr = ThinPtr> + Sized + Pod {}
 
 impl<T: Object<Ptr = ThinPtr> + Sized + Copy + Pod> FixedSizeObject for T {}
 
-pub trait Application {
-    type Root: Object + ?Sized;
-    type Message: MessagePayload<Root = Self::Root>;
+pub trait Application : Object {
+    type Message: MessagePayload<Root = Self>;
 
-    fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self::Root;
+    fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1697,13 +1686,6 @@ pub mod data_types {
         }
     }
 
-    impl<T: Copy> Deref for DatabaseCell<T> {
-        type Target = T;
-
-        fn deref(&self) -> &Self::Target {
-            &self.value
-        }
-    }
 
     unsafe impl<T> Zeroable for DatabaseCell<T> where T: Pod {}
 
@@ -1930,6 +1912,12 @@ pub mod data_types {
         phantom_data: PhantomData<T>,
     }
 
+    impl<T> Debug for DatabaseVec<T> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "DatabaseVec({})", self.length)
+        }
+    }
+
     unsafe impl<T> Zeroable for DatabaseVec<T> {}
 
     impl<T> Copy for DatabaseVec<T> {}
@@ -1942,7 +1930,35 @@ pub mod data_types {
 
     unsafe impl<T> Pod for DatabaseVec<T> where T: 'static {}
 
+    pub struct DatabaseVecIterator<'a,T> {
+        vec: &'a DatabaseVec<T>,
+        context: &'a DatabaseContext,
+        index: usize,
+    }
+
+    impl<'a,T: FixedSizeObject + 'static> Iterator for DatabaseVecIterator<'a, T> {
+        type Item = &'a T;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if self.index >= self.vec.length {
+                return None;
+            }
+            let index = self.index;
+            self.index += 1;
+            Some(self.vec.get(self.context, index))
+        }
+    }
+
     impl<T: 'static> DatabaseVec<T> {
+
+        pub fn iter<'a>(&'a self, context: &'a DatabaseContext) -> DatabaseVecIterator<'a, T> {
+            DatabaseVecIterator {
+                vec: self,
+                context,
+                index: 0,
+            }
+        }
+
         fn realloc_add(&mut self, ctx: &mut DatabaseContext, new_capacity: usize, new_len: usize) {
             debug_assert!(new_capacity >= new_len);
             debug_assert!(new_capacity >= self.capacity);
@@ -2172,7 +2188,6 @@ pub mod database {
         context: DatabaseContext,
         message_store: Projector<Base>,
         time_override: Option<DateTime<Utc>>,
-        app: Base,
     }
 
     //TODO: Make the modules in this file be distinct files
@@ -2228,9 +2243,9 @@ pub mod database {
             self.message_store.get_all_messages_with_children()
         }
 
-        pub fn get_root(&self) -> (&APP::Root, &DatabaseContext) {
-            let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
-            let root = unsafe { <APP::Root as Object>::access(&self.context, root_ptr) };
+        pub fn get_root(&self) -> (&APP, &DatabaseContext) {
+            let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
+            let root = unsafe { <APP as Object>::access(&self.context, root_ptr) };
             //let root = self.context.access_pod(root_ptr);
             (root, &self.context)
         }
@@ -2241,21 +2256,20 @@ pub mod database {
 
         pub(crate) fn with_root_mut<R>(
             &mut self,
-            f: impl FnOnce(&mut APP::Root, &mut DatabaseContext) -> R,
+            f: impl FnOnce(&mut APP, &mut DatabaseContext) -> R,
         ) -> Result<R> {
             let now = self.now();
             if !self.context.mark_dirty()? {
                 // Recovery needed
                 Self::recover(
-                    &mut self.app,
                     &mut self.context,
                     &mut self.message_store,
                     now,
                 )?;
             }
 
-            let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
-            let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
+            let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
+            let root = unsafe { <APP as Object>::access_mut(&mut self.context, root_ptr) };
 
             let t = f(root, &mut self.context);
 
@@ -2269,7 +2283,6 @@ pub mod database {
             if !self.context.mark_dirty()? {
                 // Recovery needed
                 Self::recover(
-                    &mut self.app,
                     &mut self.context,
                     &mut self.message_store,
                     now,
@@ -2278,8 +2291,8 @@ pub mod database {
 
             self.message_store.rewind(&mut self.context, 0)?;
 
-            let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
-            let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
+            let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
+            let root = unsafe { <APP as Object>::access_mut(&mut self.context, root_ptr) };
 
             self.message_store
                 .apply_missing_messages(root, &mut self.context, now)?;
@@ -2289,7 +2302,6 @@ pub mod database {
         }
 
         fn recover(
-            app: &mut APP,
             context: &mut DatabaseContext,
             message_store: &mut Projector<APP>,
             time_now: chrono::DateTime<Utc>,
@@ -2306,7 +2318,7 @@ pub mod database {
 
             // Safety:
             // Recover is only called when the db is not used
-            let root = unsafe { <APP::Root as Object>::access_mut(context, root_ptr) };
+            let root = unsafe { <APP as Object>::access_mut(context, root_ptr) };
             //let root = context.access_pod(root_ptr);
             message_store.apply_missing_messages(root, context, time_now)?;
 
@@ -2316,13 +2328,11 @@ pub mod database {
         /// Note: You can set max_file_size to something very large, like 100_000_000_000
         pub fn create_new(
             path: impl AsRef<Path>,
-            app: APP,
             overwrite_existing: bool,
             max_file_size: usize,
             cutoff_interval: Duration,
         ) -> Result<Database<APP>> {
             Self::create(
-                app,
                 if overwrite_existing {
                     Target::CreateNewOrOverwrite(path.as_ref().to_path_buf())
                 } else {
@@ -2334,12 +2344,10 @@ pub mod database {
         }
         pub fn open(
             path: impl AsRef<Path>,
-            app: APP,
             max_file_size: usize,
             cutoff_interval: Duration,
         ) -> Result<Database<APP>> {
             Self::create(
-                app,
                 Target::OpenExisting(path.as_ref().to_path_buf()),
                 max_file_size,
                 cutoff_interval,
@@ -2388,7 +2396,6 @@ pub mod database {
             if !self.context.mark_dirty()? {
                 // Recovery needed
                 Self::recover(
-                    &mut self.app,
                     &mut self.context,
                     &mut self.message_store,
                     now,
@@ -2400,8 +2407,8 @@ pub mod database {
                 .push_messages(&mut self.context, messages, local);
 
 
-            let root_ptr = self.context.get_root_ptr::<<APP::Root as Object>::Ptr>();
-            let root = unsafe { <APP::Root as Object>::access_mut(&mut self.context, root_ptr) };
+            let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
+            let root = unsafe { <APP as Object>::access_mut(&mut self.context, root_ptr) };
 
             self.message_store
                 .apply_missing_messages(root, &mut self.context, now)?;
@@ -2434,7 +2441,6 @@ pub mod database {
         /// This is mostly useful for tests
         // TODO: Use builder pattern?
         pub fn create_in_memory(
-            mut app: APP,
             max_size: usize,
             cutoff_interval: Duration,
             mock_time: Option<chrono::DateTime<Utc>>,
@@ -2447,7 +2453,6 @@ pub mod database {
             let mut message_store = Projector::new(&mut disk, &target, max_size, cutoff_interval)?;
 
             Self::recover(
-                &mut app,
                 &mut ctx,
                 &mut message_store,
                 mock_time.unwrap_or_else(|| Utc::now()),
@@ -2456,14 +2461,12 @@ pub mod database {
 
             Ok(Database {
                 context: ctx,
-                app,
                 message_store,
                 time_override: mock_time,
             })
         }
 
         fn create(
-            mut app: APP,
             target: Target,
             max_file_size: usize,
             cutoff_interval: Duration,
@@ -2480,12 +2483,11 @@ pub mod database {
                 Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
             let mut update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
             if is_dirty {
-                Self::recover(&mut app, &mut ctx, &mut message_store, Utc::now())?;
+                Self::recover(&mut ctx, &mut message_store, Utc::now())?;
                 ctx.mark_clean()?;
             }
             Ok(Database {
                 context: ctx,
-                app,
                 message_store,
                 time_override: None,
             })
@@ -3026,7 +3028,7 @@ mod tests {
         assert_eq!(mmap.read_u8().unwrap(), 42);
     }
 
-    struct DummyMessage<T> {
+    pub struct DummyMessage<T> {
         phantom_data: PhantomData<T>,
     }
     impl<T> Debug for DummyMessage<T> {
@@ -3084,13 +3086,11 @@ mod tests {
         }
     }
 
-    struct CounterApplication;
 
-    impl Application for CounterApplication {
-        type Root = CounterObject;
+    impl Application for CounterObject {
         type Message = CounterMessage;
 
-        fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self::Root {
+        fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self {
             let new_obj = CounterObject::new(ctx);
             new_obj
         }
@@ -3123,9 +3123,8 @@ mod tests {
 
     #[test]
     fn test1() {
-        let mut db: Database<CounterApplication> = Database::create_new(
+        let mut db: Database<CounterObject> = Database::create_new(
             "test/test1.bin",
-            CounterApplication,
             true,
             1000,
             Duration::from_secs(1000),
@@ -3138,7 +3137,7 @@ mod tests {
             counter.counter2.set(context, 43);
             counter.counter.set(context, 44);
 
-            assert_eq!(*counter.counter, 44);
+            assert_eq!(counter.counter.get(context), 44);
             assert_eq!(counter.counter.get(context), 44);
             assert_eq!(counter.counter2.get(context), 43);
         });
@@ -3184,9 +3183,8 @@ mod tests {
 
     #[test]
     fn test_msg_store_real() {
-        let mut db: Database<CounterApplication> = Database::create_new(
+        let mut db: Database<CounterObject> = Database::create_new(
             "test/msg_store.bin",
-            CounterApplication,
             true,
             10000,
             Duration::from_secs(1000),
@@ -3240,8 +3238,7 @@ mod tests {
 
     #[test]
     fn test_msg_store_inmem_miri() {
-        let mut db: Database<CounterApplication> = Database::create_in_memory(
-            CounterApplication,
+        let mut db: Database<CounterObject> = Database::create_in_memory(
             10000,
             Duration::from_secs(1000),
             Some(datetime!(2021-01-01 Z)),
@@ -3294,8 +3291,7 @@ mod tests {
 
     #[test]
     fn test_msg_store_after_cutoff_inmem_miri() {
-        let mut db: Database<CounterApplication> = Database::create_in_memory(
-            CounterApplication,
+        let mut db: Database<CounterObject> = Database::create_in_memory(
             10000,
             Duration::from_secs(1000),
             Some(datetime!(2024-01-01 Z)),
@@ -3354,8 +3350,8 @@ mod tests {
 
     #[test]
     fn test_cutoff_handling() {
-        let mut db: Database<CounterApplication> =
-            Database::create_in_memory(CounterApplication, 10000, Duration::from_secs(1000), None)
+        let mut db: Database<CounterObject> =
+            Database::create_in_memory( 10000, Duration::from_secs(1000), None)
                 .unwrap();
 
         db.append_single(
@@ -3415,85 +3411,66 @@ mod tests {
 
     #[test]
     fn test_handle() {
-        struct HandleApplication;
 
-        impl Application for HandleApplication {
-            type Root = DatabaseObjectHandle<DatabaseCell<u32>>;
-            type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
 
-            fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self::Root {
-                let obj = DatabaseObjectHandle::allocate(ctx, DatabaseCell::new(43u32));
-                obj
-            }
-        }
-
-        let mut db: Database<HandleApplication> = Database::create_new(
+        let mut db: Database<DatabaseObjectHandle<DatabaseCell<u32>>> = Database::create_new(
             "test/test_handle.bin",
-            HandleApplication,
             true,
             1000,
             Duration::from_secs(1000),
         )
         .unwrap();
 
-        let app = HandleApplication;
         let (handle, context) = db.get_root();
         assert_eq!(handle.get(context).get(context), 43);
     }
 
+    impl Application for DatabaseObjectHandle<DatabaseCell<u32>> {
+        type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
+
+        fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self {
+            let obj = DatabaseObjectHandle::allocate(ctx, DatabaseCell::new(43u32));
+            obj
+        }
+    }
+    impl Application for DatabaseObjectHandle<[DatabaseCell<u8>]> {
+        type Message = DummyMessage<DatabaseObjectHandle<[DatabaseCell<u8>]>>;
+
+        fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self {
+            let obj = DatabaseObjectHandle::allocate_unsized(
+                ctx,
+                [43u8, 45].map(|x| DatabaseCell::new(x)).as_slice(),
+            );
+            obj
+        }
+    }
+
     #[test]
     fn test_handle_to_unsized_miri() {
-        struct HandleApplication;
 
-        impl Application for HandleApplication {
-            type Root = DatabaseObjectHandle<[DatabaseCell<u8>]>;
-            type Message = DummyMessage<DatabaseObjectHandle<[DatabaseCell<u8>]>>;
 
-            fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self::Root {
-                let obj = DatabaseObjectHandle::allocate_unsized(
-                    ctx,
-                    [43u8, 45].map(|x| DatabaseCell::new(x)).as_slice(),
-                );
-                obj
-            }
-        }
-
-        let mut db: Database<HandleApplication> = Database::create_in_memory(
-            HandleApplication,
+        let mut db: Database<DatabaseObjectHandle<[DatabaseCell<u8>]>> = Database::create_in_memory(
             1000,
             Duration::from_secs(1000),
             Some(datetime!(2021-01-01 Z)),
         )
         .unwrap();
 
-        let app = HandleApplication;
         let (handle, context) = db.get_root();
         assert_eq!(handle.get(context).observe(context), &[43, 45]);
     }
 
     #[test]
     fn test_handle_miri() {
-        struct HandleApplication;
 
-        impl Application for HandleApplication {
-            type Root = DatabaseObjectHandle<DatabaseCell<u32>>;
-            type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
 
-            fn initialize_root(mut ctx: &mut DatabaseContext) -> &mut Self::Root {
-                let obj = DatabaseObjectHandle::allocate(ctx, DatabaseCell::new(43u32));
-                obj
-            }
-        }
-
-        let mut db: Database<HandleApplication> = Database::create_in_memory(
-            HandleApplication,
+        let mut db: Database<DatabaseObjectHandle<DatabaseCell<u32>>> = Database::create_in_memory(
             1000,
             Duration::from_secs(1000),
             Some(datetime!(2021-01-01 Z)),
         )
         .unwrap();
 
-        let app = HandleApplication;
         let (handle, context) = db.get_root();
         assert_eq!(handle.get(context).get(context), 43);
 
@@ -3502,25 +3479,22 @@ mod tests {
             assert_eq!(a1.get(context), 43);
         });
     }
+    impl Application for DatabaseVec<CounterObject> {
+
+        fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self {
+            let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new(ctx);
+            obj
+        }
+
+        type Message = DummyMessage<DatabaseVec<CounterObject>>;
+    }
 
     #[test]
     fn test_vec0() {
-        struct CounterVecApplication;
 
-        impl Application for CounterVecApplication {
-            type Root = DatabaseVec<CounterObject>;
 
-            fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self::Root {
-                let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new(ctx);
-                obj
-            }
-
-            type Message = DummyMessage<DatabaseVec<CounterObject>>;
-        }
-
-        let mut db: Database<CounterVecApplication> = Database::create_new(
+        let mut db: Database<DatabaseVec<CounterObject>> = Database::create_new(
             "test/test_vec0",
-            CounterVecApplication,
             true,
             10000,
             Duration::from_secs(1000),
@@ -3540,7 +3514,7 @@ mod tests {
 
             let item = counter_vec.get_mut(context, 1);
             //let item2 = counter_vec.get_mut(context, 1);
-            assert_eq!(*item.counter, 48);
+            assert_eq!(item.counter.get(context), 48);
             //assert_eq!(*item2.counter, 48);
 
             for _ in 0..10 {
@@ -3548,27 +3522,15 @@ mod tests {
             }
 
             let item = counter_vec.get_mut(context, 1);
-            assert_eq!(*item.counter, 48);
+            assert_eq!(item.counter.get(context), 48);
         });
     }
 
     #[test]
     fn test_vec_miri0() {
-        struct CounterVecApplication;
 
-        impl Application for CounterVecApplication {
-            type Root = DatabaseVec<CounterObject>;
 
-            fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self::Root {
-                let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new(ctx);
-                obj
-            }
-
-            type Message = DummyMessage<DatabaseVec<CounterObject>>;
-        }
-
-        let mut db: Database<CounterVecApplication> = Database::create_in_memory(
-            CounterVecApplication,
+        let mut db: Database<DatabaseVec<CounterObject>> = Database::create_in_memory(
             10000,
             Duration::from_secs(1000),
             Some(datetime!(2021-01-01 Z)),
@@ -3588,7 +3550,7 @@ mod tests {
 
             let item = counter_vec.get_mut(context, 1);
             //let item2 = counter_vec.get_mut(context, 1);
-            assert_eq!(*item.counter, 48);
+            assert_eq!(item.counter.get(context), 48);
             //assert_eq!(*item2.counter, 48);
 
             for _ in 0..10 {
@@ -3596,27 +3558,15 @@ mod tests {
             }
 
             let item = counter_vec.get_mut(context, 1);
-            assert_eq!(*item.counter, 48);
+            assert_eq!(item.counter.get(context), 48);
         });
     }
     #[test]
     fn test_vec_undo() {
-        struct CounterVecApplication;
 
-        impl Application for CounterVecApplication {
-            type Root = DatabaseVec<CounterObject>;
 
-            fn initialize_root(ctx: &mut DatabaseContext) -> &mut Self::Root {
-                let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new(ctx);
-                obj
-            }
-
-            type Message = DummyMessage<DatabaseVec<CounterObject>>;
-        }
-
-        let mut db: Database<CounterVecApplication> = Database::create_new(
+        let mut db: Database<DatabaseVec<CounterObject>> = Database::create_new(
             "test/vec_undo",
-            CounterVecApplication,
             true,
             10000,
             Duration::from_secs(1000),
@@ -3672,7 +3622,7 @@ mod tests {
     mod distributor_tests {
         use crate::distributor::DistributorMessage::Message;
         use crate::distributor::{Distributor, DistributorMessage};
-        use crate::tests::{CounterApplication, CounterMessage};
+        use crate::tests::{CounterMessage, CounterObject};
         use crate::{Database, MessageId};
         use chrono::DateTime;
         use chrono::Utc;
@@ -3693,9 +3643,8 @@ mod tests {
                     bool, /*local*/
                 ),
             >,
-        ) -> Database<CounterApplication> {
-            let mut db: Database<CounterApplication> = Database::create_in_memory(
-                CounterApplication,
+        ) -> Database<CounterObject> {
+            let mut db: Database<CounterObject> = Database::create_in_memory(
                 10000,
                 Duration::from_secs(1000),
                 Some(datetime!(2021-01-01 Z)),
@@ -3726,7 +3675,7 @@ mod tests {
             num_messages: usize,
         }
 
-        fn sync(dbs: Vec<Database<CounterApplication>>) -> SyncReport {
+        fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
             let mut report = SyncReport { num_messages: 0 };
             let mut dbs: Vec<(Distributor, Database<_>)> =
                 dbs.into_iter().map(|x| (Distributor::new(), x)).collect();
