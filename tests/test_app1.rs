@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use datetime_literal::datetime;
 use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::Database;
-use noatun::{Application, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, Object, ThinPtr};
+use noatun::{Application, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, Object, ThinPtr};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::time::Duration;
@@ -71,8 +71,8 @@ impl MessagePayload for CounterMessage {
 impl Application for CounterObject {
     type Message = CounterMessage;
 
-    fn initialize_root(ctx: &mut DatabaseContextData) -> &mut Self {
-        let ctr = ctx.allocate_pod::<CounterObject>();
+    fn initialize_root<'a>() -> &'a mut Self {
+        let ctr = NoatunContext.allocate_pod::<CounterObject>();
         ctr
     }
 }
@@ -83,6 +83,7 @@ fn test_counter_object_miri() {
         10_000,
         Duration::from_secs(1000),
         Some(datetime!(2023-01-01 Z)),
+        None
     )
     .unwrap();
 

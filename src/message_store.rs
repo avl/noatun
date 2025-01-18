@@ -518,6 +518,10 @@ impl<M> OnDiskMessageStore<M> {
         Ok(())
     }
 
+    pub fn count_messages(&self) -> Result<usize> {
+        Ok(self.header_and_index()?.0.entries as usize)
+    }
+
     #[inline]
     fn header(map: &mut FileAccessor) -> Result<&mut StoreHeader> {
         Self::provide_index_map(map, 0)?;

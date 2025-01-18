@@ -3,7 +3,7 @@ use std::time::Duration;
 use bytemuck::{Pod, Zeroable};
 use savefile::{Deserializer, Serializer};
 use savefile_derive::Savefile;
-use noatun::{disable_multi_instance_blocker, Application, Database, DatabaseContextData, MessagePayload, NoatunContext, Object, ThinPtr};
+use noatun::{disable_multi_instance_blocker, Application, Database, MessagePayload, NoatunContext, Object, ThinPtr};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::DatabaseCell;
 
@@ -58,8 +58,8 @@ impl MessagePayload for MazeMessage {
 impl Application for Maze {
     type Message = MazeMessage;
 
-    fn initialize_root(ctx: &mut DatabaseContextData) -> &mut Maze {
-        let maze = ctx.allocate_pod();
+    fn initialize_root<'a>() -> &'a mut Maze {
+        let maze = NoatunContext.allocate_pod();
 
         maze
     }
@@ -86,6 +86,7 @@ async fn test_sync_app() {
                 true,
                 1_000_000,
                 Duration::from_secs(86400),
+                None
             ).unwrap();
             let comm = DatabaseCommunication::new(db, DatabaseCommunicationConfig::default()).await;
             comms.push(comm);
