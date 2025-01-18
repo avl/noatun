@@ -3,7 +3,7 @@ use std::time::Duration;
 use bytemuck::{Pod, Zeroable};
 use savefile::{Deserializer, Serializer};
 use savefile_derive::Savefile;
-use noatun::{disable_multi_instance_blocker, Application, Database, MessagePayload, NoatunContext, Object, ThinPtr};
+use noatun::{disable_multi_instance_blocker, Application, Database, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::DatabaseCell;
 
@@ -38,7 +38,7 @@ impl MessagePayload for MazeMessage {
     type Root = Maze;
 
 
-    fn apply(&self, root: &mut Self::Root) {
+    fn apply(&self, time: NoatunTime, root: &mut Self::Root) {
         root.player_pos_x.set(root.player_pos_x.get().saturating_add_signed(self.delta_x));
         root.player_pos_y.set(root.player_pos_y.get().saturating_add_signed(self.delta_y));
     }

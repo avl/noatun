@@ -210,6 +210,7 @@ pub mod communication {
     use std::sync::{Arc, Mutex, MutexGuard};
     use std::thread::JoinHandle;
     use std::time::{Duration, Instant};
+    use chrono::{DateTime, Utc};
     use tokio::net::UdpSocket;
     use tokio::{select, spawn};
     use tokio::sync::mpsc::{Receiver, Sender};
@@ -787,11 +788,12 @@ pub mod communication {
             db.with_root(f)
         }
         pub fn with_root_prevew<R>(&self,
+                                   time: DateTime<Utc>,
                                    preview: impl Iterator<Item=APP::Message>,
                                    f: impl FnOnce(&APP) -> R) -> Result<R> {
             let mut db = self.database.lock().unwrap();
 
-            db.with_root_preview(preview, f)
+            db.with_root_preview(time, preview, f)
         }
 
 
@@ -1099,9 +1101,39 @@ pub mod sequence_nr {
     }
 }
 
+#[derive(Clone,Copy,Pod,Zeroable)]
+#[repr(C)]
+pub struct NoatunTime(u64);
+
+impl Display for NoatunTime {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let time = chrono::DateTime::from_timestamp_millis(self.0 as i64)
+            .unwrap();
+
+        let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
+        write!(f, "{}", time_str)
+    }
+}
+impl Debug for NoatunTime {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let time = chrono::DateTime::from_timestamp_millis(self.0 as i64)
+            .unwrap();
+
+        let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
+        write!(f, "{}", time_str)
+    }
+}
+
+impl NoatunTime {
+    pub fn to_datetime(&self) -> DateTime<Utc> {
+        //TODO: Don't panic here!
+        DateTime::<Utc>::from_timestamp_millis(self.0 as i64).unwrap()
+    }
+}
+
 pub trait MessagePayload: Debug {
     type Root: Object;
-    fn apply(&self, root: &mut Self::Root);
+    fn apply(&self, time: NoatunTime, root: &mut Self::Root);
 
     fn deserialize(buf: &[u8]) -> Result<Self>
     where
@@ -1421,7 +1453,7 @@ mod projector {
     use crate::message_store::{IndexEntry, OnDiskMessageStore};
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
-    use crate::{Application, ContextGuardMut, Database, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, Target, CONTEXT_MUT};
+    use crate::{Application, ContextGuardMut, Database, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime, Target, CONTEXT_MUT};
     use anyhow::Result;
     use bytemuck::{Pod, Zeroable};
     use chrono::{DateTime, Utc};
@@ -1563,15 +1595,16 @@ mod projector {
             msg: &Message<APP::Message>,
             seqnr: SequenceNr,
         ) {
-            msg.payload.apply(root); //TODO: Handle panics in apply gracefully
+            msg.payload.apply(NoatunTime(msg.header.id.timestamp()), root); //TODO: Handle panics in apply gracefully
             context.set_next_seqnr(seqnr.successor()); //TODO: Don't record a snapshot for _every_ message.
             context.finalize_message(seqnr);
         }
 
-        pub fn apply_preview(&mut self, root: &mut APP, preview: impl Iterator<Item=APP::Message>) -> Result<()> {
+        pub fn apply_preview(&mut self, time: DateTime<Utc>, root: &mut APP, preview: impl Iterator<Item=APP::Message>) -> Result<()> {
             NoatunContext.clear_unused_tracking();
+            let time = NoatunTime(time.timestamp_millis() as u64);
             for msg in preview {
-                msg.apply(root);
+                msg.apply(time,root);
             }
 
             Ok(())
@@ -2110,6 +2143,11 @@ pub mod data_types {
         index: usize,
     }
 
+    pub struct DatabaseVecIteratorMut<'a,T> {
+        vec: &'a mut DatabaseVec<T>,
+        index: usize,
+    }
+
     impl<'a,T: FixedSizeObject + 'static> Iterator for DatabaseVecIterator<'a, T> {
         type Item = &'a T;
 
@@ -2122,6 +2160,19 @@ pub mod data_types {
             Some(self.vec.get(index))
         }
     }
+    impl<'a,T: FixedSizeObject + 'static> Iterator for DatabaseVecIteratorMut<'a, T> {
+        type Item = &'a mut T;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if self.index >= self.vec.length {
+                return None;
+            }
+            let index = self.index;
+            self.index += 1;
+            //TODO: Get rid of this transmute. Why is it even neded?
+            Some(unsafe { std::mem::transmute(self.vec.get_mut(index)) })
+        }
+    }
 
     impl<T: 'static> DatabaseVec<T> {
 
@@ -2131,7 +2182,12 @@ pub mod data_types {
                 index: 0,
             }
         }
-
+        pub fn iter_mut<'a>(&'a mut self) -> DatabaseVecIteratorMut<'a, T> {
+            DatabaseVecIteratorMut {
+                vec: self,
+                index: 0,
+            }
+        }
         fn realloc_add(&mut self, new_capacity: usize, new_len: usize) {
             debug_assert!(new_capacity >= new_len);
             debug_assert!(new_capacity >= self.capacity);
@@ -2462,6 +2518,7 @@ pub mod database {
         }
 
         pub fn with_root_preview<R>(&mut self,
+                                    time: DateTime<Utc>,
                                    preview: impl Iterator<Item=APP::Message>,
                                    f: impl FnOnce(&APP) -> R) -> Result<R> {
             let now = self.now();
@@ -2481,7 +2538,7 @@ pub mod database {
             let guard = ContextGuardMut::new(&mut self.context);
             let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
-            self.message_store.apply_preview(root, preview)?;
+            self.message_store.apply_preview(time,root, preview)?;
             let ret = f(root);
 
             drop(guard);
@@ -3312,7 +3369,7 @@ mod tests {
         type Root = T;
 
 
-        fn apply(&self, root: &mut Self::Root) {
+        fn apply(&self, time: NoatunTime, root: &mut Self::Root) {
             unimplemented!()
         }
 
@@ -3376,7 +3433,7 @@ mod tests {
         type Root = CounterObject;
 
 
-        fn apply(&self, root: &mut Self::Root) {
+        fn apply(&self, time: NoatunTime, root: &mut Self::Root) {
             unimplemented!()
         }
 
@@ -3430,7 +3487,7 @@ mod tests {
     impl MessagePayload for CounterMessage {
         type Root = CounterObject;
 
-        fn apply(&self, root: &mut CounterObject) {
+        fn apply(&self, time: NoatunTime, root: &mut CounterObject) {
             if self.inc1 != 0 {
                 root.counter.set(
                     root.counter.get().saturating_add_signed(self.inc1),
@@ -3504,7 +3561,9 @@ mod tests {
             assert_eq!(root.counter.get(), 2);
         });
 
-        db.with_root_preview([
+        db.with_root_preview(
+            datetime!(2024-01-03 00:00:00 Z),
+            [
             CounterMessage {
                 parent: vec![],
                 id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z), [0;10]).unwrap(),

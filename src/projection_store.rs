@@ -768,6 +768,10 @@ impl DatabaseContextData {
             self.rt_decrease_use(*registrar_point);
         }
         let current_registrar = self.next_seqnr();
+        if current_registrar.is_invalid() {
+            // We're in the 'initialize root' method
+            return;
+        }
         if !opaque {
             self.rt_set_non_opaque(current_registrar);
         }

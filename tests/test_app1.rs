@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use datetime_literal::datetime;
 use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::Database;
-use noatun::{Application, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, Object, ThinPtr};
+use noatun::{Application, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::time::Duration;
@@ -39,7 +39,7 @@ impl MessagePayload for CounterMessage {
     type Root = CounterObject;
 
 
-    fn apply(&self, root: &mut Self::Root) {
+    fn apply(&self, time: NoatunTime, root: &mut Self::Root) {
         println!(
             "Applying message {} {} {}",
             self.id, self.counter, self.delta
