@@ -464,7 +464,7 @@ impl FileAccessor {
         if new_size + Self::HEADER_SIZE > self.committed_size.get() {
             let max_size = self.mapping.maximum_size();
             if new_size + Self::HEADER_SIZE >= max_size {
-                bail!("maximum file size exceeded");
+                bail!("maximum file size exceeded. Requested new size: {}. Max size: {}", new_size+Self::HEADER_SIZE, max_size);
             }
 
             let new_file_size = ((self.committed_size.get() + new_size + Self::HEADER_SIZE) * 2)

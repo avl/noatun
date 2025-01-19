@@ -34,7 +34,7 @@ mod registrar_info {
 
     use crate::message_store::OnDiskMessageStore;
     use crate::sequence_nr::SequenceNr;
-    use crate::{DatabaseContextData, MessagePayload, Target, ThinPtr};
+    use crate::{DatabaseContextData, MessagePayload, NoatunContext, Target, ThinPtr};
 
     #[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
     #[repr(C)]
@@ -51,13 +51,14 @@ mod registrar_info {
         pub fn get_use(&self) -> u32 {
             self.uses & 0x7FFF_FFFF
         }
-        pub fn increase_use(&mut self) {
+        pub fn increase_use(&mut self, context: &DatabaseContextData) {
             if self.get_use() >= 0x7FFF_FFFF {
                 return;
             }
-            self.uses += 1;
+            //TODO: We could have a special "inc 1" noatun primitive.
+            context.write_pod(self.uses+1,&mut self.uses);
         }
-        pub fn decrease_use(&mut self) {
+        pub fn decrease_use(&mut self, context: &DatabaseContextData) {
             let cur_uses = self.get_use();
             if cur_uses == 0 {
                 panic!("Internal error, use count wrong");
@@ -65,7 +66,8 @@ mod registrar_info {
             if cur_uses >= 0x7FFF_FFFF {
                 return;
             }
-            self.uses -= 1;
+            //TODO: We could have a special "dec 1" noatun primitive.
+            context.write_pod(self.uses-1,&mut self.uses);
         }
     }
 
@@ -908,7 +910,7 @@ impl DatabaseContextData {
         if uses.len() <= registrar.index() {
             uses.grow(self, registrar.index() + 1);
         }
-        uses.get_mut(self, registrar.index()).increase_use();
+        uses.get_mut(self, registrar.index()).increase_use(self);
     }
     pub(crate) fn rt_set_non_opaque(&self, registrar: SequenceNr) {
         let uses = unsafe { self.get_uses() };
@@ -923,7 +925,7 @@ impl DatabaseContextData {
         if cur.get_use() == 0 {
             panic!("Corrupt use count for sequence nr {:?}", registrar);
         }
-        cur.decrease_use();
+        cur.decrease_use(self);
         if cur.get_use() == 0 {
             // This is the normal way messages end up in 'unused_messags'
             self.unused_messages.borrow_mut().push(UnusedInfo {

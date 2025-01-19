@@ -116,6 +116,19 @@ impl NoatunContext {
         unsafe { (*context_ptr).copy(src, dest_index) }
 
     }
+    pub fn copy_pod<T:Pod>(&self, src: &T, dst: &mut T)  {
+        let context_ptr = CONTEXT_MUT.get();
+        if context_ptr.is_null() {
+            panic!("No mutable NoatunContext available");
+        }
+        let c = unsafe{&*context_ptr};
+        let src = c.index_of_sized(src);
+        let dst = c.index_of_sized(dst);
+        let src_fat = FatPtr::from(src.0, size_of::<T>());
+
+        unsafe { (*context_ptr).copy(src_fat, dst) }
+    }
+
     pub fn index_of_ptr(&self, ptr: *const u8) -> ThinPtr {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
@@ -990,6 +1003,23 @@ impl MessageId {
         MessageId { data: [0, 0, 0, 0] }
     }
 
+    /// Next larger MessageId.
+    /// Panics if current id is the largest possible.
+    /// Note: This *CAN* change the timestamp of the message, though this is unlikely.
+    /// Note: The timestamp can at most increase by 1 ms.
+    // TODO: Possibly add test-feature that will randomly change the timestamp, just for testing.
+    pub fn successor(&self) -> MessageId {
+        let mut temp = *self;
+        for element in temp.data.iter_mut().rev() {
+            if *element < u32::MAX {
+                *element += 1;
+                return temp;
+            }
+            *element = 0;
+        }
+        panic!("successor() invoked on MessageId::MAX");
+    }
+
     /// Create an artificial MessageId, mostly useful for tests and possibly debugging.
     pub fn new_debug(nr: u32) -> Self {
         Self {
@@ -1128,6 +1158,9 @@ impl NoatunTime {
     pub fn to_datetime(&self) -> DateTime<Utc> {
         //TODO: Don't panic here!
         DateTime::<Utc>::from_timestamp_millis(self.0 as i64).unwrap()
+    }
+    pub fn from_datetime(t: DateTime<Utc>) -> NoatunTime {
+        NoatunTime(t.timestamp_millis() as u64)
     }
 }
 
@@ -1760,8 +1793,10 @@ impl<T: Object<Ptr = ThinPtr> + Sized + Copy + Pod> FixedSizeObject for T {}
 
 pub trait Application : Object {
     type Message: MessagePayload<Root = Self>;
+    /// Parameters that will be available in the "initialize_root" call.
+    type Params;
 
-    fn initialize_root<'a>() -> &'a mut Self;
+    fn initialize_root<'a>(params: &Self::Params) -> &'a mut Self;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1853,12 +1888,67 @@ pub mod data_types {
     use std::ops::{Deref, Index, Range};
 
 
+
+/*
+
+    #[derive(Copy, Clone, Debug)]
+    #[repr(C)]
+    pub struct DatabaseOption<T: Copy> {
+        value: T,
+        // TODO: This is needed to have correct alignment
+        registrar: SequenceNr,
+        present: u8,
+    }
+
+    impl<T:Copy+Pod> DatabaseOption<T> {
+        pub fn set(&mut self, new_value: Option<T>) {
+            let c = CONTEXT_MUT.get();
+            if c.is_null() {
+                if let Some(new_value) = new_value {
+                    self.value = new_value;
+                    self.present = 1;
+                } else {
+                    self.present = 0;
+                }
+                return;
+                //unreachable!("Attempt to modify DatabaseCell without a mutable context.");
+            }
+            let c = unsafe {&mut *c};
+            if let Some(new_value) = new_value {
+                NoatunContext.write_pod(new_value, &mut self.value);
+                NoatunContext.write_pod(1, &mut self.present);
+            } else {
+                NoatunContext.write_pod(0, &mut self.present);
+            }
+
+            c.update_registrar(&mut self.registrar, false);
+        }
+        pub fn get(&self) -> Option<T> {
+            NoatunContext.observe_registrar(self.registrar);
+            if self.present!=0 {
+                Some(self.value)
+            } else {
+                None
+            }
+        }
+    }
+
+    //TODO: This is unsound. Stop using bytemuck for these types in Noatun
+    unsafe impl<T> Pod for DatabaseOption<T>
+     where T: Pod
+    {}
+    unsafe impl<T:Copy> Zeroable for DatabaseOption<T>
+    where T: Zeroable
+    {}
+*/
+
     #[derive(Copy, Clone)]
     #[repr(C)]
     pub struct DatabaseCell<T: Copy> {
         value: T,
         registrar: SequenceNr,
     }
+
 
     impl<T:Copy+Debug> Debug for DatabaseCell<T> {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -1874,9 +1964,10 @@ pub mod data_types {
         registrar: SequenceNr,
     }
 
-    // TODO: The below (and same for DatabaseCell) are probably not actually sound.
-    // There could be padding needed. We could avoid this by making sure SequenceNr
-    // has alignment 1.
+    // TODO: The below (and same for DatabaseCell) are not actually sound. Pod requires
+    // that there's no padding, but here, there will be padding for align_of<T> > 4.
+    // There could be padding needed. Solution: We must stop using bytemuck for
+    // Noatun internals.
     unsafe impl<T: Pod> Zeroable for OpaqueCell<T> {}
     unsafe impl<T: Pod> Pod for OpaqueCell<T> {}
 
@@ -1905,7 +1996,9 @@ pub mod data_types {
         pub fn set<'a>(&'a mut self, new_value: T) {
             let c = CONTEXT_MUT.get();
             if c.is_null() {
-                unreachable!("Attempt to modify DatabaseCell without a mutable context.");
+                self.value = new_value;
+                return;
+                //unreachable!("Attempt to modify DatabaseCell without a mutable context.");
             }
             let c = unsafe {&mut *c};
             let index = c.index_of(self);
@@ -2249,6 +2342,23 @@ pub mod data_types {
             self.push(T::zeroed());
             self.get_mut( self.length - 1)
         }
+
+        pub fn shift_remove(&mut self, index: usize) {
+            if index >= self.length {
+                return;
+            }
+            if index == self.length -1 {
+                NoatunContext.write_pod(self.length-1, &mut self.length);
+                return;
+            }
+            let src_ptr = ThinPtr(self.data + (self.length-1) * size_of::<T>());
+            let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
+            NoatunContext.copy(FatPtr::from(src_ptr.0, size_of::<T>()),
+                                dst_ptr);
+            NoatunContext.write_pod(self.length-1, &mut self.length);
+            compile_error!("Test this. And also implement retain :)")
+        }
+
         pub fn push<'a>(&'a mut self, t: T) {
             if self.length >= self.capacity {
                 self.realloc_add((self.capacity + 1) * 2, self.length + 1);
@@ -2460,8 +2570,12 @@ pub mod database {
     pub struct Database<Base: Application> {
         context: DatabaseContextData,
         message_store: Projector<Base>,
+        // Most recently generated local id, or all zeroes.
+        // Future local id's will always be greater than this.
+        prev_local: MessageId,
         time_override: Option<DateTime<Utc>>,
         projection_time_limit: Option<DateTime<Utc>>,
+        params: Base::Params
     }
 
     //TODO: Make the modules in this file be distinct files
@@ -2528,20 +2642,22 @@ pub mod database {
                     &mut self.context,
                     &mut self.message_store,
                     now,
-                    self.projection_time_limit
+                    self.projection_time_limit,
+                    &self.params
                 )?;
             }
 
             let current = self.context.next_seqnr();
 
+            self.context.set_next_seqnr(current.successor());
             let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
             let guard = ContextGuardMut::new(&mut self.context);
             let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
             self.message_store.apply_preview(time,root, preview)?;
             let ret = f(root);
-
             drop(guard);
+            self.message_store.rewind(&mut self.context, current.index())?;
             self.context.mark_clean()?;
             Ok(ret)
 
@@ -2571,7 +2687,8 @@ pub mod database {
                     &mut self.context,
                     &mut self.message_store,
                     now,
-                    self.projection_time_limit
+                    self.projection_time_limit,
+                    &self.params
                 )?;
             }
 
@@ -2594,7 +2711,8 @@ pub mod database {
                     &mut self.context,
                     &mut self.message_store,
                     now,
-                    self.projection_time_limit
+                    self.projection_time_limit,
+                    &self.params
                 )?;
             }
 
@@ -2617,13 +2735,14 @@ pub mod database {
             message_store: &mut Projector<APP>,
             time_now: chrono::DateTime<Utc>,
             projection_time_limit: Option<DateTime<Utc>>,
+            params: &APP::Params,
         ) -> Result<()> {
             context.clear()?;
 
             message_store.recover();
             let mmap_ptr = context.start_ptr();
             let guard = ContextGuardMut::new(context);
-            let root_obj_ref = APP::initialize_root();
+            let root_obj_ref = APP::initialize_root(params);
             let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, root_obj_ref);
             context.set_root_ptr(root_ptr.as_generic());
 
@@ -2645,7 +2764,8 @@ pub mod database {
             overwrite_existing: bool,
             max_file_size: usize,
             cutoff_interval: Duration,
-            projection_time_limit: Option<DateTime<Utc>>
+            projection_time_limit: Option<DateTime<Utc>>,
+            params: APP::Params
         ) -> Result<Database<APP>> {
             Self::create(
                 if overwrite_existing {
@@ -2655,7 +2775,8 @@ pub mod database {
                 },
                 max_file_size,
                 cutoff_interval,
-                projection_time_limit
+                projection_time_limit,
+                params
             )
         }
         pub fn open(
@@ -2663,12 +2784,14 @@ pub mod database {
             max_file_size: usize,
             cutoff_interval: Duration,
             projection_time_limit: Option<DateTime<Utc>>,
+            params: APP::Params
         ) -> Result<Database<APP>> {
             Self::create(
                 Target::OpenExisting(path.as_ref().to_path_buf()),
                 max_file_size,
                 cutoff_interval,
-                projection_time_limit
+                projection_time_limit,
+                params
             )
         }
 
@@ -2695,7 +2818,10 @@ pub mod database {
         pub fn append_local(&mut self, message: APP::Message) -> Result<()> {
             let now = self.now();
             println!("Now: {:?}", now);
-            let new_id = MessageId::generate_for_time(now)?;
+            let new_id = MessageId::generate_for_time(now)?
+                .max(self.prev_local.successor());
+            self.prev_local = new_id;
+
             println!("New id: {:?}", new_id);
             let t = Message::new(
                 new_id,self.get_update_heads().to_vec(),
@@ -2717,7 +2843,8 @@ pub mod database {
                     &mut self.context,
                     &mut self.message_store,
                     now,
-                    self.projection_time_limit
+                    self.projection_time_limit,
+                    &self.params
                 )?;
             }
 
@@ -2765,7 +2892,8 @@ pub mod database {
             max_size: usize,
             cutoff_interval: Duration,
             mock_time: Option<chrono::DateTime<Utc>>,
-            projection_time_limit: Option<DateTime<Utc>>
+            projection_time_limit: Option<DateTime<Utc>>,
+            params: APP::Params,
         ) -> Result<Database<APP>> {
             Self::set_multi_instance_block();
             let mut disk = InMemoryDisk::default();
@@ -2778,15 +2906,18 @@ pub mod database {
                 &mut ctx,
                 &mut message_store,
                 mock_time.unwrap_or_else(|| Utc::now()),
-                projection_time_limit
+                projection_time_limit,
+                &params
             )?;
             ctx.mark_clean()?;
 
             Ok(Database {
+                prev_local: MessageId::ZERO,
                 context: ctx,
                 message_store,
                 time_override: mock_time,
                 projection_time_limit,
+                params,
             })
         }
 
@@ -2795,6 +2926,7 @@ pub mod database {
             max_file_size: usize,
             cutoff_interval: Duration,
             projection_time_limit: Option<DateTime<Utc>>,
+            params: APP::Params,
         ) -> Result<Database<APP>> {
             Self::set_multi_instance_block();
             let mut disk = StandardDisk;
@@ -2808,10 +2940,12 @@ pub mod database {
                 Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
             let mut update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
             if is_dirty {
-                Self::recover(&mut ctx, &mut message_store, Utc::now(), projection_time_limit)?;
+                Self::recover(&mut ctx, &mut message_store, Utc::now(), projection_time_limit, &params)?;
                 ctx.mark_clean()?;
             }
             Ok(Database {
+                params,
+                prev_local: MessageId::ZERO,
                 context: ctx,
                 message_store,
                 time_override: None,
@@ -3417,8 +3551,9 @@ mod tests {
 
     impl Application for CounterObject {
         type Message = CounterMessage;
+        type Params = ();
 
-        fn initialize_root<'a>() -> &'a mut Self {
+        fn initialize_root<'a>(params: &Self::Params) -> &'a mut Self {
             let new_obj = CounterObject::new();
             new_obj
         }
@@ -3456,7 +3591,8 @@ mod tests {
             true,
             1000,
             Duration::from_secs(1000),
-            None
+            None,
+            ()
         )
         .unwrap();
 
@@ -3515,7 +3651,8 @@ mod tests {
             true,
             10000,
             Duration::from_secs(1000),
-            Some(datetime!(2024-01-02 00:00:00 Z))
+            Some(datetime!(2024-01-02 00:00:00 Z)),
+            ()
         )
             .unwrap();
 
@@ -3574,6 +3711,11 @@ mod tests {
             assert_eq!(root.counter.get(), 4);
         }).unwrap();
 
+
+        db.with_root_mut(|root| {
+            // Time limit means last message isn't projected
+            assert_eq!(root.counter.get(), 2);
+        });
     }
     #[test]
     fn test_msg_store_real() {
@@ -3582,7 +3724,8 @@ mod tests {
             true,
             10000,
             Duration::from_secs(1000),
-            None
+            None,
+            ()
         )
         .unwrap();
 
@@ -3637,7 +3780,8 @@ mod tests {
             10000,
             Duration::from_secs(1000),
             Some(datetime!(2021-01-01 Z)),
-            None
+            None,
+            ()
         )
         .unwrap();
 
@@ -3691,7 +3835,8 @@ mod tests {
             10000,
             Duration::from_secs(1000),
             Some(datetime!(2024-01-01 Z)),
-            None
+            None,
+            ()
         )
         .unwrap();
 
@@ -3748,7 +3893,7 @@ mod tests {
     #[test]
     fn test_cutoff_handling() {
         let mut db: Database<CounterObject> =
-            Database::create_in_memory( 10000, Duration::from_secs(1000), None, None)
+            Database::create_in_memory( 10000, Duration::from_secs(1000), None, None,())
                 .unwrap();
 
         db.append_single(
@@ -3815,7 +3960,8 @@ mod tests {
             true,
             1000,
             Duration::from_secs(1000),
-            None
+            None,
+            ()
         )
         .unwrap();
 
@@ -3826,16 +3972,18 @@ mod tests {
 
     impl Application for DatabaseObjectHandle<DatabaseCell<u32>> {
         type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
+        type Params = ();
 
-        fn initialize_root<'a>() -> &'a mut Self {
+        fn initialize_root<'a>(_params:&()) -> &'a mut Self {
             let obj = DatabaseObjectHandle::allocate(DatabaseCell::new(43u32));
             obj
         }
     }
     impl Application for DatabaseObjectHandle<[DatabaseCell<u8>]> {
         type Message = DummyMessage<DatabaseObjectHandle<[DatabaseCell<u8>]>>;
+        type Params = ();
 
-        fn initialize_root<'a>() -> &'a mut Self {
+        fn initialize_root<'a>(_params: &()) -> &'a mut Self {
             let obj = DatabaseObjectHandle::allocate_unsized(
                 [43u8, 45].map(|x| DatabaseCell::new(x)).as_slice(),
             );
@@ -3851,7 +3999,8 @@ mod tests {
             1000,
             Duration::from_secs(1000),
             Some(datetime!(2021-01-01 Z)),
-            None
+            None,
+            ()
         )
         .unwrap();
 
@@ -3869,7 +4018,8 @@ mod tests {
             1000,
             Duration::from_secs(1000),
             Some(datetime!(2021-01-01 Z)),
-            None
+            None,
+            ()
         )
         .unwrap();
 
@@ -3883,8 +4033,9 @@ mod tests {
         });
     }
     impl Application for DatabaseVec<CounterObject> {
+        type Params = ();
 
-        fn initialize_root<'a>() -> &'a mut Self {
+        fn initialize_root<'a>(_params: &()) -> &'a mut Self {
             let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new();
             obj
         }
@@ -3901,7 +4052,8 @@ mod tests {
             true,
             10000,
             Duration::from_secs(1000),
-            None
+            None,
+            ()
         )
         .unwrap();
         db.with_root_mut(|counter_vec| {
@@ -3938,7 +4090,8 @@ mod tests {
             10000,
             Duration::from_secs(1000),
             Some(datetime!(2021-01-01 Z)),
-            None
+            None,
+            ()
         )
         .unwrap();
         db.with_root_mut(|counter_vec| {
@@ -3975,7 +4128,8 @@ mod tests {
             true,
             10000,
             Duration::from_secs(1000),
-            None
+            None,
+            ()
         )
         .unwrap();
 
@@ -4056,7 +4210,8 @@ mod tests {
                 10000,
                 Duration::from_secs(1000),
                 Some(datetime!(2021-01-01 Z)),
-                None
+                None,
+                ()
             )
             .unwrap();
             for (id, parents, inc1, set1, local) in msgs {
