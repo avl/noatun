@@ -5,7 +5,7 @@ use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{Application, FatPtr, FixedSizeObject, GenPtr, MessageId, MessagePayload, Object, Pointer, Target, ThinPtr, CONTEXT, CONTEXT_MUT};
+use crate::{Application, FatPtr, FixedSizeObject, GenPtr, MessageId, MessagePayload, Object, Pointer, Target, ThinPtr};
 use anyhow::{Context, Result, bail};
 use bumpalo::Bump;
 use bytemuck::{Pod, Zeroable, bytes_of, from_bytes, from_bytes_mut};
@@ -519,6 +519,9 @@ impl DatabaseContextData {
     pub fn start_ptr(&self) -> *const u8 {
         self.main_db_mmap.map_const_ptr()
     }
+    pub fn start_ptr_mut(&self) -> *mut u8 {
+        self.main_db_mmap.map_mut_ptr()
+    }
 
     pub fn set_next_seqnr(&mut self, new_seqnr: SequenceNr) {
         if new_seqnr.is_invalid() {
@@ -584,7 +587,20 @@ impl DatabaseContextData {
             dest.copy_from_slice(src);
         }
     }
+    pub fn copy_sized(&self, source: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
+        self.copy(FatPtr::from(source.0, size_bytes), dest_index)
+    }
+    pub fn copy_pod<T:Pod>(&self, source: &T, dest: &mut T) {
+        unsafe {
 
+            let dest_index = self.index_of_sized(dest);
+            self.undo_log.record(UndoLogEntry::Restore {
+                start: dest_index.0,
+                data: bytes_of(dest),
+            });
+            *dest = *source;
+        }
+    }
     #[allow(clippy::mut_from_ref)]
     pub fn allocate_pod<T: Pod>(&self) -> &mut T {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
@@ -735,6 +751,15 @@ impl DatabaseContextData {
         });
         *dest = src;
     }
+    pub fn write_pod_ptr<T: Pod>(&self, src: T, dest: *mut T) {
+        let dest_index = self.index_of_ptr(dest);
+
+        self.undo_log.record(UndoLogEntry::Restore {
+            start: dest_index.0,
+            data: unsafe { slice::from_raw_parts(dest as *const u8, size_of::<T>()) },
+        });
+        unsafe { dest.write_unaligned(src) };
+    }
     pub fn index_of_sized<T: Sized>(&self, t: &T) -> ThinPtr {
         ThinPtr::create(t, self.main_db_mmap.map_const_ptr())
     }
@@ -767,7 +792,7 @@ impl DatabaseContextData {
 
     pub fn update_registrar(&self, registrar_point: &mut SequenceNr, opaque: bool) {
         if registrar_point.is_valid() {
-            self.rt_decrease_use(*registrar_point);
+            self.rt_decrease_use(unsafe { *registrar_point } );
         }
         let current_registrar = self.next_seqnr();
         if current_registrar.is_invalid() {
@@ -780,6 +805,25 @@ impl DatabaseContextData {
         self.rt_increase_use(current_registrar);
 
         self.write_pod(current_registrar, registrar_point)
+
+    }
+    pub fn update_registrar_ptr(&self, registrar_point: *mut SequenceNr, opaque: bool) {
+
+        let registrar_point_value = unsafe { registrar_point.read_unaligned() };
+        if registrar_point_value.is_valid() {
+            self.rt_decrease_use(registrar_point_value );
+        }
+        let current_registrar = self.next_seqnr();
+        if current_registrar.is_invalid() {
+            // We're in the 'initialize root' method
+            return;
+        }
+        if !opaque {
+            self.rt_set_non_opaque(current_registrar);
+        }
+        self.rt_increase_use(current_registrar);
+
+        self.write_pod_ptr(current_registrar, registrar_point)
     }
 
     // Signify that the current message has observed data previously written

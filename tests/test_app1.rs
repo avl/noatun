@@ -39,7 +39,7 @@ impl MessagePayload for CounterMessage {
     type Root = CounterObject;
 
 
-    fn apply(&self, time: NoatunTime, root: &mut Self::Root) {
+    fn apply(&self, _time: NoatunTime, root: &mut Self::Root) {
         println!(
             "Applying message {} {} {}",
             self.id, self.counter, self.delta
@@ -47,10 +47,12 @@ impl MessagePayload for CounterMessage {
 
         root.counter
             .set(root.counter.get() + self.delta);
-        let cell: &mut DatabaseCell<u32> = DatabaseCell::allocate();
-        cell.set(self.delta);
+        let cell: &mut DatabaseCell<u8> = DatabaseCell::allocate();
+        cell.set(self.delta as u8);
+        // TODO: This is quite horrible, should we even have support for unsized objects if
+        // it's going to be this unsafe/untyped? Can we make it nicer?
         let cell_slice =
-            unsafe { std::slice::from_raw_parts_mut(cell as *mut DatabaseCell<u32>, 1) };
+            unsafe { std::slice::from_raw_parts_mut(cell as *mut DatabaseCell<u8>, 1) };
 
         let handle = DatabaseObjectHandle::new(NoatunContext.index_of(cell_slice));
         root.counter2.push(handle);
@@ -70,8 +72,9 @@ impl MessagePayload for CounterMessage {
 
 impl Application for CounterObject {
     type Message = CounterMessage;
+    type Params = ();
 
-    fn initialize_root<'a>() -> &'a mut Self {
+    fn initialize_root<'a>(_params: &()) -> &'a mut Self {
         let ctr = NoatunContext.allocate_pod::<CounterObject>();
         ctr
     }
@@ -83,7 +86,8 @@ fn test_counter_object_miri() {
         10_000,
         Duration::from_secs(1000),
         Some(datetime!(2023-01-01 Z)),
-        None
+        None,
+        ()
     )
     .unwrap();
 

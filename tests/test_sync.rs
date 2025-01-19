@@ -38,7 +38,7 @@ impl MessagePayload for MazeMessage {
     type Root = Maze;
 
 
-    fn apply(&self, time: NoatunTime, root: &mut Self::Root) {
+    fn apply(&self, _time: NoatunTime, root: &mut Self::Root) {
         root.player_pos_x.set(root.player_pos_x.get().saturating_add_signed(self.delta_x));
         root.player_pos_y.set(root.player_pos_y.get().saturating_add_signed(self.delta_y));
     }
@@ -57,8 +57,9 @@ impl MessagePayload for MazeMessage {
 
 impl Application for Maze {
     type Message = MazeMessage;
+    type Params = ();
 
-    fn initialize_root<'a>() -> &'a mut Maze {
+    fn initialize_root<'a>(_params:&()) -> &'a mut Maze {
         let maze = NoatunContext.allocate_pod();
 
         maze
@@ -86,7 +87,8 @@ async fn test_sync_app() {
                 true,
                 1_000_000,
                 Duration::from_secs(86400),
-                None
+                None,
+                ()
             ).unwrap();
             let comm = DatabaseCommunication::new(db, DatabaseCommunicationConfig::default()).await;
             comms.push(comm);

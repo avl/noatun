@@ -64,29 +64,41 @@ pub(crate) mod disk_access;
 mod sha2_helper;
 
 thread_local! {
-    pub static CONTEXT: Cell<*const DatabaseContextData> = const { Cell::new(null()) };
-    pub static CONTEXT_MUT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
+    pub static CONTEXT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
 }
 
 
 #[derive(Clone, Copy)]
 pub struct NoatunContext;
 
+fn get_context_mut_ptr() -> *mut DatabaseContextData {
+    let context_ptr = CONTEXT.get();
+    if context_ptr.is_null() {
+        panic!("No mutable NoatunContext is presently available on this thread");
+    }
+    context_ptr
+}
+fn get_context_ptr() -> *const DatabaseContextData {
+    let context_ptr = CONTEXT.get();
+    if context_ptr.is_null() {
+        panic!("No NoatunContext is presently available on this thread");
+    }
+    context_ptr
+}
+
 impl NoatunContext {
 
+    pub fn start_ptr_mut(self) -> *mut u8 {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).start_ptr_mut() }
+    }
     pub(crate) fn clear_unused_tracking(self) {
-        let context_ptr = CONTEXT_MUT.get();
-        if context_ptr.is_null() {
-            panic!("No NoatunContext available");
-        }
+        let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).clear_unused_tracking() }
     }
 
     pub fn index_of<T: Object + ?Sized>(self, t: &T) -> T::Ptr {
-        let context_ptr = CONTEXT.get();
-        if context_ptr.is_null() {
-            panic!("No NoatunContext available");
-        }
+        let context_ptr = get_context_ptr();
         unsafe { (*context_ptr).index_of(t) }
     }
 
@@ -94,39 +106,26 @@ impl NoatunContext {
     // It's used in a very early test, from before we had the architecture down
     #[doc(hidden)]
     pub(crate) unsafe fn rewind(self, new_time: SequenceNr) {
-        let context_ptr = CONTEXT_MUT.get();
-        if context_ptr.is_null() {
-            panic!("No mutable NoatunContext available");
-        }
+        let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).rewind(new_time) }
     }
 
     pub fn set_next_seqnr(self, seqnr: SequenceNr) {
-        let context_ptr = CONTEXT_MUT.get();
-        if context_ptr.is_null() {
-            panic!("No mutable NoatunContext available");
-        }
+        let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).set_next_seqnr(seqnr) }
     }
     pub fn copy(&self, src: FatPtr, dest_index: ThinPtr)  {
-        let context_ptr = CONTEXT_MUT.get();
-        if context_ptr.is_null() {
-            panic!("No mutable NoatunContext available");
-        }
+        let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy(src, dest_index) }
-
+    }
+    pub fn copy_sized(&self, src: ThinPtr, dest_index: ThinPtr, size_bytes: usize)  {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).copy_sized(src, dest_index, size_bytes) }
     }
     pub fn copy_pod<T:Pod>(&self, src: &T, dst: &mut T)  {
-        let context_ptr = CONTEXT_MUT.get();
-        if context_ptr.is_null() {
-            panic!("No mutable NoatunContext available");
-        }
-        let c = unsafe{&*context_ptr};
-        let src = c.index_of_sized(src);
-        let dst = c.index_of_sized(dst);
-        let src_fat = FatPtr::from(src.0, size_of::<T>());
+        let context_ptr = get_context_mut_ptr();
+        unsafe{(*context_ptr).copy_pod(src, dst)}
 
-        unsafe { (*context_ptr).copy(src_fat, dst) }
     }
 
     pub fn index_of_ptr(&self, ptr: *const u8) -> ThinPtr {
@@ -138,38 +137,27 @@ impl NoatunContext {
 
     }
     pub fn allocate_raw(&self, size: usize, align: usize) -> *mut u8 {
-        let context_ptr = CONTEXT_MUT.get();
-        if context_ptr.is_null() {
-            panic!("No mutable NoatunContext available");
-        }
+        let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_raw(size, align) }
     }
     pub fn update_registrar(&self, registrar: &mut SequenceNr, value: bool) {
-        let context_ptr = CONTEXT_MUT.get();
-        if context_ptr.is_null() {
-            panic!("No mutable NoatunContext available");
-        }
+        let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).update_registrar(registrar, value); }
     }
     pub fn write_pod<T:Pod>(&self, value: T, dest: &mut T)  {
-        let context_ptr = CONTEXT_MUT.get();
-        if context_ptr.is_null() {
-            panic!("No mutable NoatunContext available");
-        }
+        let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_pod(value, dest) }
     }
+    pub fn write_pod_ptr<T:Pod>(&self, value: T, dest: *mut T)  {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).write_pod_ptr(value, dest) }
+    }
     pub fn allocate_pod<'a, T:Pod>(&self) -> &'a mut T {
-        let context_ptr = CONTEXT_MUT.get();
-        if context_ptr.is_null() {
-            panic!("No mutable NoatunContext available");
-        }
+        let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_pod() }
     }
     pub unsafe fn access_pod_mut<'a, T:Pod>(&mut self, ptr: ThinPtr) -> &'a mut T {
-        let context_ptr = CONTEXT_MUT.get();
-        if context_ptr.is_null() {
-            panic!("No mutable NoatunContext available");
-        }
+        let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).access_pod_mut(ptr) }
     }
     pub unsafe fn access_pod<'a, T:Pod>(&self, ptr: ThinPtr) -> &'a T {
@@ -181,11 +169,8 @@ impl NoatunContext {
     }
 
     pub fn observe_registrar(self, registrar: SequenceNr) {
-        let p = CONTEXT_MUT.get();
-        if p.is_null() {
-            return;
-        }
-        unsafe { (*p).observe_registrar(registrar) }
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).observe_registrar(registrar) }
     }
     pub unsafe fn access_slice<'a, T: Pod>(self, range: FatPtr) -> &'a [T] {
         let p = CONTEXT.get();
@@ -195,11 +180,8 @@ impl NoatunContext {
         unsafe { (*p).access_slice(range) }
     }
     pub unsafe fn access_slice_mut<'a, T: Pod>(self, range: FatPtr) -> &'a mut [T] {
-        let p = CONTEXT_MUT.get();
-        if p.is_null() {
-            panic!("No mutable NoatunContext available");
-        }
-        unsafe { (*p).access_slice_mut(range) }
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).access_slice_mut(range) }
 
     }
 }
@@ -1486,7 +1468,7 @@ mod projector {
     use crate::message_store::{IndexEntry, OnDiskMessageStore};
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
-    use crate::{Application, ContextGuardMut, Database, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime, Target, CONTEXT_MUT};
+    use crate::{Application, ContextGuardMut, Database, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime, Target, CONTEXT};
     use anyhow::Result;
     use bytemuck::{Pod, Zeroable};
     use chrono::{DateTime, Utc};
@@ -1628,6 +1610,22 @@ mod projector {
             msg: &Message<APP::Message>,
             seqnr: SequenceNr,
         ) {
+
+            if context as *mut _  != CONTEXT.get() {
+                #[cfg(debug_assertions)] {
+                    unreachable!("context was not set correctly");
+                }
+                #[cfg(not(debug_assertions))] {
+                    std::hint::unreachable_unchecked()
+                }
+            }
+            // This is just here to satisfy miri.
+            // Pointer provenance is tricky. Without the assignment below, the access to the
+            // thread safe CONTEXT_MUT from within 'apply' will alias with 'context' here.
+            // Which becomes ok after this call, since the thread safe ptr then has the
+            // right provenance (though it's the exact same bits regardless)
+            CONTEXT.set(context as *mut _);
+
             msg.payload.apply(NoatunTime(msg.header.id.timestamp()), root); //TODO: Handle panics in apply gracefully
             context.set_next_seqnr(seqnr.successor()); //TODO: Don't record a snapshot for _every_ message.
             context.finalize_message(seqnr);
@@ -1746,6 +1744,7 @@ pub trait Pointer: Copy + Debug + 'static {
     fn start(self) -> usize;
     fn create<T: ?Sized>(addr: &T, buffer_start: *const u8) -> Self;
     fn as_generic(&self) -> GenPtr;
+    fn is_null(&self) -> bool;
 }
 
 pub trait Object {
@@ -1836,6 +1835,10 @@ impl Pointer for ThinPtr {
     fn as_generic(&self) -> GenPtr {
         GenPtr::Thin(*self)
     }
+
+    fn is_null(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl ThinPtr {
@@ -1862,6 +1865,10 @@ impl Pointer for FatPtr {
     fn as_generic(&self) -> GenPtr {
         GenPtr::Fat(*self)
     }
+
+    fn is_null(&self) -> bool {
+        self.start == 0
+    }
 }
 
 impl<T: FixedSizeObject> Object for [T] {
@@ -1879,20 +1886,17 @@ impl<T: FixedSizeObject> Object for [T] {
 
 pub mod data_types {
     use crate::sequence_nr::SequenceNr;
-    use crate::{Database, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, Object, Pointer, ThinPtr, CONTEXT, CONTEXT_MUT};
+    use crate::{Database, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, Object, Pointer, ThinPtr, CONTEXT};
     use bytemuck::{Pod, Zeroable};
     use sha2::digest::typenum::Zero;
     use std::fmt::{Debug, Formatter};
     use std::marker::PhantomData;
     use std::mem::transmute_copy;
     use std::ops::{Deref, Index, Range};
-
-
-
-/*
+    use std::ptr::addr_of_mut;
 
     #[derive(Copy, Clone, Debug)]
-    #[repr(C)]
+    #[repr(C, packed)]
     pub struct DatabaseOption<T: Copy> {
         value: T,
         // TODO: This is needed to have correct alignment
@@ -1902,7 +1906,7 @@ pub mod data_types {
 
     impl<T:Copy+Pod> DatabaseOption<T> {
         pub fn set(&mut self, new_value: Option<T>) {
-            let c = CONTEXT_MUT.get();
+            let c = CONTEXT.get();
             if c.is_null() {
                 if let Some(new_value) = new_value {
                     self.value = new_value;
@@ -1915,13 +1919,13 @@ pub mod data_types {
             }
             let c = unsafe {&mut *c};
             if let Some(new_value) = new_value {
-                NoatunContext.write_pod(new_value, &mut self.value);
+                NoatunContext.write_pod_ptr(new_value, std::ptr::addr_of_mut!(self.value));
                 NoatunContext.write_pod(1, &mut self.present);
             } else {
                 NoatunContext.write_pod(0, &mut self.present);
             }
 
-            c.update_registrar(&mut self.registrar, false);
+            c.update_registrar_ptr(addr_of_mut!(self.registrar), false);
         }
         pub fn get(&self) -> Option<T> {
             NoatunContext.observe_registrar(self.registrar);
@@ -1940,10 +1944,10 @@ pub mod data_types {
     unsafe impl<T:Copy> Zeroable for DatabaseOption<T>
     where T: Zeroable
     {}
-*/
+
 
     #[derive(Copy, Clone)]
-    #[repr(C)]
+    #[repr(C, packed)]
     pub struct DatabaseCell<T: Copy> {
         value: T,
         registrar: SequenceNr,
@@ -1952,7 +1956,8 @@ pub mod data_types {
 
     impl<T:Copy+Debug> Debug for DatabaseCell<T> {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            self.value.fmt(f)
+            let value = self.value;
+            value.fmt(f)
         }
     }
 
@@ -1989,12 +1994,12 @@ pub mod data_types {
             NoatunContext.observe_registrar(self.registrar);
             self.value
         }
-        pub fn get_ref(&self, context: &DatabaseContextData) -> &T {
+        /*pub fn get_ref(&self, context: &DatabaseContextData) -> &T {
             context.observe_registrar(self.registrar);
             &self.value
-        }
+        }*/
         pub fn set<'a>(&'a mut self, new_value: T) {
-            let c = CONTEXT_MUT.get();
+            let c = CONTEXT.get();
             if c.is_null() {
                 self.value = new_value;
                 return;
@@ -2003,8 +2008,8 @@ pub mod data_types {
             let c = unsafe {&mut *c};
             let index = c.index_of(self);
             //context.write(index, bytes_of(&new_value));
-            c.write_pod(new_value, &mut self.value);
-            c.update_registrar(&mut self.registrar, false);
+            c.write_pod_ptr(new_value, addr_of_mut!(self.value));
+            c.update_registrar_ptr(addr_of_mut!(self.registrar), false);
         }
     }
 
@@ -2356,7 +2361,30 @@ pub mod data_types {
             NoatunContext.copy(FatPtr::from(src_ptr.0, size_of::<T>()),
                                 dst_ptr);
             NoatunContext.write_pod(self.length-1, &mut self.length);
-            compile_error!("Test this. And also implement retain :)")
+        }
+
+        pub fn retain(&mut self, mut f: impl FnMut(&mut T) -> bool) {
+            let mut read_offset = 0;
+            let mut write_offset = 0;
+            let mut new_len = self.length;
+
+            while read_offset < self.length {
+                let read_ptr = ThinPtr(self.data + read_offset * size_of::<T>());
+                let val = unsafe { T::access_mut(read_ptr) };
+                let retain = f(val);
+                if !retain {
+                    new_len -= 1;
+                    read_offset += 1;
+                } else {
+                    if read_offset != write_offset {
+                        let write_ptr = ThinPtr(self.data + write_offset * size_of::<T>());
+                        NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>());
+                    }
+                    read_offset += 1;
+                    write_offset += 1;
+                }
+            }
+            NoatunContext.write_pod(new_len, &mut self.length);
         }
 
         pub fn push<'a>(&'a mut self, t: T) {
@@ -2414,9 +2442,15 @@ pub mod data_types {
 
     impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
         pub fn get(&self) -> &T {
+            if self.object_index.is_null() {
+                panic!("get() called on an uninitialized (null) DatabaseObjectHandle.");
+            }
             unsafe { T::access(self.object_index) }
         }
         pub fn get_mut(&mut self) -> &mut T {
+            if self.object_index.is_null() {
+                panic!("get_mut() called on an uninitialized (null) DatabaseObjectHandle.");
+            }
             unsafe { T::access_mut(self.object_index) }
         }
 
@@ -2514,42 +2548,40 @@ struct ContextGuard;
 
 impl ContextGuard {
     fn new(context: &DatabaseContextData) -> ContextGuard {
-        if !CONTEXT_MUT.get().is_null() || !CONTEXT.get().is_null() {
+        if !CONTEXT.get().is_null() {
             panic!("'with_root' must not be called within an existing database access context.
                          For example, it cannot be called within a 'with_root', 'with_root_mut' or
                          message apply operation.
                 ");
         }
-        CONTEXT.set(context as *const _);
+        CONTEXT.set(context as *const _  as *mut _);
         ContextGuard
     }
 }
 
 impl Drop for ContextGuard {
     fn drop(&mut self) {
-        CONTEXT.set(null());
+        CONTEXT.set(null_mut());
     }
 }
 struct ContextGuardMut;
 
 impl ContextGuardMut {
     fn new(context: &mut DatabaseContextData) -> ContextGuardMut {
-        if !CONTEXT_MUT.get().is_null() || !CONTEXT.get().is_null() {
+        if !CONTEXT.get().is_null() {
             panic!("'with_root' must not be called within an existing database access context.
                          For example, it cannot be called within a 'with_root', 'with_root_mut' or
                          message apply operation.
                 ");
         }
-        CONTEXT_MUT.set(context as *mut _);
-        CONTEXT.set(context as *const _);
+        CONTEXT.set(context as *mut _);
         ContextGuardMut
     }
 }
 
 impl Drop for ContextGuardMut {
     fn drop(&mut self) {
-        CONTEXT.set(null());
-        CONTEXT_MUT.set(null_mut());
+        CONTEXT.set(null_mut());
     }
 }
 
@@ -2561,7 +2593,7 @@ pub mod database {
     use crate::projector::Projector;
     use crate::sequence_nr::SequenceNr;
     use crate::update_head_tracker::UpdateHeadTracker;
-    use crate::{Application, DatabaseContextData, MULTI_INSTANCE_BLOCKER, Message, MessageComponent, MessageHeader, MessageId, MessagePayload, Object, Pointer, Target, MultiInstanceThreadBlocker, CONTEXT, ContextGuard, ContextGuardMut, CONTEXT_MUT};
+    use crate::{Application, DatabaseContextData, MULTI_INSTANCE_BLOCKER, Message, MessageComponent, MessageHeader, MessageId, MessagePayload, Object, Pointer, Target, MultiInstanceThreadBlocker, CONTEXT, ContextGuard, ContextGuardMut};
     use anyhow::{Context, Result};
     use chrono::{DateTime, Utc};
     use std::path::{Path, PathBuf};
@@ -2667,7 +2699,6 @@ pub mod database {
             let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
             let guard = ContextGuard::new(&self.context);
             let root = unsafe { <APP as Object>::access(root_ptr) };
-
             let ret = f(root);
             ret
         }
@@ -2697,6 +2728,7 @@ pub mod database {
             let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
             let t = f(root);
+            drop(guard);
             self.context.mark_clean()?;
 
             Ok(t)
@@ -2722,7 +2754,7 @@ pub mod database {
             let guard = ContextGuardMut::new(&mut self.context);
             let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
-            let context = unsafe { &mut *CONTEXT_MUT.get() };
+            let context = unsafe { &mut *CONTEXT.get() };
             self.message_store
                 .apply_missing_messages(context, root, now, self.projection_time_limit)?;
 
@@ -2744,14 +2776,16 @@ pub mod database {
             let guard = ContextGuardMut::new(context);
             let root_obj_ref = APP::initialize_root(params);
             let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, root_obj_ref);
-            context.set_root_ptr(root_ptr.as_generic());
 
+
+            let context = unsafe { &mut *CONTEXT.get() };
+            context.set_root_ptr(root_ptr.as_generic());
             context.set_next_seqnr(SequenceNr::from_index(0));
 
             // Safety:
             // Recover is only called when the db is not used
             let root = unsafe { <APP as Object>::access_mut(root_ptr) };
-            let context = unsafe { &mut *CONTEXT_MUT.get() };
+            let context = unsafe { &mut *CONTEXT.get() };
             //let root = context.access_pod(root_ptr);
             message_store.apply_missing_messages(context, root, time_now, projection_time_limit)?;
 
@@ -2817,12 +2851,10 @@ pub mod database {
 
         pub fn append_local(&mut self, message: APP::Message) -> Result<()> {
             let now = self.now();
-            println!("Now: {:?}", now);
             let new_id = MessageId::generate_for_time(now)?
                 .max(self.prev_local.successor());
             self.prev_local = new_id;
 
-            println!("New id: {:?}", new_id);
             let t = Message::new(
                 new_id,self.get_update_heads().to_vec(),
                 message
@@ -2857,7 +2889,7 @@ pub mod database {
             let guard = ContextGuardMut::new(&mut self.context);
             let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
-            let context = unsafe { &mut *CONTEXT_MUT.get() };
+            let context = unsafe { &mut *CONTEXT.get() };
             self.message_store
                 .apply_missing_messages(context, root, now, self.projection_time_limit)?;
 
@@ -4098,6 +4130,7 @@ mod tests {
             assert_eq!(counter_vec.len(), 0);
 
             let new_element = counter_vec.push_zeroed();
+
             let new_element = counter_vec.get_mut( 0);
 
             new_element.counter.set( 47);
@@ -4111,12 +4144,27 @@ mod tests {
             assert_eq!(item.counter.get(), 48);
             //assert_eq!(*item2.counter, 48);
 
-            for _ in 0..10 {
+            for i in 0..10 {
                 let new_element = counter_vec.push_zeroed();
             }
 
             let item = counter_vec.get_mut( 1);
             assert_eq!(item.counter.get(), 48);
+            assert_eq!(counter_vec.len(), 12);
+
+            counter_vec.shift_remove(1);
+            assert_eq!(counter_vec.len(), 11);
+            assert_eq!(counter_vec.get(0).counter.get(), 47);
+
+            counter_vec.retain(|x|x.counter.get() == 0);
+            assert_eq!(counter_vec.len(), 10);
+
+            for i in 0..10 {
+                assert_eq!(counter_vec.get(i).counter.get() as usize, 0);;
+            }
+
+
+
         });
     }
     #[test]
