@@ -49,7 +49,7 @@ pub(crate) struct ReadonlyFileAccessor<'a> {
     seek_pos: usize,
     phantom: PhantomData<&'a ()>,
 }
-impl<'a> Read for ReadonlyFileAccessor<'a> {
+impl Read for ReadonlyFileAccessor<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.seek_pos == self.size {
             return Ok(0);
@@ -61,7 +61,7 @@ impl<'a> Read for ReadonlyFileAccessor<'a> {
         Ok(getnow)
     }
 }
-impl<'a> ReadonlyFileAccessor<'a> {
+impl ReadonlyFileAccessor<'_> {
     pub(crate) fn map(&self) -> &[u8] {
         let used = self.size;
         unsafe { slice::from_raw_parts(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE), used) }
@@ -102,7 +102,7 @@ impl<'a> ReadonlyFileAccessor<'a> {
         Ok(ret)
     }
 }
-impl<'a> Seek for ReadonlyFileAccessor<'a> {
+impl Seek for ReadonlyFileAccessor<'_> {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         match pos {
             SeekFrom::Start(s) => {
@@ -146,7 +146,7 @@ impl Debug for FileAccessor {
         write!(f, "FileAccessor({})", self.committed_size.get())
     }
 }
-impl<'a> Debug for ReadonlyFileAccessor<'a> {
+impl Debug for ReadonlyFileAccessor<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "ReadonlyFileAccessor({})", self.size)
     }

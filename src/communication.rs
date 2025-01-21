@@ -178,8 +178,7 @@ impl ReceiveTrack {
                     if next_size == u16::MAX as usize {
                         break;
                     }
-                    let mut temp = Vec::with_capacity(next_size);
-                    temp.resize(next_size, 0);
+                    let mut temp = vec![0;next_size];
                     reader.read_exact(&mut temp)?;
                     if !temp.is_empty() {
                         //println!("Sending out {:?}", temp);
@@ -270,7 +269,7 @@ impl MulticasterSenderLoop {
             recvbuf: Vec::with_capacity(mtu),
             max_payload_per_packet,
             next_send_seq: 0,
-            multicast_group: multicast_group,
+            multicast_group,
         })
     }
     pub fn send_buf(
@@ -373,7 +372,7 @@ impl MulticasterSenderLoop {
                     //println!("Sending {} bytes on wire", tosend.len());
                     match self
                         .send_socket
-                        .send_to(&tosend, &self.multicast_group)
+                        .send_to(tosend, &self.multicast_group)
                         .await
                     {
                         Ok(sent) => {
@@ -541,7 +540,7 @@ impl<APP:Application+'static> DatabaseCommunicationLoop<APP> {
                 periodic = tokio::time::sleep_until(self.next_periodic) => {
                     let database = self.database.lock().unwrap();
                     self.outbuf.extend(self.distributor.get_periodic_message(&*database)?);
-                    self.next_periodic = self.next_periodic + Self::PERIODIC_MSG_INTERVAL;
+                    self.next_periodic += Self::PERIODIC_MSG_INTERVAL;
                 }
                 cmd = self.cmd_rx.recv() => {
                     println!("Cmd received");

@@ -19,7 +19,7 @@ impl Object for CounterObject {
     type Ptr = ThinPtr;
     type DetachedType = ();
 
-    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+    unsafe fn init_from_detached(&mut self, _detached: Self::DetachedType) {
         todo!()
     }
 

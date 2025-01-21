@@ -216,9 +216,9 @@ dependencies = [
 
 [[package]]
 name = "datetime_literal"
-version = "0.1.1"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d26c7cadb97d2993b8bfe6dc8b4c39e8eab9771ad65c6062c127ce0717cc028"
+checksum = "fcd4412a63631453298d1c8d9935baca734b58663adb3114bc872c6d13c0b5a6"
 dependencies = [
  "chrono",
 ]

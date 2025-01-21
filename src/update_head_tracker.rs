@@ -30,13 +30,13 @@ impl UpdateHeadTracker {
         }
         if maplen == file_len {
             self.file.grow((file_len + 1) * size_of::<MessageId>())?;
-            file_len = file_len + 1;
+            file_len += 1;
         }
 
         let mapping = self.file.map_mut();
         let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
 
-        id_mapping[maplen] = new_message_id.clone();
+        id_mapping[maplen] = new_message_id;
         maplen += 1;
 
         if maplen < file_len {

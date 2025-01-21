@@ -15,8 +15,8 @@ pub(crate) struct CutOffConfig {
 impl Default for CutOffConfig {
     fn default() -> Self {
         Self {
-            age: 86400_000,
-            stride: 3600_000,
+            age: 86_400_000,
+            stride: 3_600_000,
         }
     }
 }

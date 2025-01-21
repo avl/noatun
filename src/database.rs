@@ -112,12 +112,11 @@ impl<APP: Application> Database<APP> {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuard::new(&self.context);
         let root = unsafe { <APP as Object>::access(root_ptr) };
-        let ret = f(root);
-        ret
+        f(root)
     }
 
     pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
-        self.time_override.unwrap_or_else(|| Utc::now())
+        self.time_override.unwrap_or_else(Utc::now)
     }
 
     pub(crate) fn with_root_mut<R>(
@@ -396,7 +395,7 @@ impl<APP: Application> Database<APP> {
         Self::recover(
             &mut ctx,
             &mut message_store,
-            mock_time.unwrap_or_else(|| Utc::now()),
+            mock_time.unwrap_or_else(Utc::now),
             projection_time_limit,
             &params
         )?;

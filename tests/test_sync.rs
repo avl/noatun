@@ -116,7 +116,7 @@ async fn test_sync_app() {
             for (i,comm) in comms.iter_mut().enumerate() {
                 println!("State of db #{}:", i);
                 comm.with_root(|root|{
-                    println!("Root: {:#?}", &*root);
+                    println!("Root: {:#?}", root);
                 });
             }
             tokio::time::sleep(Duration::from_secs(1)).await;

@@ -112,7 +112,7 @@ impl<T: Pod> DatabaseCell<T> {
         context.observe_registrar(self.registrar);
         &self.value
     }*/
-    pub fn set<'a>(&'a mut self, new_value: T) {
+    pub fn set(&mut self, new_value: T) {
         let c = CONTEXT.get();
         if c.is_null() {
             self.value = new_value;
@@ -151,7 +151,7 @@ impl<T: Pod> Object for OpaqueCell<T> {
 }
 
 impl<T: Pod> OpaqueCell<T> {
-    pub fn set<'a>(&'a mut self, new_value: T) {
+    pub fn set(&mut self, new_value: T) {
         let index = NoatunContext.index_of(self);
         //context.write(index, bytes_of(&new_value));
         NoatunContext.write_pod(new_value, &mut self.value);
@@ -163,7 +163,7 @@ impl<T: Pod> DatabaseCell<T> {
     #[allow(clippy::mut_from_ref)]
     pub fn allocate<'a>() -> &'a mut Self {
         let memory = unsafe { NoatunContext.allocate_pod::<DatabaseCell<T>>() };
-        unsafe { &mut *(memory as *mut _ as *mut DatabaseCell<T>) }
+        unsafe { &mut *(memory as *mut _) }
     }
     pub fn new(value: T) -> DatabaseCell<T> {
         DatabaseCell {
@@ -196,7 +196,6 @@ impl<T: Pod> Object for DatabaseCell<T> {
     }
 }
 #[repr(C)]
-
 pub struct RawDatabaseVec<T> {
     length: usize,
     capacity: usize,
@@ -245,7 +244,6 @@ impl<T: 'static> RawDatabaseVec<T> {
             ctx.copy(old_ptr, dest_index);
         }
 
-        let new_len = new_len;
 
         ctx.write_pod(
             RawDatabaseVec {
@@ -260,6 +258,9 @@ impl<T: 'static> RawDatabaseVec<T> {
     pub fn len(&self) -> usize {
         self.length
     }
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
     pub fn grow(&mut self, ctx: &DatabaseContextData, new_length: usize) {
         if new_length <= self.length {
             return;
@@ -271,7 +272,7 @@ impl<T: 'static> RawDatabaseVec<T> {
         }
     }
     #[allow(clippy::mut_from_ref)]
-    pub fn new(ctx: &DatabaseContextData) -> &mut DatabaseVec<T> {
+    pub fn allocate(ctx: &DatabaseContextData) -> &mut DatabaseVec<T> {
         unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
     }
 }
@@ -282,6 +283,7 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
 
         unsafe { context.access_slice_at(offset, len) }
     }
+    #[allow(clippy::mut_from_ref)]
     pub(crate) fn get_full_slice_mut(&self, context: &DatabaseContextData) -> &mut [T] {
         let offset = self.data;
         unsafe { context.access_slice_at_mut(offset, self.length) }
@@ -290,6 +292,7 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
         let offset = self.data;
         unsafe { context.access_slice_at(offset, self.length) }
     }
+    #[allow(clippy::mut_from_ref)]
     pub(crate) fn get_slice_mut(
         &self,
         context: &DatabaseContextData,
@@ -305,6 +308,8 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
         let offset = self.data + index * size_of::<T>();
         unsafe { ctx.access_pod(ThinPtr(offset)) }
     }
+    #[allow(clippy::mut_from_ref)]
+    // TODO: Maybe make this unsafe(even though it's internal)
     pub(crate) fn get_mut(&self, ctx: &DatabaseContextData, index: usize) -> &mut T {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
@@ -317,7 +322,7 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
             ctx.write_pod(val, ctx.access_pod_mut(ThinPtr(offset)));
         };
     }
-    pub(crate) fn push_untracked<'a>(&'a mut self, ctx: &DatabaseContextData, t: T) -> ThinPtr
+    pub(crate) fn push_untracked(&mut self, ctx: &DatabaseContextData, t: T) -> ThinPtr
     where
         T: Pod,
     {
@@ -414,13 +419,13 @@ impl<'a,T: FixedSizeObject + 'static> Iterator for DatabaseVecIteratorMut<'a, T>
         self.index += 1;
         //TODO: Get rid of this transmute. Why is it even neded?
         let vec = unsafe { Pin::new_unchecked(self.vec.as_mut().get_unchecked_mut()) };
-        Some(unsafe { std::mem::transmute(DatabaseVec::getmut(vec, index)) })
+        Some(unsafe { std::mem::transmute::<&mut T, &mut T>(DatabaseVec::getmut(vec, index).get_unchecked_mut()) })
     }
 }
 
 impl<T: 'static> DatabaseVec<T> {
 
-    pub fn iter<'a>(&'a self) -> DatabaseVecIterator<'a, T> {
+    pub fn iter(&self) -> DatabaseVecIterator<T> {
         DatabaseVecIterator {
             vec: self,
             index: 0,
@@ -468,6 +473,10 @@ where
     pub fn len(&self) -> usize {
         NoatunContext.observe_registrar(self.length_registrar);
         self.length
+    }
+    pub fn is_empty(&self) -> bool {
+        NoatunContext.observe_registrar(self.length_registrar);
+        self.length==0
     }
     pub fn get(&self, index: usize) -> &T {
         assert!(index < self.length);

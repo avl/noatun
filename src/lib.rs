@@ -3,7 +3,16 @@
 #![allow(clippy::unnecessary_lazy_evaluations)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]
+#![allow(clippy::needless_question_mark)]
+#![allow(clippy::bool_comparison)]
+// At some point we might remove this and actually analyse each individual site that
+// produces this warning.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::type_complexity)]
 
+// Yeah, this is not ideal. This should be fixed.
+#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::let_and_return)]
 
 use crate::data_types::{DatabaseCell, DatabaseVec};
 use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
@@ -311,7 +320,7 @@ impl MessageId {
         Self::from_parts(time, data).unwrap()
     }
     pub fn timestamp(&self) -> u64 {
-        let restes = (self.data[0] as u64) + (((self.data[1] & 0xffff) as u64) << 32) as u64;
+        let restes = (self.data[0] as u64) + (((self.data[1] & 0xffff) as u64) << 32);
         restes
     }
     pub fn from_parts(time: DateTime<Utc>, random: [u8; 10]) -> Result<MessageId> {
@@ -601,7 +610,7 @@ pub trait Object {
                 $( $name : noatun_object!(declare_field $kind $typ) ),*
             }
             impl $n {
-                pub fn init<'a>(
+                pub fn init(
                     &mut self,
                     $( $name: noatun_object!(new_declare_param $kind $typ) ),*
                     ) {
@@ -940,11 +949,11 @@ mod tests {
         let initial_ptr = mmap.map_mut_ptr();
         assert_eq!(mmap.read_u64::<LittleEndian>().unwrap(), 0x2c);
 
-        mmap.seek(SeekFrom::Start(3000_000)).unwrap();
+        mmap.seek(SeekFrom::Start(3_000_000)).unwrap();
         mmap.write_u8(1).unwrap();
         assert_eq!(initial_ptr, mmap.map_mut_ptr());
 
-        mmap.seek(SeekFrom::Start(3000_000)).unwrap();
+        mmap.seek(SeekFrom::Start(3_000_000)).unwrap();
         assert_eq!(mmap.read_u8().unwrap(), 1);
 
         mmap.flush_all().unwrap();
@@ -1468,7 +1477,7 @@ mod tests {
 
         fn initialize_root<'a>(_params: &()) -> &'a mut Self {
             let obj = DatabaseObjectHandle::allocate_unsized(
-                [43u8, 45].map(|x| DatabaseCell::new(x)).as_slice(),
+                [43u8, 45].map(DatabaseCell::new).as_slice(),
             );
             obj
         }
@@ -1476,8 +1485,7 @@ mod tests {
 
     #[test]
     fn test_handle_to_unsized_miri() {
-
-
+        
         let mut db: Database<DatabaseObjectHandle<[DatabaseCell<u8>]>> = Database::create_in_memory(
             1000,
             Duration::from_secs(1000),

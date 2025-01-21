@@ -128,7 +128,7 @@ impl Distributor {
     ) -> Result<Vec<DistributorMessage>> {
         let mut temp = vec![DistributorMessage::ReportHeads(
             database.nominal_cutoffhash()?,
-            database.get_update_heads().into_iter().copied().collect(),
+            database.get_update_heads().to_vec(),
         )];
         let sync_from = match &self.sync_all_inprogress {
             SyncAllState::NotActive => None,
@@ -394,8 +394,7 @@ impl Distributor {
                     .header
                     .parents
                     .iter()
-                    .find(|x| **x == msg_id)
-                    .is_some()
+                    .any(|x| *x == msg_id)
                 {
                     message_list.insert(child_msg.id());
                 }

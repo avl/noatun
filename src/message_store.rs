@@ -639,7 +639,7 @@ impl<M> OnDiskMessageStore<M> {
                 let parents = parvec.all()?;
 
                 file_info.file.seek(SeekFrom::Start(
-                    (file_offset + header.size_before_payload() as u64),
+                    file_offset + header.size_before_payload() as u64,
                 ))?;
 
                 let msg: Result<M> = file_info
@@ -1174,27 +1174,6 @@ impl<M> OnDiskMessageStore<M> {
         Ok(())
     }
 
-    /// Returns false if more work is done
-    /*fn add_child(files: &mut [DataFileInfo;2], search_index: &[IndexEntry], parent: MessageId, child: MessageId) -> Result<bool> {
-
-        let Ok(index) = search_index.binary_search_by_key(&parent, |x| x.message) else
-        {
-            eprintln!("Parent {:?} did not exist", parent);
-            return Ok(true); //Done, nothing to do
-        };
-        let index_entry = &search_index[index];
-        let Some((parent_file,parent_offset)) = index_entry.file_offset.file_and_offset() else {
-            eprintln!("Parent was deleted");
-            return Ok(true); //Done, nothing to do
-        };
-        let file = &mut files[parent_file.index()].file;
-
-        // TODO: Use usize everywhere?
-        let parent_header: &FileHeaderEntry = file.access_pod(parent_offset as usize)?;
-        let mut children = EmbVecAccessor::new_children(file, parent_offset)?;
-        let could_insert = children.push(child)?;
-        Ok(could_insert)
-    }*/
 
     // If remaining_child_assignments is None, don't rewrite parents by adding new children to them
     fn do_write_message(
@@ -1248,7 +1227,7 @@ impl<M> OnDiskMessageStore<M> {
         let sha2 = file.with_bytes_at(
             start_pos as usize + HASH_SIZE,
             msg_total_size as usize - HASH_SIZE,
-            |bytes| sha2(bytes),
+            sha2,
         )?;
         // Write data store header
         file.seek(SeekFrom::Start(start_pos))?;
@@ -1322,13 +1301,13 @@ impl<M> OnDiskMessageStore<M> {
             if let Some(removed_parent) = removed_parent {
                 parents.remove(removed_parent);
             }
-            parents.extend(new_parents.into_iter());
+            parents.extend(new_parents.iter());
 
             let mut children = EmbVecAccessor::new_children(&mut *file, offset)?;
             if let Some(removed_child) = removed_child {
                 children.remove(removed_child);
             }
-            children.extend(new_children.into_iter());
+            children.extend(new_children.iter());
         }
 
         Ok(())
@@ -1353,13 +1332,13 @@ impl<M> OnDiskMessageStore<M> {
         // TODO: Maybe create an optimized header_and_index_mut that has a fast path
         let (header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
         for new_child in new_children {
-            if !children.contains(&new_child) {
+            if !children.contains(new_child) {
                 children.push(*new_child);
             }
         }
 
         for new_parent in new_parents {
-            if !msg.header.parents.contains(&new_parent) {
+            if !msg.header.parents.contains(new_parent) {
                 msg.header.parents.push(*new_parent);
             }
         }
@@ -1524,11 +1503,11 @@ impl<M> OnDiskMessageStore<M> {
                     }
                     *cur_index_entry = IndexEntry {
                         message: msg.id(),
-                        file_offset: FileOffset::new(start_pos as u64, self.active_file),
-                        file_total_size: total_size as u64,
+                        file_offset: FileOffset::new(start_pos, self.active_file),
+                        file_total_size: total_size,
                     };
                     cur_index += 1;
-                    let full_msg_size = total_size as u64;
+                    let full_msg_size = total_size;
 
                     index_header.data_files[self.active_file.index()].bytes_used += full_msg_size;
                     index_header.data_files[self.active_file.index()].nominal_size += full_msg_size;
@@ -1745,7 +1724,7 @@ impl<M> OnDiskMessageStore<M> {
             })
             .unwrap()
             .0;
-        let mut update_heads = d.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
+        let mut update_heads = d.open_file(target, "update_heads", 0, 128 * 1024 * 1024)?;
 
         let mut this = Self {
             target: target.clone(),
@@ -1817,8 +1796,7 @@ mod tests {
             let id = cursor.read_u64::<LittleEndian>()?;
             let seq = cursor.read_u64::<LittleEndian>()?;
             let data_len = cursor.read_u64::<LittleEndian>()?;
-            let mut data = Vec::new();
-            data.resize(4, 0);
+            let mut data = vec![0;4];
             cursor.read_exact(&mut data)?;
             Ok(OnDiskMessage { id, seq, data })
         }
@@ -1875,7 +1853,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/add_and_read_messages.bin".into()),
-            5000_000_000,
+            5_000_000_000,
         )
         .unwrap();
 
@@ -2030,7 +2008,7 @@ mod tests {
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
             Message::new(MessageId::new_debug(i as u32), vec![], OnDiskMessage {
-                id: (1000_000 + i) as u64,
+                id: (1_000_000 + i) as u64,
                 seq: i as u64,
                 data: vec![42u8; 1024],
             })
@@ -2044,7 +2022,7 @@ mod tests {
         let mut count = 0;
         let mut sum = 0;
         let start = Instant::now();
-        for msg in store.query_greater(MessageId::new_debug(1999_900)).unwrap() {
+        for msg in store.query_greater(MessageId::new_debug(1_999_900)).unwrap() {
             sum += msg.message.data[0] as u64;
             count += 1;
         }
@@ -2065,7 +2043,7 @@ mod tests {
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
             Message::new(MessageId::new_debug(i as u32), vec![], OnDiskMessage {
-                id: (1000_000 + i) as u64,
+                id: (1_000_000 + i) as u64,
                 seq: i as u64,
                 data: vec![42u8; 4],
             })

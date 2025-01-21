@@ -69,7 +69,7 @@ impl Application for Bank {
 }
 
 #[test]
-fn init_bank() {
+fn init_bank_miri() {
     let mut db: Database<Bank> = Database::create_in_memory(
         10_000,
         Duration::from_secs(1000),

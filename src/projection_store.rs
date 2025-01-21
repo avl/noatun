@@ -699,7 +699,7 @@ impl DatabaseContextData {
         }
     }
 
-    /// # Safety:
+    /// # Safety
     /// Caller must ensure no mutable reference exists to the requested object
     pub unsafe fn access_pod<'a, T: Pod>(&self, index: ThinPtr) -> &'a T {
         if index
@@ -718,7 +718,7 @@ impl DatabaseContextData {
         }
     }
 
-    /// # Safety:
+    /// # Safety
     /// Caller must ensure no references exists to the requested object
     pub unsafe fn access_pod_mut<'a, T: Pod>(&self, index: ThinPtr) -> &'a mut T {
         if index
@@ -738,7 +738,7 @@ impl DatabaseContextData {
     }
 
     pub fn write(&mut self, index: usize, data: &[u8]) {
-        debug_assert!(index + data.len() <= self.main_db_mmap.used_space());
+        assert!(index + data.len() <= self.main_db_mmap.used_space());
         let fat = FatPtr {
             start: index,
             len: data.len(),
@@ -755,8 +755,10 @@ impl DatabaseContextData {
         });
         *dest = src;
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] //False positive, we check the bounds
     pub fn write_pod_ptr<T: Pod>(&self, src: T, dest: *mut T) {
         let dest_index = self.index_of_ptr(dest);
+        assert!(dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space());
 
         self.undo_log.record(UndoLogEntry::Restore {
             start: dest_index.0,
