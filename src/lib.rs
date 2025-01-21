@@ -565,12 +565,7 @@ macro_rules! noatun_object {
             $( $name : noatun_object!(declare_detached_field $kind $typ) ),*
         }
     };
-    ( declare_detached_struct fields $( $kind:ident $name: ident $typ:ty ),* ) => {
 
-    };
-    ( detached_type ) => {
-        $crate::Undetachable
-    };
     ( detached_type $n_detached: ident) => {
         $n_detached
     };
@@ -588,6 +583,15 @@ macro_rules! noatun_object {
                     $name : noatun_object!(declare_field $kind $typ)
                 ),*
             }
+            $crate::paste!(
+                pub struct [<$n PinProject>]<'a> {
+                    $(
+                        $name: ::std::pin::Pin<&'a mut noatun_object!(declare_field $kind $typ)>
+                    ),*
+                }
+            );
+
+
             impl $n {
                 pub fn init(
                     &mut self,
@@ -603,6 +607,21 @@ macro_rules! noatun_object {
                     noatun_object!(setter $kind $name $typ);
                 )*
 
+                $crate::paste! {
+                    pub fn pin_project<'a>(self: Pin<&'a mut Self>) -> [<$n PinProject>]<'a> {
+                        unsafe {
+                            let $n {
+                                $($name),* , ..
+                            } = self.get_unchecked_mut();
+
+                            [<$n PinProject>] {
+                                $($name: Pin::new_unchecked($name)),*
+
+                            }
+                        }
+                    }
+                }
+
             }
 
             $crate::paste! {
@@ -613,6 +632,7 @@ macro_rules! noatun_object {
             impl $crate::Object for $n {
                 type Ptr = $crate::ThinPtr;
                 type DetachedType = $crate::paste!(noatun_object!(detached_type [<$n Detached>]));
+
 
                 unsafe fn init_from_detached(mut self: ::std::pin::Pin<&mut Self>, detached: Self::DetachedType) {
                     $(

@@ -408,7 +408,7 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIterator<'a, T> {
     }
 }
 impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIteratorMut<'a, T> {
-    type Item = &'a mut T;
+    type Item = Pin<&'a mut T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.index >= self.vec.length {
@@ -419,9 +419,9 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIteratorMut<'a, T
         //TODO: Get rid of this transmute. Why is it even neded?
         let vec = unsafe { Pin::new_unchecked(self.vec.as_mut().get_unchecked_mut()) };
         Some(unsafe {
-            std::mem::transmute::<&mut T, &mut T>(
+            Pin::new_unchecked(std::mem::transmute::<&mut T, &mut T>(
                 DatabaseVec::getmut(vec, index).get_unchecked_mut(),
-            )
+            ))
         })
     }
 }
@@ -516,18 +516,23 @@ where
         tself.get_mut_internal(tself.length - 1)
     }
 
-    pub fn shift_remove(&mut self, index: usize) {
+    pub fn shift_remove(mut self:Pin<&mut Self>, index: usize) {
+
         if index >= self.length {
             return;
         }
-        if index == self.length - 1 {
-            NoatunContext.write_pod_ptr(self.length - 1, addr_of_mut!(self.length));
+        let tself = unsafe { self.get_unchecked_mut() };
+
+        if index == tself.length - 1 {
+            NoatunContext.write_pod_ptr(tself.length - 1, addr_of_mut!(tself.length));
             return;
         }
-        let src_ptr = ThinPtr(self.data + (self.length - 1) * size_of::<T>());
-        let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
+        let src_ptr = ThinPtr(tself.data + (tself.length - 1) * size_of::<T>());
+        let dst_ptr = ThinPtr(tself.data + index * size_of::<T>());
         NoatunContext.copy(FatPtr::from(src_ptr.0, size_of::<T>()), dst_ptr);
-        NoatunContext.write_pod_ptr(self.length - 1, addr_of_mut!(self.length));
+
+        NoatunContext.write_pod_ptr(tself.length - 1, addr_of_mut!(tself.length));
+
     }
 
     pub fn retain(&mut self, mut f: impl FnMut(Pin<&mut T>) -> bool) {
