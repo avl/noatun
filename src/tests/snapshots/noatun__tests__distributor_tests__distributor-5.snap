@@ -1,0 +1,8 @@
+---
+source: src/lib.rs
+expression: app2.get_update_heads()
+---
+[
+    "2021-01-02T00:00:00.000Z"-0-0-0,
+    "2021-01-01T00:00:00.000Z"-0-0-0,
+]
