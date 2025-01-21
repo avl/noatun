@@ -13,7 +13,7 @@
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::let_and_return)]
 
-use crate::data_types::{DatabaseCell, DatabaseVec};
+pub use crate::data_types::{DatabaseCell, DatabaseVec};
 use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
 use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::{get_boot_time, FileMapping};
@@ -161,7 +161,7 @@ impl NoatunContext {
             (*context_ptr).update_registrar(registrar, value);
         }
     }
-    pub fn write_pod<T: Pod>(&self, value: T, dest: &mut T) {
+    pub fn write_pod<T: Pod>(&self, value: T, dest: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_pod(value, dest) }
     }
@@ -169,11 +169,11 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_pod_ptr(value, dest) }
     }
-    pub fn allocate_pod<'a, T: Pod>(&self) -> &'a mut T {
+    pub fn allocate_pod<'a, T: Pod>(&self) -> Pin<&'a mut T> {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_pod() }
     }
-    pub unsafe fn access_pod_mut<'a, T: Pod>(&mut self, ptr: ThinPtr) -> &'a mut T {
+    pub unsafe fn access_pod_mut<'a, T: Pod>(&mut self, ptr: ThinPtr) -> Pin<&'a mut T> {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).access_pod_mut(ptr) }
     }
@@ -199,9 +199,9 @@ impl NoatunContext {
         }
         unsafe { (*p).access_slice(range) }
     }
-    pub unsafe fn access_slice_mut<'a, T: Pod>(self, range: FatPtr) -> &'a mut [T] {
+    pub unsafe fn access_slice_mut<'a, T: Pod>(self, range: FatPtr) -> Pin<&'a mut [T]> {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).access_slice_mut(range) }
+        unsafe { Pin::new_unchecked( (*context_ptr).access_slice_mut(range)) }
     }
 }
 
@@ -408,20 +408,20 @@ impl Object for DummyUnitObject {
     type Ptr = ThinPtr;
     type DetachedType = ();
 
-    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {}
+    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {}
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
-        unsafe { &mut *(1usize as *mut DummyUnitObject) }
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+        unsafe { Pin::new_unchecked(&mut *(1usize as *mut DummyUnitObject)) }
     }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
         &DummyUnitObject
     }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
         // # SAFETY
         // Any dangling pointer is a valid pointer to a zero-sized type
-        unsafe { &mut *(1usize as *mut DummyUnitObject) }
+        unsafe { Pin::new_unchecked(&mut *(1usize as *mut DummyUnitObject)) }
     }
 }
 
@@ -451,7 +451,7 @@ pub trait Object {
     /// Note that you don't _have_ to use detached type, it's perfectly fine
     /// to initialize all Object's "in place", after constructing/allocating default
     /// versions of them.
-    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType);
+    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType);
 
     /// This can in most cases be:
     /// ```dontrun
@@ -461,7 +461,7 @@ pub trait Object {
     /// ```
     /// The only cases where some other implementation is required is when 'Self' does
     /// not have a fixed size.
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self;
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self>;
 
     /// Access a shared instance of Self at the given pointer address.
     ///
@@ -495,7 +495,7 @@ pub trait Object {
     /// the lifetime 'a' ends up bound to that of the Object that owns the returned instance,
     /// which must ultimately be bounded by the lifetime of the root object!
     // TODO: Don't expose these methods. Too hard to use correctly!
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self;
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self>;
 }
 
 #[macro_export]
@@ -514,17 +514,19 @@ macro_rules! noatun_object {
         $typ
     };
     ( new_assign_field pod $self: ident $name: ident $typ: ty ) => {
-        $self.$name.set($name);
+        unsafe { ::std::pin::Pin::new_unchecked(&mut $self.$name).set($name); }
     };
     ( getter pod $name:ident $typ: ty  ) => {
         pub fn $name(&self) -> $typ {
             self.$name.get()
         }
     };
-    ( setter pod $name:ident $setter:ident $typ: ty  ) => {
-        pub fn $setter(self: Pin<&mut Self>, val: $typ) {
-            unsafe { self.get_unchecked_mut().$name.set(val); }
-        }
+    ( setter pod $name:ident $typ: ty  ) => {
+        $crate::paste!(
+            pub fn [<set_ $name>](self: ::std::pin::Pin<&mut Self>, val: $typ) {
+                unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().$name).set(val); }
+            }
+        );
     };
 
     ( bounded_type object $typ:ty) => {
@@ -540,18 +542,20 @@ macro_rules! noatun_object {
         <$typ as $crate::Object>::DetachedType
     };
     ( new_assign_field object $self:ident $name: ident $typ: ty ) => {
-        unsafe { <_ as $crate::Object>::init_from_detached(&mut $self.$name, $name); }
+        unsafe { <_ as $crate::Object>::init_from_detached(Pin::new_unchecked(&mut $self.$name), $name); }
     };
     ( getter object $name:ident $typ: ty  ) => {
         pub fn $name(&self) -> &$typ {
             &self.$name
         }
     };
-    ( setter object $name:ident $setter:ident $typ: ty  ) => {
-        pub fn $setter(self: Pin<&mut Self>) -> std::pin::Pin<&mut $typ> {
-            let tself = unsafe { self.get_unchecked_mut() };
-            unsafe { std::pin::Pin::new_unchecked(&mut tself.$name) }
-        }
+    ( setter object $name:ident $typ: ty  ) => {
+        $crate::paste!(
+            pub fn [<$name _mut>](self: ::std::pin::Pin<&mut Self>) -> ::std::pin::Pin<&mut $typ> {
+                let tself = unsafe { self.get_unchecked_mut() };
+                unsafe { ::std::pin::Pin::new_unchecked(&mut tself.$name) }
+            }
+        );
     };
 
     ( declare_detached_struct $n_detached:ident fields $( $kind:ident $name: ident $typ:ty ),* ) => {
@@ -571,7 +575,7 @@ macro_rules! noatun_object {
         $n_detached
     };
 
-    ( struct $n:ident detached as $n_detached:ident { $( $kind:ident $name: ident : $typ:ty $([setter: $setter:ident])?  $(,)* )* } $(;)* ) => {
+    ( struct $n:ident { $( $kind:ident $name: ident : $typ:ty $(,)* )* } $(;)* ) => {
 
 
             #[derive(Debug,Copy,Clone, $crate::Pod, $crate::Zeroable)]
@@ -579,7 +583,10 @@ macro_rules! noatun_object {
             pub struct $n where $( noatun_object!(bounded_type $kind $typ) : $crate::Object ),*
             {
                 phantom: ::std::marker::PhantomPinned,
-                $( $name : noatun_object!(declare_field $kind $typ) ),*
+                $(
+                    #[doc(hidden)]
+                    $name : noatun_object!(declare_field $kind $typ)
+                ),*
             }
             impl $n {
                 pub fn init(
@@ -591,29 +598,34 @@ macro_rules! noatun_object {
 
                 $( noatun_object!(getter $kind $name $typ); )*
 
+
                 $(
-                    $(
-                        noatun_object!(setter $kind $name $setter $typ);
-                    )*
+                    noatun_object!(setter $kind $name $typ);
                 )*
 
             }
 
-            noatun_object!{declare_detached_struct $n_detached fields $($kind $name $typ),*}
+            $crate::paste! {
+                noatun_object!{declare_detached_struct [<$n Detached>] fields $($kind $name $typ),*}
+            }
+
 
             impl $crate::Object for $n {
                 type Ptr = $crate::ThinPtr;
-                type DetachedType = noatun_object!(detached_type $n_detached);
+                type DetachedType = $crate::paste!(noatun_object!(detached_type [<$n Detached>]));
 
-                unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+                unsafe fn init_from_detached(mut self: ::std::pin::Pin<&mut Self>, detached: Self::DetachedType) {
                     $(
-                        self.$name.init_from_detached(detached.$name);
+                    unsafe {
+                        Pin::new_unchecked(&mut self.as_mut().get_unchecked_mut().$name).init_from_detached(detached.$name);
+
+                    }
                     )*
                 }
 
-                unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
-                    let ret: &mut Self = NoatunContext.allocate_pod();
-                    ret.init_from_detached(detached);
+                unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> ::std::pin::Pin<&'a mut Self> {
+                    let mut ret: ::std::pin::Pin<&mut Self> = NoatunContext.allocate_pod();
+                    ret.as_mut().init_from_detached(detached);
                     ret
                 }
 
@@ -621,7 +633,7 @@ macro_rules! noatun_object {
                     unsafe { NoatunContext.access_pod(index) }
                 }
 
-                unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+                unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
                     unsafe { NoatunContext.access_pod_mut(index) }
                 }
             }
@@ -640,7 +652,7 @@ pub trait Application: Object {
     /// Parameters that will be available in the "initialize_root" call.
     type Params;
 
-    fn initialize_root<'a>(params: &Self::Params) -> &'a mut Self;
+    fn initialize_root<'a>(params: &Self::Params) -> Pin<&'a mut Self>;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -720,28 +732,30 @@ impl<T: FixedSizeObject> Object for [T] {
     type Ptr = FatPtr;
     type DetachedType = Vec<T::DetachedType>;
 
-    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
-        for (dst, src) in self.iter_mut().zip(detached.into_iter()) {
-            dst.init_from_detached(src);
+    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
+        unsafe {
+            for (dst, src) in self.get_unchecked_mut().iter_mut().zip(detached.into_iter()) {
+                Pin::new_unchecked(dst).init_from_detached(src);
+            }
         }
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
         let bytes = size_of::<T>() * detached.len();
         let alloc = NoatunContext.allocate_raw(bytes, align_of::<T>());
 
         let slice: &mut [T] = bytemuck::cast_slice_mut(slice::from_raw_parts_mut(alloc, bytes));
         for (src, dst) in detached.into_iter().zip(&mut *slice) {
-            dst.init_from_detached(src);
+            Pin::new_unchecked(dst).init_from_detached(src);
         }
-        slice
+        Pin::new_unchecked(slice)
     }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
         unsafe { NoatunContext.access_slice(index) }
     }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
         unsafe { NoatunContext.access_slice_mut(index) }
     }
 }
@@ -837,18 +851,19 @@ impl Drop for ContextGuardMut {
     }
 }
 
+pub use paste::paste;
 noatun_object!(
-        struct Kalle detached as KalleDetached {
+        struct Kalle {
             pod hej:u32,
             pod tva:u32,
-            object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>> [setter: da_mut]
+            object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>>
         }
 );
 noatun_object!(
-    struct Nalle detached as NalleDetached {
+    struct Nalle {
         pod hej:u32,
         pod tva:u32,
-        object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>> [setter: da_mut]
+        object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>>
     }
 );
 
@@ -983,11 +998,11 @@ mod tests {
         type Ptr = ThinPtr;
         type DetachedType = ();
 
-        unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+        unsafe fn init_from_detached(self:Pin<&mut Self>, detached: Self::DetachedType) {
             todo!()
         }
 
-        unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+        unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
             todo!()
         }
 
@@ -995,18 +1010,17 @@ mod tests {
             unsafe { NoatunContext.access_pod(index) }
         }
 
-        unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+        unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
             unsafe { NoatunContext.access_pod_mut(index) }
         }
     }
 
     impl CounterObject {
-        fn set_counter(&mut self, value1: u32, value2: u32) {
-            self.counter.set(value1);
-            self.counter2.set(value2);
-        }
-        fn new<'a>() -> &'a mut CounterObject {
-            NoatunContext.allocate_pod()
+        fn set_counter(mut self: Pin<&mut Self>, value1: u32, value2: u32) {
+            unsafe {
+                self.as_mut().map_unchecked_mut(|x|&mut x.counter).set(value1);
+                self.as_mut().map_unchecked_mut(|x|&mut x.counter2).set(value2);
+            }
         }
     }
 
@@ -1014,8 +1028,8 @@ mod tests {
         type Message = CounterMessage;
         type Params = ();
 
-        fn initialize_root<'a>(params: &Self::Params) -> &'a mut Self {
-            let new_obj = CounterObject::new();
+        fn initialize_root<'a>(params: &Self::Params) -> Pin<&'a mut Self> {
+            let new_obj = NoatunContext.allocate_pod();
             new_obj
         }
     }
@@ -1057,14 +1071,17 @@ mod tests {
         .unwrap();
 
         db.with_root_mut(|mut counter| {
-            assert_eq!(counter.counter.get(), 0);
-            counter.counter.set(42);
-            counter.counter2.set(43);
-            counter.counter.set(44);
+            unsafe {
+                let counter = unsafe { counter.get_unchecked_mut() };
+                assert_eq!(counter.counter.get(), 0);
+                Pin::new_unchecked(&mut counter.counter). set(42);
+                Pin::new_unchecked(&mut counter.counter2).set(43);
+                Pin::new_unchecked(&mut counter.counter). set(44);
 
-            assert_eq!(counter.counter.get(), 44);
-            assert_eq!(counter.counter.get(), 44);
-            assert_eq!(counter.counter2.get(), 43);
+                assert_eq!(counter.counter.get(), 44);
+                assert_eq!(counter.counter.get(), 44);
+                assert_eq!(counter.counter2.get(), 43);
+            }
         });
     }
 
@@ -1084,11 +1101,13 @@ mod tests {
         type Root = CounterObject;
 
         fn apply(&self, time: NoatunTime, mut root: Pin<&mut CounterObject>) {
-            if self.inc1 != 0 {
-                let val = root.counter.get().saturating_add_signed(self.inc1);
-                root.counter.set(val);
-            } else {
-                root.counter.set(self.set1);
+            unsafe {
+                if self.inc1 != 0 {
+                    let val = root.counter.get().saturating_add_signed(self.inc1);
+                    root.map_unchecked_mut(|x|&mut x.counter).set(val);
+                } else {
+                    root.map_unchecked_mut(|x|&mut x.counter).set(self.set1);
+                }
             }
         }
 
@@ -1431,7 +1450,7 @@ mod tests {
         type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
         type Params = ();
 
-        fn initialize_root<'a>(_params: &()) -> &'a mut Self {
+        fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
             let obj = DatabaseObjectHandle::allocate(DatabaseCell::new(43u32));
             obj
         }
@@ -1440,7 +1459,7 @@ mod tests {
         type Message = DummyMessage<DatabaseObjectHandle<[DatabaseCell<u8>]>>;
         type Params = ();
 
-        fn initialize_root<'a>(_params: &()) -> &'a mut Self {
+        fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
             let obj = DatabaseObjectHandle::allocate_unsized(
                 [43u8, 45].map(DatabaseCell::new).as_slice(),
             );
@@ -1488,8 +1507,8 @@ mod tests {
     impl Application for DatabaseVec<CounterObject> {
         type Params = ();
 
-        fn initialize_root<'a>(_params: &()) -> &'a mut Self {
-            let obj: &mut DatabaseVec<CounterObject> = DatabaseVec::new();
+        fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
+            let obj: Pin<&mut DatabaseVec<CounterObject>> = DatabaseVec::new();
             obj
         }
 
@@ -1508,28 +1527,30 @@ mod tests {
         )
         .unwrap();
         db.with_root_mut(|mut counter_vec| {
-            assert_eq!(counter_vec.len(), 0);
+            unsafe {
+                assert_eq!(counter_vec.len(), 0);
 
-            let new_element = counter_vec.as_mut().push_zeroed();
-            let mut new_element = counter_vec.as_mut().getmut(0);
-
-            new_element.counter.set(47);
-            let mut new_element = counter_vec.as_mut().push_zeroed();
-            new_element.counter.set(48);
-
-            assert_eq!(counter_vec.len(), 2);
-
-            let item = counter_vec.as_mut().getmut(1);
-            //let item2 = counter_vec.get_mut(context, 1);
-            assert_eq!(item.counter.get(), 48);
-            //assert_eq!(*item2.counter, 48);
-
-            for _ in 0..10 {
                 let new_element = counter_vec.as_mut().push_zeroed();
-            }
+                let mut new_element = counter_vec.as_mut().getmut(0);
 
-            let item = counter_vec.as_mut().getmut(1);
-            assert_eq!(item.counter.get(), 48);
+                new_element.map_unchecked_mut(|x| &mut x.counter).set(47);
+                let mut new_element = counter_vec.as_mut().push_zeroed();
+                new_element.map_unchecked_mut(|x|&mut x.counter).set(48);
+
+                assert_eq!(counter_vec.len(), 2);
+
+                let item = counter_vec.as_mut().getmut(1);
+                //let item2 = counter_vec.get_mut(context, 1);
+                assert_eq!(item.counter.get(), 48);
+                //assert_eq!(*item2.counter, 48);
+
+                for _ in 0..10 {
+                    let new_element = counter_vec.as_mut().push_zeroed();
+                }
+
+                let item = counter_vec.as_mut().getmut(1);
+                assert_eq!(item.counter.get(), 48);
+            }
         });
     }
 
@@ -1550,9 +1571,13 @@ mod tests {
 
             let mut new_element = counter_vec.as_mut().getmut(0);
 
-            new_element.counter.set(47);
+            unsafe {
+                new_element.map_unchecked_mut(|x|&mut x.counter).set(47);
+            }
             let mut new_element = counter_vec.as_mut().push_zeroed();
-            new_element.counter.set(48);
+            unsafe {
+                new_element.map_unchecked_mut(|x| &mut x.counter).set(48);
+            }
 
             assert_eq!(counter_vec.len(), 2);
 
@@ -1599,8 +1624,10 @@ mod tests {
                 assert_eq!(counter_vec.len(), 0);
 
                 let mut new_element = counter_vec.as_mut().push_zeroed();
-                new_element.counter.set(47);
-                new_element.counter2.set(48);
+                unsafe {
+                    new_element.as_mut().map_unchecked_mut(|x|&mut x.counter).set(47);
+                    new_element.as_mut().map_unchecked_mut(|x|&mut x.counter2).set(48);
+                }
 
                 NoatunContext.set_next_seqnr(SequenceNr::from_index(2));
                 assert_eq!(counter_vec.len(), 1);
@@ -1611,8 +1638,9 @@ mod tests {
         {
             db.with_root_mut(|counter_vec| {
                 let mut counter = counter_vec.getmut(0);
-                counter.counter.set(50);
+
                 unsafe {
+                    counter.as_mut().map_unchecked_mut(|x|&mut x.counter).set(50);
                     NoatunContext.rewind(SequenceNr::from_index(2));
                 }
                 assert_eq!(counter.counter.get(), 47);
@@ -1644,20 +1672,18 @@ mod tests {
     fn test_object_macro() {
         use crate::data_types::DatabaseVec;
         noatun_object!(
-
-        struct Kalle detached as DetachedKalle {
-            pod hej:u32 [setter: set_hej],
-            pod tva:u32 [setter: set_tva],
-            object da: DatabaseVec<DatabaseCell<u32>> [setter: da_mut]
-        }
-        );
-        noatun_object!(
-            struct Nalle detached as DetachedNalle {
+            struct Kalle {
                 pod hej:u32,
                 pod tva:u32,
                 object da: DatabaseVec<DatabaseCell<u32>>
             }
-
+        );
+        noatun_object!(
+            struct Nalle {
+                pod hej:u32,
+                pod tva:u32,
+                object da: DatabaseVec<DatabaseCell<u32>>
+            }
         );
     }
 }

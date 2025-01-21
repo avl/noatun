@@ -103,10 +103,10 @@ impl<APP: Application> Database<APP> {
         self.context.set_next_seqnr(current.successor());
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
-        let root = unsafe { <APP as Object>::access_mut(root_ptr) };
+        let mut root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
-        self.message_store.apply_preview(time, root, preview)?;
-        let ret = f(root);
+        self.message_store.apply_preview(time, root.as_mut(), preview)?;
+        let ret = f(&*root);
         drop(guard);
         self.message_store
             .rewind(&mut self.context, current.index())?;
@@ -142,7 +142,7 @@ impl<APP: Application> Database<APP> {
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
-        let t = f(unsafe { Pin::new_unchecked(root) });
+        let t = f(root);
         drop(guard);
         self.context.mark_clean()?;
 
@@ -177,7 +177,7 @@ impl<APP: Application> Database<APP> {
         let context = unsafe { &mut *CONTEXT.get() };
         self.message_store.apply_missing_messages(
             context,
-            root,
+            unsafe{root.get_unchecked_mut()},
             now,
             self.projection_time_limit,
         )?;
@@ -209,7 +209,7 @@ impl<APP: Application> Database<APP> {
         let context = unsafe { &mut *CONTEXT.get() };
         self.message_store.apply_missing_messages(
             context,
-            root,
+            unsafe{root.get_unchecked_mut()},
             now,
             self.projection_time_limit,
         )?;
@@ -231,7 +231,7 @@ impl<APP: Application> Database<APP> {
         let mmap_ptr = context.start_ptr();
         let guard = ContextGuardMut::new(context);
         let root_obj_ref = APP::initialize_root(params);
-        let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, root_obj_ref);
+        let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, &*root_obj_ref);
 
         let context = unsafe { &mut *CONTEXT.get() };
         context.set_root_ptr(root_ptr.as_generic());
@@ -242,7 +242,7 @@ impl<APP: Application> Database<APP> {
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
         let context = unsafe { &mut *CONTEXT.get() };
         //let root = context.access_pod(root_ptr);
-        message_store.apply_missing_messages(context, root, time_now, projection_time_limit)?;
+        message_store.apply_missing_messages(context, unsafe{root.get_unchecked_mut()}, time_now, projection_time_limit)?;
 
         Ok(())
     }
@@ -362,7 +362,7 @@ impl<APP: Application> Database<APP> {
         let context = unsafe { &mut *CONTEXT.get() };
         self.message_store.apply_missing_messages(
             context,
-            root,
+            unsafe{root.get_unchecked_mut()},
             now,
             self.projection_time_limit,
         )?;

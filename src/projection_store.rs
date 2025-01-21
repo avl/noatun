@@ -27,14 +27,14 @@ use std::{iter, slice};
 
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
 use crate::sequence_nr::SequenceNr;
-
+use std::pin::Pin;
 mod registrar_info {
     use crate::disk_abstraction::Disk;
     use bumpalo::Bump;
     use bytemuck::{Pod, Zeroable};
     use indexmap::IndexMap;
     use std::fmt::Debug;
-
+    use std::pin::Pin;
     use crate::message_store::OnDiskMessageStore;
     use crate::sequence_nr::SequenceNr;
     use crate::{DatabaseContextData, MessagePayload, NoatunContext, Target, ThinPtr};
@@ -59,7 +59,7 @@ mod registrar_info {
                 return;
             }
             //TODO: We could have a special "inc 1" noatun primitive.
-            context.write_pod(self.uses + 1, &mut self.uses);
+            context.write_pod(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) } );
         }
         pub fn decrease_use(&mut self, context: &DatabaseContextData) {
             let cur_uses = self.get_use();
@@ -70,7 +70,7 @@ mod registrar_info {
                 return;
             }
             //TODO: We could have a special "dec 1" noatun primitive.
-            context.write_pod(self.uses - 1, &mut self.uses);
+            context.write_pod(self.uses - 1, unsafe{Pin::new_unchecked(&mut self.uses)});
         }
     }
 
@@ -245,10 +245,10 @@ impl DatabaseContextData {
 
         let key_place = keys.get_mut(self, observee.index());
 
-        let mut new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod();
+        let mut new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod_internal();
 
-        self.write_pod(*key_place, &mut new_entry.next);
-        self.write_pod(observer, &mut new_entry.seq);
+        self.write_pod(*key_place, unsafe{Pin::new_unchecked(&mut new_entry.next)});
+        self.write_pod(observer,   unsafe{Pin::new_unchecked(&mut new_entry.seq)});
 
         let new_entry_index = self.index_of_sized(new_entry);
         self.write_pod(new_entry_index, key_place);
@@ -606,11 +606,15 @@ impl DatabaseContextData {
         }
     }
     #[allow(clippy::mut_from_ref)]
-    pub fn allocate_pod<T: Pod>(&self) -> &mut T {
+    pub fn allocate_pod<T: Pod>(&self) -> Pin<&mut T> {
+        let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
+        unsafe { Pin::new_unchecked(&mut *(bytes as *mut T)) }
+    }
+    #[allow(clippy::mut_from_ref)]
+    pub(crate) fn allocate_pod_internal<T: Pod>(&self) -> &mut T {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { &mut *(bytes as *mut T) }
     }
-
     pub fn allocate_raw(&self, size: usize, align: usize) -> *mut u8 {
         if align > 256 {
             panic!("Noatun arbitrarily does not support types with alignment > 256");
@@ -720,7 +724,7 @@ impl DatabaseContextData {
 
     /// # Safety
     /// Caller must ensure no references exists to the requested object
-    pub unsafe fn access_pod_mut<'a, T: Pod>(&self, index: ThinPtr) -> &'a mut T {
+    pub unsafe fn access_pod_mut<'a, T: Pod>(&self, index: ThinPtr) -> Pin<&'a mut T> {
         if index
             .0
             .checked_add(size_of::<T>())
@@ -730,10 +734,10 @@ impl DatabaseContextData {
             panic!("invalid pointer value");
         }
         unsafe {
-            from_bytes_mut(std::slice::from_raw_parts_mut(
+            Pin::new_unchecked(from_bytes_mut(std::slice::from_raw_parts_mut(
                 self.main_db_mmap.map_mut_ptr().wrapping_add(index.0),
                 size_of::<T>(),
-            ))
+            )))
         }
     }
 
@@ -746,7 +750,8 @@ impl DatabaseContextData {
         let target = unsafe { self.access_slice_mut(fat) };
         target.copy_from_slice(data);
     }
-    pub fn write_pod<T: Pod>(&self, src: T, dest: &mut T) {
+    pub fn write_pod<T: Pod>(&self, src: T, dest: Pin<&mut T>) {
+        let dest = unsafe { dest.get_unchecked_mut() };
         let dest_index = self.index_of_sized(dest);
 
         self.undo_log.record(UndoLogEntry::Restore {
@@ -810,7 +815,7 @@ impl DatabaseContextData {
         }
         self.rt_increase_use(current_registrar);
 
-        self.write_pod(current_registrar, registrar_point)
+        self.write_pod(current_registrar, Pin::new(registrar_point))
     }
     pub fn update_registrar_ptr(&self, registrar_point: *mut SequenceNr, opaque: bool) {
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
@@ -969,11 +974,11 @@ impl DatabaseContextData {
     }
     pub(crate) fn rt_decrease_use(&self, registrar: SequenceNr) {
         let uses = unsafe { self.get_uses() };
-        let cur = uses.get_mut(self, registrar.index());
+        let mut cur = uses.get_mut(self, registrar.index());
         if cur.get_use() == 0 {
             panic!("Corrupt use count for sequence nr {:?}", registrar);
         }
-        cur.decrease_use(self);
+        unsafe { cur.as_mut().get_unchecked_mut().decrease_use(self) };
         if cur.get_use() == 0 {
             // This is the normal way messages end up in 'unused_messags'
             self.unused_messages.borrow_mut().push(UnusedInfo {

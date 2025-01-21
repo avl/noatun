@@ -27,14 +27,15 @@ impl Object for Maze {
     type Ptr = ThinPtr;
     type DetachedType = (u32, u32);
 
-    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
-        self.player_pos_x.set(detached.0);
-        self.player_pos_y.set(detached.1);
+    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
+        let tself = unsafe {self.get_unchecked_mut() };
+        Pin::new_unchecked(&mut tself.player_pos_x).set(detached.0);
+        Pin::new_unchecked(&mut tself.player_pos_y).set(detached.1);
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
-        let temp: &mut Maze = NoatunContext.allocate_pod();
-        temp.init_from_detached(detached);
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+        let mut temp: Pin<&mut Maze> = NoatunContext.allocate_pod();
+        temp.as_mut().init_from_detached(detached);
         temp
     }
 
@@ -42,7 +43,7 @@ impl Object for Maze {
         unsafe { NoatunContext.access_pod(index) }
     }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
         unsafe { NoatunContext.access_pod_mut(index) }
     }
 }
@@ -53,10 +54,14 @@ impl MessagePayload for MazeMessage {
     type Root = Maze;
 
     fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
-        let x = root.player_pos_x.get().saturating_add_signed(self.delta_x);
-        root.player_pos_x.set(x);
-        let y = root.player_pos_y.get().saturating_add_signed(self.delta_y);
-        root.player_pos_y.set(y);
+
+        let root_player_pos_x = unsafe{root.as_mut().map_unchecked_mut(|x|&mut x.player_pos_x)};
+        let x = root_player_pos_x.get().saturating_add_signed(self.delta_x);
+        root_player_pos_x.set(x);
+
+        let root_player_pos_y = unsafe{root.as_mut().map_unchecked_mut(|x|&mut x.player_pos_y)};
+        let y = root_player_pos_y.get().saturating_add_signed(self.delta_y);
+        root_player_pos_y.set(y);
     }
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
@@ -75,7 +80,7 @@ impl Application for Maze {
     type Message = MazeMessage;
     type Params = ();
 
-    fn initialize_root<'a>(_params: &()) -> &'a mut Maze {
+    fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Maze> {
         let maze = NoatunContext.allocate_pod();
 
         maze

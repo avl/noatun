@@ -8,15 +8,15 @@ use std::io::Write;
 use std::pin::Pin;
 use std::time::Duration;
 noatun_object!(
-    struct Customer detached as CustomerDetached {
+    struct Customer {
         pod name: u32,
         pod worth: u32,
     }
 );
 noatun_object!(
-    struct Bank detached as BankDetached {
-        pod total_money:u32 [setter: set_total_money],
-        object customers: DatabaseVec<Customer> [setter: customers_mut]
+    struct Bank {
+        pod total_money:u32,
+        object customers: DatabaseVec<Customer>
     }
 );
 
@@ -58,7 +58,7 @@ impl Application for Bank {
     type Message = BankMessage;
     type Params = ();
 
-    fn initialize_root<'a>(params: &Self::Params) -> &'a mut Self {
+    fn initialize_root<'a>(params: &Self::Params) -> Pin<&'a mut Self> {
         NoatunContext.allocate_pod()
     }
 }

@@ -22,13 +22,13 @@ impl Object for CounterObject {
     type Ptr = ThinPtr;
     type DetachedType = ();
 
-    unsafe fn init_from_detached(&mut self, _detached: Self::DetachedType) {
+    unsafe fn init_from_detached(self: Pin<&mut Self>, _detached: Self::DetachedType) {
         todo!()
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
-        let this: &mut CounterObject = NoatunContext.allocate_pod();
-        this.init_from_detached(detached);
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+        let mut this: Pin<&mut CounterObject> = NoatunContext.allocate_pod();
+        this.as_mut().init_from_detached(detached);
         this
     }
 
@@ -36,7 +36,7 @@ impl Object for CounterObject {
         unsafe { NoatunContext.access_pod(index) }
     }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
         unsafe { NoatunContext.access_pod_mut(index) }
     }
 }
@@ -52,16 +52,22 @@ impl MessagePayload for CounterMessage {
     type Root = CounterObject;
 
     fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
+        let root_counter;
+        unsafe {
+            root_counter = root.as_mut().map_unchecked_mut(|x|&mut x.counter);
+        }
+
         println!(
             "Applying message {} {} {}",
             self.id, self.counter, self.delta
         );
 
-        let counter = root.as_ref().counter.get();
-        root.counter.set(counter + self.delta);
+        let counter = root_counter.get();
+        root_counter.set(counter + self.delta);
 
         unsafe {
-            Pin::new_unchecked(&mut root.counter2).push(vec![self.delta as u8]);
+            let root_counter2 = root.as_mut().map_unchecked_mut(|x|&mut x.counter2);
+            root_counter2.push(vec![self.delta as u8]);
         }
     }
 
@@ -81,7 +87,7 @@ impl Application for CounterObject {
     type Message = CounterMessage;
     type Params = ();
 
-    fn initialize_root<'a>(_params: &()) -> &'a mut Self {
+    fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
         let ctr = NoatunContext.allocate_pod::<CounterObject>();
         ctr
     }

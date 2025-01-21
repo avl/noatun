@@ -37,9 +37,9 @@ impl<T: Copy + Pod> DatabaseOption<T> {
         let c = unsafe { &mut *c };
         if let Some(new_value) = new_value {
             NoatunContext.write_pod_ptr(new_value, std::ptr::addr_of_mut!(self.value));
-            NoatunContext.write_pod(1, &mut self.present);
+            NoatunContext.write_pod(1, Pin::new(&mut self.present));
         } else {
-            NoatunContext.write_pod(0, &mut self.present);
+            NoatunContext.write_pod(0, Pin::new(&mut self.present));
         }
 
         c.update_registrar_ptr(addr_of_mut!(self.registrar), false);
@@ -109,18 +109,20 @@ impl<T: Pod> DatabaseCell<T> {
         context.observe_registrar(self.registrar);
         &self.value
     }*/
-    pub fn set(&mut self, new_value: T) {
+    pub fn set(self: Pin<&mut Self>, new_value: T) {
         let c = CONTEXT.get();
         if c.is_null() {
-            self.value = new_value;
+            let tself = unsafe { self.get_unchecked_mut() };
+            tself.value = new_value;
             return;
             //unreachable!("Attempt to modify DatabaseCell without a mutable context.");
         }
         let c = unsafe { &mut *c };
-        let index = c.index_of(self);
+        let tself = unsafe { self.get_unchecked_mut() };
+        let index = c.index_of(tself);
         //context.write(index, bytes_of(&new_value));
-        c.write_pod_ptr(new_value, addr_of_mut!(self.value));
-        c.update_registrar_ptr(addr_of_mut!(self.registrar), false);
+        c.write_pod_ptr(new_value, addr_of_mut!(tself.value));
+        c.update_registrar_ptr(addr_of_mut!(tself.registrar), false);
     }
 }
 
@@ -128,13 +130,13 @@ impl<T: Pod> Object for OpaqueCell<T> {
     type Ptr = ThinPtr;
     type DetachedType = T;
 
-    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
         self.set(detached);
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
-        let ret: &mut Self = NoatunContext.allocate_pod();
-        ret.init_from_detached(detached);
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+        let mut ret: Pin<&mut Self> = NoatunContext.allocate_pod();
+        ret.as_mut().init_from_detached(detached);
         ret
     }
 
@@ -142,26 +144,27 @@ impl<T: Pod> Object for OpaqueCell<T> {
         unsafe { NoatunContext.access_pod(index) }
     }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
         unsafe { NoatunContext.access_pod_mut(index) }
     }
 }
 
 impl<T: Pod> OpaqueCell<T> {
-    pub fn set(&mut self, new_value: T) {
-        let index = NoatunContext.index_of(self);
+    pub fn set(self: Pin<&mut Self>, new_value: T) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        let index = NoatunContext.index_of(tself);
         //context.write(index, bytes_of(&new_value));
-        NoatunContext.write_pod(new_value, &mut self.value);
-        NoatunContext.update_registrar(&mut self.registrar, true);
+        NoatunContext.write_pod(new_value, unsafe{Pin::new_unchecked(&mut tself.value)});
+        NoatunContext.update_registrar(&mut tself.registrar, true);
     }
 }
 
 impl<T: Pod> DatabaseCell<T> {
-    #[allow(clippy::mut_from_ref)]
+    /*#[allow(clippy::mut_from_ref)]
     pub fn allocate<'a>() -> &'a mut Self {
         let memory = unsafe { NoatunContext.allocate_pod::<DatabaseCell<T>>() };
         unsafe { &mut *(memory as *mut _) }
-    }
+    }*/
     pub fn new(value: T) -> DatabaseCell<T> {
         DatabaseCell {
             value,
@@ -174,13 +177,13 @@ impl<T: Pod> Object for DatabaseCell<T> {
     type Ptr = ThinPtr;
     type DetachedType = T;
 
-    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
         self.set(detached);
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
-        let ret: &mut Self = NoatunContext.allocate_pod();
-        ret.init_from_detached(detached);
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+        let mut ret: Pin<&mut Self> = NoatunContext.allocate_pod();
+        ret.as_mut().init_from_detached(detached);
         ret
     }
 
@@ -188,7 +191,7 @@ impl<T: Pod> Object for DatabaseCell<T> {
         unsafe { NoatunContext.access_pod(index) }
     }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
         unsafe { NoatunContext.access_pod_mut(index) }
     }
 }
@@ -248,7 +251,7 @@ impl<T: 'static> RawDatabaseVec<T> {
                 data: dest_index.0,
                 phantom_data: Default::default(),
             },
-            self,
+            unsafe {Pin::new_unchecked(self)},
         )
     }
     pub fn len(&self) -> usize {
@@ -264,11 +267,11 @@ impl<T: 'static> RawDatabaseVec<T> {
         if self.capacity < new_length {
             self.realloc_add(ctx, 2 * new_length, new_length);
         } else {
-            ctx.write_pod(new_length, &mut self.length);
+            ctx.write_pod(new_length, unsafe { Pin::new_unchecked(&mut self.length) } );
         }
     }
     #[allow(clippy::mut_from_ref)]
-    pub fn allocate(ctx: &DatabaseContextData) -> &mut DatabaseVec<T> {
+    pub fn allocate(ctx: &DatabaseContextData) -> Pin<&mut DatabaseVec<T>> {
         unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
     }
 }
@@ -306,7 +309,7 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
     }
     #[allow(clippy::mut_from_ref)]
     // TODO: Maybe make this unsafe(even though it's internal)
-    pub(crate) fn get_mut(&self, ctx: &DatabaseContextData, index: usize) -> &mut T {
+    pub(crate) fn get_mut(&self, ctx: &DatabaseContextData, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         let t = unsafe { ctx.access_pod_mut(ThinPtr(offset)) };
@@ -325,7 +328,7 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
         if self.length >= self.capacity {
             self.realloc_add(ctx, (self.capacity + 1) * 2, self.length + 1);
         } else {
-            ctx.write_pod(self.length + 1, &mut self.length);
+            ctx.write_pod(self.length + 1, Pin::new(&mut self.length));
         }
 
         self.write_untracked(ctx, self.length - 1, t);
@@ -340,17 +343,17 @@ where
     type Ptr = ThinPtr;
     type DetachedType = Vec<T::DetachedType>;
 
-    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
         panic!("init_from_detached is not implemented for RawDatabaseVec");
     }
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
         panic!("allocate_from_detached is not implemented for RawDatabaseVec");
     }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
         unsafe { NoatunContext.access_pod(index) }
     }
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
         unsafe { NoatunContext.access_pod_mut(index) }
     }
 }
@@ -456,11 +459,11 @@ impl<T: 'static> DatabaseVec<T> {
                 length_registrar: SequenceNr::default(),
                 phantom_data: Default::default(),
             },
-            self,
+            unsafe{Pin::new_unchecked(self)},
         )
     }
     #[allow(clippy::mut_from_ref)]
-    pub fn new<'a>() -> &'a mut DatabaseVec<T> {
+    pub fn new<'a>() -> Pin<&'a mut DatabaseVec<T>> {
         unsafe { NoatunContext.allocate_pod::<DatabaseVec<T>>() }
     }
 }
@@ -486,13 +489,13 @@ where
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         let t = unsafe { T::access_mut(ThinPtr(offset)) };
-        unsafe { Pin::new_unchecked(t) }
+        unsafe { t }
     }
     fn get_mut_internal(&mut self, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         let t = unsafe { T::access_mut(ThinPtr(offset)) };
-        unsafe { Pin::new_unchecked(t) }
+        t
     }
     pub(crate) fn write(&mut self, index: usize, val: T) {
         let offset = self.data + index * size_of::<T>();
@@ -527,7 +530,7 @@ where
         NoatunContext.write_pod_ptr(self.length - 1, addr_of_mut!(self.length));
     }
 
-    pub fn retain(&mut self, mut f: impl FnMut(&mut T) -> bool) {
+    pub fn retain(&mut self, mut f: impl FnMut(Pin<&mut T>) -> bool) {
         let mut read_offset = 0;
         let mut write_offset = 0;
         let mut new_len = self.length;
@@ -570,23 +573,22 @@ where
     type Ptr = ThinPtr;
     type DetachedType = Vec<T::DetachedType>;
 
-    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+    unsafe fn init_from_detached(mut self: Pin<&mut Self>, detached: Self::DetachedType) {
         for item in detached {
-            let new_item = Pin::new_unchecked(&mut *self).push_zeroed();
-            let new_item = unsafe { new_item.get_unchecked_mut() };
+            let new_item = self.as_mut().push_zeroed();
             new_item.init_from_detached(item);
         }
     }
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
-        let pod: &mut Self = NoatunContext.allocate_pod();
-        pod.init_from_detached(detached);
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+        let mut pod: Pin<&mut Self> = NoatunContext.allocate_pod();
+        pod.as_mut().init_from_detached(detached);
         pod
     }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
         unsafe { NoatunContext.access_pod(index) }
     }
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
         unsafe { NoatunContext.access_pod_mut(index) }
     }
 }
@@ -615,22 +617,22 @@ where
     type Ptr = ThinPtr;
     type DetachedType = T::DetachedType;
 
-    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
         let target = T::allocate_from_detached(detached);
-        let new_index = NoatunContext.index_of(target);
-        NoatunContext.write_pod(new_index, &mut self.object_index);
+        let new_index = NoatunContext.index_of(&*target);
+        NoatunContext.write_pod(new_index, unsafe{Pin::new_unchecked(&mut self.get_unchecked_mut().object_index)});
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
-        let pod: &mut Self = NoatunContext.allocate_pod();
-        pod.init_from_detached(detached);
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+        let mut pod: Pin<&mut Self> = NoatunContext.allocate_pod();
+        pod.as_mut().init_from_detached(detached);
         pod
     }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
         unsafe { NoatunContext.access_pod(index) }
     }
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
         unsafe { NoatunContext.access_pod_mut(index) }
     }
 }
@@ -657,7 +659,7 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
         if self.object_index.is_null() {
             panic!("get_mut() called on an uninitialized (null) DatabaseObjectHandle.");
         }
-        unsafe { Pin::new_unchecked(T::access_mut(self.object_index)) }
+        unsafe { T::access_mut(self.object_index) }
     }
 
     pub fn new(value: T::Ptr) -> Self {
@@ -667,25 +669,26 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
         }
     }
     #[allow(clippy::mut_from_ref)]
-    pub fn allocate<'a>(value: T) -> &'a mut Self
+    pub fn allocate<'a>(value: T) -> Pin<&'a mut Self>
     where
         T: Object<Ptr = ThinPtr>,
         T: Pod,
     {
-        let this = unsafe { NoatunContext.allocate_pod::<DatabaseObjectHandle<T>>() };
-        let target = unsafe { NoatunContext.allocate_pod::<T>() };
-        *target = value;
-        this.object_index = NoatunContext.index_of(target);
+        let mut this = unsafe { NoatunContext.allocate_pod::<DatabaseObjectHandle<T>>() };
+        let mut target = unsafe { NoatunContext.allocate_pod::<T>() };
+        //TODO: This is a bug, isn't it? Should use NoatunContext.write!?
+        unsafe { *target.as_mut().get_unchecked_mut() = value; }
+        unsafe { this.as_mut().get_unchecked_mut().object_index = NoatunContext.index_of(&*target); }
         this
     }
 
     #[allow(clippy::mut_from_ref)]
-    pub fn allocate_unsized<'a>(value: &T) -> &'a mut Self
+    pub fn allocate_unsized<'a>(value: &T) -> Pin<&'a mut Self>
     where
         T: Object<Ptr = FatPtr> + 'static,
     {
         let size_bytes = std::mem::size_of_val(value);
-        let this = unsafe { NoatunContext.allocate_pod::<DatabaseObjectHandle<T>>() };
+        let mut this = unsafe { NoatunContext.allocate_pod::<DatabaseObjectHandle<T>>() };
         let target_dst_ptr =
             unsafe { NoatunContext.allocate_raw(size_bytes, std::mem::align_of_val(value)) };
 
@@ -696,7 +699,7 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
         unsafe { std::ptr::copy(target_src_ptr, target_dst_ptr, size_bytes) };
         let thin_index = NoatunContext.index_of_ptr(target_dst_ptr);
 
-        this.object_index = FatPtr::from(thin_index.start(), size_bytes);
+        unsafe { this.as_mut().get_unchecked_mut().object_index = FatPtr::from(thin_index.start(), size_bytes) };
         this
     }
 }

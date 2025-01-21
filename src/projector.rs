@@ -179,13 +179,13 @@ impl<APP: Application> Projector<APP> {
     pub(crate) fn apply_preview(
         &mut self,
         time: DateTime<Utc>,
-        root: &mut APP,
+        mut root: Pin<&mut APP>,
         preview: impl Iterator<Item = APP::Message>,
     ) -> Result<()> {
         NoatunContext.clear_unused_tracking();
         let time = NoatunTime(time.timestamp_millis() as u64);
         for msg in preview {
-            msg.apply(time, unsafe { Pin::new_unchecked(root) });
+            msg.apply(time, root.as_mut());
         }
 
         Ok(())
