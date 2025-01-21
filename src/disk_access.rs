@@ -1,10 +1,10 @@
-use crate::Target;
 use crate::platform_specific::FileMapping;
-use anyhow::{Context, Result, bail};
+use crate::Target;
+use anyhow::{bail, Context, Result};
 use bytemuck::Pod;
 use std::cell::Cell;
 use std::fmt::{Debug, Formatter};
-use std::fs::{File, OpenOptions, create_dir_all};
+use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::os::fd::AsRawFd;
@@ -464,7 +464,11 @@ impl FileAccessor {
         if new_size + Self::HEADER_SIZE > self.committed_size.get() {
             let max_size = self.mapping.maximum_size();
             if new_size + Self::HEADER_SIZE >= max_size {
-                bail!("maximum file size exceeded. Requested new size: {}. Max size: {}", new_size+Self::HEADER_SIZE, max_size);
+                bail!(
+                    "maximum file size exceeded. Requested new size: {}. Max size: {}",
+                    new_size + Self::HEADER_SIZE,
+                    max_size
+                );
             }
 
             let new_file_size = ((self.committed_size.get() + new_size + Self::HEADER_SIZE) * 2)

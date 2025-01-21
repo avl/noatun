@@ -4,7 +4,7 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::sha2;
 use crate::{Database, Message, MessageHeader, MessageId, MessagePayload, Target};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use bytemuck::{Pod, Zeroable};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use fs2::FileExt;
@@ -15,7 +15,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
-use std::mem::{MaybeUninit, offset_of};
+use std::mem::{offset_of, MaybeUninit};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
@@ -251,7 +251,11 @@ impl U1 {
     const ONE: U1 = U1(1);
     const ZERO: U1 = U1(0);
     fn index(self) -> usize {
-        if self.0 == 1 { 1 } else { 0 }
+        if self.0 == 1 {
+            1
+        } else {
+            0
+        }
     }
     fn swap(&mut self) {
         *self = Self::from_index(self.other());
@@ -398,7 +402,7 @@ impl<M> OnDiskMessageStore<M> {
     pub fn get_upstream_of(
         &self,
         message_ids: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
-    ) -> Result<impl Iterator<Item = (MessageHeader, usize /*query count*/)>+ '_>
+    ) -> Result<impl Iterator<Item = (MessageHeader, usize /*query count*/)> + '_>
     where
         M: MessagePayload,
     {
@@ -713,7 +717,7 @@ impl<M> OnDiskMessageStore<M> {
     pub fn query_by_index(
         &self,
         index: usize,
-    ) -> Result<impl Iterator<Item = (usize /*seqnr/index*/, Message<M>)>+ '_>
+    ) -> Result<impl Iterator<Item = (usize /*seqnr/index*/, Message<M>)> + '_>
     where
         M: MessagePayload,
     {
@@ -956,7 +960,6 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
-
     /// Return message with the given id.
     /// If no such message exist, return the index of the next message with a larger id.
     /// If the given id is larger than the largest MessageId, return the number of messages.
@@ -965,7 +968,7 @@ impl<M> OnDiskMessageStore<M> {
         if message_index.is_empty() == false && id > message_index.last().unwrap().message {
             return Ok(message_index.len());
         }
-        let (Ok(i)|Err(i)) = message_index.binary_search_by_key(&id, |x| x.message);
+        let (Ok(i) | Err(i)) = message_index.binary_search_by_key(&id, |x| x.message);
         Ok(i)
     }
 
@@ -1173,7 +1176,6 @@ impl<M> OnDiskMessageStore<M> {
         Self::provide_index_map(&mut self.index_mmap, count);
         Ok(())
     }
-
 
     // If remaining_child_assignments is None, don't rewrite parents by adding new children to them
     fn do_write_message(
@@ -1408,7 +1410,7 @@ impl<M> OnDiskMessageStore<M> {
         let (Ok(first_index) | Err(first_index)) = index[0..index_header.entries as usize]
             .binary_search_by_key(&first_input_message.id(), |x| x.message);
         let mut cur_index = first_index;
-        let mut first_index_actually_inserted=None;
+        let mut first_index_actually_inserted = None;
 
         let mut parents: Vec<MessageId> = vec![];
 
@@ -1766,12 +1768,15 @@ impl<M> OnDiskMessageStore<M> {
 mod tests {
     use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
     use crate::message_store::{FileOffset, OnDiskMessageStore, STATUS_NOK, STATUS_OK, U1};
-    use crate::{DatabaseContextData, DummyUnitObject, Message, MessageId, MessagePayload, NoatunTime, Target};
+    use crate::{
+        DatabaseContextData, DummyUnitObject, Message, MessageId, MessagePayload, NoatunTime,
+        Target,
+    };
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use std::io::{Cursor, Read, Write};
     use std::path::Path;
-    use std::time::Instant;
     use std::pin::Pin;
+    use std::time::Instant;
 
     #[derive(Debug)]
     struct OnDiskMessage {
@@ -1782,7 +1787,6 @@ mod tests {
 
     impl MessagePayload for OnDiskMessage {
         type Root = DummyUnitObject;
-
 
         fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
             unimplemented!()
@@ -1796,7 +1800,7 @@ mod tests {
             let id = cursor.read_u64::<LittleEndian>()?;
             let seq = cursor.read_u64::<LittleEndian>()?;
             let data_len = cursor.read_u64::<LittleEndian>()?;
-            let mut data = vec![0;4];
+            let mut data = vec![0; 4];
             cursor.read_exact(&mut data)?;
             Ok(OnDiskMessage { id, seq, data })
         }
@@ -1823,11 +1827,15 @@ mod tests {
 
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(MessageId::new_debug(i as u32), vec![], OnDiskMessage {
-                id: i as u64,
-                seq: i as u64,
-                data: vec![42u8; 4],
-            })
+            Message::new(
+                MessageId::new_debug(i as u32),
+                vec![],
+                OnDiskMessage {
+                    id: i as u64,
+                    seq: i as u64,
+                    data: vec![42u8; 4],
+                },
+            )
         });
 
         store
@@ -1915,11 +1923,15 @@ mod tests {
 
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(MessageId::new_debug(2 * i as u32), vec![], OnDiskMessage {
-                id: 2 * i as u64,
-                seq: 2 * i as u64,
-                data: vec![42u8; 4],
-            })
+            Message::new(
+                MessageId::new_debug(2 * i as u32),
+                vec![],
+                OnDiskMessage {
+                    id: 2 * i as u64,
+                    seq: 2 * i as u64,
+                    data: vec![42u8; 4],
+                },
+            )
         });
 
         store
@@ -1961,11 +1973,15 @@ mod tests {
 
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(MessageId::new_debug(i as u32), vec![], OnDiskMessage {
-                id: i as u64,
-                seq: i as u64,
-                data: vec![42u8; 4],
-            })
+            Message::new(
+                MessageId::new_debug(i as u32),
+                vec![],
+                OnDiskMessage {
+                    id: i as u64,
+                    seq: i as u64,
+                    data: vec![42u8; 4],
+                },
+            )
         });
 
         store
@@ -2007,11 +2023,15 @@ mod tests {
 
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(MessageId::new_debug(i as u32), vec![], OnDiskMessage {
-                id: (1_000_000 + i) as u64,
-                seq: i as u64,
-                data: vec![42u8; 1024],
-            })
+            Message::new(
+                MessageId::new_debug(i as u32),
+                vec![],
+                OnDiskMessage {
+                    id: (1_000_000 + i) as u64,
+                    seq: i as u64,
+                    data: vec![42u8; 1024],
+                },
+            )
         });
 
         store
@@ -2022,7 +2042,10 @@ mod tests {
         let mut count = 0;
         let mut sum = 0;
         let start = Instant::now();
-        for msg in store.query_greater(MessageId::new_debug(1_999_900)).unwrap() {
+        for msg in store
+            .query_greater(MessageId::new_debug(1_999_900))
+            .unwrap()
+        {
             sum += msg.message.data[0] as u64;
             count += 1;
         }
@@ -2042,11 +2065,15 @@ mod tests {
 
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(MessageId::new_debug(i as u32), vec![], OnDiskMessage {
-                id: (1_000_000 + i) as u64,
-                seq: i as u64,
-                data: vec![42u8; 4],
-            })
+            Message::new(
+                MessageId::new_debug(i as u32),
+                vec![],
+                OnDiskMessage {
+                    id: (1_000_000 + i) as u64,
+                    seq: i as u64,
+                    data: vec![42u8; 4],
+                },
+            )
         });
 
         store

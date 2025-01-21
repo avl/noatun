@@ -5,10 +5,13 @@ use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::platform_specific::get_boot_time;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{Application, FatPtr, FixedSizeObject, GenPtr, MessageId, MessagePayload, Object, Pointer, Target, ThinPtr};
-use anyhow::{Context, Result, bail};
+use crate::{
+    Application, FatPtr, FixedSizeObject, GenPtr, MessageId, MessagePayload, Object, Pointer,
+    Target, ThinPtr,
+};
+use anyhow::{bail, Context, Result};
 use bumpalo::Bump;
-use bytemuck::{Pod, Zeroable, bytes_of, from_bytes, from_bytes_mut};
+use bytemuck::{bytes_of, from_bytes, from_bytes_mut, Pod, Zeroable};
 use indexmap::{IndexMap, IndexSet};
 use std::alloc::Layout;
 use std::any::{Any, TypeId};
@@ -56,7 +59,7 @@ mod registrar_info {
                 return;
             }
             //TODO: We could have a special "inc 1" noatun primitive.
-            context.write_pod(self.uses+1,&mut self.uses);
+            context.write_pod(self.uses + 1, &mut self.uses);
         }
         pub fn decrease_use(&mut self, context: &DatabaseContextData) {
             let cur_uses = self.get_use();
@@ -67,7 +70,7 @@ mod registrar_info {
                 return;
             }
             //TODO: We could have a special "dec 1" noatun primitive.
-            context.write_pod(self.uses-1,&mut self.uses);
+            context.write_pod(self.uses - 1, &mut self.uses);
         }
     }
 
@@ -136,7 +139,6 @@ pub struct DatabaseContextData {
     //next_seqnr: SequenceNr,
 }
 
-
 pub struct DatabaseContextHandle<'a> {
     d: Cell<*const DatabaseContextData>,
     phantom: PhantomData<&'a ()>,
@@ -184,7 +186,6 @@ impl<'a> DatabaseContextHandleMut<'a> {
         unsafe { &mut *t }
     }
 }
-
 
 // This has been shamelessly lifted from the rust std
 #[inline]
@@ -252,7 +253,7 @@ impl DatabaseContextData {
         let new_entry_index = self.index_of_sized(new_entry);
         self.write_pod(new_entry_index, key_place);
     }
-    fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr>+ '_ {
+    fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> + '_ {
         let keys: &RawDatabaseVec<ThinPtr> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observee.index() < keys.len() {
@@ -594,9 +595,8 @@ impl DatabaseContextData {
     pub fn copy_sized(&self, source: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
         self.copy(FatPtr::from(source.0, size_bytes), dest_index)
     }
-    pub fn copy_pod<T:Pod>(&self, source: &T, dest: &mut T) {
+    pub fn copy_pod<T: Pod>(&self, source: &T, dest: &mut T) {
         unsafe {
-
             let dest_index = self.index_of_sized(dest);
             self.undo_log.record(UndoLogEntry::Restore {
                 start: dest_index.0,
@@ -798,7 +798,7 @@ impl DatabaseContextData {
 
     pub fn update_registrar(&self, registrar_point: &mut SequenceNr, opaque: bool) {
         if registrar_point.is_valid() {
-            self.rt_decrease_use(unsafe { *registrar_point } );
+            self.rt_decrease_use(unsafe { *registrar_point });
         }
         let current_registrar = self.next_seqnr();
         if current_registrar.is_invalid() {
@@ -811,13 +811,11 @@ impl DatabaseContextData {
         self.rt_increase_use(current_registrar);
 
         self.write_pod(current_registrar, registrar_point)
-
     }
     pub fn update_registrar_ptr(&self, registrar_point: *mut SequenceNr, opaque: bool) {
-
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
         if registrar_point_value.is_valid() {
-            self.rt_decrease_use(registrar_point_value );
+            self.rt_decrease_use(registrar_point_value);
         }
         let current_registrar = self.next_seqnr();
         if current_registrar.is_invalid() {
@@ -1012,7 +1010,10 @@ mod tests {
 
         let t = Instant::now();
         for i in 0..100_usize {
-            tracker.record_dependency(SequenceNr::from_index((i as f64).sqrt() as usize), SequenceNr::from_index(i));
+            tracker.record_dependency(
+                SequenceNr::from_index((i as f64).sqrt() as usize),
+                SequenceNr::from_index(i),
+            );
         }
         println!("Time: {:?}", t.elapsed());
 
@@ -1020,8 +1021,9 @@ mod tests {
             .read_dependency(SequenceNr::from_index(8))
             .map(|x| x.index())
             .collect();
-        assert_eq!(result, vec![
-            80, 79, 78, 77, 76, 75, 74, 73, 72, 71, 70, 69, 68, 67, 66, 65, 64
-        ]);
+        assert_eq!(
+            result,
+            vec![80, 79, 78, 77, 76, 75, 74, 73, 72, 71, 70, 69, 68, 67, 66, 65, 64]
+        );
     }
 }

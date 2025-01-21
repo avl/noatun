@@ -9,7 +9,6 @@
 // produces this warning.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(clippy::type_complexity)]
-
 // Yeah, this is not ideal. This should be fixed.
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::let_and_return)]
@@ -17,11 +16,13 @@
 use crate::data_types::{DatabaseCell, DatabaseVec};
 use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
 use crate::message_store::OnDiskMessageStore;
-use crate::platform_specific::{FileMapping, get_boot_time};
+use crate::platform_specific::{get_boot_time, FileMapping};
 use crate::projector::Projector;
+use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::sha2;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use bumpalo::Bump;
+pub use bytemuck::{Pod, Zeroable};
 use chrono::{DateTime, SecondsFormat, Utc};
 pub use database::Database;
 use fs2::FileExt;
@@ -29,6 +30,7 @@ use indexmap::IndexMap;
 use memmap2::MmapMut;
 pub use projection_store::DatabaseContextData;
 use rand::RngCore;
+use savefile::Deserializer;
 use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, OnceCell};
@@ -47,18 +49,13 @@ use std::slice;
 use std::slice::SliceIndex;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
-use crate::sequence_nr::SequenceNr;
-pub use bytemuck::{Pod, Zeroable};
-use savefile::Deserializer;
 
 mod disk_abstraction;
 mod message_store;
 mod projection_store;
 mod undo_store;
 
-pub mod prelude {
-
-}
+pub mod prelude {}
 #[cfg(feature = "tokio")]
 pub mod communication;
 
@@ -66,11 +63,10 @@ pub mod distributor;
 pub mod sequence_nr;
 
 pub(crate) mod cutoff;
-mod projector;
-mod update_head_tracker;
 pub mod data_types;
 pub mod database;
-
+mod projector;
+mod update_head_tracker;
 
 struct MessageComponent<const ID: u32, T> {
     value: Option<T>,
@@ -85,7 +81,6 @@ mod sha2_helper;
 thread_local! {
     pub static CONTEXT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
 }
-
 
 #[derive(Clone, Copy)]
 pub struct NoatunContext;
@@ -107,12 +102,9 @@ fn get_context_ptr() -> *const DatabaseContextData {
 
 /// This represents a type that has no detached representation.
 /// Instances of this type cannot be created.
-pub enum Undetachable {
-
-}
+pub enum Undetachable {}
 
 impl NoatunContext {
-
     pub fn start_ptr_mut(self) -> *mut u8 {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).start_ptr_mut() }
@@ -139,18 +131,17 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).set_next_seqnr(seqnr) }
     }
-    pub fn copy(&self, src: FatPtr, dest_index: ThinPtr)  {
+    pub fn copy(&self, src: FatPtr, dest_index: ThinPtr) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy(src, dest_index) }
     }
-    pub fn copy_sized(&self, src: ThinPtr, dest_index: ThinPtr, size_bytes: usize)  {
+    pub fn copy_sized(&self, src: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy_sized(src, dest_index, size_bytes) }
     }
-    pub fn copy_pod<T:Pod>(&self, src: &T, dst: &mut T)  {
+    pub fn copy_pod<T: Pod>(&self, src: &T, dst: &mut T) {
         let context_ptr = get_context_mut_ptr();
-        unsafe{(*context_ptr).copy_pod(src, dst)}
-
+        unsafe { (*context_ptr).copy_pod(src, dst) }
     }
 
     pub fn index_of_ptr(&self, ptr: *const u8) -> ThinPtr {
@@ -159,7 +150,6 @@ impl NoatunContext {
             panic!("No NoatunContext available");
         }
         unsafe { (*context_ptr).index_of_ptr(ptr) }
-
     }
     pub fn allocate_raw(&self, size: usize, align: usize) -> *mut u8 {
         let context_ptr = get_context_mut_ptr();
@@ -167,25 +157,27 @@ impl NoatunContext {
     }
     pub fn update_registrar(&self, registrar: &mut SequenceNr, value: bool) {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).update_registrar(registrar, value); }
+        unsafe {
+            (*context_ptr).update_registrar(registrar, value);
+        }
     }
-    pub fn write_pod<T:Pod>(&self, value: T, dest: &mut T)  {
+    pub fn write_pod<T: Pod>(&self, value: T, dest: &mut T) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_pod(value, dest) }
     }
-    pub fn write_pod_ptr<T:Pod>(&self, value: T, dest: *mut T)  {
+    pub fn write_pod_ptr<T: Pod>(&self, value: T, dest: *mut T) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_pod_ptr(value, dest) }
     }
-    pub fn allocate_pod<'a, T:Pod>(&self) -> &'a mut T {
+    pub fn allocate_pod<'a, T: Pod>(&self) -> &'a mut T {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_pod() }
     }
-    pub unsafe fn access_pod_mut<'a, T:Pod>(&mut self, ptr: ThinPtr) -> &'a mut T {
+    pub unsafe fn access_pod_mut<'a, T: Pod>(&mut self, ptr: ThinPtr) -> &'a mut T {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).access_pod_mut(ptr) }
     }
-    pub unsafe fn access_pod<'a, T:Pod>(&self, ptr: ThinPtr) -> &'a T {
+    pub unsafe fn access_pod<'a, T: Pod>(&self, ptr: ThinPtr) -> &'a T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             panic!("No NoatunContext available");
@@ -195,7 +187,7 @@ impl NoatunContext {
 
     pub fn observe_registrar(self, registrar: SequenceNr) {
         let context_ptr = CONTEXT.get();
-        if context_ptr.is_null(){
+        if context_ptr.is_null() {
             return;
         }
         unsafe { (*context_ptr).observe_registrar(registrar) }
@@ -210,24 +202,10 @@ impl NoatunContext {
     pub unsafe fn access_slice_mut<'a, T: Pod>(self, range: FatPtr) -> &'a mut [T] {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).access_slice_mut(range) }
-
     }
 }
 
-
-
-#[derive(
-    Pod,
-    Zeroable,
-    Copy,
-    Clone,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Savefile,
-)]
+#[derive(Pod, Zeroable, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Savefile)]
 #[repr(transparent)]
 pub struct MessageId {
     data: [u32; 4],
@@ -243,8 +221,7 @@ impl Display for MessageId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let time_ms = self.timestamp();
 
-        let time = chrono::DateTime::from_timestamp_millis(time_ms as i64)
-            .unwrap();
+        let time = chrono::DateTime::from_timestamp_millis(time_ms as i64).unwrap();
 
         let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
         write!(
@@ -275,7 +252,11 @@ impl Debug for MessageId {
 impl MessageId {
     pub const ZERO: MessageId = MessageId { data: [0u32; 4] };
     pub fn min(self, other: MessageId) -> MessageId {
-        if self < other { self } else { other }
+        if self < other {
+            self
+        } else {
+            other
+        }
     }
     pub fn is_zero(&self) -> bool {
         self.data[0] == 0 && self.data[1] == 0
@@ -353,15 +334,13 @@ impl MessageId {
     }
 }
 
-
-#[derive(Clone,Copy,Pod,Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct NoatunTime(u64);
 
 impl Display for NoatunTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let time = chrono::DateTime::from_timestamp_millis(self.0 as i64)
-            .unwrap();
+        let time = chrono::DateTime::from_timestamp_millis(self.0 as i64).unwrap();
 
         let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
         write!(f, "{}", time_str)
@@ -369,8 +348,7 @@ impl Display for NoatunTime {
 }
 impl Debug for NoatunTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let time = chrono::DateTime::from_timestamp_millis(self.0 as i64)
-            .unwrap();
+        let time = chrono::DateTime::from_timestamp_millis(self.0 as i64).unwrap();
 
         let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
         write!(f, "{}", time_str)
@@ -426,13 +404,11 @@ impl<M: MessagePayload> Message<M> {
 #[repr(C)]
 pub struct DummyUnitObject;
 
-
 impl Object for DummyUnitObject {
     type Ptr = ThinPtr;
     type DetachedType = ();
 
-    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
-    }
+    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {}
 
     unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
         unsafe { &mut *(1usize as *mut DummyUnitObject) }
@@ -449,7 +425,6 @@ impl Object for DummyUnitObject {
     }
 }
 
-
 pub enum GenPtr {
     Thin(ThinPtr),
     Fat(FatPtr),
@@ -462,13 +437,11 @@ pub trait Pointer: Copy + Debug + 'static {
     fn is_null(&self) -> bool;
 }
 
-
 pub trait Object {
     /// This is meant to be either ThinPtr for sized objects, or
     /// FatPtr for dynamically sized objects. Other types are likely to not make sense.
     type Ptr: Pointer;
     type DetachedType;
-
 
     /// Initialize all the fields in 'self' from the given 'detached' type.
     /// The detached type is a regular rust pod struct, with no requirements
@@ -525,9 +498,8 @@ pub trait Object {
     unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self;
 }
 
-
-
-#[macro_export] macro_rules! noatun_object {
+#[macro_export]
+macro_rules! noatun_object {
 
     ( bounded_type pod $typ:ty) => {
         $crate::DatabaseCell<$typ>
@@ -659,14 +631,11 @@ pub trait Object {
 
 }
 
-
-
-
 pub trait FixedSizeObject: Object<Ptr = ThinPtr> + Sized + Pod {}
 
 impl<T: Object<Ptr = ThinPtr> + Sized + Copy + Pod> FixedSizeObject for T {}
 
-pub trait Application : Object {
+pub trait Application: Object {
     type Message: MessagePayload<Root = Self>;
     /// Parameters that will be available in the "initialize_root" call.
     type Params;
@@ -762,7 +731,7 @@ impl<T: FixedSizeObject> Object for [T] {
         let alloc = NoatunContext.allocate_raw(bytes, align_of::<T>());
 
         let slice: &mut [T] = bytemuck::cast_slice_mut(slice::from_raw_parts_mut(alloc, bytes));
-        for (src,dst) in detached.into_iter().zip(&mut *slice) {
+        for (src, dst) in detached.into_iter().zip(&mut *slice) {
             dst.init_from_detached(src);
         }
         slice
@@ -777,20 +746,18 @@ impl<T: FixedSizeObject> Object for [T] {
     }
 }
 
-
-#[derive(Clone,Copy)]
+#[derive(Clone, Copy)]
 enum MultiInstanceThreadBlocker {
     Idle,
     InstanceActive,
-    Disabled
+    Disabled,
 }
-
 
 thread_local! {
     pub(crate) static MULTI_INSTANCE_BLOCKER: Cell<MultiInstanceThreadBlocker> = const { Cell::new(MultiInstanceThreadBlocker::Idle) };
 }
 
-pub unsafe  fn disable_multi_instance_blocker() {
+pub unsafe fn disable_multi_instance_blocker() {
     MULTI_INSTANCE_BLOCKER.set(MultiInstanceThreadBlocker::Disabled);
 }
 
@@ -830,12 +797,14 @@ struct ContextGuard;
 impl ContextGuard {
     fn new(context: &DatabaseContextData) -> ContextGuard {
         if !CONTEXT.get().is_null() {
-            panic!("'with_root' must not be called within an existing database access context.
+            panic!(
+                "'with_root' must not be called within an existing database access context.
                          For example, it cannot be called within a 'with_root', 'with_root_mut' or
                          message apply operation.
-                ");
+                "
+            );
         }
-        CONTEXT.set(context as *const _  as *mut _);
+        CONTEXT.set(context as *const _ as *mut _);
         ContextGuard
     }
 }
@@ -850,10 +819,12 @@ struct ContextGuardMut;
 impl ContextGuardMut {
     fn new(context: &mut DatabaseContextData) -> ContextGuardMut {
         if !CONTEXT.get().is_null() {
-            panic!("'with_root' must not be called within an existing database access context.
+            panic!(
+                "'with_root' must not be called within an existing database access context.
                          For example, it cannot be called within a 'with_root', 'with_root_mut' or
                          message apply operation.
-                ");
+                "
+            );
         }
         CONTEXT.set(context as *mut _);
         ContextGuardMut
@@ -866,30 +837,32 @@ impl Drop for ContextGuardMut {
     }
 }
 
-
-
-
 noatun_object!(
-            struct Kalle detached as KalleDetached {
-                pod hej:u32,
-                pod tva:u32,
-                object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>> [setter: da_mut]
-            }
-    );
+        struct Kalle detached as KalleDetached {
+            pod hej:u32,
+            pod tva:u32,
+            object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>> [setter: da_mut]
+        }
+);
 noatun_object!(
-            struct Nalle detached as NalleDetached {
-                pod hej:u32,
-                pod tva:u32,
-                object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>> [setter: da_mut]
-            }
-        );
+    struct Nalle detached as NalleDetached {
+        pod hej:u32,
+        pod tva:u32,
+        object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>> [setter: da_mut]
+    }
+);
 
-
-fn msg_serialize<T:savefile::Serialize + savefile::Packed>(obj: &T, mut writer: impl Write) -> anyhow::Result<()> {
+fn msg_serialize<T: savefile::Serialize + savefile::Packed>(
+    obj: &T,
+    mut writer: impl Write,
+) -> anyhow::Result<()> {
     Ok(savefile::Serializer::bare_serialize(&mut writer, 0, obj)?)
 }
-fn msg_deserialize<T:savefile::Deserialize + savefile::Packed>(buf:&[u8]) -> anyhow::Result<T> {
-    Ok(Deserializer::bare_deserialize(&mut std::io::Cursor::new(buf), 0)?)
+fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(buf: &[u8]) -> anyhow::Result<T> {
+    Ok(Deserializer::bare_deserialize(
+        &mut std::io::Cursor::new(buf),
+        0,
+    )?)
 }
 
 #[cfg(test)]
@@ -914,9 +887,8 @@ mod tests {
     use std::iter::once;
     use tokio::io::AsyncSeekExt;
 
-    mod tests_using_noatun_object_macro;
     mod distributor_tests;
-
+    mod tests_using_noatun_object_macro;
 
     #[test]
     fn test_mmap_big() {
@@ -982,7 +954,6 @@ mod tests {
     impl<T: Object> MessagePayload for DummyMessage<T> {
         type Root = T;
 
-
         fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
             unimplemented!()
         }
@@ -1030,7 +1001,7 @@ mod tests {
     }
 
     impl CounterObject {
-        fn set_counter(&mut self,value1: u32, value2: u32) {
+        fn set_counter(&mut self, value1: u32, value2: u32) {
             self.counter.set(value1);
             self.counter2.set(value2);
         }
@@ -1038,7 +1009,6 @@ mod tests {
             NoatunContext.allocate_pod()
         }
     }
-
 
     impl Application for CounterObject {
         type Message = CounterMessage;
@@ -1057,7 +1027,6 @@ mod tests {
 
     impl MessagePayload for IncrementMessage {
         type Root = CounterObject;
-
 
         fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
             unimplemented!()
@@ -1083,7 +1052,7 @@ mod tests {
             1000,
             Duration::from_secs(1000),
             None,
-            ()
+            (),
         )
         .unwrap();
 
@@ -1117,9 +1086,7 @@ mod tests {
         fn apply(&self, time: NoatunTime, mut root: Pin<&mut CounterObject>) {
             if self.inc1 != 0 {
                 let val = root.counter.get().saturating_add_signed(self.inc1);
-                root.counter.set(
-                    val,
-                );
+                root.counter.set(val);
             } else {
                 root.counter.set(self.set1);
             }
@@ -1144,46 +1111,46 @@ mod tests {
             10000,
             Duration::from_secs(1000),
             Some(datetime!(2024-01-02 00:00:00 Z)),
-            ()
+            (),
         )
-            .unwrap();
+        .unwrap();
 
         db.append_single(
             CounterMessage {
                 parent: vec![],
-                id: MessageId::from_parts(datetime!(2024-01-01 00:00:00 Z), [0;10]).unwrap(),
+                id: MessageId::from_parts(datetime!(2024-01-01 00:00:00 Z), [0; 10]).unwrap(),
                 inc1: 1,
                 set1: 0,
             }
-                .wrap(),
+            .wrap(),
             true,
         )
-            .unwrap();
+        .unwrap();
 
         db.mark_transmitted(MessageId::new_debug(0x100));
 
         db.append_single(
             CounterMessage {
                 parent: vec![],
-                id: MessageId::from_parts(datetime!(2024-01-02 00:00:00 Z), [0;10]).unwrap(),
+                id: MessageId::from_parts(datetime!(2024-01-02 00:00:00 Z), [0; 10]).unwrap(),
                 inc1: 1,
                 set1: 0,
             }
-                .wrap(),
+            .wrap(),
             true,
         )
-            .unwrap();
+        .unwrap();
         db.append_single(
             CounterMessage {
                 parent: vec![],
-                id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z), [0;10]).unwrap(),
+                id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z), [0; 10]).unwrap(),
                 inc1: 1, //This is never projected, because of time limit
                 set1: 0,
             }
-                .wrap(),
+            .wrap(),
             true,
         )
-            .unwrap();
+        .unwrap();
 
         db.with_root_mut(|root| {
             // Time limit means last message isn't projected
@@ -1192,17 +1159,18 @@ mod tests {
 
         db.with_root_preview(
             datetime!(2024-01-03 00:00:00 Z),
-            [
-            CounterMessage {
+            [CounterMessage {
                 parent: vec![],
-                id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z), [0;10]).unwrap(),
+                id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z), [0; 10]).unwrap(),
                 inc1: 2,
                 set1: 0,
-            }
-        ].into_iter(), |root|{
-            assert_eq!(root.counter.get(), 4);
-        }).unwrap();
-
+            }]
+            .into_iter(),
+            |root| {
+                assert_eq!(root.counter.get(), 4);
+            },
+        )
+        .unwrap();
 
         db.with_root_mut(|root| {
             // Time limit means last message isn't projected
@@ -1217,7 +1185,7 @@ mod tests {
             10000,
             Duration::from_secs(1000),
             None,
-            ()
+            (),
         )
         .unwrap();
 
@@ -1273,7 +1241,7 @@ mod tests {
             Duration::from_secs(1000),
             Some(datetime!(2021-01-01 Z)),
             None,
-            ()
+            (),
         )
         .unwrap();
 
@@ -1328,7 +1296,7 @@ mod tests {
             Duration::from_secs(1000),
             Some(datetime!(2024-01-01 Z)),
             None,
-            ()
+            (),
         )
         .unwrap();
 
@@ -1385,8 +1353,7 @@ mod tests {
     #[test]
     fn test_cutoff_handling() {
         let mut db: Database<CounterObject> =
-            Database::create_in_memory( 10000, Duration::from_secs(1000), None, None,())
-                .unwrap();
+            Database::create_in_memory(10000, Duration::from_secs(1000), None, None, ()).unwrap();
 
         db.append_single(
             CounterMessage {
@@ -1445,19 +1412,17 @@ mod tests {
 
     #[test]
     fn test_handle() {
-
-
         let mut db: Database<DatabaseObjectHandle<DatabaseCell<u32>>> = Database::create_new(
             "test/test_handle.bin",
             true,
             1000,
             Duration::from_secs(1000),
             None,
-            ()
+            (),
         )
         .unwrap();
 
-        db.with_root(|handle|{
+        db.with_root(|handle| {
             assert_eq!(handle.get().get(), 43);
         });
     }
@@ -1466,7 +1431,7 @@ mod tests {
         type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
         type Params = ();
 
-        fn initialize_root<'a>(_params:&()) -> &'a mut Self {
+        fn initialize_root<'a>(_params: &()) -> &'a mut Self {
             let obj = DatabaseObjectHandle::allocate(DatabaseCell::new(43u32));
             obj
         }
@@ -1485,36 +1450,33 @@ mod tests {
 
     #[test]
     fn test_handle_to_unsized_miri() {
-        
-        let mut db: Database<DatabaseObjectHandle<[DatabaseCell<u8>]>> = Database::create_in_memory(
-            1000,
-            Duration::from_secs(1000),
-            Some(datetime!(2021-01-01 Z)),
-            None,
-            ()
-        )
-        .unwrap();
+        let mut db: Database<DatabaseObjectHandle<[DatabaseCell<u8>]>> =
+            Database::create_in_memory(
+                1000,
+                Duration::from_secs(1000),
+                Some(datetime!(2021-01-01 Z)),
+                None,
+                (),
+            )
+            .unwrap();
 
         db.with_root(|handle| {
             assert_eq!(handle.get().observe(), &[43, 45]);
         });
-
     }
 
     #[test]
     fn test_handle_miri() {
-
-
         let mut db: Database<DatabaseObjectHandle<DatabaseCell<u32>>> = Database::create_in_memory(
             1000,
             Duration::from_secs(1000),
             Some(datetime!(2021-01-01 Z)),
             None,
-            ()
+            (),
         )
         .unwrap();
 
-        db.with_root(|handle|{
+        db.with_root(|handle| {
             assert_eq!(handle.get().get(), 43);
         });
 
@@ -1534,19 +1496,15 @@ mod tests {
         type Message = DummyMessage<DatabaseVec<CounterObject>>;
     }
 
-
-
     #[test]
     fn test_vec0() {
-
-
         let mut db: Database<DatabaseVec<CounterObject>> = Database::create_new(
             "test/test_vec0",
             true,
             10000,
             Duration::from_secs(1000),
             None,
-            ()
+            (),
         )
         .unwrap();
         db.with_root_mut(|mut counter_vec| {
@@ -1577,14 +1535,12 @@ mod tests {
 
     #[test]
     fn test_vec_miri0() {
-
-
         let mut db: Database<DatabaseVec<CounterObject>> = Database::create_in_memory(
             10000,
             Duration::from_secs(1000),
             Some(datetime!(2021-01-01 Z)),
             None,
-            ()
+            (),
         )
         .unwrap();
         db.with_root_mut(|mut counter_vec| {
@@ -1592,15 +1548,15 @@ mod tests {
 
             let new_element = counter_vec.as_mut().push_zeroed();
 
-            let mut new_element = counter_vec.as_mut().getmut( 0);
+            let mut new_element = counter_vec.as_mut().getmut(0);
 
-            new_element.counter.set( 47);
+            new_element.counter.set(47);
             let mut new_element = counter_vec.as_mut().push_zeroed();
-            new_element.counter.set( 48);
+            new_element.counter.set(48);
 
             assert_eq!(counter_vec.len(), 2);
 
-            let item = counter_vec.as_mut().getmut( 1);
+            let item = counter_vec.as_mut().getmut(1);
             //let item2 = counter_vec.get_mut(context, 1);
             assert_eq!(item.counter.get(), 48);
             //assert_eq!(*item2.counter, 48);
@@ -1609,7 +1565,7 @@ mod tests {
                 let new_element = counter_vec.as_mut().push_zeroed();
             }
 
-            let item = counter_vec.as_mut().getmut( 1);
+            let item = counter_vec.as_mut().getmut(1);
             assert_eq!(item.counter.get(), 48);
             assert_eq!(counter_vec.len(), 12);
 
@@ -1617,28 +1573,23 @@ mod tests {
             assert_eq!(counter_vec.len(), 11);
             assert_eq!(counter_vec.as_mut().get(0).counter.get(), 47);
 
-            counter_vec.as_mut().retain(|x|x.counter.get() == 0);
+            counter_vec.as_mut().retain(|x| x.counter.get() == 0);
             assert_eq!(counter_vec.len(), 10);
 
             for i in 0..10 {
-                assert_eq!(counter_vec.get(i).counter.get() as usize, 0);;
+                assert_eq!(counter_vec.get(i).counter.get() as usize, 0);
             }
-
-
-
         });
     }
     #[test]
     fn test_vec_undo() {
-
-
         let mut db: Database<DatabaseVec<CounterObject>> = Database::create_new(
             "test/vec_undo",
             true,
             10000,
             Duration::from_secs(1000),
             None,
-            ()
+            (),
         )
         .unwrap();
 
@@ -1648,8 +1599,8 @@ mod tests {
                 assert_eq!(counter_vec.len(), 0);
 
                 let mut new_element = counter_vec.as_mut().push_zeroed();
-                new_element.counter.set( 47);
-                new_element.counter2.set( 48);
+                new_element.counter.set(47);
+                new_element.counter2.set(48);
 
                 NoatunContext.set_next_seqnr(SequenceNr::from_index(2));
                 assert_eq!(counter_vec.len(), 1);
@@ -1660,7 +1611,7 @@ mod tests {
         {
             db.with_root_mut(|counter_vec| {
                 let mut counter = counter_vec.getmut(0);
-                counter.counter.set( 50);
+                counter.counter.set(50);
                 unsafe {
                     NoatunContext.rewind(SequenceNr::from_index(2));
                 }
@@ -1691,16 +1642,15 @@ mod tests {
 
     #[test]
     fn test_object_macro() {
-
         use crate::data_types::DatabaseVec;
         noatun_object!(
 
-            struct Kalle detached as DetachedKalle {
-                pod hej:u32 [setter: set_hej],
-                pod tva:u32 [setter: set_tva],
-                object da: DatabaseVec<DatabaseCell<u32>> [setter: da_mut]
-            }
-            );
+        struct Kalle detached as DetachedKalle {
+            pod hej:u32 [setter: set_hej],
+            pod tva:u32 [setter: set_tva],
+            object da: DatabaseVec<DatabaseCell<u32>> [setter: da_mut]
+        }
+        );
         noatun_object!(
             struct Nalle detached as DetachedNalle {
                 pod hej:u32,
@@ -1709,7 +1659,5 @@ mod tests {
             }
 
         );
-
     }
-
 }

@@ -1,6 +1,6 @@
-use crate::Target;
 use crate::disk_access::{FileAccessor, FileBackend};
-use anyhow::{Context, Result, anyhow, bail};
+use crate::Target;
+use anyhow::{anyhow, bail, Context, Result};
 use fs2::FileExt;
 use memmap2::MmapMut;
 use std::alloc::Layout;

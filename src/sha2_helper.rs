@@ -1,6 +1,6 @@
+use sha2::digest::FixedOutput;
 use sha2::Digest;
 use sha2::Sha256;
-use sha2::digest::FixedOutput;
 
 pub fn sha2(bytes: &[u8]) -> [u8; 16] {
     let mut hasher = Sha256::new();

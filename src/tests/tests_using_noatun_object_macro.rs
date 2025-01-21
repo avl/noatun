@@ -1,12 +1,12 @@
-use std::io::Write;
-use std::time::Duration;
+use crate::data_types::{DatabaseCell, DatabaseVec};
+use crate::{msg_deserialize, msg_serialize};
+use crate::{Application, Database, MessagePayload, NoatunContext, NoatunTime};
 use datetime_literal::datetime;
 use savefile::Deserializer;
-use crate::{Application, Database, NoatunContext, MessagePayload, NoatunTime};
-use crate::data_types::{DatabaseVec, DatabaseCell};
-use crate::{msg_deserialize, msg_serialize};
-use std::pin::Pin;
 use savefile_derive::Savefile;
+use std::io::Write;
+use std::pin::Pin;
+use std::time::Duration;
 noatun_object!(
     struct Customer detached as CustomerDetached {
         pod name: u32,
@@ -22,10 +22,7 @@ noatun_object!(
 
 #[derive(Debug, Savefile)]
 pub enum BankMessage {
-    AddCustomerAndMoney {
-        money: u32,
-        customer: u32,
-    }
+    AddCustomerAndMoney { money: u32, customer: u32 },
 }
 
 // TODO: Rename MessagePayload to Message, and Message to MessageFrame?
@@ -37,19 +34,17 @@ impl MessagePayload for BankMessage {
             BankMessage::AddCustomerAndMoney { money, customer } => {
                 let prev_money = root.total_money();
                 root.as_mut().set_total_money(prev_money + *money);
-                root.customers_mut().push(
-                    CustomerDetached {
-                        name: 42,
-                        worth: 100,
-                    }
-                );
+                root.customers_mut().push(CustomerDetached {
+                    name: 42,
+                    worth: 100,
+                });
             }
         }
     }
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
     where
-        Self: Sized
+        Self: Sized,
     {
         msg_deserialize(buf)
     }
@@ -75,24 +70,23 @@ fn init_bank_miri() {
         Duration::from_secs(1000),
         Some(datetime!(2023-01-01 Z)),
         None,
-        ()
+        (),
     )
-        .unwrap();
+    .unwrap();
 
     db.append_local(BankMessage::AddCustomerAndMoney {
         money: 10,
         customer: 10,
-    }).unwrap();
+    })
+    .unwrap();
 
     db.append_local(BankMessage::AddCustomerAndMoney {
         money: 10,
         customer: 10,
-    }).unwrap();
-    db.with_root(|root|{
+    })
+    .unwrap();
+    db.with_root(|root| {
         assert_eq!(root.total_money.get(), 20);
         assert_eq!(root.customers().len(), 2);
     })
-
 }
-
-

@@ -1,5 +1,5 @@
-use crate::MessageId;
 use crate::message_store::IndexEntry;
+use crate::MessageId;
 use bytemuck::{Pod, Zeroable};
 use chrono::{DateTime, Utc};
 use savefile_derive::Savefile;
@@ -132,8 +132,8 @@ impl CutOffState {
 #[cfg(test)]
 mod tests {
     use super::{CutOffHashPos, CutoffHash};
-    use crate::MessageId;
     use crate::message_store::IndexEntry;
+    use crate::MessageId;
 
     #[test]
     fn test_advance_pos() {
@@ -142,11 +142,14 @@ mod tests {
             before_time: 100,
         };
 
-        pos.adjust_forward_to(201, &[IndexEntry {
-            message: MessageId::from_parts_raw(200, [0u8; 10]).unwrap(),
-            file_offset: crate::message_store::FileOffset::deleted(),
-            file_total_size: 0,
-        }]);
+        pos.adjust_forward_to(
+            201,
+            &[IndexEntry {
+                message: MessageId::from_parts_raw(200, [0u8; 10]).unwrap(),
+                file_offset: crate::message_store::FileOffset::deleted(),
+                file_total_size: 0,
+            }],
+        );
 
         assert_eq!(
             pos.hash,

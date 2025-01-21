@@ -1,6 +1,6 @@
-use crate::MessageId;
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
+use crate::MessageId;
 use anyhow::Result;
 
 pub(crate) struct UpdateHeadTracker {
@@ -40,7 +40,7 @@ impl UpdateHeadTracker {
         maplen += 1;
 
         if maplen < file_len {
-            self.file.fast_truncate(maplen* size_of::<MessageId>());
+            self.file.fast_truncate(maplen * size_of::<MessageId>());
         }
         Ok(())
     }
@@ -48,10 +48,7 @@ impl UpdateHeadTracker {
     pub(crate) fn get_update_heads(&self) -> &[MessageId] {
         bytemuck::cast_slice(self.file.map())
     }
-    pub(crate) fn new<D: Disk>(
-        disk: &mut D,
-        target: &crate::Target,
-    ) -> Result<UpdateHeadTracker> {
+    pub(crate) fn new<D: Disk>(disk: &mut D, target: &crate::Target) -> Result<UpdateHeadTracker> {
         Ok(Self {
             file: disk.open_file(target, "update_head", 0, 10 * 1024 * 1024)?,
         })

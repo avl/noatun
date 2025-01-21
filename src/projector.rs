@@ -4,7 +4,10 @@ use crate::disk_access::FileAccessor;
 use crate::message_store::{IndexEntry, OnDiskMessageStore};
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{Application, ContextGuardMut, Database, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime, Target, CONTEXT};
+use crate::{
+    Application, ContextGuardMut, Database, DatabaseContextData, Message, MessageHeader, MessageId,
+    MessagePayload, NoatunContext, NoatunTime, Target, CONTEXT,
+};
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use chrono::{DateTime, Utc};
@@ -141,19 +144,19 @@ impl<APP: Application> Projector<APP> {
         Ok(())
     }
 
-
     fn apply_single_message(
         context: &mut DatabaseContextData,
         root: &mut APP,
         msg: &Message<APP::Message>,
         seqnr: SequenceNr,
     ) {
-
-        if context as *mut _  != CONTEXT.get() {
-            #[cfg(debug_assertions)] {
+        if context as *mut _ != CONTEXT.get() {
+            #[cfg(debug_assertions)]
+            {
                 unreachable!("context was not set correctly");
             }
-            #[cfg(not(debug_assertions))] {
+            #[cfg(not(debug_assertions))]
+            {
                 std::hint::unreachable_unchecked()
             }
         }
@@ -165,16 +168,24 @@ impl<APP: Application> Projector<APP> {
         CONTEXT.set(context as *mut _);
 
         println!("Applying message #{}", context.next_seqnr());
-        msg.payload.apply(NoatunTime(msg.header.id.timestamp()), unsafe { Pin::new_unchecked(root) } ); //TODO: Handle panics in apply gracefully
+        msg.payload
+            .apply(NoatunTime(msg.header.id.timestamp()), unsafe {
+                Pin::new_unchecked(root)
+            }); //TODO: Handle panics in apply gracefully
         context.set_next_seqnr(seqnr.successor()); //TODO: Don't record a snapshot for _every_ message.
         context.finalize_message(seqnr);
     }
 
-    pub(crate) fn apply_preview(&mut self, time: DateTime<Utc>, root: &mut APP, preview: impl Iterator<Item=APP::Message>) -> Result<()> {
+    pub(crate) fn apply_preview(
+        &mut self,
+        time: DateTime<Utc>,
+        root: &mut APP,
+        preview: impl Iterator<Item = APP::Message>,
+    ) -> Result<()> {
         NoatunContext.clear_unused_tracking();
         let time = NoatunTime(time.timestamp_millis() as u64);
         for msg in preview {
-            msg.apply(time, unsafe { Pin::new_unchecked(root) } );
+            msg.apply(time, unsafe { Pin::new_unchecked(root) });
         }
 
         Ok(())
@@ -184,7 +195,7 @@ impl<APP: Application> Projector<APP> {
     /// I.e, rewinding to this index will leave only messages at time and before.
     pub(crate) fn get_index_of_time(&mut self, time: DateTime<Utc>) -> Result<usize> {
         let stamp = time.timestamp_millis() as u64;
-        let key = MessageId::from_parts_raw(stamp+1, [0;10])?;
+        let key = MessageId::from_parts_raw(stamp + 1, [0; 10])?;
         let index = self.messages.get_insertion_point(key)?;
         Ok(index)
     }
@@ -198,7 +209,6 @@ impl<APP: Application> Projector<APP> {
     ) -> Result<()> {
         let cutoff = self.cut_off_config.nominal_cutoff(real_time_now);
 
-
         let cur_seqnr = context.next_seqnr();
 
         context.clear_unused_tracking();
@@ -208,8 +218,8 @@ impl<APP: Application> Projector<APP> {
             .query_by_index(context.next_seqnr().try_index().unwrap())?;
 
         let max_project_to = match max_project_to {
-            None => {u64::MAX}
-            Some(max_project_to) => max_project_to.timestamp_millis().try_into()?
+            None => u64::MAX,
+            Some(max_project_to) => max_project_to.timestamp_millis().try_into()?,
         };
 
         match do_run::<APP>(context, root, first_run, cutoff, max_project_to)? {

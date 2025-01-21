@@ -2,7 +2,10 @@ use bytemuck::{Pod, Zeroable};
 use datetime_literal::datetime;
 use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::Database;
-use noatun::{Application, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
+use noatun::{
+    Application, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime,
+    Object, ThinPtr,
+};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::pin::Pin;
@@ -38,8 +41,6 @@ impl Object for CounterObject {
     }
 }
 
-
-
 #[derive(Debug, Savefile)]
 struct CounterMessage {
     id: u32,
@@ -50,7 +51,6 @@ struct CounterMessage {
 impl MessagePayload for CounterMessage {
     type Root = CounterObject;
 
-
     fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
         println!(
             "Applying message {} {} {}",
@@ -58,10 +58,11 @@ impl MessagePayload for CounterMessage {
         );
 
         let counter = root.as_ref().counter.get();
-        root.counter
-            .set(counter + self.delta);
+        root.counter.set(counter + self.delta);
 
-        unsafe { Pin::new_unchecked (&mut root.counter2).push(vec![self.delta as u8]); }
+        unsafe {
+            Pin::new_unchecked(&mut root.counter2).push(vec![self.delta as u8]);
+        }
     }
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
@@ -93,7 +94,7 @@ fn test_counter_object_miri() {
         Duration::from_secs(1000),
         Some(datetime!(2023-01-01 Z)),
         None,
-        ()
+        (),
     )
     .unwrap();
 
@@ -113,8 +114,7 @@ fn test_counter_object_miri() {
     )
     .unwrap();
 
-
-    db.with_root(|root|  {
+    db.with_root(|root| {
         assert_eq!(root.counter.get(), 42);
     });
 
@@ -134,10 +134,10 @@ fn test_counter_object_miri() {
     )
     .unwrap();
 
-    db.with_root(|root|{
+    db.with_root(|root| {
         assert_eq!(root.counter.get(), 85);
         assert_eq!(root.counter2.len(), 2);
-        let vec_elem = root.counter2.get( 0);
+        let vec_elem = root.counter2.get(0);
         let arr = vec_elem.get();
         let arr_item = &arr[0];
         assert_eq!(arr_item.get(), 43u8);

@@ -1,8 +1,15 @@
-use anyhow::{Result, bail};
+use crate::distributor::{Distributor, DistributorMessage};
+use crate::projection_store::DatabaseContextHandle;
+use crate::{Application, ContextGuard, Database, DatabaseContextData};
+use anyhow::{bail, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use libc::newlocale;
-use savefile::{Deserialize, Deserializer, Field, Introspect, IntrospectItem, Packed, SavefileError, Schema, SchemaPrimitive, SchemaStruct, Serialize, Serializer, WithSchema, WithSchemaContext};
+use savefile::{
+    Deserialize, Deserializer, Field, Introspect, IntrospectItem, Packed, SavefileError, Schema,
+    SchemaPrimitive, SchemaStruct, Serialize, Serializer, WithSchema, WithSchemaContext,
+};
 use savefile_derive::Savefile;
 use socket2::{Domain, Protocol, SockRef, Type};
 use std::collections::VecDeque;
@@ -12,16 +19,12 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use chrono::{DateTime, Utc};
 use tokio::net::UdpSocket;
-use tokio::{select, spawn};
-use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::spawn_local;
-use crate::{Application, ContextGuard, Database, DatabaseContextData};
-use crate::distributor::{Distributor, DistributorMessage};
-use crate::projection_store::DatabaseContextHandle;
+use tokio::{select, spawn};
 
 #[derive(Savefile, Debug)]
 enum NetworkPacket {
@@ -33,8 +36,10 @@ const IP_HEADER_SIZE: usize = 20;
 const UDP_HEADER_SIZE: usize = 8;
 const NOATUN_NETWORK_PACKET_OVERHEAD: usize = 1;
 const NOATUN_TRANSMITTED_ENTITY_OVERHEAD: usize = 6;
-const APPROX_HEADER_SIZE: usize =
-    IP_HEADER_SIZE + UDP_HEADER_SIZE+NOATUN_NETWORK_PACKET_OVERHEAD+NOATUN_TRANSMITTED_ENTITY_OVERHEAD;
+const APPROX_HEADER_SIZE: usize = IP_HEADER_SIZE
+    + UDP_HEADER_SIZE
+    + NOATUN_NETWORK_PACKET_OVERHEAD
+    + NOATUN_TRANSMITTED_ENTITY_OVERHEAD;
 
 #[derive(Debug)]
 struct TransmittedEntity {
@@ -46,8 +51,11 @@ struct TransmittedEntity {
 
 impl Introspect for TransmittedEntity {
     fn introspect_value(&self) -> String {
-        format!("TransmittedEntity(#{},first_boundary={},len={})",
-            self.seq, self.first_boundary, self.data.len()
+        format!(
+            "TransmittedEntity(#{},first_boundary={},len={})",
+            self.seq,
+            self.first_boundary,
+            self.data.len()
         )
     }
 
@@ -63,7 +71,10 @@ impl WithSchema for TransmittedEntity {
 }
 impl Packed for TransmittedEntity {}
 impl Serialize for TransmittedEntity {
-    fn serialize(&self, serializer: &mut Serializer<impl Write>) -> std::result::Result<(), SavefileError> {
+    fn serialize(
+        &self,
+        serializer: &mut Serializer<impl Write>,
+    ) -> std::result::Result<(), SavefileError> {
         serializer.write_u16(self.seq)?;
         assert!(self.data.len() <= u16::MAX as usize);
         serializer.write_u16(self.data.len() as u16)?;
@@ -73,7 +84,9 @@ impl Serialize for TransmittedEntity {
     }
 }
 impl Deserialize for TransmittedEntity {
-    fn deserialize(deserializer: &mut Deserializer<impl Read>) -> std::result::Result<Self, SavefileError> {
+    fn deserialize(
+        deserializer: &mut Deserializer<impl Read>,
+    ) -> std::result::Result<Self, SavefileError> {
         let seq = deserializer.read_u16()?;
         let datalen = deserializer.read_u16()?;
         let data = deserializer.read_bytes(datalen as usize)?;
@@ -85,7 +98,6 @@ impl Deserialize for TransmittedEntity {
         })
     }
 }
-
 
 impl TransmittedEntity {
     fn free(&self, max_payload: usize) -> usize {
@@ -110,17 +122,16 @@ impl ReceiveTrack {
     /// How long are packets kept in the retransmit window.
     /// I.e, after this has passed, they're lost forever.
     pub const RETRANSMIT_WINDOW: usize = 1000;
-    pub const RETRANSMIT_WINDOW_U16: u16 =
-        if Self::RETRANSMIT_WINDOW > u16::MAX as usize {
-            panic!("RETRANSMIT_WINDOW constant value too large")
-        } else {
-            Self::RETRANSMIT_WINDOW as u16
-        };
+    pub const RETRANSMIT_WINDOW_U16: u16 = if Self::RETRANSMIT_WINDOW > u16::MAX as usize {
+        panic!("RETRANSMIT_WINDOW constant value too large")
+    } else {
+        Self::RETRANSMIT_WINDOW as u16
+    };
 
-    pub(crate) fn reconstruct_seq(&self, seq:u16) -> u64 {
+    pub(crate) fn reconstruct_seq(&self, seq: u16) -> u64 {
         Self::reconstruct_seq_impl(self.expected_next, seq)
     }
-    pub(crate) fn reconstruct_seq_impl(expected_next: u64, seq:u16) -> u64 {
+    pub(crate) fn reconstruct_seq_impl(expected_next: u64, seq: u16) -> u64 {
         let short_delta = seq.wrapping_sub(expected_next as u16);
 
         if short_delta >= 65535 - Self::RETRANSMIT_WINDOW_U16 {
@@ -134,11 +145,7 @@ impl ReceiveTrack {
         expected_next + short_delta as u64
     }
 
-    async fn process(
-        &mut self,
-        packet: TransmittedEntity,
-        tx: &mut Sender<Vec<u8>>,
-    ) -> Result<()> {
+    async fn process(&mut self, packet: TransmittedEntity, tx: &mut Sender<Vec<u8>>) -> Result<()> {
         let packet = SortableTransmittedEntity {
             reconstructed_seq: self.reconstruct_seq(packet.seq),
             entity: packet,
@@ -178,7 +185,7 @@ impl ReceiveTrack {
                     if next_size == u16::MAX as usize {
                         break;
                     }
-                    let mut temp = vec![0;next_size];
+                    let mut temp = vec![0; next_size];
                     reader.read_exact(&mut temp)?;
                     if !temp.is_empty() {
                         //println!("Sending out {:?}", temp);
@@ -282,7 +289,8 @@ impl MulticasterSenderLoop {
         let buffer: &[u8] = if let Some(last) = queue.back_mut() {
             if last.entity.first_boundary != u16::MAX {
                 if last.entity.free(max_payload_per_packet) >= 2 + buffer.len() {
-                    last.entity.data
+                    last.entity
+                        .data
                         .write_u16::<LittleEndian>(buffer.len().try_into().unwrap());
                     last.entity.data.extend(buffer);
                     return;
@@ -321,16 +329,14 @@ impl MulticasterSenderLoop {
             }
             data.write_all(&buffer[reader_pos..reader_pos + chunk]);
             reader_pos += chunk;
-            queue.push_back(
-                SortableTransmittedEntity {
-                    reconstructed_seq: *next_send_seq,
-                    entity: TransmittedEntity {
-                        seq: *next_send_seq as u16,
-                        data,
-                        first_boundary: if is_first { 0 } else { u16::MAX },
-                    },
-                }
-                );
+            queue.push_back(SortableTransmittedEntity {
+                reconstructed_seq: *next_send_seq,
+                entity: TransmittedEntity {
+                    seq: *next_send_seq as u16,
+                    data,
+                    first_boundary: if is_first { 0 } else { u16::MAX },
+                },
+            });
             is_first = false;
             *next_send_seq += 1;
         }
@@ -342,7 +348,10 @@ impl MulticasterSenderLoop {
     }
     pub fn queue_retransmits(&mut self, what: &[u64]) {
         for what in what {
-            let Ok(index) = self.history.binary_search_by_key(what, |x| x.reconstructed_seq) else {
+            let Ok(index) = self
+                .history
+                .binary_search_by_key(what, |x| x.reconstructed_seq)
+            else {
                 return;
             };
             let Some(history_item) = self.history.remove(index) else {
@@ -362,7 +371,8 @@ impl MulticasterSenderLoop {
                     let mut temp = vec![];
                     // Consider if savefile really is the best here. Some more efficiency
                     // wouldn't hurt!
-                    Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::Data(x.entity)).unwrap();
+                    Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::Data(x.entity))
+                        .unwrap();
                     temp
                 });
             }
@@ -436,12 +446,11 @@ impl MulticasterSenderLoop {
     }
 }
 
-
-enum Cmd<APP:Application> {
-    AddMessage(APP::Message, oneshot::Sender<Result<()>>)
+enum Cmd<APP: Application> {
+    AddMessage(APP::Message, oneshot::Sender<Result<()>>),
 }
 
-struct DatabaseCommunicationLoop<APP:Application> {
+struct DatabaseCommunicationLoop<APP: Application> {
     database: Arc<Mutex<Database<APP>>>,
     jh: tokio::task::JoinHandle<()>,
     sender_tx: Sender<Vec<u8>>,
@@ -474,16 +483,13 @@ impl Default for DatabaseCommunicationConfig {
     }
 }
 
-pub struct DatabaseCommunication<APP:Application> {
+pub struct DatabaseCommunication<APP: Application> {
     database: Arc<Mutex<Database<APP>>>,
-    cmd_tx: Sender<Cmd<APP>>
+    cmd_tx: Sender<Cmd<APP>>,
 }
 
-
-impl<APP:Application+'static> DatabaseCommunicationLoop<APP> {
+impl<APP: Application + 'static> DatabaseCommunicationLoop<APP> {
     const PERIODIC_MSG_INTERVAL: Duration = Duration::from_secs(5);
-
-
 
     pub fn process_packet(&mut self, packet: Vec<u8>) -> Result<()> {
         let msg: DistributorMessage = Deserializer::bare_deserialize(&mut Cursor::new(&packet), 0)?;
@@ -494,9 +500,9 @@ impl<APP:Application+'static> DatabaseCommunicationLoop<APP> {
     pub fn process_messages(&mut self) -> Result<()> {
         {}
         let mut database = self.database.lock().unwrap();
-        let new_msgs = self.distributor.receive_message(
-            &mut *database,
-            self.bufferd_incoming_messages.drain(..))?;
+        let new_msgs = self
+            .distributor
+            .receive_message(&mut *database, self.bufferd_incoming_messages.drain(..))?;
         drop(database);
         self.outbuf.extend(new_msgs);
         Ok(())
@@ -510,7 +516,8 @@ impl<APP:Application+'static> DatabaseCommunicationLoop<APP> {
             let buffer_life_start = self.buffer_life_start;
             let mut buffering_timer = async move {
                 if buffer_len > 0 {
-                    if buffer_len > 1000 || buffer_life_start.elapsed() > Duration::from_secs(2) {} else {
+                    if buffer_len > 1000 || buffer_life_start.elapsed() > Duration::from_secs(2) {
+                    } else {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                 } else {
@@ -530,7 +537,7 @@ impl<APP:Application+'static> DatabaseCommunicationLoop<APP> {
                 } else {
                     std::future::pending().await
                 }
-                Ok::<(),SendError<()>>(())
+                Ok::<(), SendError<()>>(())
             };
 
             select!(
@@ -570,8 +577,7 @@ impl<APP:Application+'static> DatabaseCommunicationLoop<APP> {
         }
     }
 }
-impl<APP:Application+'static> DatabaseCommunication<APP> {
-
+impl<APP: Application + 'static> DatabaseCommunication<APP> {
     pub async fn add_message(&self, msg: APP::Message) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         match self.cmd_tx.send(Cmd::AddMessage(msg, response_tx)).await {
@@ -587,18 +593,21 @@ impl<APP:Application+'static> DatabaseCommunication<APP> {
         let db = self.database.lock().unwrap();
         db.with_root(f)
     }
-    pub fn with_root_prevew<R>(&self,
-                               time: DateTime<Utc>,
-                               preview: impl Iterator<Item=APP::Message>,
-                               f: impl FnOnce(&APP) -> R) -> Result<R> {
+    pub fn with_root_prevew<R>(
+        &self,
+        time: DateTime<Utc>,
+        preview: impl Iterator<Item = APP::Message>,
+        f: impl FnOnce(&APP) -> R,
+    ) -> Result<R> {
         let mut db = self.database.lock().unwrap();
 
         db.with_root_preview(time, preview, f)
     }
 
-
-
-    pub async fn new(database: Database<APP>, config: DatabaseCommunicationConfig) -> DatabaseCommunication<APP> {
+    pub async fn new(
+        database: Database<APP>,
+        config: DatabaseCommunicationConfig,
+    ) -> DatabaseCommunication<APP> {
         let (sender_tx, mut sender_rx) = tokio::sync::mpsc::channel(1000);
         let (receiver_tx, mut receiver_rx) = tokio::sync::mpsc::channel(1000);
         let sender_loop = MulticasterSenderLoop::new(
@@ -609,15 +618,15 @@ impl<APP:Application+'static> DatabaseCommunication<APP> {
             config.bandwidth_limit_bytes_per_second,
             config.mtu,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         let jh = spawn(sender_loop.run());
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(100);
 
         let database = Arc::new(Mutex::new(database));
         let main = DatabaseCommunicationLoop {
-            database:database.clone(),
+            database: database.clone(),
             jh,
             sender_tx,
             receiver_rx,
@@ -630,56 +639,32 @@ impl<APP:Application+'static> DatabaseCommunication<APP> {
         };
         spawn_local(main.run());
 
-        DatabaseCommunication {
-            database,
-            cmd_tx
-        }
+        DatabaseCommunication { database, cmd_tx }
     }
-
 }
 
 #[cfg(test)]
 mod tests {
 
+    use crate::communication::{MulticasterSenderLoop, ReceiveTrack};
     use tokio::spawn;
-    use crate::communication::{MulticasterSenderLoop,ReceiveTrack};
 
     #[test]
     fn reconstruct_seq_logic() {
-        assert_eq!(
-            ReceiveTrack::reconstruct_seq_impl(0, 0),
-            0);
-        assert_eq!(
-            ReceiveTrack::reconstruct_seq_impl(1, 0),
-            0);
-        assert_eq!(
-            ReceiveTrack::reconstruct_seq_impl(0, 1),
-            1);
-        assert_eq!(
-            ReceiveTrack::reconstruct_seq_impl(1500, 0),
-            65536);
+        assert_eq!(ReceiveTrack::reconstruct_seq_impl(0, 0), 0);
+        assert_eq!(ReceiveTrack::reconstruct_seq_impl(1, 0), 0);
+        assert_eq!(ReceiveTrack::reconstruct_seq_impl(0, 1), 1);
+        assert_eq!(ReceiveTrack::reconstruct_seq_impl(1500, 0), 65536);
 
+        assert_eq!(ReceiveTrack::reconstruct_seq_impl(10, 9), 9);
+        assert_eq!(ReceiveTrack::reconstruct_seq_impl(10, 7), 7);
+        assert_eq!(ReceiveTrack::reconstruct_seq_impl(65536, 0), 65536);
+        assert_eq!(ReceiveTrack::reconstruct_seq_impl(65535, 1), 65537);
         assert_eq!(
-            ReceiveTrack::reconstruct_seq_impl(10, 9),
-            9);
-        assert_eq!(
-            ReceiveTrack::reconstruct_seq_impl(10, 7),
-            7);
-        assert_eq!(
-            ReceiveTrack::reconstruct_seq_impl(65536, 0),
-            65536);
-        assert_eq!(
-            ReceiveTrack::reconstruct_seq_impl(65535, 1),
-            65537);
-        assert_eq!(
-            ReceiveTrack::reconstruct_seq_impl(65536+65535, 1),
-            65536+65537);
-
+            ReceiveTrack::reconstruct_seq_impl(65536 + 65535, 1),
+            65536 + 65537
+        );
     }
-
-
-
-
 
     #[tokio::test]
     async fn test_sender() {
@@ -701,11 +686,11 @@ mod tests {
 
         println!("About to send");
         for packet in [
-            vec![1u8;1],
-            vec![2u8;10],
-            vec![3u8;250],
-            vec![4u8;1000],
-            vec![5u8;10000],
+            vec![1u8; 1],
+            vec![2u8; 10],
+            vec![3u8; 250],
+            vec![4u8; 1000],
+            vec![5u8; 10000],
         ] {
             sender_tx.send(packet.clone()).await.unwrap();
             println!("About to recv");

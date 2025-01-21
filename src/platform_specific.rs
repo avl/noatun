@@ -1,12 +1,12 @@
 #[cfg(unix)]
-pub(crate) use unix::FileMapping;
-#[cfg(unix)]
 pub(crate) use unix::get_boot_time;
+#[cfg(unix)]
+pub(crate) use unix::FileMapping;
 
 #[cfg(unix)]
 mod unix {
     use crate::disk_access::FileBackend;
-    use anyhow::{Context, Result, anyhow, bail};
+    use anyhow::{anyhow, bail, Context, Result};
     use fs2::FileExt;
     use std::cell::Cell;
     use std::cmp::max;

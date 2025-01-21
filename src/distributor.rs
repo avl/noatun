@@ -183,8 +183,7 @@ impl Distributor {
                 }
                 DistributorMessage::RequestUpstream { query } => {
                     for (msg, count) in query {
-                        let accum_count =
-                            accumulated_upstream_queries.entry(msg).or_insert(0usize);
+                        let accum_count = accumulated_upstream_queries.entry(msg).or_insert(0usize);
                         *accum_count = (*accum_count).max(count);
                     }
                 }
@@ -390,12 +389,7 @@ impl Distributor {
 
             //TODO: Make smarter, this is super-inefficient
             for child_msg in database.get_all_messages()? {
-                if child_msg
-                    .header
-                    .parents
-                    .iter()
-                    .any(|x| *x == msg_id)
-                {
+                if child_msg.header.parents.iter().any(|x| *x == msg_id) {
                     message_list.insert(child_msg.id());
                 }
             }

@@ -5,7 +5,11 @@ use crate::message_store::IndexEntry;
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{Application, DatabaseContextData, MULTI_INSTANCE_BLOCKER, Message, MessageComponent, MessageHeader, MessageId, MessagePayload, Object, Pointer, Target, MultiInstanceThreadBlocker, CONTEXT, ContextGuard, ContextGuardMut};
+use crate::{
+    Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageComponent,
+    MessageHeader, MessageId, MessagePayload, MultiInstanceThreadBlocker, Object, Pointer, Target,
+    CONTEXT, MULTI_INSTANCE_BLOCKER,
+};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -20,7 +24,7 @@ pub struct Database<Base: Application> {
     prev_local: MessageId,
     time_override: Option<DateTime<Utc>>,
     projection_time_limit: Option<DateTime<Utc>>,
-    params: Base::Params
+    params: Base::Params,
 }
 
 //TODO: Make the modules in this file be distinct files
@@ -37,7 +41,7 @@ impl<APP: Application> Database<APP> {
     pub fn get_upstream_of(
         &self,
         message_id: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
-    ) -> Result<impl Iterator<Item = (MessageHeader, /*query count*/ usize)>+'_> {
+    ) -> Result<impl Iterator<Item = (MessageHeader, /*query count*/ usize)> + '_> {
         self.message_store.get_upstream_of(message_id)
     }
 
@@ -76,10 +80,12 @@ impl<APP: Application> Database<APP> {
         self.message_store.get_all_messages_with_children()
     }
 
-    pub fn with_root_preview<R>(&mut self,
-                                time: DateTime<Utc>,
-                               preview: impl Iterator<Item=APP::Message>,
-                               f: impl FnOnce(&APP) -> R) -> Result<R> {
+    pub fn with_root_preview<R>(
+        &mut self,
+        time: DateTime<Utc>,
+        preview: impl Iterator<Item = APP::Message>,
+        f: impl FnOnce(&APP) -> R,
+    ) -> Result<R> {
         let now = self.now();
         if !self.context.mark_dirty()? {
             // Recovery needed
@@ -88,7 +94,7 @@ impl<APP: Application> Database<APP> {
                 &mut self.message_store,
                 now,
                 self.projection_time_limit,
-                &self.params
+                &self.params,
             )?;
         }
 
@@ -99,13 +105,13 @@ impl<APP: Application> Database<APP> {
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
-        self.message_store.apply_preview(time,root, preview)?;
+        self.message_store.apply_preview(time, root, preview)?;
         let ret = f(root);
         drop(guard);
-        self.message_store.rewind(&mut self.context, current.index())?;
+        self.message_store
+            .rewind(&mut self.context, current.index())?;
         self.context.mark_clean()?;
         Ok(ret)
-
     }
 
     pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
@@ -119,10 +125,7 @@ impl<APP: Application> Database<APP> {
         self.time_override.unwrap_or_else(Utc::now)
     }
 
-    pub(crate) fn with_root_mut<R>(
-        &mut self,
-        f: impl FnOnce(Pin<&mut APP>) -> R,
-    ) -> Result<R> {
+    pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
         let now = self.now();
         if !self.context.mark_dirty()? {
             // Recovery needed
@@ -131,7 +134,7 @@ impl<APP: Application> Database<APP> {
                 &mut self.message_store,
                 now,
                 self.projection_time_limit,
-                &self.params
+                &self.params,
             )?;
         }
 
@@ -139,7 +142,7 @@ impl<APP: Application> Database<APP> {
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
-        let t = f(unsafe{Pin::new_unchecked(root)});
+        let t = f(unsafe { Pin::new_unchecked(root) });
         drop(guard);
         self.context.mark_clean()?;
 
@@ -157,10 +160,9 @@ impl<APP: Application> Database<APP> {
                 &mut self.message_store,
                 now,
                 self.projection_time_limit,
-                &self.params
+                &self.params,
             )?;
         }
-
 
         let index = self.message_store.get_index_of_time(limit)?;
         let context = unsafe { &mut *CONTEXT.get() };
@@ -168,15 +170,17 @@ impl<APP: Application> Database<APP> {
 
         self.projection_time_limit = Some(limit);
 
-
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
         let context = unsafe { &mut *CONTEXT.get() };
-        self.message_store
-            .apply_missing_messages(context, root, now, self.projection_time_limit)?;
-
+        self.message_store.apply_missing_messages(
+            context,
+            root,
+            now,
+            self.projection_time_limit,
+        )?;
 
         self.context.mark_clean();
         Ok(())
@@ -192,7 +196,7 @@ impl<APP: Application> Database<APP> {
                 &mut self.message_store,
                 now,
                 self.projection_time_limit,
-                &self.params
+                &self.params,
             )?;
         }
 
@@ -203,8 +207,12 @@ impl<APP: Application> Database<APP> {
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
         let context = unsafe { &mut *CONTEXT.get() };
-        self.message_store
-            .apply_missing_messages(context, root, now, self.projection_time_limit)?;
+        self.message_store.apply_missing_messages(
+            context,
+            root,
+            now,
+            self.projection_time_limit,
+        )?;
 
         self.context.mark_clean()?;
         Ok(())
@@ -224,7 +232,6 @@ impl<APP: Application> Database<APP> {
         let guard = ContextGuardMut::new(context);
         let root_obj_ref = APP::initialize_root(params);
         let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, root_obj_ref);
-
 
         let context = unsafe { &mut *CONTEXT.get() };
         context.set_root_ptr(root_ptr.as_generic());
@@ -247,7 +254,7 @@ impl<APP: Application> Database<APP> {
         max_file_size: usize,
         cutoff_interval: Duration,
         projection_time_limit: Option<DateTime<Utc>>,
-        params: APP::Params
+        params: APP::Params,
     ) -> Result<Database<APP>> {
         Self::create(
             if overwrite_existing {
@@ -258,7 +265,7 @@ impl<APP: Application> Database<APP> {
             max_file_size,
             cutoff_interval,
             projection_time_limit,
-            params
+            params,
         )
     }
     pub fn open(
@@ -266,14 +273,14 @@ impl<APP: Application> Database<APP> {
         max_file_size: usize,
         cutoff_interval: Duration,
         projection_time_limit: Option<DateTime<Utc>>,
-        params: APP::Params
+        params: APP::Params,
     ) -> Result<Database<APP>> {
         Self::create(
             Target::OpenExisting(path.as_ref().to_path_buf()),
             max_file_size,
             cutoff_interval,
             projection_time_limit,
-            params
+            params,
         )
     }
 
@@ -302,20 +309,27 @@ impl<APP: Application> Database<APP> {
         self.append_local_at(now, message)
     }
     pub fn append_local_at(&mut self, time: DateTime<Utc>, message: APP::Message) -> Result<()> {
-
         let mut new_id = MessageId::generate_for_time(time)?;
 
         if new_id.timestamp() == self.prev_local.timestamp() {
             new_id = self.prev_local.successor();
         }
         self.prev_local = new_id;
-        println!("At {:?}/#{} Appending {:?}", time, self.context.next_seqnr(), message);
+        println!(
+            "At {:?}/#{} Appending {:?}",
+            time,
+            self.context.next_seqnr(),
+            message
+        );
 
         let t = Message::new(
-            new_id,self.get_update_heads()
-                .iter().copied().filter(|x|*x < new_id )
+            new_id,
+            self.get_update_heads()
+                .iter()
+                .copied()
+                .filter(|x| *x < new_id)
                 .collect(),
-            message
+            message,
         );
         self.append_single(t, true)?;
         Ok(())
@@ -324,7 +338,7 @@ impl<APP: Application> Database<APP> {
     pub fn append_many(
         &mut self,
         messages: impl Iterator<Item = Message<APP::Message>>,
-        local: bool
+        local: bool,
     ) -> Result<()> {
         let now = self.now();
         if !self.context.mark_dirty()? {
@@ -334,22 +348,24 @@ impl<APP: Application> Database<APP> {
                 &mut self.message_store,
                 now,
                 self.projection_time_limit,
-                &self.params
+                &self.params,
             )?;
         }
 
-
         self.message_store
             .push_messages(&mut self.context, messages, local);
-
 
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
 
         let context = unsafe { &mut *CONTEXT.get() };
-        self.message_store
-            .apply_missing_messages(context, root, now, self.projection_time_limit)?;
+        self.message_store.apply_missing_messages(
+            context,
+            root,
+            now,
+            self.projection_time_limit,
+        )?;
 
         self.context.mark_clean();
         Ok(())
@@ -397,7 +413,7 @@ impl<APP: Application> Database<APP> {
             &mut message_store,
             mock_time.unwrap_or_else(Utc::now),
             projection_time_limit,
-            &params
+            &params,
         )?;
         ctx.mark_clean()?;
 
@@ -426,11 +442,16 @@ impl<APP: Application> Database<APP> {
 
         let is_dirty = ctx.is_dirty();
 
-        let mut message_store =
-            Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
+        let mut message_store = Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
         let mut update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
         if is_dirty {
-            Self::recover(&mut ctx, &mut message_store, Utc::now(), projection_time_limit, &params)?;
+            Self::recover(
+                &mut ctx,
+                &mut message_store,
+                Utc::now(),
+                projection_time_limit,
+                &params,
+            )?;
             ctx.mark_clean()?;
         }
         Ok(Database {
@@ -439,7 +460,7 @@ impl<APP: Application> Database<APP> {
             context: ctx,
             message_store,
             time_override: None,
-            projection_time_limit
+            projection_time_limit,
         })
     }
 }

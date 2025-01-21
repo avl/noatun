@@ -27,7 +27,7 @@ fn create_app(
         Duration::from_secs(1000),
         Some(datetime!(2021-01-01 Z)),
         None,
-        ()
+        (),
     )
     .unwrap();
     for (id, parents, inc1, set1, local) in msgs {
