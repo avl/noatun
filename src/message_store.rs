@@ -1792,6 +1792,7 @@ mod tests {
     use std::io::{Cursor, Read, Write};
     use std::path::Path;
     use std::time::Instant;
+    use std::pin::Pin;
 
     #[derive(Debug)]
     struct OnDiskMessage {
@@ -1804,7 +1805,7 @@ mod tests {
         type Root = DummyUnitObject;
 
 
-        fn apply(&self, time: NoatunTime, root: &mut Self::Root) {
+        fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
             unimplemented!()
         }
 

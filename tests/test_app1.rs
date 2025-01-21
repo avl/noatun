@@ -5,6 +5,7 @@ use noatun::database::Database;
 use noatun::{Application, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
+use std::pin::Pin;
 use std::time::Duration;
 
 #[derive(Clone, Copy, Zeroable, Pod)]
@@ -16,6 +17,17 @@ struct CounterObject {
 
 impl Object for CounterObject {
     type Ptr = ThinPtr;
+    type DetachedType = ();
+
+    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+        todo!()
+    }
+
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+        let this: &mut CounterObject = NoatunContext.allocate_pod();
+        this.init_from_detached(detached);
+        this
+    }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
         unsafe { NoatunContext.access_pod(index) }
@@ -39,23 +51,17 @@ impl MessagePayload for CounterMessage {
     type Root = CounterObject;
 
 
-    fn apply(&self, _time: NoatunTime, root: &mut Self::Root) {
+    fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
         println!(
             "Applying message {} {} {}",
             self.id, self.counter, self.delta
         );
 
+        let counter = root.as_ref().counter.get();
         root.counter
-            .set(root.counter.get() + self.delta);
-        let cell: &mut DatabaseCell<u8> = DatabaseCell::allocate();
-        cell.set(self.delta as u8);
-        // TODO: This is quite horrible, should we even have support for unsized objects if
-        // it's going to be this unsafe/untyped? Can we make it nicer?
-        let cell_slice =
-            unsafe { std::slice::from_raw_parts_mut(cell as *mut DatabaseCell<u8>, 1) };
+            .set(counter + self.delta);
 
-        let handle = DatabaseObjectHandle::new(NoatunContext.index_of(cell_slice));
-        root.counter2.push(handle);
+        unsafe { Pin::new_unchecked (&mut root.counter2).push(vec![self.delta as u8]); }
     }
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
@@ -107,20 +113,6 @@ fn test_counter_object_miri() {
     )
     .unwrap();
 
-    /*
-    TODO
-    Finish big refactoring:
-
-    1: Message is now a new type, that carries parents and id,
-    message payload is now the only user-changable part.
-
-    2: The way we store parents in the db has changed, see the smallvec-like new datastructure
-    in the store
-
-    3: We have prepared to store child-info in db. This is needed to be able to actually send
-    'Message + all descendants!'
-
-     */
 
     db.with_root(|root|  {
         assert_eq!(root.counter.get(), 42);

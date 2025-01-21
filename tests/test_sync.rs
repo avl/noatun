@@ -6,7 +6,7 @@ use savefile_derive::Savefile;
 use noatun::{disable_multi_instance_blocker, Application, Database, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::DatabaseCell;
-
+use std::pin::Pin;
 #[derive(Savefile, Debug)]
 struct MazeMessage {
     delta_x: i32,
@@ -22,6 +22,18 @@ struct Maze {
 
 impl Object for Maze {
     type Ptr = ThinPtr;
+    type DetachedType = (u32,u32);
+
+    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+        self.player_pos_x.set(detached.0);
+        self.player_pos_y.set(detached.1);
+    }
+
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+        let temp: &mut Maze = NoatunContext.allocate_pod();
+        temp.init_from_detached(detached);
+        temp
+    }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
         unsafe { NoatunContext.access_pod(index) }
@@ -38,9 +50,11 @@ impl MessagePayload for MazeMessage {
     type Root = Maze;
 
 
-    fn apply(&self, _time: NoatunTime, root: &mut Self::Root) {
-        root.player_pos_x.set(root.player_pos_x.get().saturating_add_signed(self.delta_x));
-        root.player_pos_y.set(root.player_pos_y.get().saturating_add_signed(self.delta_y));
+    fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
+        let x = root.player_pos_x.get().saturating_add_signed(self.delta_x);
+        root.player_pos_x.set(x);
+        let y = root.player_pos_y.get().saturating_add_signed(self.delta_y);
+        root.player_pos_y.set(y);
     }
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
