@@ -398,7 +398,7 @@ impl<M> OnDiskMessageStore<M> {
     pub fn get_upstream_of(
         &self,
         message_ids: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
-    ) -> Result<impl Iterator<Item = (MessageHeader, usize /*query count*/)>>
+    ) -> Result<impl Iterator<Item = (MessageHeader, usize /*query count*/)>+ '_>
     where
         M: MessagePayload,
     {
@@ -713,7 +713,7 @@ impl<M> OnDiskMessageStore<M> {
     pub fn query_by_index(
         &self,
         index: usize,
-    ) -> Result<impl Iterator<Item = (usize /*seqnr/index*/, Message<M>)>>
+    ) -> Result<impl Iterator<Item = (usize /*seqnr/index*/, Message<M>)>+ '_>
     where
         M: MessagePayload,
     {
@@ -954,6 +954,19 @@ impl<M> OnDiskMessageStore<M> {
             Ok(index) => Ok(Some(index)),
             Err(index) => Ok(None),
         }
+    }
+
+
+    /// Return message with the given id.
+    /// If no such message exist, return the index of the next message with a larger id.
+    /// If the given id is larger than the largest MessageId, return the number of messages.
+    pub fn get_insertion_point(&self, id: MessageId) -> Result<usize> {
+        let (header, message_index) = self.header_and_index().context("opening index file")?;
+        if message_index.is_empty() == false && id > message_index.last().unwrap().message {
+            return Ok(message_index.len());
+        }
+        let (Ok(i)|Err(i)) = message_index.binary_search_by_key(&id, |x| x.message);
+        Ok(i)
     }
 
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {

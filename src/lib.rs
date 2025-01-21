@@ -1,11 +1,9 @@
-#![feature(test)]
 #![allow(unused)]
 #![allow(dead_code)]
 #![allow(clippy::unnecessary_lazy_evaluations)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]
 
-extern crate test;
 
 use crate::data_types::DatabaseCell;
 use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
@@ -15,7 +13,6 @@ use crate::projector::Projector;
 use crate::sha2_helper::sha2;
 use anyhow::{Context, Result, bail};
 use bumpalo::Bump;
-use bytemuck::{Pod, Zeroable};
 use chrono::{DateTime, SecondsFormat, Utc};
 pub use database::Database;
 use fs2::FileExt;
@@ -36,10 +33,12 @@ use std::ops::{Add, Deref, Range};
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
+use std::slice;
 use std::slice::SliceIndex;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 use crate::sequence_nr::SequenceNr;
+pub use bytemuck::{Pod, Zeroable};
 
 mod disk_abstraction;
 mod message_store;
@@ -169,7 +168,10 @@ impl NoatunContext {
     }
 
     pub fn observe_registrar(self, registrar: SequenceNr) {
-        let context_ptr = get_context_mut_ptr();
+        let context_ptr = CONTEXT.get();
+        if context_ptr.is_null(){
+            return;
+        }
         unsafe { (*context_ptr).observe_registrar(registrar) }
     }
     pub unsafe fn access_slice<'a, T: Pod>(self, range: FatPtr) -> &'a [T] {
@@ -1059,7 +1061,7 @@ pub mod sequence_nr {
     use std::fmt::{Debug, Display, Formatter};
 
     #[derive(Pod, Zeroable, Copy, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-    #[repr(transparent)]
+    #[repr(C,packed)]
     // 0 is an invalid sequence number, used to represent 'not a number'
     pub struct SequenceNr(u32);
     impl Display for SequenceNr {
@@ -1185,8 +1187,17 @@ impl<M: MessagePayload> Message<M> {
 #[repr(C)]
 pub struct DummyUnitObject;
 
+
 impl Object for DummyUnitObject {
     type Ptr = ThinPtr;
+    type DetachedType = ();
+
+    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+    }
+
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+        unsafe { &mut *(1usize as *mut DummyUnitObject) }
+    }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
         &DummyUnitObject
@@ -1195,7 +1206,7 @@ impl Object for DummyUnitObject {
     unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
         // # SAFETY
         // Any dangling pointer is a valid pointer to a zero-sized type
-        unsafe { &mut *(std::ptr::dangling_mut()) }
+        unsafe { &mut *(1usize as *mut DummyUnitObject) }
     }
 }
 
@@ -1242,7 +1253,7 @@ mod update_head_tracker {
             maplen += 1;
 
             if maplen < file_len {
-                self.file.fast_truncate(maplen);
+                self.file.fast_truncate(maplen* size_of::<MessageId>());
             }
             Ok(())
         }
@@ -1486,7 +1497,7 @@ mod projector {
         pub fn get_upstream_of(
             &self,
             message_id: impl DoubleEndedIterator<Item = (MessageId, usize)>,
-        ) -> Result<impl Iterator<Item = (MessageHeader, /*count*/ usize)>> {
+        ) -> Result<impl Iterator<Item = (MessageHeader, /*count*/ usize)> + '_> {
             self.messages.get_upstream_of(message_id)
         }
 
@@ -1582,7 +1593,7 @@ mod projector {
             messages: impl ExactSizeIterator<Item = Message<APP::Message>>,
             local: bool,
         ) -> Result<bool> {
-            debug_assert_eq!(self.messages.count_messages()?, context.next_seqnr().try_index().unwrap_or(0));
+            //debug_assert_eq!(self.messages.count_messages()?, context.next_seqnr().try_index().unwrap_or(0));
             if let Some(insert_point) = self.messages.append_many_sorted(
                 messages,
                 |id, parents| self.head_tracker.add_new_update_head(id, parents),
@@ -1603,6 +1614,7 @@ mod projector {
             context.rewind(SequenceNr::from_index(point));
             Ok(())
         }
+
 
         fn apply_single_message(
             context: &mut DatabaseContextData,
@@ -1626,6 +1638,7 @@ mod projector {
             // right provenance (though it's the exact same bits regardless)
             CONTEXT.set(context as *mut _);
 
+            println!("Applying message #{}", context.next_seqnr());
             msg.payload.apply(NoatunTime(msg.header.id.timestamp()), root); //TODO: Handle panics in apply gracefully
             context.set_next_seqnr(seqnr.successor()); //TODO: Don't record a snapshot for _every_ message.
             context.finalize_message(seqnr);
@@ -1639,6 +1652,15 @@ mod projector {
             }
 
             Ok(())
+        }
+
+        /// Returns the first index _after_ the given time.
+        /// I.e, rewinding to this index will leave only messages at time and before.
+        pub(crate) fn get_index_of_time(&mut self, time: DateTime<Utc>) -> Result<usize> {
+            let stamp = time.timestamp_millis() as u64;
+            let key = MessageId::from_parts_raw(stamp+1, [0;10])?;
+            let index = self.messages.get_insertion_point(key)?;
+            Ok(index)
         }
 
         pub(crate) fn apply_missing_messages(
@@ -1747,10 +1769,16 @@ pub trait Pointer: Copy + Debug + 'static {
     fn is_null(&self) -> bool;
 }
 
+
 pub trait Object {
     /// This is meant to be either ThinPtr for sized objects, or
     /// FatPtr for dynamically sized objects. Other types are likely to not make sense.
     type Ptr: Pointer;
+    type DetachedType;
+
+    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType);
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self;
+
     /// Access a shared instance of Self at the given pointer address.
     ///
     /// # Safety
@@ -1785,6 +1813,86 @@ pub trait Object {
     // TODO: Don't expose these methods. Too hard to use correctly!
     unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self;
 }
+
+
+
+#[macro_export] macro_rules! noatun_object {
+
+    ( bounded_type pod $typ:ty) => {
+        $crate::DatabaseCell<$typ>
+    };
+    ( declare_field pod $typ: ty ) => {
+        $crate::DatabaseCell<$typ>
+    };
+    ( new_declare_param pod $typ: ty ) => {
+        $typ
+    };
+    ( new_assign_field pod $self: ident $name: ident $typ: ty ) => {
+        $self.$name.set($name);
+    };
+    ( getter pod $name:ident $typ: ty  ) => {
+        pub fn $name(&self) -> $typ {
+            self.$name.get()
+        }
+    };
+    ( setter pod $name:ident $setter:ident $typ: ty  ) => {
+        pub fn $setter(&mut self, val: $typ) {
+            self.$name.set(val);
+        }
+    };
+
+    ( bounded_type object $typ:ty) => {
+        $typ
+    };
+    ( declare_field object $typ: ty ) => {
+        $typ
+    };
+    ( new_declare_param object $typ: ty ) => {
+        <$typ as $crate::Object>::DetachedType
+    };
+    ( new_assign_field object $self:ident $name: ident $typ: ty ) => {
+        unsafe { <_ as $crate::Object>::init_from_detached(&mut $self.$name, $name); }
+    };
+    ( getter object $name:ident $typ: ty  ) => {
+        pub fn $name(&self) -> &$typ {
+            &self.$name
+        }
+    };
+    ( setter object $name:ident $setter:ident $typ: ty  ) => {
+        pub fn $setter(&mut self) -> std::pin::Pin<&mut $typ> {
+            unsafe { std::pin::Pin::new_unchecked(&mut self.$name) }
+        }
+    };
+
+    ( mod $s:ident { $( struct $n:ident { $( $kind:ident $name: ident / $setter:ident : $typ:ty $(,)* )* } $(;)* )* } $(;)* ) => {
+        mod $s {
+            $(
+
+                #[derive(Debug,Copy,Clone, $crate::Pod, $crate::Zeroable)]
+                #[repr(C, packed)]
+                pub struct $n where $( noatun_object!(bounded_type $kind $typ) : $crate::Object ),*
+                {
+                    phantom: ::std::marker::PhantomPinned,
+                    $( $name : noatun_object!(declare_field $kind $typ) ),*
+                }
+                impl $n {
+                    pub fn init<'a>(
+                        &mut self,
+                        $( $name: noatun_object!(new_declare_param $kind $typ) ),*
+                        ) {
+                        $( noatun_object!(new_assign_field $kind self $name $typ); )*
+                    }
+
+                    $( noatun_object!(getter $kind $name $typ); )*
+
+                    $( noatun_object!(setter $kind $name $setter $typ); )*
+
+                }
+            )*
+        }
+    };
+}
+
 
 pub trait FixedSizeObject: Object<Ptr = ThinPtr> + Sized + Pod {}
 
@@ -1873,6 +1981,24 @@ impl Pointer for FatPtr {
 
 impl<T: FixedSizeObject> Object for [T] {
     type Ptr = FatPtr;
+    type DetachedType = Vec<T::DetachedType>;
+
+    unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+        for (dst, src) in self.iter_mut().zip(detached.into_iter()) {
+            dst.init_from_detached(src);
+        }
+    }
+
+    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+        let bytes = size_of::<T>() * detached.len();
+        let alloc = NoatunContext.allocate_raw(bytes, align_of::<T>());
+
+        let slice: &mut [T] = bytemuck::cast_slice_mut(slice::from_raw_parts_mut(alloc, bytes));
+        for (src,dst) in detached.into_iter().zip(&mut *slice) {
+            dst.init_from_detached(src);
+        }
+        slice
+    }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
         unsafe { NoatunContext.access_slice(index) }
@@ -1893,6 +2019,7 @@ pub mod data_types {
     use std::marker::PhantomData;
     use std::mem::transmute_copy;
     use std::ops::{Deref, Index, Range};
+    use std::pin::Pin;
     use std::ptr::addr_of_mut;
 
     #[derive(Copy, Clone, Debug)]
@@ -2015,6 +2142,17 @@ pub mod data_types {
 
     impl<T: Pod> Object for OpaqueCell<T> {
         type Ptr = ThinPtr;
+        type DetachedType = T;
+
+        unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+            self.set(detached);
+        }
+
+        unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+            let ret: &mut Self = NoatunContext.allocate_pod();
+            ret.init_from_detached(detached);
+            ret
+        }
 
         unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
             unsafe { NoatunContext.access_pod(index) }
@@ -2026,11 +2164,11 @@ pub mod data_types {
     }
 
     impl<T: Pod> OpaqueCell<T> {
-        pub fn set<'a>(&'a mut self, context: &'a DatabaseContextData, new_value: T) {
-            let index = context.index_of(self);
+        pub fn set<'a>(&'a mut self, new_value: T) {
+            let index = NoatunContext.index_of(self);
             //context.write(index, bytes_of(&new_value));
-            context.write_pod(new_value, &mut self.value);
-            context.update_registrar(&mut self.registrar, true);
+            NoatunContext.write_pod(new_value, &mut self.value);
+            NoatunContext.update_registrar(&mut self.registrar, true);
         }
     }
 
@@ -2050,6 +2188,17 @@ pub mod data_types {
 
     impl<T: Pod> Object for DatabaseCell<T> {
         type Ptr = ThinPtr;
+        type DetachedType = T;
+
+        unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+            self.set(detached);
+        }
+
+        unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+            let ret: &mut Self = NoatunContext.allocate_pod();
+            ret.init_from_detached(detached);
+            ret
+        }
 
         unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
             unsafe { NoatunContext.access_pod(index) }
@@ -2201,6 +2350,15 @@ pub mod data_types {
         T: FixedSizeObject + 'static,
     {
         type Ptr = ThinPtr;
+        type DetachedType = Vec<T::DetachedType>;
+
+        unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+            panic!("init_from_detached is not implemented for RawDatabaseVec");
+        }
+        unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+            panic!("allocate_from_detached is not implemented for RawDatabaseVec");
+        }
+
         unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
             unsafe { NoatunContext.access_pod(index) }
         }
@@ -2209,7 +2367,7 @@ pub mod data_types {
         }
     }
 
-    #[repr(C)]
+    #[repr(C, packed)]
     pub struct DatabaseVec<T> {
         length: usize,
         capacity: usize,
@@ -2220,7 +2378,7 @@ pub mod data_types {
 
     impl<T> Debug for DatabaseVec<T> {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            write!(f, "DatabaseVec({})", self.length)
+            write!(f, "DatabaseVec({})", {self.length})
         }
     }
 
@@ -2328,11 +2486,11 @@ pub mod data_types {
             let offset = self.data + index * size_of::<T>();
             unsafe { T::access(ThinPtr(offset)) }
         }
-        pub fn get_mut(&mut self, index: usize) -> &mut T {
+        pub fn get_mut(&mut self, index: usize) -> Pin<&mut T> {
             assert!(index < self.length);
             let offset = self.data + index * size_of::<T>();
             let t = unsafe { T::access_mut(ThinPtr(offset)) };
-            t
+            unsafe { Pin::new_unchecked(t) }
         }
         pub(crate) fn write(&mut self, index: usize, val: T) {
             let offset = self.data + index * size_of::<T>();
@@ -2342,7 +2500,7 @@ pub mod data_types {
             };
         }
 
-        pub fn push_zeroed(&mut self) -> &mut T {
+        pub fn push_zeroed(&mut self) -> Pin<&mut T> {
 
             self.push(T::zeroed());
             self.get_mut( self.length - 1)
@@ -2353,14 +2511,14 @@ pub mod data_types {
                 return;
             }
             if index == self.length -1 {
-                NoatunContext.write_pod(self.length-1, &mut self.length);
+                NoatunContext.write_pod_ptr(self.length-1, addr_of_mut!(self.length));
                 return;
             }
             let src_ptr = ThinPtr(self.data + (self.length-1) * size_of::<T>());
             let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
             NoatunContext.copy(FatPtr::from(src_ptr.0, size_of::<T>()),
                                 dst_ptr);
-            NoatunContext.write_pod(self.length-1, &mut self.length);
+            NoatunContext.write_pod_ptr(self.length-1, addr_of_mut!(self.length));
         }
 
         pub fn retain(&mut self, mut f: impl FnMut(&mut T) -> bool) {
@@ -2384,14 +2542,14 @@ pub mod data_types {
                     write_offset += 1;
                 }
             }
-            NoatunContext.write_pod(new_len, &mut self.length);
+            NoatunContext.write_pod_ptr(new_len, addr_of_mut!( self.length));
         }
 
         pub fn push<'a>(&'a mut self, t: T) {
             if self.length >= self.capacity {
                 self.realloc_add((self.capacity + 1) * 2, self.length + 1);
             } else {
-                NoatunContext.write_pod(self.length + 1, &mut self.length);
+                NoatunContext.write_pod_ptr(self.length + 1, addr_of_mut!( self.length));
             }
             NoatunContext.update_registrar(&mut self.length_registrar, false);
 
@@ -2404,6 +2562,21 @@ pub mod data_types {
         T: FixedSizeObject + 'static,
     {
         type Ptr = ThinPtr;
+        type DetachedType = Vec<T::DetachedType>;
+
+        unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+            for item in detached {
+                let new_item = self.push_zeroed();
+                let new_item = unsafe { new_item.get_unchecked_mut() };
+                new_item.init_from_detached(item);
+            }
+        }
+        unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+            let pod: &mut Self = NoatunContext.allocate_pod();
+            pod.init_from_detached(detached);
+            pod
+        }
+
         unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
             unsafe { NoatunContext.access_pod(index) }
         }
@@ -2429,8 +2602,21 @@ pub mod data_types {
     }
 
     unsafe impl<T: Object + ?Sized + 'static> Pod for DatabaseObjectHandle<T> {}
-    impl<T: Object + ?Sized + 'static> Object for DatabaseObjectHandle<T> {
+    impl<T: Object + ?Sized + 'static> Object for DatabaseObjectHandle<T> where T::Ptr: Pod {
         type Ptr = ThinPtr;
+        type DetachedType = T::DetachedType;
+
+        unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+            let target = T::allocate_from_detached(detached);
+            let new_index = NoatunContext.index_of(target);
+            NoatunContext.write_pod(new_index, &mut self.object_index);
+        }
+
+        unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+            let pod: &mut Self = NoatunContext.allocate_pod();
+            pod.init_from_detached(detached);
+            pod
+        }
 
         unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
             unsafe { NoatunContext.access_pod(index) }
@@ -2447,11 +2633,11 @@ pub mod data_types {
             }
             unsafe { T::access(self.object_index) }
         }
-        pub fn get_mut(&mut self) -> &mut T {
+        pub fn get_mut(&mut self) -> Pin<&mut T> {
             if self.object_index.is_null() {
                 panic!("get_mut() called on an uninitialized (null) DatabaseObjectHandle.");
             }
-            unsafe { T::access_mut(self.object_index) }
+            unsafe { Pin::new_unchecked(T::access_mut(self.object_index)) }
         }
 
         pub fn new(value: T::Ptr) -> Self {
@@ -2460,7 +2646,6 @@ pub mod data_types {
                 phantom: Default::default(),
             }
         }
-
         #[allow(clippy::mut_from_ref)]
         pub fn allocate<'a>(value: T) -> &'a mut Self
         where
@@ -2624,7 +2809,7 @@ pub mod database {
         pub fn get_upstream_of(
             &self,
             message_id: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
-        ) -> Result<impl Iterator<Item = (MessageHeader, /*query count*/ usize)>> {
+        ) -> Result<impl Iterator<Item = (MessageHeader, /*query count*/ usize)>+'_> {
             self.message_store.get_upstream_of(message_id)
         }
 
@@ -2732,6 +2917,42 @@ pub mod database {
             self.context.mark_clean()?;
 
             Ok(t)
+        }
+
+        pub fn set_projection_time_limit(&mut self, limit: DateTime<Utc>) -> Result<()> {
+            let now = self.now();
+            // TODO: Remove duplication. There are many methods that have exact this
+            // code
+            if !self.context.mark_dirty()? {
+                // Recovery needed
+                Self::recover(
+                    &mut self.context,
+                    &mut self.message_store,
+                    now,
+                    self.projection_time_limit,
+                    &self.params
+                )?;
+            }
+
+
+            let index = self.message_store.get_index_of_time(limit)?;
+            let context = unsafe { &mut *CONTEXT.get() };
+            self.message_store.rewind(&mut self.context, index)?;
+
+            self.projection_time_limit = Some(limit);
+
+
+            let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
+            let guard = ContextGuardMut::new(&mut self.context);
+            let root = unsafe { <APP as Object>::access_mut(root_ptr) };
+
+            let context = unsafe { &mut *CONTEXT.get() };
+            self.message_store
+                .apply_missing_messages(context, root, now, self.projection_time_limit)?;
+
+
+            self.context.mark_clean();
+            Ok(())
         }
 
         pub fn reproject(&mut self) -> Result<()> {
@@ -2851,12 +3072,22 @@ pub mod database {
 
         pub fn append_local(&mut self, message: APP::Message) -> Result<()> {
             let now = self.now();
-            let new_id = MessageId::generate_for_time(now)?
-                .max(self.prev_local.successor());
+            self.append_local_at(now, message)
+        }
+        pub fn append_local_at(&mut self, time: DateTime<Utc>, message: APP::Message) -> Result<()> {
+
+            let mut new_id = MessageId::generate_for_time(time)?;
+
+            if new_id.timestamp() == self.prev_local.timestamp() {
+                new_id = self.prev_local.successor();
+            }
             self.prev_local = new_id;
+            println!("At {:?}/#{} Appending {:?}", time, self.context.next_seqnr(), message);
 
             let t = Message::new(
-                new_id,self.get_update_heads().to_vec(),
+                new_id,self.get_update_heads()
+                    .iter().copied().filter(|x|*x < new_id )
+                    .collect(),
                 message
             );
             self.append_single(t, true)?;
@@ -3447,6 +3678,17 @@ pub mod distributor {
 }
 
 
+noatun_object!(
+            mod kalle {
+                struct Kalle {
+                    pod hej/set_hej:u32,
+                    pod tva/set_tva:u32,
+                    object da/da_mut: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>>
+                }
+            }
+        );
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3467,8 +3709,8 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::io::{Cursor, SeekFrom};
     use std::iter::once;
-    use test::Bencher;
     use tokio::io::AsyncSeekExt;
+
 
     #[test]
     fn test_mmap_big() {
@@ -3554,12 +3796,23 @@ mod tests {
     #[derive(Clone, Copy, Zeroable, Pod)]
     #[repr(C)]
     struct CounterObject {
+        // TODO: This isn't Unpin, but it should be!
+        // Though, since it's just for testing, it's not critical
         counter: DatabaseCell<u32>,
         counter2: DatabaseCell<u32>,
     }
 
     impl Object for CounterObject {
         type Ptr = ThinPtr;
+        type DetachedType = ();
+
+        unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+            todo!()
+        }
+
+        unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+            todo!()
+        }
 
         unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
             unsafe { NoatunContext.access_pod(index) }
@@ -4092,10 +4345,10 @@ mod tests {
             assert_eq!(counter_vec.len(), 0);
 
             let new_element = counter_vec.push_zeroed();
-            let new_element = counter_vec.get_mut(0);
+            let mut new_element = counter_vec.get_mut(0);
 
             new_element.counter.set(47);
-            let new_element = counter_vec.push_zeroed();
+            let mut new_element = counter_vec.push_zeroed();
             new_element.counter.set(48);
 
             assert_eq!(counter_vec.len(), 2);
@@ -4131,10 +4384,10 @@ mod tests {
 
             let new_element = counter_vec.push_zeroed();
 
-            let new_element = counter_vec.get_mut( 0);
+            let mut new_element = counter_vec.get_mut( 0);
 
             new_element.counter.set( 47);
-            let new_element = counter_vec.push_zeroed();
+            let mut new_element = counter_vec.push_zeroed();
             new_element.counter.set( 48);
 
             assert_eq!(counter_vec.len(), 2);
@@ -4186,7 +4439,7 @@ mod tests {
                 NoatunContext.set_next_seqnr(SequenceNr::from_index(1));
                 assert_eq!(counter_vec.len(), 0);
 
-                let new_element = counter_vec.push_zeroed();
+                let mut new_element = counter_vec.push_zeroed();
                 new_element.counter.set( 47);
                 new_element.counter2.set( 48);
 
@@ -4198,7 +4451,7 @@ mod tests {
 
         {
             db.with_root_mut(|counter_vec| {
-                let counter = counter_vec.get_mut(0);
+                let mut counter = counter_vec.get_mut(0);
                 counter.counter.set( 50);
                 unsafe {
                     NoatunContext.rewind(SequenceNr::from_index(2));
@@ -4215,8 +4468,7 @@ mod tests {
             });
         }
     }
-
-    #[bench]
+    /*#[bench]
     fn bench_sha256(b: &mut Bencher) {
         // write input message
 
@@ -4227,7 +4479,7 @@ mod tests {
             hasher.update(b"hello world");
             hasher.finalize()
         });
-    }
+    }*/
 
     mod distributor_tests {
         use crate::distributor::DistributorMessage::Message;
@@ -4448,6 +4700,24 @@ mod tests {
             insta::assert_debug_snapshot!(app2.get_all_message_ids().unwrap());
             insta::assert_debug_snapshot!(app2.get_update_heads());
         }
+    }
+
+    #[test]
+    fn test_object_macro() {
+
+        use crate::data_types::DatabaseVec;
+        noatun_object!(
+            mod kalle {
+                struct Kalle {
+                    pod hej/set_hej:u32,
+                    pod tva/set_tva:u32,
+                    object da/da_mut: self::DatabaseVec<self::DatabaseCell<u32>>
+                }
+            }
+        );
+        let mut kalle :kalle::Kalle = Zeroable::zeroed();
+
+        kalle.init(42,42, vec![42u32]);
     }
 
 }

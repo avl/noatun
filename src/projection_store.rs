@@ -252,7 +252,7 @@ impl DatabaseContextData {
         let new_entry_index = self.index_of_sized(new_entry);
         self.write_pod(new_entry_index, key_place);
     }
-    fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> {
+    fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr>+ '_ {
         let keys: &RawDatabaseVec<ThinPtr> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observee.index() < keys.len() {
@@ -313,6 +313,7 @@ impl DatabaseContextData {
     fn raw_set_next_seqnr_of(main_db_mmap: &FileAccessor, new_value: SequenceNr) {
         let header: &mut MainDbHeader =
             unsafe { &mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
+        //println!("Rewind to #{}", new_value);
         header.next_seqnr = new_value;
     }
 
@@ -471,6 +472,9 @@ impl DatabaseContextData {
                 "Attempt to rewind time before any time snapshot was recorded.\
                     It is not allowed to rewind time before/while constructing the root object."
             )
+        }
+        if self.next_seqnr() <= new_time {
+            return;
         }
         //println!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
 
@@ -1006,7 +1010,7 @@ mod tests {
 
         let t = Instant::now();
         for i in 0..100_usize {
-            tracker.record_dependency(SequenceNr::from_index(i.isqrt()), SequenceNr::from_index(i));
+            tracker.record_dependency(SequenceNr::from_index((i as f64).sqrt() as usize), SequenceNr::from_index(i));
         }
         println!("Time: {:?}", t.elapsed());
 
