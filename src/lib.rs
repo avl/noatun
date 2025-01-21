@@ -85,6 +85,12 @@ fn get_context_ptr() -> *const DatabaseContextData {
     context_ptr
 }
 
+/// This represents a type that has no detached representation.
+/// Instances of this type cannot be created.
+pub enum Undetachable {
+
+}
+
 impl NoatunContext {
 
     pub fn start_ptr_mut(self) -> *mut u8 {
@@ -1824,6 +1830,9 @@ pub trait Object {
     ( declare_field pod $typ: ty ) => {
         $crate::DatabaseCell<$typ>
     };
+    ( declare_detached_field pod $typ: ty ) => {
+        $typ
+    };
     ( new_declare_param pod $typ: ty ) => {
         $typ
     };
@@ -1847,6 +1856,9 @@ pub trait Object {
     ( declare_field object $typ: ty ) => {
         $typ
     };
+    ( declare_detached_field object $typ: ty ) => {
+        <$typ as $crate::Object>::DetachedType
+    };
     ( new_declare_param object $typ: ty ) => {
         <$typ as $crate::Object>::DetachedType
     };
@@ -1864,32 +1876,84 @@ pub trait Object {
         }
     };
 
-    ( mod $s:ident { $( struct $n:ident { $( $kind:ident $name: ident / $setter:ident : $typ:ty $(,)* )* } $(;)* )* } $(;)* ) => {
-        mod $s {
-            $(
-
-                #[derive(Debug,Copy,Clone, $crate::Pod, $crate::Zeroable)]
-                #[repr(C, packed)]
-                pub struct $n where $( noatun_object!(bounded_type $kind $typ) : $crate::Object ),*
-                {
-                    phantom: ::std::marker::PhantomPinned,
-                    $( $name : noatun_object!(declare_field $kind $typ) ),*
-                }
-                impl $n {
-                    pub fn init<'a>(
-                        &mut self,
-                        $( $name: noatun_object!(new_declare_param $kind $typ) ),*
-                        ) {
-                        $( noatun_object!(new_assign_field $kind self $name $typ); )*
-                    }
-
-                    $( noatun_object!(getter $kind $name $typ); )*
-
-                    $( noatun_object!(setter $kind $name $setter $typ); )*
-
-                }
-            )*
+    ( declare_detached_struct $n_detached:ident fields $( $kind:ident $name: ident $typ:ty ),* ) => {
+        #[derive(Debug,Clone)]
+        pub struct $n_detached
+        {
+            $( $name : noatun_object!(declare_detached_field $kind $typ) ),*
         }
+    };
+    ( declare_detached_struct fields $( $kind:ident $name: ident $typ:ty ),* ) => {
+
+    };
+    ( detached_type ) => {
+        $crate::Undetachable
+    };
+    ( detached_type $n_detached: ident) => {
+        $n_detached
+    };
+
+    ( $( struct $n:ident $(detached as $n_detached:ident)? { $( $kind:ident $name: ident : $typ:ty $([setter: $setter:ident])?  $(,)* )* } $(;)* )* ) => {
+
+        $(
+
+            #[derive(Debug,Copy,Clone, $crate::Pod, $crate::Zeroable)]
+            #[repr(C, packed)]
+            pub struct $n where $( noatun_object!(bounded_type $kind $typ) : $crate::Object ),*
+            {
+                phantom: ::std::marker::PhantomPinned,
+                $( $name : noatun_object!(declare_field $kind $typ) ),*
+            }
+            impl $n {
+                pub fn init<'a>(
+                    &mut self,
+                    $( $name: noatun_object!(new_declare_param $kind $typ) ),*
+                    ) {
+                    $( noatun_object!(new_assign_field $kind self $name $typ); )*
+                }
+
+                $( noatun_object!(getter $kind $name $typ); )*
+
+                $(
+                    $(
+                        noatun_object!(setter $kind $name $setter $typ);
+                    )*
+                )*
+
+            }
+
+
+            noatun_object!{declare_detached_struct $($n_detached)? fields $($kind $name $typ),*}
+
+
+
+            impl $crate::Object for $n {
+                type Ptr = ThinPtr;
+                type DetachedType = noatun_object!(detached_type $($n_detached)?);
+
+                unsafe fn init_from_detached(&mut self, detached: Self::DetachedType) {
+                    /*$(
+                        self.$name.init_from_detached(detached.$name);
+                    )**/
+                }
+
+                unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> &'a mut Self {
+                    let ret: &mut Self = NoatunContext.allocate_pod();
+                    ret.init_from_detached(detached);
+                    ret
+                }
+
+                unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
+                    unsafe { NoatunContext.access_pod(index) }
+                }
+
+                unsafe fn access_mut<'a>(index: Self::Ptr) -> &'a mut Self {
+                    unsafe { NoatunContext.access_pod_mut(index) }
+                }
+            }
+
+        )*
+
     };
 }
 
@@ -3679,12 +3743,15 @@ pub mod distributor {
 
 
 noatun_object!(
-            mod kalle {
-                struct Kalle {
-                    pod hej/set_hej:u32,
-                    pod tva/set_tva:u32,
-                    object da/da_mut: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>>
-                }
+            struct Kalle {
+                pod hej:u32,
+                pod tva:u32,
+                object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>> [setter: da_mut]
+            }
+            struct Nalle detached as NalleDetached {
+                pod hej:u32,
+                pod tva:u32,
+                object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>> [setter: da_mut]
             }
         );
 
@@ -4707,17 +4774,26 @@ mod tests {
 
         use crate::data_types::DatabaseVec;
         noatun_object!(
-            mod kalle {
-                struct Kalle {
-                    pod hej/set_hej:u32,
-                    pod tva/set_tva:u32,
-                    object da/da_mut: self::DatabaseVec<self::DatabaseCell<u32>>
-                }
-            }
-        );
-        let mut kalle :kalle::Kalle = Zeroable::zeroed();
 
+            struct Kalle detached as DetachedKalle {
+                pod hej:u32 [setter: set_hej],
+                pod tva:u32 [setter: set_tva],
+                object da: DatabaseVec<DatabaseCell<u32>> [setter: da_mut]
+            }
+            struct Nalle detached as DetachedNalle {
+                pod hej:u32,
+                pod tva:u32,
+                object da: DatabaseVec<DatabaseCell<u32>>
+            }
+
+        );
+        let mut kalle : Kalle = Zeroable::zeroed();
         kalle.init(42,42, vec![42u32]);
+        let kalle = unsafe { Kalle::allocate_from_detached(DetachedKalle {
+            hej: 0,
+            tva: 0,
+            da: vec![],
+        }) };
     }
 
 }
