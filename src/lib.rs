@@ -33,6 +33,7 @@ use rand::RngCore;
 use savefile::Deserializer;
 use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
+pub use serde_derive;
 use std::cell::{Cell, OnceCell};
 use std::ffi::c_void;
 use std::fmt::{Debug, Display, Formatter};
@@ -334,9 +335,9 @@ impl MessageId {
     }
 }
 
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable,PartialEq,Eq,PartialOrd,Ord,Hash, serde_derive::Serialize, serde_derive::Deserialize)]
 #[repr(C)]
-pub struct NoatunTime(u64);
+pub struct NoatunTime(pub u64);
 
 impl Display for NoatunTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -356,6 +357,14 @@ impl Debug for NoatunTime {
 }
 
 impl NoatunTime {
+    pub const ZERO: NoatunTime = NoatunTime(0);
+    #[must_use]
+    pub fn add_ms(self, ms: u64) -> NoatunTime {
+        NoatunTime(self.0.saturating_add(ms))
+    }
+    pub fn sub_ms(self, ms: u64) -> NoatunTime {
+        NoatunTime(self.0.saturating_sub(ms))
+    }
     pub fn to_datetime(&self) -> DateTime<Utc> {
         //TODO: Don't panic here!
         DateTime::<Utc>::from_timestamp_millis(self.0 as i64).unwrap()
@@ -559,7 +568,7 @@ macro_rules! noatun_object {
     };
 
     ( declare_detached_struct $n_detached:ident fields $( $kind:ident $name: ident $typ:ty ),* ) => {
-        #[derive(Debug,Clone)]
+        #[derive(Debug,Clone,$crate::serde_derive::Serialize, $crate::serde_derive::Deserialize)]
         pub struct $n_detached
         {
             $( $name : noatun_object!(declare_detached_field $kind $typ) ),*
@@ -872,6 +881,7 @@ impl Drop for ContextGuardMut {
 }
 
 pub use paste::paste;
+
 noatun_object!(
         struct Kalle {
             pod hej:u32,

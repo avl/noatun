@@ -100,6 +100,14 @@ impl<T: Pod> DatabaseCellArrayExt<T> for &[DatabaseCell<T>] {
 unsafe impl<T> Zeroable for DatabaseCell<T> where T: Pod {}
 
 unsafe impl<T> Pod for DatabaseCell<T> where T: Pod {}
+impl<T> PartialEq<DatabaseCell<T>> for DatabaseCell<T> where T: Copy + PartialEq{
+    fn eq(&self, other: &DatabaseCell<T>) -> bool {
+        let val1 = self.value;
+        let val2 = other.value;
+        val1 == val2
+    }
+}
+
 impl<T: Pod> DatabaseCell<T> {
     pub fn get(&self) -> T {
         NoatunContext.observe_registrar(self.registrar);
