@@ -11,7 +11,7 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use bumpalo::Bump;
-use bytemuck::{bytes_of, from_bytes, from_bytes_mut, Pod, Zeroable};
+use bytemuck::{bytes_of, from_bytes, from_bytes_mut, AnyBitPattern, Pod, Zeroable};
 use indexmap::{IndexMap, IndexSet};
 use std::alloc::Layout;
 use std::any::{Any, TypeId};
@@ -115,7 +115,7 @@ pub struct MainDbHeader {
     last_boot: [u8; 16],
 }
 
-#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Default, Zeroable, Pod)]
 #[repr(C)]
 pub struct MainDbAuxHeader {
     deptrack_keys: RawDatabaseVec<ThinPtr>,
@@ -606,7 +606,7 @@ impl DatabaseContextData {
         }
     }
     #[allow(clippy::mut_from_ref)]
-    pub fn allocate_pod<T: Pod>(&self) -> Pin<&mut T> {
+    pub fn allocate_pod<T: AnyBitPattern>(&self) -> Pin<&mut T> {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { Pin::new_unchecked(&mut *(bytes as *mut T)) }
     }
@@ -644,7 +644,7 @@ impl DatabaseContextData {
     /// # Safety
     /// The returned range must not overlap any mutable reference.
     /// Alignment must be right.
-    pub unsafe fn access_slice_at<'a, T: Pod>(&self, offset: usize, size: usize) -> &'a [T] {
+    pub unsafe fn access_slice_at<'a, T: AnyBitPattern>(&self, offset: usize, size: usize) -> &'a [T] {
         assert!(offset + size * size_of::<T>() <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts(
@@ -656,7 +656,8 @@ impl DatabaseContextData {
     /// # Safety
     /// The returned range must not overlap any reference.
     /// Alignment must be right.
-    pub unsafe fn access_slice_at_mut<'a, T: Pod>(
+    /// The source must not contain any uninitialized bytes.
+    pub unsafe fn access_slice_at_mut<'a, T: AnyBitPattern>(
         &self,
         offset: usize,
         size: usize,
@@ -696,6 +697,30 @@ impl DatabaseContextData {
     }
 
     /// # Safety
+    /// The returned range must not overlap any mutable reference
+    /// Alignment must be right.
+    pub unsafe fn access_object_slice<'a, T: FixedSizeObject>(&self, range: FatPtr) -> &'a [T] {
+        assert!(range.start + range.len <= self.main_db_mmap.used_space());
+        unsafe {
+            std::slice::from_raw_parts(
+                self.main_db_mmap.map_const_ptr().wrapping_add(range.start) as *const T,
+                range.len / size_of::<T>(),
+            )
+        }
+    }
+    /// # Safety
+    /// The returned range must not overlap any other reference
+    /// Alignment must be right.
+    pub unsafe fn access_object_slice_mut<'a, T: FixedSizeObject>(&self, range: FatPtr) -> &'a mut [T] {
+        assert!(range.start + range.len <= self.main_db_mmap.used_space());
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.main_db_mmap.map_mut_ptr().wrapping_add(range.start) as *mut T,
+                range.len / size_of::<T>(),
+            )
+        }
+    }
+    /// # Safety
     /// The given range must point to valid memory, and must not overlap any other reference
     pub unsafe fn mut_slice<'a>(data: *mut u8, range: Range<usize>) -> &'a mut [u8] {
         unsafe {
@@ -705,7 +730,7 @@ impl DatabaseContextData {
 
     /// # Safety
     /// Caller must ensure no mutable reference exists to the requested object
-    pub unsafe fn access_pod<'a, T: Pod>(&self, index: ThinPtr) -> &'a T {
+    pub unsafe fn access_pod<'a, T: AnyBitPattern>(&self, index: ThinPtr) -> &'a T {
         if index
             .0
             .checked_add(size_of::<T>())
@@ -723,6 +748,11 @@ impl DatabaseContextData {
     }
 
     /// # Safety
+    /// Caller must ensure no mutable reference exists to the requested object
+    pub unsafe fn access_object<'a, T: FixedSizeObject>(&self, index: ThinPtr) -> &'a T {
+        unsafe { self.access_pod(index) }
+    }
+    /// # Safety
     /// Caller must ensure no references exists to the requested object
     pub unsafe fn access_pod_mut<'a, T: Pod>(&self, index: ThinPtr) -> Pin<&'a mut T> {
         if index
@@ -734,13 +764,34 @@ impl DatabaseContextData {
             panic!("invalid pointer value");
         }
         unsafe {
+            let ptr = self.main_db_mmap.map_mut_ptr().wrapping_add(index.0);
+            assert!((ptr as *mut T).is_aligned());
             Pin::new_unchecked(from_bytes_mut(std::slice::from_raw_parts_mut(
-                self.main_db_mmap.map_mut_ptr().wrapping_add(index.0),
+                ptr,
                 size_of::<T>(),
             )))
         }
     }
-
+    /// # Safety
+    /// Caller must ensure no references exists to the requested object
+    pub unsafe fn access_object_mut<'a, T: FixedSizeObject>(&self, index: ThinPtr) -> Pin<&'a mut T> {
+        if index
+            .0
+            .checked_add(size_of::<T>())
+            .expect("invalid address for pointer")
+            > self.main_db_mmap.used_space()
+        {
+            panic!("invalid pointer value");
+        }
+        unsafe {
+            let ptr = self.main_db_mmap.map_mut_ptr().wrapping_add(index.0);
+            assert!((ptr as *mut T).is_aligned());
+            Pin::new_unchecked(crate::from_bytes_mut(std::slice::from_raw_parts_mut(
+                ptr,
+                size_of::<T>(),
+            )))
+        }
+    }
     pub fn write(&mut self, index: usize, data: &[u8]) {
         assert!(index + data.len() <= self.main_db_mmap.used_space());
         let fat = FatPtr {
@@ -757,6 +808,16 @@ impl DatabaseContextData {
         self.undo_log.record(UndoLogEntry::Restore {
             start: dest_index.0,
             data: bytes_of(dest),
+        });
+        *dest = src;
+    }
+    pub fn write_object<T: FixedSizeObject>(&self, src: T, dest: Pin<&mut T>) {
+        let dest = unsafe { dest.get_unchecked_mut() };
+        let dest_index = self.index_of_sized(dest);
+
+        self.undo_log.record(UndoLogEntry::Restore {
+            start: dest_index.0,
+            data: crate::bytes_of(dest),
         });
         *dest = src;
     }

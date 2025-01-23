@@ -3,7 +3,7 @@ use crate::{
     Database, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, Object, Pointer,
     ThinPtr, CONTEXT,
 };
-use bytemuck::{Pod, Zeroable};
+use bytemuck::{Pod,AnyBitPattern, Zeroable};
 use sha2::digest::typenum::Zero;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::ptr::addr_of_mut;
 
 #[derive(Copy, Clone, Debug)]
-#[repr(C, packed)]
+#[repr(C)]
 pub struct DatabaseOption<T: Copy> {
     value: T,
     // TODO: This is needed to have correct alignment
@@ -55,11 +55,11 @@ impl<T: Copy + Pod> DatabaseOption<T> {
 }
 
 //TODO: This is unsound. Stop using bytemuck for these types in Noatun
-unsafe impl<T> Pod for DatabaseOption<T> where T: Pod {}
+unsafe impl<T> AnyBitPattern for DatabaseOption<T> where T: AnyBitPattern {}
 unsafe impl<T: Copy> Zeroable for DatabaseOption<T> where T: Zeroable {}
 
 #[derive(Copy, Clone)]
-#[repr(C, packed)]
+#[repr(C)]
 pub struct DatabaseCell<T: Copy> {
     value: T,
     registrar: SequenceNr,
@@ -84,8 +84,8 @@ pub struct OpaqueCell<T: Copy> {
 // that there's no padding, but here, there will be padding for align_of<T> > 4.
 // There could be padding needed. Solution: We must stop using bytemuck for
 // Noatun internals.
-unsafe impl<T: Pod> Zeroable for OpaqueCell<T> {}
-unsafe impl<T: Pod> Pod for OpaqueCell<T> {}
+unsafe impl<T: AnyBitPattern> Zeroable for OpaqueCell<T> {}
+unsafe impl<T: AnyBitPattern> AnyBitPattern for OpaqueCell<T> {}
 
 pub trait DatabaseCellArrayExt<T: Pod> {
     fn observe(&self) -> Vec<T>;
@@ -97,9 +97,9 @@ impl<T: Pod> DatabaseCellArrayExt<T> for &[DatabaseCell<T>] {
     }
 }
 
-unsafe impl<T> Zeroable for DatabaseCell<T> where T: Pod {}
+unsafe impl<T> Zeroable for DatabaseCell<T> where T: AnyBitPattern {}
 
-unsafe impl<T> Pod for DatabaseCell<T> where T: Pod {}
+unsafe impl<T> AnyBitPattern for DatabaseCell<T> where T: AnyBitPattern {}
 impl<T> PartialEq<DatabaseCell<T>> for DatabaseCell<T> where T: Copy + PartialEq{
     fn eq(&self, other: &DatabaseCell<T>) -> bool {
         let val1 = self.value;
@@ -107,6 +107,17 @@ impl<T> PartialEq<DatabaseCell<T>> for DatabaseCell<T> where T: Copy + PartialEq
         val1 == val2
     }
 }
+
+/*
+impl<T:Copy> Deref for DatabaseCell<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        NoatunContext.observe_registrar(self.registrar);
+        &self.value
+    }
+}
+*/
 
 impl<T: Pod> DatabaseCell<T> {
     pub fn get(&self) -> T {
@@ -153,7 +164,7 @@ impl<T: Pod> Object for OpaqueCell<T> {
     }
 
     unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_pod_mut(index) }
+        unsafe { NoatunContext.access_object_mut(index) }
     }
 }
 
@@ -200,7 +211,7 @@ impl<T: Pod> Object for DatabaseCell<T> {
     }
 
     unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_pod_mut(index) }
+        unsafe { NoatunContext.access_object_mut(index) }
     }
 }
 #[repr(C)]
@@ -210,6 +221,10 @@ pub struct RawDatabaseVec<T> {
     data: usize,
     phantom_data: PhantomData<T>,
 }
+unsafe impl<T:'static> Pod for RawDatabaseVec<T> {
+
+}
+
 unsafe impl<T> Zeroable for RawDatabaseVec<T> {}
 
 impl<T> Copy for RawDatabaseVec<T> {}
@@ -236,9 +251,8 @@ impl<T> Debug for RawDatabaseVec<T> {
         write!(f, "RawDatabaseVec({})", self.length)
     }
 }
-unsafe impl<T> Pod for RawDatabaseVec<T> where T: 'static {}
 
-impl<T: 'static> RawDatabaseVec<T> {
+impl<T:Pod+ 'static> RawDatabaseVec<T> {
     fn realloc_add(&mut self, ctx: &DatabaseContextData, new_capacity: usize, new_len: usize) {
         debug_assert!(new_capacity >= new_len);
         debug_assert!(new_capacity >= self.capacity);
@@ -278,10 +292,7 @@ impl<T: 'static> RawDatabaseVec<T> {
             ctx.write_pod(new_length, unsafe { Pin::new_unchecked(&mut self.length) } );
         }
     }
-    #[allow(clippy::mut_from_ref)]
-    pub fn allocate(ctx: &DatabaseContextData) -> Pin<&mut DatabaseVec<T>> {
-        unsafe { ctx.allocate_pod::<DatabaseVec<T>>() }
-    }
+
 }
 impl<T: Pod + 'static> RawDatabaseVec<T> {
     pub(crate) fn get_slice(&self, context: &DatabaseContextData, range: Range<usize>) -> &[T] {
@@ -331,7 +342,7 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
     }
     pub(crate) fn push_untracked(&mut self, ctx: &DatabaseContextData, t: T) -> ThinPtr
     where
-        T: Pod,
+        T: AnyBitPattern,
     {
         if self.length >= self.capacity {
             self.realloc_add(ctx, (self.capacity + 1) * 2, self.length + 1);
@@ -366,8 +377,8 @@ where
     }
 }
 
-#[repr(C, packed)]
-pub struct DatabaseVec<T> {
+#[repr(C)]
+pub struct DatabaseVec<T:FixedSizeObject> {
     length: usize,
     capacity: usize,
     data: usize,
@@ -375,30 +386,30 @@ pub struct DatabaseVec<T> {
     phantom_data: PhantomData<T>,
 }
 
-impl<T> Debug for DatabaseVec<T> {
+impl<T:FixedSizeObject> Debug for DatabaseVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "DatabaseVec({})", { self.length })
     }
 }
 
-unsafe impl<T> Zeroable for DatabaseVec<T> {}
+unsafe impl<T:FixedSizeObject> Zeroable for DatabaseVec<T> {}
 
-impl<T> Copy for DatabaseVec<T> {}
+impl<T:FixedSizeObject> Copy for DatabaseVec<T> {}
 
-impl<T> Clone for DatabaseVec<T> {
+impl<T:FixedSizeObject> Clone for DatabaseVec<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-unsafe impl<T> Pod for DatabaseVec<T> where T: 'static {}
+unsafe impl<T:FixedSizeObject> Pod for DatabaseVec<T> where T: 'static {}
 
-pub struct DatabaseVecIterator<'a, T> {
+pub struct DatabaseVecIterator<'a, T:FixedSizeObject> {
     vec: &'a DatabaseVec<T>,
     index: usize,
 }
 
-pub struct DatabaseVecIteratorMut<'a, T> {
+pub struct DatabaseVecIteratorMut<'a, T:FixedSizeObject> {
     vec: Pin<&'a mut DatabaseVec<T>>,
     index: usize,
 }
@@ -434,7 +445,7 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIteratorMut<'a, T
     }
 }
 
-impl<T: 'static> DatabaseVec<T> {
+impl<T:FixedSizeObject+ 'static> DatabaseVec<T> {
     pub fn iter(&self) -> DatabaseVecIterator<T> {
         DatabaseVecIterator {
             vec: self,
@@ -509,7 +520,7 @@ where
         let offset = self.data + index * size_of::<T>();
         unsafe {
             let dest = T::access_mut(ThinPtr(offset));
-            NoatunContext.write_pod(val, dest);
+            NoatunContext.write_object(val, dest);
         };
     }
 
@@ -622,7 +633,7 @@ impl<T: Object + ?Sized> Clone for DatabaseObjectHandle<T> {
     }
 }
 
-unsafe impl<T: Object + ?Sized + 'static> Pod for DatabaseObjectHandle<T> {}
+unsafe impl<T: Object + ?Sized + 'static> AnyBitPattern for DatabaseObjectHandle<T> {}
 impl<T: Object + ?Sized + 'static> Object for DatabaseObjectHandle<T>
 where
     T::Ptr: Pod,
@@ -646,7 +657,7 @@ where
         unsafe { NoatunContext.access_pod(index) }
     }
     unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_pod_mut(index) }
+        unsafe { NoatunContext.access_object_mut(index) }
     }
 }
 
@@ -685,7 +696,7 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
     pub fn allocate<'a>(value: T) -> Pin<&'a mut Self>
     where
         T: Object<Ptr = ThinPtr>,
-        T: Pod,
+        T: AnyBitPattern,
     {
         let mut this = unsafe { NoatunContext.allocate_pod::<DatabaseObjectHandle<T>>() };
         let mut target = unsafe { NoatunContext.allocate_pod::<T>() };

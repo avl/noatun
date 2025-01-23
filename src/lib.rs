@@ -13,6 +13,7 @@
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::let_and_return)]
 
+use std::any::Any;
 pub use crate::data_types::{DatabaseCell, DatabaseVec};
 use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
 use crate::message_store::OnDiskMessageStore;
@@ -22,7 +23,7 @@ use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::sha2;
 use anyhow::{bail, Context, Result};
 use bumpalo::Bump;
-pub use bytemuck::{Pod, Zeroable};
+pub use bytemuck::{AnyBitPattern, Pod, Zeroable};
 use chrono::{DateTime, SecondsFormat, Utc};
 pub use database::Database;
 use fs2::FileExt;
@@ -46,7 +47,7 @@ use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::ptr::{null, null_mut};
-use std::slice;
+use std::{mem, slice};
 use std::slice::SliceIndex;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
@@ -166,11 +167,15 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_pod(value, dest) }
     }
+    pub fn write_object<T: FixedSizeObject>(&self, value: T, dest: Pin<&mut T>) {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).write_object(value, dest) }
+    }
     pub fn write_pod_ptr<T: Pod>(&self, value: T, dest: *mut T) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_pod_ptr(value, dest) }
     }
-    pub fn allocate_pod<'a, T: Pod>(&self) -> Pin<&'a mut T> {
+    pub fn allocate_pod<'a, T: AnyBitPattern>(&self) -> Pin<&'a mut T> {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_pod() }
     }
@@ -178,12 +183,23 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).access_pod_mut(ptr) }
     }
-    pub unsafe fn access_pod<'a, T: Pod>(&self, ptr: ThinPtr) -> &'a T {
+    pub unsafe fn access_object_mut<'a, T: FixedSizeObject>(&mut self, ptr: ThinPtr) -> Pin<&'a mut T> {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).access_object_mut(ptr) }
+    }
+    pub unsafe fn access_pod<'a, T: AnyBitPattern>(&self, ptr: ThinPtr) -> &'a T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             panic!("No NoatunContext available");
         }
         unsafe { (*context_ptr).access_pod(ptr) }
+    }
+    pub unsafe fn access_object<'a, T: FixedSizeObject>(&self, ptr: ThinPtr) -> &'a T {
+        let context_ptr = CONTEXT.get();
+        if context_ptr.is_null() {
+            panic!("No NoatunContext available");
+        }
+        unsafe { (*context_ptr).access_object(ptr) }
     }
 
     pub fn observe_registrar(self, registrar: SequenceNr) {
@@ -193,16 +209,27 @@ impl NoatunContext {
         }
         unsafe { (*context_ptr).observe_registrar(registrar) }
     }
-    pub unsafe fn access_slice<'a, T: Pod>(self, range: FatPtr) -> &'a [T] {
+    pub unsafe fn access_pod_slice<'a, T: Pod>(self, range: FatPtr) -> &'a [T] {
         let p = CONTEXT.get();
         if p.is_null() {
             panic!("No NoatunContext available");
         }
         unsafe { (*p).access_slice(range) }
     }
-    pub unsafe fn access_slice_mut<'a, T: Pod>(self, range: FatPtr) -> Pin<&'a mut [T]> {
+    pub unsafe fn access_pod_slice_mut<'a, T: Pod>(self, range: FatPtr) -> Pin<&'a mut [T]> {
         let context_ptr = get_context_mut_ptr();
         unsafe { Pin::new_unchecked( (*context_ptr).access_slice_mut(range)) }
+    }
+    pub unsafe fn access_object_slice<'a, T: FixedSizeObject>(self, range: FatPtr) -> &'a [T] {
+        let p = CONTEXT.get();
+        if p.is_null() {
+            panic!("No NoatunContext available");
+        }
+        unsafe { (*p).access_object_slice(range) }
+    }
+    pub unsafe fn access_object_slice_mut<'a, T: FixedSizeObject>(self, range: FatPtr) -> Pin<&'a mut [T]> {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { Pin::new_unchecked( (*context_ptr).access_object_slice_mut(range)) }
     }
 }
 
@@ -358,6 +385,15 @@ impl Debug for NoatunTime {
 
 impl NoatunTime {
     pub const ZERO: NoatunTime = NoatunTime(0);
+
+    pub fn now() -> Self {
+        Self(Utc::now().timestamp_millis() as u64)
+    }
+
+    #[must_use]
+    pub fn as_ms(self) -> u64 {
+        self.0
+    }
     #[must_use]
     pub fn add_ms(self, ms: u64) -> NoatunTime {
         NoatunTime(self.0.saturating_add(ms))
@@ -409,7 +445,7 @@ impl<M: MessagePayload> Message<M> {
 }
 
 /// A state-less object, mostly useful for testing
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, AnyBitPattern)]
 #[repr(C)]
 pub struct DummyUnitObject;
 
@@ -446,6 +482,55 @@ pub trait Pointer: Copy + Debug + 'static {
     fn is_null(&self) -> bool;
 }
 
+
+
+pub fn from_bytes_mut<T: FixedSizeObject>(s: &mut [u8]) -> &mut T {
+    assert_eq!(s.len(), size_of::<T>());
+    assert!( (s.as_mut_ptr() as *mut T).is_aligned());
+
+    // # Safety
+    // We've checked alignment and size, and those are the only requirements
+    // an Object need to be valid.
+    unsafe { transmute::<*mut u8, &mut T>(s.as_mut_ptr()) }
+}
+pub fn bytes_of<T: FixedSizeObject>(t: &T) -> &[u8] {
+    // # Safety
+    // FixedSizeObject instances can always be viewed as a set of by tes
+    // That set of bytes can have uninitialized values, so we can't use the values.
+    // Just copying uninitialized values is ok, and that's all we'll end up doing.
+    unsafe {
+        slice::from_raw_parts(t as *const _ as *const u8, size_of::<T>())
+    }
+}
+
+/// # Safety
+/// To implement this safely:
+///  * Self must be repr(C) or repr(transparent). repr(packed) may work, but
+///    causes composability problems, as types that own Self may then also need to
+///    be packed.
+///  * Self must not utilize any niches in owned objects. This is because the undo-function
+///    of noatun will overwrite such niches during undo.
+///  * Self can have niches, but noatun guarantees they will never be used and Self is
+///    allowed to clobber them.
+///  * All fields of Self must implement Object
+///  * Self must not be Sync or Send.
+///  * Self must not be Unpin.
+///
+/// TLDR:
+///  * Use repr(C)
+///  * Make sure all your fields also implement Object.
+///
+/// # Note on Pin::set
+/// Pin::set might seem to be a problem:
+/// It allows the user to overwrite the target of a pinned ptr, in a for-noatun-unobservable way.
+/// However:
+/// 1: Just don't do that!
+/// 2: In order to be able to call Pin::set, the user needs to have an owned value of
+///    an Object-type. This should be impossible to obtain.
+/// Therefore, any type that implements Object must make sure that safe
+/// code cannot obtain an owned instance of Self:
+///   * No Default-impl!
+///   * No new() impl (though DetachedType can of course have new())
 pub trait Object {
     /// This is meant to be either ThinPtr for sized objects, or
     /// FatPtr for dynamically sized objects. Other types are likely to not make sense.
@@ -582,8 +667,8 @@ macro_rules! noatun_object {
     ( struct $n:ident { $( $kind:ident $name: ident : $typ:ty $(,)* )* } $(;)* ) => {
 
 
-            #[derive(Debug,Copy,Clone, $crate::Pod, $crate::Zeroable)]
-            #[repr(C, packed)]
+            #[derive(Debug,Copy,Clone, $crate::AnyBitPattern)]
+            #[repr(C)]
             pub struct $n where $( noatun_object!(bounded_type $kind $typ) : $crate::Object ),*
             {
                 phantom: ::std::marker::PhantomPinned,
@@ -659,11 +744,11 @@ macro_rules! noatun_object {
                 }
 
                 unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-                    unsafe { NoatunContext.access_pod(index) }
+                    unsafe { NoatunContext.access_object(index) }
                 }
 
                 unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-                    unsafe { NoatunContext.access_pod_mut(index) }
+                    unsafe { NoatunContext.access_object_mut(index) }
                 }
             }
 
@@ -672,9 +757,9 @@ macro_rules! noatun_object {
 
 }
 
-pub trait FixedSizeObject: Object<Ptr = ThinPtr> + Sized + Pod {}
+pub trait FixedSizeObject: Object<Ptr = ThinPtr> + Sized + AnyBitPattern {}
 
-impl<T: Object<Ptr = ThinPtr> + Sized + Copy + Pod> FixedSizeObject for T {}
+impl<T: Object<Ptr = ThinPtr> + Sized + Copy + AnyBitPattern> FixedSizeObject for T {}
 
 pub trait Application: Object {
     type Message: MessagePayload<Root = Self>;
@@ -773,7 +858,7 @@ impl<T: FixedSizeObject> Object for [T] {
         let bytes = size_of::<T>() * detached.len();
         let alloc = NoatunContext.allocate_raw(bytes, align_of::<T>());
 
-        let slice: &mut [T] = bytemuck::cast_slice_mut(slice::from_raw_parts_mut(alloc, bytes));
+        let slice: &mut [T] = unsafe {slice::from_raw_parts_mut(alloc as *mut T, detached.len())};
         for (src, dst) in detached.into_iter().zip(&mut *slice) {
             Pin::new_unchecked(dst).init_from_detached(src);
         }
@@ -781,11 +866,11 @@ impl<T: FixedSizeObject> Object for [T] {
     }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        unsafe { NoatunContext.access_slice(index) }
+        unsafe { NoatunContext.access_object_slice(index) }
     }
 
     unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_slice_mut(index) }
+        unsafe { NoatunContext.access_object_slice_mut(index) }
     }
 }
 
@@ -1015,7 +1100,7 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Copy, Zeroable, Pod)]
+    #[derive(Clone, Copy, AnyBitPattern)]
     #[repr(C)]
     struct CounterObject {
         // TODO: This isn't Unpin, but it should be!
@@ -1041,7 +1126,7 @@ mod tests {
         }
 
         unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-            unsafe { NoatunContext.access_pod_mut(index) }
+            unsafe { NoatunContext.access_object_mut(index) }
         }
     }
 

@@ -1,10 +1,6 @@
-use bytemuck::{Pod, Zeroable};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::DatabaseCell;
-use noatun::{
-    disable_multi_instance_blocker, Application, Database, MessagePayload, NoatunContext,
-    NoatunTime, Object, ThinPtr,
-};
+use noatun::{disable_multi_instance_blocker, AnyBitPattern, Application, Database, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
 use savefile::{Deserializer, Serializer};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
@@ -16,7 +12,7 @@ struct MazeMessage {
     delta_y: i32,
 }
 
-#[derive(Copy, Clone, Pod, Zeroable, Debug)]
+#[derive(Copy, Clone, AnyBitPattern, Debug)]
 #[repr(C)]
 struct Maze {
     player_pos_x: DatabaseCell<u32>,
@@ -44,7 +40,7 @@ impl Object for Maze {
     }
 
     unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_pod_mut(index) }
+        unsafe { NoatunContext.access_object_mut(index) }
     }
 }
 

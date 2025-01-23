@@ -1,4 +1,4 @@
-use bytemuck::{Pod, Zeroable};
+use bytemuck::{AnyBitPattern};
 use datetime_literal::datetime;
 use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::Database;
@@ -11,7 +11,7 @@ use std::io::{Cursor, Write};
 use std::pin::Pin;
 use std::time::Duration;
 
-#[derive(Clone, Copy, Zeroable, Pod)]
+#[derive(Clone, Copy, AnyBitPattern)]
 #[repr(C)]
 struct CounterObject {
     counter: DatabaseCell<u32>,
@@ -33,11 +33,11 @@ impl Object for CounterObject {
     }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        unsafe { NoatunContext.access_pod(index) }
+        unsafe { NoatunContext.access_object(index) }
     }
 
     unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_pod_mut(index) }
+        unsafe { NoatunContext.access_object_mut(index) }
     }
 }
 

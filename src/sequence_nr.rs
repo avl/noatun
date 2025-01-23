@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use std::fmt::{Debug, Display, Formatter};
 
 #[derive(Pod, Zeroable, Copy, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[repr(C, packed)]
+#[repr(C)]
 // 0 is an invalid sequence number, used to represent 'not a number'
 pub struct SequenceNr(u32);
 impl Display for SequenceNr {
