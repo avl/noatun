@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use crate::sequence_nr::SequenceNr;
 use crate::{
     Database, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, Object, Pointer,
@@ -11,6 +12,75 @@ use std::mem::transmute_copy;
 use std::ops::{Deref, Index, Range};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
+use std::slice;
+
+#[derive(Copy, Clone, Debug, AnyBitPattern)]
+#[repr(C)]
+pub struct NoatunString {
+    start: ThinPtr,
+    length: usize,
+}
+
+impl Object for NoatunString {
+    type Ptr = ThinPtr;
+    type DetachedType = str;
+    type DetachedOwnedType = String;
+
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        self.assign(&detached);
+    }
+
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+        let mut temp: Pin<&mut Self> = NoatunContext.allocate_pod();
+        temp.as_mut().assign(&detached);
+        temp
+    }
+
+    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
+        NoatunContext.access_pod(index)
+    }
+
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
+        NoatunContext.access_object_mut(index)
+    }
+}
+
+impl Deref for NoatunString {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.get()
+    }
+}
+
+impl NoatunString {
+    pub fn get(&self) -> &str {
+
+        if self.length == 0 {
+            return "";
+        }
+        let start_ptr = NoatunContext.start_ptr_mut().wrapping_add(self.start.0);
+        unsafe {
+            let bytes = slice::from_raw_parts(start_ptr, self.length);
+            std::str::from_utf8_unchecked(bytes)
+        }
+    }
+    pub fn assign(self: Pin<&mut Self>, value: &str) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        if tself.get().starts_with(value) {
+            if tself.length != value.len() {
+                NoatunContext.write_pod_internal(value.len(), &mut tself.length);
+            }
+            return;
+        }
+        let raw = NoatunContext.allocate_raw(value.len(),1);
+        let mut target = unsafe{slice::from_raw_parts_mut(raw, value.len())};
+        target.copy_from_slice(value.as_bytes());
+        let raw_index = NoatunContext.index_of_ptr(raw);
+        NoatunContext.write_pod_internal(raw_index, &mut tself.start);
+        NoatunContext.write_pod_internal(value.len(), &mut tself.length);
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
@@ -148,12 +218,13 @@ impl<T: Pod> DatabaseCell<T> {
 impl<T: Pod> Object for OpaqueCell<T> {
     type Ptr = ThinPtr;
     type DetachedType = T;
+    type DetachedOwnedType = T;
 
-    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
-        self.set(detached);
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        self.set(*detached);
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         let mut ret: Pin<&mut Self> = NoatunContext.allocate_pod();
         ret.as_mut().init_from_detached(detached);
         ret
@@ -192,15 +263,17 @@ impl<T: Pod> DatabaseCell<T> {
     }
 }
 
+
 impl<T: Pod> Object for DatabaseCell<T> {
     type Ptr = ThinPtr;
     type DetachedType = T;
+    type DetachedOwnedType = T;
 
-    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
-        self.set(detached);
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        self.set(*detached);
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         let mut ret: Pin<&mut Self> = NoatunContext.allocate_pod();
         ret.as_mut().init_from_detached(detached);
         ret
@@ -360,12 +433,13 @@ where
     T: FixedSizeObject + 'static,
 {
     type Ptr = ThinPtr;
-    type DetachedType = Vec<T::DetachedType>;
+    type DetachedType = [T::DetachedOwnedType];
+    type DetachedOwnedType = Vec<T::DetachedOwnedType>;
 
-    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         panic!("init_from_detached is not implemented for RawDatabaseVec");
     }
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         panic!("allocate_from_detached is not implemented for RawDatabaseVec");
     }
 
@@ -578,14 +652,14 @@ where
         NoatunContext.write_pod_ptr(new_len, addr_of_mut!(self.length));
     }
 
-    pub fn push(mut self: Pin<&mut Self>, t: <T as Object>::DetachedType) {
+    pub fn push(mut self: Pin<&mut Self>, t: impl Borrow<<T as Object>::DetachedType>) {
         self.as_mut().push_zeroed();
 
         let tself = unsafe { self.get_unchecked_mut() };
         let index = tself.length - 1;
         let offset = ThinPtr(tself.data + index * size_of::<T>());
         unsafe {
-            <T as Object>::access_mut(offset).init_from_detached(t);
+            <T as Object>::access_mut(offset).init_from_detached(t.borrow());
         }
     }
 }
@@ -595,15 +669,17 @@ where
     T: FixedSizeObject + 'static,
 {
     type Ptr = ThinPtr;
-    type DetachedType = Vec<T::DetachedType>;
+    type DetachedType = [T::DetachedOwnedType];
+    type DetachedOwnedType = Vec<T::DetachedOwnedType>;
 
-    unsafe fn init_from_detached(mut self: Pin<&mut Self>, detached: Self::DetachedType) {
+    fn init_from_detached(mut self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        use std::borrow::Borrow;
         for item in detached {
             let new_item = self.as_mut().push_zeroed();
-            new_item.init_from_detached(item);
+            new_item.init_from_detached(item.borrow());
         }
     }
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         let mut pod: Pin<&mut Self> = NoatunContext.allocate_pod();
         pod.as_mut().init_from_detached(detached);
         pod
@@ -640,14 +716,17 @@ where
 {
     type Ptr = ThinPtr;
     type DetachedType = T::DetachedType;
+    type DetachedOwnedType = T::DetachedOwnedType;
 
-    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
-        let target = T::allocate_from_detached(detached);
-        let new_index = NoatunContext.index_of(&*target);
-        NoatunContext.write_pod(new_index, unsafe{Pin::new_unchecked(&mut self.get_unchecked_mut().object_index)});
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        unsafe {
+            let target = T::allocate_from_detached(detached);
+            let new_index = NoatunContext.index_of(&*target);
+            NoatunContext.write_pod(new_index, unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().object_index) });
+        }
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         let mut pod: Pin<&mut Self> = NoatunContext.allocate_pod();
         pod.as_mut().init_from_detached(detached);
         pod

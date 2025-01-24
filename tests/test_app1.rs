@@ -21,12 +21,13 @@ struct CounterObject {
 impl Object for CounterObject {
     type Ptr = ThinPtr;
     type DetachedType = ();
+    type DetachedOwnedType = ();
 
-    unsafe fn init_from_detached(self: Pin<&mut Self>, _detached: Self::DetachedType) {
+    fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {
         todo!()
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         let mut this: Pin<&mut CounterObject> = NoatunContext.allocate_pod();
         this.as_mut().init_from_detached(detached);
         this
@@ -67,7 +68,7 @@ impl MessagePayload for CounterMessage {
 
         unsafe {
             let root_counter2 = root.as_mut().map_unchecked_mut(|x|&mut x.counter2);
-            root_counter2.push(vec![self.delta as u8]);
+            root_counter2.push([self.delta as u8]);
         }
     }
 

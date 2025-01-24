@@ -48,6 +48,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::ptr::{null, null_mut};
 use std::{mem, slice};
+use std::borrow::Borrow;
 use std::slice::SliceIndex;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
@@ -166,6 +167,10 @@ impl NoatunContext {
     pub fn write_pod<T: Pod>(&self, value: T, dest: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_pod(value, dest) }
+    }
+    pub(crate) fn write_pod_internal<T: Pod>(&self, value: T, dest: &mut T) {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).write_pod(value, Pin::new_unchecked(dest)) }
     }
     pub fn write_object<T: FixedSizeObject>(&self, value: T, dest: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
@@ -362,7 +367,7 @@ impl MessageId {
     }
 }
 
-#[derive(Clone, Copy, Pod, Zeroable,PartialEq,Eq,PartialOrd,Ord,Hash, serde_derive::Serialize, serde_derive::Deserialize)]
+#[derive(Clone, Copy, Pod, Zeroable,PartialEq,Eq,PartialOrd,Ord,Hash, serde_derive::Serialize, serde_derive::Deserialize, Savefile)]
 #[repr(C)]
 pub struct NoatunTime(pub u64);
 
@@ -385,6 +390,7 @@ impl Debug for NoatunTime {
 
 impl NoatunTime {
     pub const ZERO: NoatunTime = NoatunTime(0);
+    pub const MAX: NoatunTime = NoatunTime(u64::MAX);
 
     pub fn now() -> Self {
         Self(Utc::now().timestamp_millis() as u64)
@@ -452,10 +458,11 @@ pub struct DummyUnitObject;
 impl Object for DummyUnitObject {
     type Ptr = ThinPtr;
     type DetachedType = ();
+    type DetachedOwnedType = ();
 
-    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {}
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {}
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         unsafe { Pin::new_unchecked(&mut *(1usize as *mut DummyUnitObject)) }
     }
 
@@ -535,17 +542,18 @@ pub trait Object {
     /// This is meant to be either ThinPtr for sized objects, or
     /// FatPtr for dynamically sized objects. Other types are likely to not make sense.
     type Ptr: Pointer;
-    type DetachedType;
+    type DetachedType: ?Sized;
+    type DetachedOwnedType : Borrow<Self::DetachedType>;
 
     /// Initialize all the fields in 'self' from the given 'detached' type.
     /// The detached type is a regular rust pod struct, with no requirements
     /// on alignment, pinning or similar. It can therefore be passed around freely,
     /// being more convenient to use for initialization.
     ///
-    /// Note that you don't _have_ to use detached type, it's perfectly fine
+    /// Note that you don't _have_ to use this method, it's perfectly fine
     /// to initialize all Object's "in place", after constructing/allocating default
     /// versions of them.
-    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType);
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType);
 
     /// This can in most cases be:
     /// ```dontrun
@@ -555,7 +563,7 @@ pub trait Object {
     /// ```
     /// The only cases where some other implementation is required is when 'Self' does
     /// not have a fixed size.
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self>;
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self>;
 
     /// Access a shared instance of Self at the given pointer address.
     ///
@@ -630,10 +638,10 @@ macro_rules! noatun_object {
         $typ
     };
     ( declare_detached_field object $typ: ty ) => {
-        <$typ as $crate::Object>::DetachedType
+        <$typ as $crate::Object>::DetachedOwnedType
     };
     ( new_declare_param object $typ: ty ) => {
-        <$typ as $crate::Object>::DetachedType
+        &<$typ as $crate::Object>::DetachedType
     };
     ( new_assign_field object $self:ident $name: ident $typ: ty ) => {
         unsafe { <_ as $crate::Object>::init_from_detached(Pin::new_unchecked(&mut $self.$name), $name); }
@@ -653,7 +661,8 @@ macro_rules! noatun_object {
     };
 
     ( declare_detached_struct $n_detached:ident fields $( $kind:ident $name: ident $typ:ty ),* ) => {
-        #[derive(Debug,Clone,$crate::serde_derive::Serialize, $crate::serde_derive::Deserialize)]
+        #[derive(Debug,Clone,$crate::serde_derive::Serialize, $crate::serde_derive::Deserialize, Savefile)]
+
         pub struct $n_detached
         {
             $( $name : noatun_object!(declare_detached_field $kind $typ) ),*
@@ -726,18 +735,19 @@ macro_rules! noatun_object {
             impl $crate::Object for $n {
                 type Ptr = $crate::ThinPtr;
                 type DetachedType = $crate::paste!(noatun_object!(detached_type [<$n Detached>]));
+                type DetachedOwnedType = $crate::paste!(noatun_object!(detached_type [<$n Detached>]));
 
 
-                unsafe fn init_from_detached(mut self: ::std::pin::Pin<&mut Self>, detached: Self::DetachedType) {
+                fn init_from_detached(mut self: ::std::pin::Pin<&mut Self>, detached: &Self::DetachedType) {
                     $(
                     unsafe {
-                        Pin::new_unchecked(&mut self.as_mut().get_unchecked_mut().$name).init_from_detached(detached.$name);
+                        Pin::new_unchecked(&mut self.as_mut().get_unchecked_mut().$name).init_from_detached(&detached.$name);
 
                     }
                     )*
                 }
 
-                unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> ::std::pin::Pin<&'a mut Self> {
+                unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> ::std::pin::Pin<&'a mut Self> {
                     let mut ret: ::std::pin::Pin<&mut Self> = NoatunContext.allocate_pod();
                     ret.as_mut().init_from_detached(detached);
                     ret
@@ -842,25 +852,26 @@ impl Pointer for FatPtr {
     }
 }
 
-impl<T: FixedSizeObject> Object for [T] {
+impl<T: FixedSizeObject> Object for [T] where T::DetachedType: Sized {
     type Ptr = FatPtr;
-    type DetachedType = Vec<T::DetachedType>;
+    type DetachedType = [T::DetachedOwnedType];
+    type DetachedOwnedType = Vec<T::DetachedOwnedType>;
 
-    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         unsafe {
             for (dst, src) in self.get_unchecked_mut().iter_mut().zip(detached.into_iter()) {
-                Pin::new_unchecked(dst).init_from_detached(src);
+                Pin::new_unchecked(dst).init_from_detached(src.borrow());
             }
         }
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         let bytes = size_of::<T>() * detached.len();
         let alloc = NoatunContext.allocate_raw(bytes, align_of::<T>());
 
         let slice: &mut [T] = unsafe {slice::from_raw_parts_mut(alloc as *mut T, detached.len())};
         for (src, dst) in detached.into_iter().zip(&mut *slice) {
-            Pin::new_unchecked(dst).init_from_detached(src);
+            Pin::new_unchecked(dst).init_from_detached(src.borrow());
         }
         Pin::new_unchecked(slice)
     }
@@ -998,7 +1009,7 @@ fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(buf: &[u8]) -> a
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_types::DatabaseCellArrayExt;
+    use crate::data_types::{DatabaseCellArrayExt, NoatunString};
     use crate::disk_access::FileAccessor;
     use crate::distributor::DistributorMessage;
     use crate::projection_store::{MainDbAuxHeader, MainDbHeader};
@@ -1112,12 +1123,13 @@ mod tests {
     impl Object for CounterObject {
         type Ptr = ThinPtr;
         type DetachedType = ();
+        type DetachedOwnedType = ();
 
-        unsafe fn init_from_detached(self:Pin<&mut Self>, detached: Self::DetachedType) {
+        fn init_from_detached(self:Pin<&mut Self>, detached: &Self::DetachedType) {
             todo!()
         }
 
-        unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+        unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
             todo!()
         }
 
@@ -1629,8 +1641,43 @@ mod tests {
 
         type Message = DummyMessage<DatabaseVec<CounterObject>>;
     }
+    impl Application for NoatunString {
+        type Params = ();
+
+        fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
+            unsafe { NoatunString::allocate_from_detached("hello".into()) }
+        }
+
+        type Message = DummyMessage<NoatunString>;
+    }
 
     #[test]
+    fn test_string0() {
+        let mut db: Database<NoatunString> = Database::create_new(
+            "test/test_string0",
+            true,
+            10000,
+            Duration::from_secs(1000),
+            None,
+            (),
+        )
+            .unwrap();
+        db.with_root_mut(|mut test_str| {
+            unsafe {
+                assert_eq!(test_str.len(), 5);
+                assert_eq!(test_str.get(), "hello");
+                let ptr = test_str.get().as_ptr();
+                test_str.as_mut().assign("hell");
+                assert_eq!(ptr, test_str.get().as_ptr());
+                assert_eq!(test_str.get(), "hell");
+                test_str.as_mut().assign("hello world!");
+                assert_eq!(test_str.get(), "hello world!");
+
+            }
+        });
+    }
+
+                #[test]
     fn test_vec0() {
         let mut db: Database<DatabaseVec<CounterObject>> = Database::create_new(
             "test/test_vec0",
@@ -1770,18 +1817,6 @@ mod tests {
             });
         }
     }
-    /*#[bench]
-    fn bench_sha256(b: &mut Bencher) {
-        // write input message
-
-        // read hash digest and consume hasher
-
-        b.iter(|| {
-            let mut hasher = Sha256::new();
-            hasher.update(b"hello world");
-            hasher.finalize()
-        });
-    }*/
 
     #[test]
     fn test_object_macro() {

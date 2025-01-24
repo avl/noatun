@@ -22,14 +22,17 @@ struct Maze {
 impl Object for Maze {
     type Ptr = ThinPtr;
     type DetachedType = (u32, u32);
+    type DetachedOwnedType = (u32, u32);
 
-    unsafe fn init_from_detached(self: Pin<&mut Self>, detached: Self::DetachedType) {
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         let tself = unsafe {self.get_unchecked_mut() };
-        Pin::new_unchecked(&mut tself.player_pos_x).set(detached.0);
-        Pin::new_unchecked(&mut tself.player_pos_y).set(detached.1);
+        unsafe {
+            Pin::new_unchecked(&mut tself.player_pos_x).set(detached.0);
+            Pin::new_unchecked(&mut tself.player_pos_y).set(detached.1);
+        }
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         let mut temp: Pin<&mut Maze> = NoatunContext.allocate_pod();
         temp.as_mut().init_from_detached(detached);
         temp
