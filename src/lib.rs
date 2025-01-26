@@ -389,6 +389,9 @@ impl Debug for NoatunTime {
 }
 
 impl NoatunTime {
+    pub fn successor(&self) -> NoatunTime {
+        NoatunTime(self.0 + 1)
+    }
     pub const ZERO: NoatunTime = NoatunTime(0);
     pub const MAX: NoatunTime = NoatunTime(u64::MAX);
 
@@ -459,6 +462,10 @@ impl Object for DummyUnitObject {
     type Ptr = ThinPtr;
     type DetachedType = ();
     type DetachedOwnedType = ();
+
+    fn detach(&self) -> Self::DetachedType {
+        ()
+    }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {}
 
@@ -544,6 +551,8 @@ pub trait Object {
     type Ptr: Pointer;
     type DetachedType: ?Sized;
     type DetachedOwnedType : Borrow<Self::DetachedType>;
+
+    fn detach(&self) -> Self::DetachedOwnedType;
 
     /// Initialize all the fields in 'self' from the given 'detached' type.
     /// The detached type is a regular rust pod struct, with no requirements
@@ -696,6 +705,7 @@ macro_rules! noatun_object {
 
 
             impl $n {
+
                 pub fn init(
                     &mut self,
                     $( $name: noatun_object!(new_declare_param $kind $typ) ),*
@@ -737,6 +747,14 @@ macro_rules! noatun_object {
                 type DetachedType = $crate::paste!(noatun_object!(detached_type [<$n Detached>]));
                 type DetachedOwnedType = $crate::paste!(noatun_object!(detached_type [<$n Detached>]));
 
+
+                fn detach(&self) -> Self::DetachedOwnedType {
+                    Self::DetachedOwnedType {
+                        $(
+                            $name: self.$name.detach()
+                        ),*
+                    }
+                }
 
                 fn init_from_detached(mut self: ::std::pin::Pin<&mut Self>, detached: &Self::DetachedType) {
                     $(
@@ -856,6 +874,10 @@ impl<T: FixedSizeObject> Object for [T] where T::DetachedType: Sized {
     type Ptr = FatPtr;
     type DetachedType = [T::DetachedOwnedType];
     type DetachedOwnedType = Vec<T::DetachedOwnedType>;
+
+    fn detach(&self) -> Self::DetachedOwnedType {
+        self.iter().map(|x|x.detach()).collect()
+    }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         unsafe {
@@ -1124,6 +1146,10 @@ mod tests {
         type Ptr = ThinPtr;
         type DetachedType = ();
         type DetachedOwnedType = ();
+
+        fn detach(&self) -> Self::DetachedOwnedType {
+            todo!()
+        }
 
         fn init_from_detached(self:Pin<&mut Self>, detached: &Self::DetachedType) {
             todo!()

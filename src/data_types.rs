@@ -26,6 +26,10 @@ impl Object for NoatunString {
     type DetachedType = str;
     type DetachedOwnedType = String;
 
+    fn detach(&self) -> Self::DetachedOwnedType {
+        self.get().to_string()
+    }
+
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         self.assign(&detached);
     }
@@ -128,6 +132,11 @@ impl<T: Copy + Pod> DatabaseOption<T> {
 unsafe impl<T> AnyBitPattern for DatabaseOption<T> where T: AnyBitPattern {}
 unsafe impl<T: Copy> Zeroable for DatabaseOption<T> where T: Zeroable {}
 
+// TODO: DatabaseCell should not be copy. .
+// It's not a disaster, but it's a bit error-prone.
+// Someone can copy it, then overwrite the copy.
+// This will not affect the db, but may lead to an out-of-bounds write-report.
+// registrar observe should work regardless.
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct DatabaseCell<T: Copy> {
@@ -220,6 +229,13 @@ impl<T: Pod> Object for OpaqueCell<T> {
     type DetachedType = T;
     type DetachedOwnedType = T;
 
+    fn detach(&self) -> Self::DetachedOwnedType {
+        // Aren't OpaqueCells actually completely useless?
+        // We need to make it so their value can be inspected in 'with_root', but
+        // not otherwise.
+        panic!("OpaqueCell cannot be detached")
+    }
+
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         self.set(*detached);
     }
@@ -268,6 +284,10 @@ impl<T: Pod> Object for DatabaseCell<T> {
     type Ptr = ThinPtr;
     type DetachedType = T;
     type DetachedOwnedType = T;
+
+    fn detach(&self) -> Self::DetachedOwnedType {
+        self.value
+    }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         self.set(*detached);
@@ -435,6 +455,10 @@ where
     type Ptr = ThinPtr;
     type DetachedType = [T::DetachedOwnedType];
     type DetachedOwnedType = Vec<T::DetachedOwnedType>;
+
+    fn detach(&self) -> Self::DetachedOwnedType {
+        todo!("RawDatabaseVec does not support detach")
+    }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         panic!("init_from_detached is not implemented for RawDatabaseVec");
@@ -672,6 +696,10 @@ where
     type DetachedType = [T::DetachedOwnedType];
     type DetachedOwnedType = Vec<T::DetachedOwnedType>;
 
+    fn detach(&self) -> Self::DetachedOwnedType {
+        self.iter().map(|x|x.detach()).collect()
+    }
+
     fn init_from_detached(mut self: Pin<&mut Self>, detached: &Self::DetachedType) {
         use std::borrow::Borrow;
         for item in detached {
@@ -717,6 +745,10 @@ where
     type Ptr = ThinPtr;
     type DetachedType = T::DetachedType;
     type DetachedOwnedType = T::DetachedOwnedType;
+
+    fn detach(&self) -> Self::DetachedOwnedType {
+        self.get().detach()
+    }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         unsafe {

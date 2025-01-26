@@ -23,6 +23,10 @@ impl Object for CounterObject {
     type DetachedType = ();
     type DetachedOwnedType = ();
 
+    fn detach(&self) -> Self::DetachedOwnedType {
+        todo!()
+    }
+
     fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {
         todo!()
     }
@@ -58,10 +62,10 @@ impl MessagePayload for CounterMessage {
             root_counter = root.as_mut().map_unchecked_mut(|x|&mut x.counter);
         }
 
-        println!(
+        /*println!(
             "Applying message {} {} {}",
             self.id, self.counter, self.delta
-        );
+        );*/
 
         let counter = root_counter.get();
         root_counter.set(counter + self.delta);

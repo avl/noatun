@@ -24,6 +24,10 @@ impl Object for Maze {
     type DetachedType = (u32, u32);
     type DetachedOwnedType = (u32, u32);
 
+    fn detach(&self) -> Self::DetachedOwnedType {
+        todo!()
+    }
+
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         let tself = unsafe {self.get_unchecked_mut() };
         unsafe {
