@@ -132,59 +132,13 @@ pub struct DatabaseContextData {
 
     // The current message being written (or None if not open for writing)
     //registrar_tracker: RefCell<RegistrarTracker>,
-    unused_messages: RefCell<Vec<UnusedInfo>>,
+    unused_messages: Vec<UnusedInfo>,
+    // Set to true when run from within message apply
+    pub(crate) is_mutable: bool,
     // The next message expected to be applied.
     // Starts at 0. When a message is being applied, this field
     // will have the seqnr of the message being applied, not the next one.
     //next_seqnr: SequenceNr,
-}
-
-pub struct DatabaseContextHandle<'a> {
-    d: Cell<*const DatabaseContextData>,
-    phantom: PhantomData<&'a ()>,
-}
-
-impl<'a> DatabaseContextHandle<'a> {
-    pub fn new(x: &DatabaseContextData) -> DatabaseContextHandle<'a> {
-        DatabaseContextHandle {
-            d: Cell::new(x as *const DatabaseContextData),
-            phantom: Default::default(),
-        }
-    }
-    // # Safety
-    // This is of course unsafe as hell, but it's only used responsibly.
-    // Jokes aside: The safety comes from us never recursing, and never storing
-    // the &'a mut DatabaseContextData. Thus there's no aliasing.
-    // The DatabaseContext is always valid, because it's only used from within a callback
-    // where the callee of the callback owns the actual DatabaseContextData.
-    pub(crate) fn d(self) -> &'a DatabaseContextData {
-        let t = self.d.get();
-        unsafe { &*t }
-    }
-}
-
-pub struct DatabaseContextHandleMut<'a> {
-    d: Cell<*mut DatabaseContextData>,
-    phantom: PhantomData<&'a mut ()>,
-}
-
-impl<'a> DatabaseContextHandleMut<'a> {
-    pub fn new(x: &mut DatabaseContextData) -> DatabaseContextHandleMut<'a> {
-        DatabaseContextHandleMut {
-            d: Cell::new(x as *mut DatabaseContextData),
-            phantom: Default::default(),
-        }
-    }
-    // # Safety
-    // This is of course unsafe as hell, but it's only used responsibly.
-    // Jokes aside: The safety comes from us never recursing, and never storing
-    // the &'a mut DatabaseContextData. Thus there's no aliasing.
-    // The DatabaseContext is always valid, because it's only used from within a callback
-    // where the callee of the callback owns the actual DatabaseContextData.
-    pub(crate) fn d(self) -> &'a mut DatabaseContextData {
-        let t = self.d.get();
-        unsafe { &mut *t }
-    }
 }
 
 // This has been shamelessly lifted from the rust std
@@ -225,7 +179,7 @@ pub(crate) struct DepTrackLinkedListEntry {
 }
 
 impl DatabaseContextData {
-    fn record_dependency(&self, observee: SequenceNr, observer: SequenceNr) {
+    fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr) {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
 
@@ -353,13 +307,13 @@ impl DatabaseContextData {
         Self::write_initial_header(&mut self.main_db_mmap);
         self.write_initial_aux_header();
         self.undo_log.clear();
-        self.unused_messages.borrow_mut().clear();
+        self.unused_messages.clear();
 
         Ok(())
     }
 
     pub fn clear_unused_tracking(&mut self) {
-        self.unused_messages.borrow_mut().clear();
+        self.unused_messages.clear();
     }
 
     pub(crate) fn get_aux_header(&self) -> &MainDbAuxHeader {
@@ -447,7 +401,8 @@ impl DatabaseContextData {
             root_index: None,
             undo_log: UndoLog::new(s, name, max_size)?,
             phantom: Default::default(),
-            unused_messages: RefCell::new(Vec::default()),
+            unused_messages: Vec::default(),
+            is_mutable: false,
         };
         // TODO: It's a bit of a code smell that at this precise point in th execution,
         // a DatabaseContext exists, but it's not actually fully initialized until we write the
@@ -862,7 +817,7 @@ impl DatabaseContextData {
             .collect())
     }
 
-    pub fn update_registrar(&self, registrar_point: &mut SequenceNr, opaque: bool) {
+    pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr, opaque: bool) {
         if registrar_point.is_valid() {
             self.rt_decrease_use(unsafe { *registrar_point });
         }
@@ -878,7 +833,7 @@ impl DatabaseContextData {
 
         self.write_pod(current_registrar, Pin::new(registrar_point))
     }
-    pub fn update_registrar_ptr(&self, registrar_point: *mut SequenceNr, opaque: bool) {
+    pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
         if registrar_point_value.is_valid() {
             self.rt_decrease_use(registrar_point_value);
@@ -898,7 +853,7 @@ impl DatabaseContextData {
 
     // Signify that the current message has observed data previously written
     // by 'registrar'.
-    pub fn observe_registrar(&self, observee: SequenceNr) {
+    pub fn observe_registrar(&mut self, observee: SequenceNr) {
         if self.next_seqnr().is_invalid() {
             return;
         }
@@ -911,20 +866,20 @@ impl DatabaseContextData {
         }
     }
 
-    pub(crate) fn rt_finalize_message(&self, message_id: SequenceNr) {
+    pub(crate) fn rt_finalize_message(&mut self, message_id: SequenceNr) {
         debug_assert!(message_id.is_valid());
         let aux_header = self.get_aux_header();
-        let mut unused_messages = self.unused_messages.borrow_mut();
 
         // #SAFETY
         // We only hold this for this method, and we call no other code that
         // uses the same memory. So does all other users of 'get_uses'.
         let uses = unsafe { self.get_uses() };
 
+
         if uses.len() <= message_id.index() {
             // This is a bit of a special case. This is a message
             // that did not actually modify any state at all during its projection.
-            unused_messages.push(UnusedInfo {
+            self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 opaque: true,
             });
@@ -933,7 +888,7 @@ impl DatabaseContextData {
         let track = uses.get(self, message_id.index());
 
         if track.get_use() == 0 {
-            unused_messages.push(UnusedInfo {
+            self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 opaque: track.get_opaque(),
             });
@@ -958,13 +913,12 @@ impl DatabaseContextData {
         messages: &mut OnDiskMessageStore<M>,
         is_before_cutoff: bool,
     ) -> anyhow::Result<Vec<SequenceNr>> {
-        let mut unused_messages = self.unused_messages.borrow_mut();
-        unused_messages.sort(); //Sort in seq-nr order
+        self.unused_messages.sort(); //Sort in seq-nr order
         let mut deleted = Vec::new();
         let mut parent_lists = Bump::new();
 
         //println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
-        'outer: for msg in unused_messages.iter().rev() {
+        'outer: for msg in self.unused_messages.iter().rev() {
             if msg.opaque {
                 // This can be deleted
             } else if !messages.may_have_been_transmitted(msg.seq)? || is_before_cutoff {
@@ -991,7 +945,7 @@ impl DatabaseContextData {
 
             deleted.push(msg.seq);
         }
-        unused_messages.clear();
+        self.unused_messages.clear();
 
         // 'deleted' ends up in reverse seqnr-order
         // iterate in seq-nr order.
@@ -1033,7 +987,7 @@ impl DatabaseContextData {
         }
         uses.get_mut(self, registrar.index()).set_non_opaque();
     }
-    pub(crate) fn rt_decrease_use(&self, registrar: SequenceNr) {
+    pub(crate) fn rt_decrease_use(&mut self, registrar: SequenceNr) {
         let uses = unsafe { self.get_uses() };
         let mut cur = uses.get_mut(self, registrar.index());
         if cur.get_use() == 0 {
@@ -1042,7 +996,7 @@ impl DatabaseContextData {
         unsafe { cur.as_mut().get_unchecked_mut().decrease_use(self) };
         if cur.get_use() == 0 {
             // This is the normal way messages end up in 'unused_messags'
-            self.unused_messages.borrow_mut().push(UnusedInfo {
+            self.unused_messages.push(UnusedInfo {
                 seq: registrar,
                 opaque: cur.get_opaque(),
             });

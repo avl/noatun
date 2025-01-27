@@ -104,7 +104,6 @@ impl<APP: Application> Database<APP> {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let mut root = unsafe { <APP as Object>::access_mut(root_ptr) };
-
         self.message_store.apply_preview(time, root.as_mut(), preview)?;
         let ret = f(&*root);
         drop(guard);
@@ -141,7 +140,6 @@ impl<APP: Application> Database<APP> {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
-
         let t = f(root);
         drop(guard);
         self.context.mark_clean()?;
@@ -165,18 +163,18 @@ impl<APP: Application> Database<APP> {
         }
 
         let index = self.message_store.get_index_of_time(limit)?;
-        let context = unsafe { &mut *CONTEXT.get() };
         self.message_store.rewind(&mut self.context, index)?;
 
         self.projection_time_limit = Some(limit);
 
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
+
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
+        drop(guard);
 
-        let context = unsafe { &mut *CONTEXT.get() };
         self.message_store.apply_missing_messages(
-            context,
+            &mut self.context,
             unsafe{root.get_unchecked_mut()},
             now,
             self.projection_time_limit,
@@ -205,10 +203,10 @@ impl<APP: Application> Database<APP> {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
+        drop(guard);
 
-        let context = unsafe { &mut *CONTEXT.get() };
         self.message_store.apply_missing_messages(
-            context,
+            &mut self.context,
             unsafe{root.get_unchecked_mut()},
             now,
             self.projection_time_limit,
@@ -232,15 +230,16 @@ impl<APP: Application> Database<APP> {
         let guard = ContextGuardMut::new(context);
         let root_obj_ref = APP::initialize_root(params);
         let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, &*root_obj_ref);
+        drop(guard);
 
-        let context = unsafe { &mut *CONTEXT.get() };
         context.set_root_ptr(root_ptr.as_generic());
         context.set_next_seqnr(SequenceNr::from_index(0));
 
         // Safety:
         // Recover is only called when the db is not used
+        let guard = ContextGuardMut::new(context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
-        let context = unsafe { &mut *CONTEXT.get() };
+        drop(guard);
         //let root = context.access_pod(root_ptr);
         message_store.apply_missing_messages(context, unsafe{root.get_unchecked_mut()}, time_now, projection_time_limit)?;
 
@@ -305,10 +304,13 @@ impl<APP: Application> Database<APP> {
     }
 
     pub fn append_local(&mut self, message: APP::Message) -> Result<()> {
-        let now = self.now();
-        self.append_local_at(now, message)
+        self.append_local_opt(None, message)
     }
     pub fn append_local_at(&mut self, time: DateTime<Utc>, message: APP::Message) -> Result<()> {
+        self.append_local_opt(Some(time), message)
+    }
+    pub fn append_local_opt(&mut self, time: Option<DateTime<Utc>>, message: APP::Message) -> Result<()> {
+        let time = time.unwrap_or_else(||self.now());
         let mut new_id = MessageId::generate_for_time(time)?;
 
         if new_id.timestamp() == self.prev_local.timestamp() {
@@ -358,15 +360,14 @@ impl<APP: Application> Database<APP> {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
+        drop(guard);
 
-        let context = unsafe { &mut *CONTEXT.get() };
         self.message_store.apply_missing_messages(
-            context,
+            &mut self.context,
             unsafe{root.get_unchecked_mut()},
             now,
             self.projection_time_limit,
         )?;
-
         self.context.mark_clean();
         Ok(())
     }

@@ -150,28 +150,17 @@ impl<APP: Application> Projector<APP> {
         msg: &Message<APP::Message>,
         seqnr: SequenceNr,
     ) {
-        if context as *mut _ != CONTEXT.get() {
-            #[cfg(debug_assertions)]
-            {
-                unreachable!("context was not set correctly");
-            }
-            #[cfg(not(debug_assertions))]
-            {
-                std::hint::unreachable_unchecked()
-            }
-        }
-        // This is just here to satisfy miri.
-        // Pointer provenance is tricky. Without the assignment below, the access to the
-        // thread safe CONTEXT_MUT from within 'apply' will alias with 'context' here.
-        // Which becomes ok after this call, since the thread safe ptr then has the
-        // right provenance (though it's the exact same bits regardless)
-        CONTEXT.set(context as *mut _);
+
+        let guard = ContextGuardMut::new(context);
 
         println!("Applying message #{}", context.next_seqnr());
         msg.payload
             .apply(NoatunTime(msg.header.id.timestamp()), unsafe {
                 Pin::new_unchecked(root)
             }); //TODO: Handle panics in apply gracefully
+        drop(guard);
+
+
         context.set_next_seqnr(seqnr.successor()); //TODO: Don't record a snapshot for _every_ message.
         context.finalize_message(seqnr);
     }

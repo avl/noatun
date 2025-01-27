@@ -212,6 +212,9 @@ impl NoatunContext {
         if context_ptr.is_null() {
             return;
         }
+        if unsafe{(*(context_ptr as *const DatabaseContextData)).is_mutable == false} {
+            return;
+        }
         unsafe { (*context_ptr).observe_registrar(registrar) }
     }
     pub unsafe fn access_pod_slice<'a, T: Pod>(self, range: FatPtr) -> &'a [T] {
@@ -987,6 +990,7 @@ impl ContextGuardMut {
                 "
             );
         }
+        context.is_mutable = true;
         CONTEXT.set(context as *mut _);
         ContextGuardMut
     }
@@ -994,7 +998,11 @@ impl ContextGuardMut {
 
 impl Drop for ContextGuardMut {
     fn drop(&mut self) {
+        unsafe {
+            (*CONTEXT.get()).is_mutable = false;
+        }
         CONTEXT.set(null_mut());
+
     }
 }
 

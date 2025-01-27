@@ -187,7 +187,7 @@ impl<T> PartialEq<DatabaseCell<T>> for DatabaseCell<T> where T: Copy + PartialEq
     }
 }
 
-/*
+
 impl<T:Copy> Deref for DatabaseCell<T> {
     type Target = T;
 
@@ -196,7 +196,7 @@ impl<T:Copy> Deref for DatabaseCell<T> {
         &self.value
     }
 }
-*/
+
 
 impl<T: Pod> DatabaseCell<T> {
     pub fn get(&self) -> T {

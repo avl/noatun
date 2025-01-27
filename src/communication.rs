@@ -1,5 +1,6 @@
+use std::cell::RefCell;
 use crate::distributor::{Distributor, DistributorMessage};
-use crate::projection_store::DatabaseContextHandle;
+
 use crate::{Application, ContextGuard, Database, DatabaseContextData};
 use anyhow::{bail, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -16,6 +17,7 @@ use std::collections::VecDeque;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::ops::Deref;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -25,6 +27,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::spawn_local;
 use tokio::{select, spawn};
+use tokio::runtime::Builder;
 
 #[derive(Savefile, Debug)]
 enum NetworkPacket {
@@ -447,7 +450,7 @@ impl MulticasterSenderLoop {
 }
 
 enum Cmd<APP: Application> {
-    AddMessage(APP::Message, oneshot::Sender<Result<()>>),
+    AddMessage(Option<DateTime<Utc>>, APP::Message, oneshot::Sender<Result<()>>),
 }
 
 struct DatabaseCommunicationLoop<APP: Application> {
@@ -461,8 +464,9 @@ struct DatabaseCommunicationLoop<APP: Application> {
     /// When the first item was put into the buffer
     buffer_life_start: Instant,
     next_periodic: tokio::time::Instant,
-    bufferd_incoming_messages: Vec<DistributorMessage>,
+    buffered_incoming_messages: Vec<DistributorMessage>,
     outbuf: VecDeque<DistributorMessage>,
+    nextsend: Vec<u8>,
 }
 
 pub struct DatabaseCommunicationConfig {
@@ -483,36 +487,32 @@ impl Default for DatabaseCommunicationConfig {
     }
 }
 
-pub struct DatabaseCommunication<APP: Application> {
-    database: Arc<Mutex<Database<APP>>>,
-    cmd_tx: Sender<Cmd<APP>>,
-}
 
 impl<APP: Application + 'static> DatabaseCommunicationLoop<APP> {
     const PERIODIC_MSG_INTERVAL: Duration = Duration::from_secs(5);
 
-    pub fn process_packet(&mut self, packet: Vec<u8>) -> Result<()> {
+    fn process_packet(&mut self, packet: Vec<u8>) -> Result<()> {
         let msg: DistributorMessage = Deserializer::bare_deserialize(&mut Cursor::new(&packet), 0)?;
         println!("Received {:?}", msg);
-        self.bufferd_incoming_messages.push(msg);
+        self.buffered_incoming_messages.push(msg);
         Ok(())
     }
-    pub fn process_messages(&mut self) -> Result<()> {
-        {}
+    fn process_messages(&mut self) -> Result<()> {
         let mut database = self.database.lock().unwrap();
         let new_msgs = self
             .distributor
-            .receive_message(&mut *database, self.bufferd_incoming_messages.drain(..))?;
+            .receive_message(&mut *database, self.buffered_incoming_messages.drain(..))?;
         drop(database);
         self.outbuf.extend(new_msgs);
         Ok(())
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let mut nextsend = vec![];
+        self.nextsend.clear();
         loop {
+
             // For buffered incoming messages
-            let buffer_len = self.bufferd_incoming_messages.len();
+            let buffer_len = self.buffered_incoming_messages.len();
             let buffer_life_start = self.buffer_life_start;
             let mut buffering_timer = async move {
                 if buffer_len > 0 {
@@ -525,15 +525,15 @@ impl<APP: Application + 'static> DatabaseCommunicationLoop<APP> {
                 }
             };
 
-            if nextsend.is_empty() && !self.outbuf.is_empty() {
+            if self.nextsend.is_empty() && !self.outbuf.is_empty() {
                 let msg = self.outbuf.pop_front().unwrap();
                 println!("Sending {:?}", msg);
-                Serializer::bare_serialize(&mut nextsend, 0, &msg)?;
+                Serializer::bare_serialize(&mut self.nextsend, 0, &msg)?;
             }
             let sendtask = async {
-                if !nextsend.is_empty() {
+                if !self.nextsend.is_empty() {
                     let permit = self.sender_tx.reserve().await?;
-                    permit.send(std::mem::take(&mut nextsend));
+                    permit.send(std::mem::take(&mut self.nextsend));
                 } else {
                     std::future::pending().await
                 }
@@ -556,9 +556,9 @@ impl<APP: Application + 'static> DatabaseCommunicationLoop<APP> {
                         return Ok(()); //Done
                     };
                     match cmd {
-                        Cmd::AddMessage(msg,result) => {
+                        Cmd::AddMessage(time, msg,result) => {
                             let mut database = self.database.lock().unwrap();
-                            let res = database.append_local(msg);
+                            let res = database.append_local_opt(time, msg);
                             _ = result.send(res);
                         }
                     }
@@ -577,10 +577,28 @@ impl<APP: Application + 'static> DatabaseCommunicationLoop<APP> {
         }
     }
 }
+
+struct NoatunRuntime {
+
+}
+
+pub struct DatabaseCommunication<APP: Application> {
+    database: Arc<Mutex<Database<APP>>>,
+    cmd_tx: Sender<Cmd<APP>>,
+
+}
+
 impl<APP: Application + 'static> DatabaseCommunication<APP> {
     pub async fn add_message(&self, msg: APP::Message) -> Result<()> {
+        self.add_message_impl(None, msg).await
+    }
+
+    pub async fn add_message_at(&self, time: DateTime<Utc>, msg: APP::Message) -> Result<()> {
+        self.add_message_impl(Some(time), msg).await
+    }
+    async fn add_message_impl(&self, time: Option<DateTime<Utc>>, msg: APP::Message) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
-        match self.cmd_tx.send(Cmd::AddMessage(msg, response_tx)).await {
+        match self.cmd_tx.send(Cmd::AddMessage(time, msg, response_tx)).await {
             Ok(()) => {}
             Err(err) => {
                 bail!("Failed to AddMessage");
@@ -589,11 +607,23 @@ impl<APP: Application + 'static> DatabaseCommunication<APP> {
         response_rx.await??;
         Ok(())
     }
+    /// Must *not* be called from within a tokio runtime
+    pub fn blocking_add_message_at(&self, time: DateTime<Utc>, msg: APP::Message) -> Result<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        match self.cmd_tx.blocking_send(Cmd::AddMessage(Some(time), msg, response_tx)) {
+            Ok(()) => {}
+            Err(err) => {
+                bail!("Failed to AddMessage");
+            }
+        }
+        response_rx.blocking_recv()??;
+        Ok(())
+    }
     pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
         let db = self.database.lock().unwrap();
         db.with_root(f)
     }
-    pub fn with_root_prevew<R>(
+    pub fn with_root_preview<R>(
         &self,
         time: DateTime<Utc>,
         preview: impl Iterator<Item = APP::Message>,
@@ -602,6 +632,11 @@ impl<APP: Application + 'static> DatabaseCommunication<APP> {
         let mut db = self.database.lock().unwrap();
 
         db.with_root_preview(time, preview, f)
+    }
+
+    pub fn set_projection_time_limit(&mut self, limit: DateTime<Utc>) -> Result<()> {
+        let mut db = self.database.lock().unwrap();
+        db.set_projection_time_limit(limit)
     }
 
     pub async fn new(
@@ -634,9 +669,11 @@ impl<APP: Application + 'static> DatabaseCommunication<APP> {
             cmd_rx,
             buffer_life_start: Instant::now(),
             next_periodic: tokio::time::Instant::now(),
-            bufferd_incoming_messages: vec![],
+            buffered_incoming_messages: vec![],
             outbuf: Default::default(),
+            nextsend: vec![],
         };
+
         spawn_local(main.run());
 
         DatabaseCommunication { database, cmd_tx }
