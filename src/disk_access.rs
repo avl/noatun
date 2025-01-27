@@ -2,7 +2,6 @@ use crate::platform_specific::FileMapping;
 use crate::Target;
 use anyhow::{bail, Context, Result};
 use bytemuck::Pod;
-use std::cell::Cell;
 use std::fmt::{Debug, Formatter};
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
@@ -24,23 +23,27 @@ pub trait FileBackend {
 
     fn maximum_size(&self) -> usize;
 
-    fn shrink_committed_mapping(&self, new_size: usize) -> Result<()>;
+    fn shrink_committed_mapping(&mut self, new_size: usize) -> Result<()>;
 
-    fn grow_committed_mapping(&self, new_size: usize) -> Result<()>;
+    fn grow_committed_mapping(&mut self, new_size: usize) -> Result<()>;
 
     fn try_lock_exclusive(&self) -> Result<()>;
 }
 
 pub(crate) struct FileAccessor {
-    mapping: Box<dyn FileBackend>,
+    mapping: Box<dyn FileBackend+Send>,
     /// This is the start of the memory-map.
     /// I.e, this points at the header.
     /// The actual contents start after the header.
     ptr: *mut u8,
     /// This is the size of the memory mapping. I.e, this value includes the size
     /// of the header. To get the payload/client byte count, subtract HEADER_SIZE
-    committed_size: Cell<usize>,
+    committed_size: usize,
     seek_pos: usize,
+}
+unsafe impl Send for FileAccessor  {
+}
+unsafe impl Sync for FileAccessor  {
 }
 
 pub(crate) struct ReadonlyFileAccessor<'a> {
@@ -143,7 +146,7 @@ impl Seek for ReadonlyFileAccessor<'_> {
 
 impl Debug for FileAccessor {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FileAccessor({})", self.committed_size.get())
+        write!(f, "FileAccessor({})", self.committed_size)
     }
 }
 impl Debug for ReadonlyFileAccessor<'_> {
@@ -279,7 +282,7 @@ impl FileAccessor {
     /// Update the used size. Note: This must not exceed
     /// committed_len
     pub(crate) fn set_used_space(&self, new_value: usize) {
-        assert!(new_value <= self.committed_size.get());
+        assert!(new_value <= self.committed_size);
         unsafe {
             *(self.mapping.ptr() as *mut usize) = new_value;
         }
@@ -287,7 +290,7 @@ impl FileAccessor {
 
     #[inline(always)]
     pub(crate) fn free_space(&self) -> usize {
-        self.committed_size.get() - Self::HEADER_SIZE - self.used_space()
+        self.committed_size - Self::HEADER_SIZE - self.used_space()
     }
 
     pub(crate) fn map_const_ptr(&self) -> *const u8 {
@@ -306,11 +309,11 @@ impl FileAccessor {
         unsafe { slice::from_raw_parts_mut(self.ptr.wrapping_add(Self::HEADER_SIZE), used) }
     }
 
-    pub(crate) fn from_mapping(mapping: impl FileBackend + 'static) -> Self {
+    pub(crate) fn from_mapping(mapping: impl FileBackend + Send+ 'static) -> Self {
         Self {
             ptr: mapping.ptr(),
             mapping: Box::new(mapping),
-            committed_size: Cell::new(0),
+            committed_size: 0,
             seek_pos: 0,
         }
     }
@@ -373,7 +376,7 @@ impl FileAccessor {
         .with_context(|| format!("failed to memory map file {}", filename))?;
 
         let mut temp = FileAccessor {
-            committed_size: Cell::new(mapping.committed_size()),
+            committed_size: mapping.committed_size(),
             ptr: mapping.ptr(),
             mapping: Box::new(mapping),
             seek_pos: 0,
@@ -460,8 +463,8 @@ impl FileAccessor {
         Ok(ret)
     }
 
-    pub(crate) fn grow(&self, new_size: usize) -> Result<()> {
-        if new_size + Self::HEADER_SIZE > self.committed_size.get() {
+    pub(crate) fn grow(&mut self, new_size: usize) -> Result<()> {
+        if new_size + Self::HEADER_SIZE > self.committed_size {
             let max_size = self.mapping.maximum_size();
             if new_size + Self::HEADER_SIZE >= max_size {
                 bail!(
@@ -471,11 +474,11 @@ impl FileAccessor {
                 );
             }
 
-            let new_file_size = ((self.committed_size.get() + new_size + Self::HEADER_SIZE) * 2)
+            let new_file_size = ((self.committed_size + new_size + Self::HEADER_SIZE) * 2)
                 .next_multiple_of(self.mapping.page_size())
                 .min(max_size);
             self.mapping.grow_committed_mapping(new_file_size)?;
-            self.committed_size.set(new_file_size);
+            self.committed_size=new_file_size;
         }
         self.set_used_space(new_size);
         Ok(())
@@ -484,7 +487,7 @@ impl FileAccessor {
     /// This is the actual size of the file on disk. This is not the 'logical' size
     /// Should probably not be exposed, since that would mean we had a leaky abstraction
     fn committed_len(&self) -> usize {
-        self.committed_size.get().saturating_sub(Self::HEADER_SIZE)
+        self.committed_size.saturating_sub(Self::HEADER_SIZE)
     }
 
     pub(crate) fn flush_range(&self, offset: usize, len: usize) -> Result<()> {
@@ -517,9 +520,9 @@ impl FileAccessor {
     pub(crate) fn truncate(&mut self, new_size: usize) -> Result<()> {
         let new_alloc_size =
             (new_size + Self::HEADER_SIZE).next_multiple_of(self.mapping.page_size());
-        if new_alloc_size < self.committed_size.get() {
+        if new_alloc_size < self.committed_size {
             self.mapping.shrink_committed_mapping(new_alloc_size)?;
-            self.committed_size.set(new_alloc_size);
+            self.committed_size = new_alloc_size;
         }
         self.set_used_space(new_size);
         Ok(())

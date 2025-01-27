@@ -45,8 +45,14 @@ mod unix {
         file: File,
         base_ptr: *mut u8,
         file_name: String,
-        committed_size: Cell<usize>,
+        committed_size: usize,
         total_size: usize,
+    }
+    unsafe impl Sync for FileMapping {
+
+    }
+    unsafe impl Send for FileMapping {
+
     }
 
     impl Drop for FileMapping {
@@ -67,7 +73,7 @@ mod unix {
                 .max(2usize * 1024 * 1024)
         }
         pub(crate) fn committed_size(&self) -> usize {
-            self.committed_size.get()
+            self.committed_size
         }
         pub fn new(
             file: File,
@@ -111,7 +117,7 @@ mod unix {
                 file,
                 base_ptr: ptr as *mut u8,
                 file_name: filename_for_diagnostics.to_string(),
-                committed_size: Cell::new(0),
+                committed_size: 0,
                 total_size: actual_size,
             };
             temp.grow_committed_mapping(min_initial_size)?;
@@ -124,7 +130,7 @@ mod unix {
             Self::page_size()
         }
         fn flush_all(&self) -> Result<()> {
-            self.flush_range(0, self.committed_size.get())
+            self.flush_range(0, self.committed_size)
         }
         fn flush_range(&self, start: usize, len: usize) -> Result<()> {
             unsafe {
@@ -162,20 +168,20 @@ mod unix {
         /// Returns the usable size of this file mapping
         #[inline(always)]
         fn len(&self) -> usize {
-            self.committed_size.get()
+            self.committed_size
         }
 
         fn maximum_size(&self) -> usize {
             self.total_size
         }
 
-        fn shrink_committed_mapping(&self, new_size: usize) -> Result<()> {
+        fn shrink_committed_mapping(&mut self, new_size: usize) -> Result<()> {
             assert_eq!(new_size % self.page_size(), 0);
-            if new_size >= self.committed_size.get() {
+            if new_size >= self.committed_size {
                 return Ok(());
             }
 
-            let prev_size = self.committed_size.get();
+            let prev_size = self.committed_size;
             let shrink_by = prev_size - new_size;
             let ptr = unsafe {
                 libc::mmap(
@@ -202,9 +208,9 @@ mod unix {
             Ok(())
         }
 
-        fn grow_committed_mapping(&self, new_size: usize) -> Result<()> {
+        fn grow_committed_mapping(&mut self, new_size: usize) -> Result<()> {
             assert_eq!(new_size % self.page_size(), 0);
-            if new_size <= self.committed_size.get() {
+            if new_size <= self.committed_size {
                 return Ok(());
             }
             if new_size > self.total_size {
@@ -238,7 +244,7 @@ mod unix {
                 );
             }
 
-            self.committed_size.set(new_size);
+            self.committed_size = new_size;
 
             Ok(())
         }

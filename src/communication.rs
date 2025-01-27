@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+
 use crate::distributor::{Distributor, DistributorMessage};
 
 use crate::{Application, ContextGuard, Database, DatabaseContextData};
@@ -453,7 +453,7 @@ enum Cmd<APP: Application> {
     AddMessage(Option<DateTime<Utc>>, APP::Message, oneshot::Sender<Result<()>>),
 }
 
-struct DatabaseCommunicationLoop<APP: Application> {
+struct DatabaseCommunicationLoop<APP: Application+Send> where <APP as Application>::Params: Send, Self:Send{
     database: Arc<Mutex<Database<APP>>>,
     jh: tokio::task::JoinHandle<()>,
     sender_tx: Sender<Vec<u8>>,
@@ -488,7 +488,10 @@ impl Default for DatabaseCommunicationConfig {
 }
 
 
-impl<APP: Application + 'static> DatabaseCommunicationLoop<APP> {
+impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
+    <APP as Application>::Params: Send,
+
+    <APP as Application>::Message: Send{
     const PERIODIC_MSG_INTERVAL: Duration = Duration::from_secs(5);
 
     fn process_packet(&mut self, packet: Vec<u8>) -> Result<()> {
@@ -588,7 +591,11 @@ pub struct DatabaseCommunication<APP: Application> {
 
 }
 
-impl<APP: Application + 'static> DatabaseCommunication<APP> {
+impl<APP: Application + 'static+Send> DatabaseCommunication<APP>
+where <APP as Application>::Params: Send,
+    <APP as Application>::Message: Send,
+
+{
     pub async fn add_message(&self, msg: APP::Message) -> Result<()> {
         self.add_message_impl(None, msg).await
     }
@@ -674,7 +681,7 @@ impl<APP: Application + 'static> DatabaseCommunication<APP> {
             nextsend: vec![],
         };
 
-        spawn_local(main.run());
+        spawn(main.run());
 
         DatabaseCommunication { database, cmd_tx }
     }

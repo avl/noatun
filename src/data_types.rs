@@ -346,7 +346,7 @@ impl<T> Debug for RawDatabaseVec<T> {
 }
 
 impl<T:Pod+ 'static> RawDatabaseVec<T> {
-    fn realloc_add(&mut self, ctx: &DatabaseContextData, new_capacity: usize, new_len: usize) {
+    fn realloc_add(&mut self, ctx: &mut DatabaseContextData, new_capacity: usize, new_len: usize) {
         debug_assert!(new_capacity >= new_len);
         debug_assert!(new_capacity >= self.capacity);
         debug_assert!(new_len >= self.length);
@@ -375,7 +375,7 @@ impl<T:Pod+ 'static> RawDatabaseVec<T> {
     pub fn is_empty(&self) -> bool {
         self.length == 0
     }
-    pub fn grow(&mut self, ctx: &DatabaseContextData, new_length: usize) {
+    pub fn grow(&mut self, ctx: &mut DatabaseContextData, new_length: usize) {
         if new_length <= self.length {
             return;
         }
@@ -427,13 +427,13 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
         let t = unsafe { ctx.access_pod_mut(ThinPtr(offset)) };
         t
     }
-    pub(crate) fn write_untracked(&mut self, ctx: &DatabaseContextData, index: usize, val: T) {
+    pub(crate) fn write_untracked(&mut self, ctx: &mut DatabaseContextData, index: usize, val: T) {
         let offset = self.data + index * size_of::<T>();
         unsafe {
             ctx.write_pod(val, ctx.access_pod_mut(ThinPtr(offset)));
         };
     }
-    pub(crate) fn push_untracked(&mut self, ctx: &DatabaseContextData, t: T) -> ThinPtr
+    pub(crate) fn push_untracked(&mut self, ctx: &mut DatabaseContextData, t: T) -> ThinPtr
     where
         T: AnyBitPattern,
     {

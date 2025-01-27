@@ -7,7 +7,6 @@ use bytemuck::{Pod, Zeroable};
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use libc::epoll_params;
 use std::backtrace::Backtrace;
-use std::cell::RefCell;
 use std::io::{Seek, SeekFrom, Write};
 
 #[derive(Debug)]
@@ -28,12 +27,12 @@ pub enum UndoLogEntry<'a> {
 }
 
 pub struct UndoLog {
-    store_mmap: RefCell<FileAccessor>,
+    store_mmap: FileAccessor,
 }
 
 impl UndoLog {
-    pub(crate) fn clear(&self) -> Result<()> {
-        self.store_mmap.borrow_mut().truncate(0)
+    pub(crate) fn clear(&mut self) -> Result<()> {
+        self.store_mmap.truncate(0)
     }
 }
 
@@ -51,17 +50,17 @@ impl UndoLog {
         let mut file = disk.open_file(target, "undo", 0, max_size)?;
 
         Ok(UndoLog {
-            store_mmap: RefCell::new(file),
+            store_mmap: file,
         })
     }
 
     fn access<R>(&self, f: impl FnOnce(&FileAccessor) -> R) -> R {
-        let bytes = self.store_mmap.borrow();
+        let bytes = &self.store_mmap;
         f(&bytes)
     }
     fn access_mut<R>(&mut self, f: impl FnOnce(&mut FileAccessor) -> R) -> R {
-        let mut bytes = self.store_mmap.borrow_mut();
-        f(&mut bytes)
+        let mut bytes = &mut self.store_mmap;
+        f(bytes)
     }
 
     /// Calls the callback with the most recent entry in the undo-log, repeatedly.
@@ -129,8 +128,8 @@ impl UndoLog {
             _ => panic!("Corrupt undo-store"),
         }
     }
-    pub fn record(&self, entry: UndoLogEntry) {
-        let mut store_ref = self.store_mmap.borrow_mut();
+    pub fn record(&mut self, entry: UndoLogEntry) {
+        let mut store_ref = &mut self.store_mmap;
         let store = &mut *store_ref;
         store.seek(SeekFrom::End(0)).unwrap();
         match entry {

@@ -15,7 +15,7 @@ use bytemuck::{bytes_of, from_bytes, from_bytes_mut, AnyBitPattern, Pod, Zeroabl
 use indexmap::{IndexMap, IndexSet};
 use std::alloc::Layout;
 use std::any::{Any, TypeId};
-use std::cell::{Cell, RefCell};
+use std::cell::{RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -54,14 +54,14 @@ mod registrar_info {
         pub fn get_use(&self) -> u32 {
             self.uses & 0x7FFF_FFFF
         }
-        pub fn increase_use(&mut self, context: &DatabaseContextData) {
+        pub fn increase_use(&mut self, context: &mut DatabaseContextData) {
             if self.get_use() >= 0x7FFF_FFFF {
                 return;
             }
             //TODO: We could have a special "inc 1" noatun primitive.
             context.write_pod(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) } );
         }
-        pub fn decrease_use(&mut self, context: &DatabaseContextData) {
+        pub fn decrease_use(&mut self, context: &mut DatabaseContextData) {
             let cur_uses = self.get_use();
             if cur_uses == 0 {
                 panic!("Internal error, use count wrong");
@@ -124,14 +124,11 @@ pub struct MainDbAuxHeader {
 
 pub struct DatabaseContextData {
     main_db_mmap: FileAccessor,
-    //pointer: Cell<usize>,
     root_index: Option<GenPtr>,
     undo_log: UndoLog,
-    // Make sure neither Send nor Sync
-    phantom: PhantomData<*mut ()>,
 
     // The current message being written (or None if not open for writing)
-    //registrar_tracker: RefCell<RegistrarTracker>,
+
     unused_messages: Vec<UnusedInfo>,
     // Set to true when run from within message apply
     pub(crate) is_mutable: bool,
@@ -191,12 +188,6 @@ impl DatabaseContextData {
         if observee.index() >= keys.len() {
             keys.grow(self, observee.index() + 1);
         }
-
-        //let (val_len, vals): (_, &mut [crate::projection_store::message_dependency_tracker::linked_list_entry::DepTrackLinkedListEntry]) = Self::access(&mut self.deptrack_vals);
-        //let (key_len, keys): (_, &mut [u64]) = Self::access(&mut self.deptrack_keys);
-        //debug_assert_eq!(keys.len(), self.key_capacity);
-        //debug_assert_eq!(vals.len(), self.value_capacity);
-
         let key_place = keys.get_mut(self, observee.index());
 
         let mut new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod_internal();
@@ -400,7 +391,6 @@ impl DatabaseContextData {
             main_db_mmap: main_db_file,
             root_index: None,
             undo_log: UndoLog::new(s, name, max_size)?,
-            phantom: Default::default(),
             unused_messages: Vec::default(),
             is_mutable: false,
         };
@@ -528,7 +518,7 @@ impl DatabaseContextData {
         }
     }
 
-    pub fn copy(&self, source: FatPtr, dest_index: ThinPtr) {
+    pub fn copy(&mut self, source: FatPtr, dest_index: ThinPtr) {
         unsafe {
             //dbg!(&source, &dest_index);
 
@@ -547,10 +537,10 @@ impl DatabaseContextData {
             dest.copy_from_slice(src);
         }
     }
-    pub fn copy_sized(&self, source: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
+    pub fn copy_sized(&mut self, source: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
         self.copy(FatPtr::from(source.0, size_bytes), dest_index)
     }
-    pub fn copy_pod<T: Pod>(&self, source: &T, dest: &mut T) {
+    pub fn copy_pod<T: Pod>(&mut self, source: &T, dest: &mut T) {
         unsafe {
             let dest_index = self.index_of_sized(dest);
             self.undo_log.record(UndoLogEntry::Restore {
@@ -561,16 +551,16 @@ impl DatabaseContextData {
         }
     }
     #[allow(clippy::mut_from_ref)]
-    pub fn allocate_pod<T: AnyBitPattern>(&self) -> Pin<&mut T> {
+    pub fn allocate_pod<T: AnyBitPattern>(&mut self) -> Pin<&mut T> {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { Pin::new_unchecked(&mut *(bytes as *mut T)) }
     }
     #[allow(clippy::mut_from_ref)]
-    pub(crate) fn allocate_pod_internal<T: Pod>(&self) -> &mut T {
+    pub(crate) fn allocate_pod_internal<'a, T: Pod>(&mut self) -> &'a mut T {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { &mut *(bytes as *mut T) }
     }
-    pub fn allocate_raw(&self, size: usize, align: usize) -> *mut u8 {
+    pub fn allocate_raw(&mut self, size: usize, align: usize) -> *mut u8 {
         if align > 256 {
             panic!("Noatun arbitrarily does not support types with alignment > 256");
         }
@@ -756,7 +746,7 @@ impl DatabaseContextData {
         let target = unsafe { self.access_slice_mut(fat) };
         target.copy_from_slice(data);
     }
-    pub fn write_pod<T: Pod>(&self, src: T, dest: Pin<&mut T>) {
+    pub fn write_pod<T: Pod>(&mut self, src: T, dest: Pin<&mut T>) {
         let dest = unsafe { dest.get_unchecked_mut() };
         let dest_index = self.index_of_sized(dest);
 
@@ -766,7 +756,7 @@ impl DatabaseContextData {
         });
         *dest = src;
     }
-    pub fn write_object<T: FixedSizeObject>(&self, src: T, dest: Pin<&mut T>) {
+    pub fn write_object<T: FixedSizeObject>(&mut self, src: T, dest: Pin<&mut T>) {
         let dest = unsafe { dest.get_unchecked_mut() };
         let dest_index = self.index_of_sized(dest);
 
@@ -777,7 +767,7 @@ impl DatabaseContextData {
         *dest = src;
     }
     #[allow(clippy::not_unsafe_ptr_arg_deref)] //False positive, we check the bounds
-    pub fn write_pod_ptr<T: Pod>(&self, src: T, dest: *mut T) {
+    pub fn write_pod_ptr<T: Pod>(&mut self, src: T, dest: *mut T) {
         let dest_index = self.index_of_ptr(dest);
         assert!(dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space());
 
@@ -973,14 +963,14 @@ impl DatabaseContextData {
 
         Ok(deleted)
     }
-    pub(crate) fn rt_increase_use(&self, registrar: SequenceNr) {
+    pub(crate) fn rt_increase_use(&mut self, registrar: SequenceNr) {
         let uses = unsafe { self.get_uses() };
         if uses.len() <= registrar.index() {
             uses.grow(self, registrar.index() + 1);
         }
         uses.get_mut(self, registrar.index()).increase_use(self);
     }
-    pub(crate) fn rt_set_non_opaque(&self, registrar: SequenceNr) {
+    pub(crate) fn rt_set_non_opaque(&mut self, registrar: SequenceNr) {
         let uses = unsafe { self.get_uses() };
         if uses.len() <= registrar.index() {
             uses.grow(self, registrar.index() + 1);

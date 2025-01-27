@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime};
 pub(crate) struct Projector<APP: Application> {
     messages: OnDiskMessageStore<APP::Message>,
     head_tracker: UpdateHeadTracker,
-    phantom_data: PhantomData<(*const APP)>,
+    phantom_data: PhantomData<APP>,
     cut_off_config: CutOffConfig,
 }
 

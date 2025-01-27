@@ -5,7 +5,6 @@ use fs2::FileExt;
 use memmap2::MmapMut;
 use std::alloc::Layout;
 use std::any::Any;
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::fs::{File, OpenOptions};
@@ -78,8 +77,15 @@ struct InMemoryGrowableFileMappingData {
     total_data_len: usize,
     used_len: usize,
 }
+
+unsafe impl Send for InMemoryGrowableFileMappingData {
+
+}
+unsafe impl Sync for InMemoryGrowableFileMappingData {
+
+}
 struct InMemoryGrowableFileMapping {
-    backing: Rc<RefCell<InMemoryGrowableFileMappingData>>,
+    backing: InMemoryGrowableFileMappingData,
 }
 
 impl InMemoryGrowableFileMappingData {
@@ -90,27 +96,26 @@ impl InMemoryGrowableFileMappingData {
     }
 }
 impl InMemoryGrowableFileMapping {
-    fn grow(&self, new_size: usize) -> Result<()> {
-        let mut tself = self.backing.borrow_mut();
-        if new_size > tself.total_data_len {
+    fn grow(&mut self, new_size: usize) -> Result<()> {
+        if new_size > self.backing.total_data_len {
             bail!(
                 "Cannot grow to {}, because max size is {}",
                 new_size,
-                tself.total_data_len
+                self.backing.total_data_len
             );
         }
-        if new_size > tself.used_len {
-            tself.used_len = new_size;
+        if new_size > self.backing.used_len {
+            self.backing.used_len = new_size;
         }
         Ok(())
     }
 
     fn get_ptr(&self) -> *mut u8 {
-        self.backing.borrow().data
+        self.backing.data
     }
 
     fn usable_len(&self) -> usize {
-        self.backing.borrow().used_len
+        self.backing.used_len
     }
 
     fn flush_range(&self, offset: usize, len: usize) -> Result<()> {
@@ -121,8 +126,8 @@ impl InMemoryGrowableFileMapping {
         Ok(())
     }
 
-    fn truncate(&self, len: usize) -> Result<()> {
-        let mut backing = self.backing.borrow_mut();
+    fn truncate(&mut self, len: usize) -> Result<()> {
+        let mut backing = &mut self.backing;
         if backing.used_len > len {
             unsafe { backing.map_mut()[len..].fill(0) };
             backing.used_len = len;
@@ -133,7 +138,7 @@ impl InMemoryGrowableFileMapping {
 
 #[derive(Default)]
 pub struct InMemoryDisk {
-    files: HashMap<PathBuf, Rc<RefCell<InMemoryGrowableFileMappingData>>>,
+    //files: HashMap<PathBuf, Rc<RefCell<InMemoryGrowableFileMappingData>>>,
 }
 
 impl Disk for InMemoryDisk {
@@ -149,24 +154,17 @@ impl Disk for InMemoryDisk {
         let overwrite = target.overwrite();
         let path = target.path().join(file);
         let data = if !create {
-            let t = (*self.files.get(&path).unwrap()).clone();
-            t.clone()
+            panic!("Open-use case not supported for in-memory db");
         } else {
-            if !overwrite {
-                if self.files.contains_key(&path) {
-                    bail!("file already exists");
-                }
-            }
             let data_len = max_size;
             let new_layout = Layout::from_size_align(data_len, 256).unwrap();
             let data_ptr = unsafe { std::alloc::alloc_zeroed(new_layout) };
 
-            let data = Rc::new(RefCell::new(InMemoryGrowableFileMappingData {
+            let data = InMemoryGrowableFileMappingData {
                 data: data_ptr,
                 total_data_len: data_len,
                 used_len: 0,
-            }));
-            self.files.insert(path.clone(), data.clone());
+            };
             data
         };
 
@@ -198,14 +196,14 @@ impl FileBackend for InMemoryGrowableFileMapping {
     }
 
     fn maximum_size(&self) -> usize {
-        self.backing.borrow().total_data_len
+        self.backing.total_data_len
     }
 
-    fn shrink_committed_mapping(&self, new_size: usize) -> Result<()> {
+    fn shrink_committed_mapping(&mut self, new_size: usize) -> Result<()> {
         self.truncate(new_size)
     }
 
-    fn grow_committed_mapping(&self, new_size: usize) -> Result<()> {
+    fn grow_committed_mapping(&mut self, new_size: usize) -> Result<()> {
         self.grow(new_size)?;
         Ok(())
     }
