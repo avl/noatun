@@ -116,7 +116,7 @@ async fn test_sync_app() {
                 )
                 .unwrap();
                 let comm =
-                    DatabaseCommunication::new(db, DatabaseCommunicationConfig::default()).await;
+                    DatabaseCommunication::async_tokio_new(db, DatabaseCommunicationConfig::default()).await.unwrap();
                 comms.push(comm);
             }
 

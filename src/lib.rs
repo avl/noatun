@@ -422,7 +422,8 @@ impl NoatunTime {
     }
 }
 
-pub trait MessagePayload: Debug {
+//TODO: Do away with the Clone-bound
+pub trait MessagePayload: Debug  {
     type Root: Object;
     fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>);
 
@@ -432,7 +433,7 @@ pub trait MessagePayload: Debug {
     fn serialize<W: Write>(&self, writer: W) -> Result<()>;
 }
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct MessageHeader {
     pub id: MessageId,
     pub parents: Vec<MessageId>,

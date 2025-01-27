@@ -303,13 +303,14 @@ impl<APP: Application> Database<APP> {
         self.message_store.mark_transmitted(message_id)
     }
 
-    pub fn append_local(&mut self, message: APP::Message) -> Result<()> {
+
+    pub fn append_local(&mut self, message: APP::Message) -> Result<MessageHeader> {
         self.append_local_opt(None, message)
     }
-    pub fn append_local_at(&mut self, time: DateTime<Utc>, message: APP::Message) -> Result<()> {
+    pub fn append_local_at(&mut self, time: DateTime<Utc>, message: APP::Message) -> Result<MessageHeader> {
         self.append_local_opt(Some(time), message)
     }
-    pub fn append_local_opt(&mut self, time: Option<DateTime<Utc>>, message: APP::Message) -> Result<()> {
+    pub fn append_local_opt(&mut self, time: Option<DateTime<Utc>>, message: APP::Message) -> Result<MessageHeader> {
         let time = time.unwrap_or_else(||self.now());
         let mut new_id = MessageId::generate_for_time(time)?;
 
@@ -317,12 +318,12 @@ impl<APP: Application> Database<APP> {
             new_id = self.prev_local.successor();
         }
         self.prev_local = new_id;
-        println!(
+        /*println!(
             "At {:?}/#{} Appending {:?}",
             time,
             self.context.next_seqnr(),
             message
-        );
+        );*/
 
         let t = Message::new(
             new_id,
@@ -333,8 +334,10 @@ impl<APP: Application> Database<APP> {
                 .collect(),
             message,
         );
+        //TODO: Find a way to avoid the following clone!
+        let header = t.header.clone();
         self.append_single(t, true)?;
-        Ok(())
+        Ok(header)
     }
 
     pub fn append_many(

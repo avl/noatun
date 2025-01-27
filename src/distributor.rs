@@ -40,7 +40,7 @@ impl SerializedMessage {
         m.payload.serialize(&mut data)?;
         Ok(SerializedMessage {
             id: m.header.id,
-            parents: m.header.parents,
+            parents: m.header.parents.clone(),
             data,
         })
     }
@@ -220,6 +220,11 @@ impl Distributor {
         let mut output = Vec::new();
 
         self.process_reported_heads(database, accumulated_heads, &mut output);
+
+        // TODO: Consider if this is the best solution.
+        // process_request_upstream presently requires sorted input. But should it?
+        accumulated_upstream_queries.sort_keys();
+
         self.process_request_upstream(database, accumulated_upstream_queries, &mut output);
         self.process_upstream_response(database, accumulated_responses, &mut output);
         self.process_send_message_all_descendants(

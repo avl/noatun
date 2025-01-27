@@ -1,8 +1,8 @@
 
-use crate::distributor::{Distributor, DistributorMessage};
+use crate::distributor::{Distributor, DistributorMessage, SerializedMessage};
 
-use crate::{Application, ContextGuard, Database, DatabaseContextData};
-use anyhow::{bail, Result};
+use crate::{Application, ContextGuard, Database, DatabaseContextData, Message, MessageHeader, MessagePayload};
+use anyhow::{bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
@@ -19,6 +19,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
@@ -27,7 +28,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::spawn_local;
 use tokio::{select, spawn};
-use tokio::runtime::Builder;
+use tokio::runtime::{Builder, Runtime};
 
 #[derive(Savefile, Debug)]
 enum NetworkPacket {
@@ -165,7 +166,11 @@ impl ReceiveTrack {
         self.sorted_packets.insert(insert_point, packet);
         while let Some(first) = self.sorted_packets.front() {
             if first.reconstructed_seq != self.expected_next {
-                return Ok(());
+                if self.expected_next == 0 {
+                    self.expected_next = first.reconstructed_seq;
+                } else {
+                    return Ok(());
+                }
             }
             if first.entity.first_boundary == u16::MAX {
                 self.accum.extend(&first.entity.data);
@@ -225,6 +230,11 @@ struct MulticasterSenderLoop {
     max_payload_per_packet: usize,
     next_send_seq: u64,
 }
+impl Drop for MulticasterSenderLoop {
+    fn drop(&mut self) {
+        println!("Dropping MulticasterSenderLoop loop");
+    }
+}
 
 impl MulticasterSenderLoop {
     pub async fn new(
@@ -242,13 +252,16 @@ impl MulticasterSenderLoop {
         }
         udp.set_reuse_address(true)?;
         udp.set_multicast_loop_v4(true);
+        println!("Binding to group {:?}", multicast_group);
         udp.bind(&multicast_group.into())?;
         udp.set_nonblocking(true);
         let receive_socket = UdpSocket::from_std(udp.into())?;
 
         let max_payload_per_packet = mtu.saturating_sub(APPROX_HEADER_SIZE);
+        println!("Send socket bind-address: {:?}", send_socket.local_addr()?);
         match (multicast_group.ip(), bind_address.ip()) {
             (IpAddr::V4(multicast_ipv4), IpAddr::V4(bind_ipv4)) => {
+                println!("Joining multicast group {} on if {}", multicast_ipv4, bind_ipv4);
                 receive_socket.join_multicast_v4(multicast_ipv4, bind_ipv4);
                 receive_socket.set_multicast_loop_v4(true);
             }
@@ -419,7 +432,10 @@ impl MulticasterSenderLoop {
                     }
                     msg = receive => {
                         let (size, addr) = msg.expect("network should not fail");
-                        //println!("Received {} byte packet: {:?}", size, self.recvbuf);
+                        if addr == self.send_socket.local_addr().unwrap() { //TODO: maybe remember local_addr, don't get it each time
+                            continue;
+                        }
+                        println!("Received {} byte packet: {:?}", size, self.recvbuf);
                         assert_eq!(size, self.recvbuf.len());
                         let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0)  else {
                             eprintln!("Invalid packet received");
@@ -469,6 +485,12 @@ struct DatabaseCommunicationLoop<APP: Application+Send> where <APP as Applicatio
     nextsend: Vec<u8>,
 }
 
+impl<APP:Application+Send> Drop for DatabaseCommunicationLoop<APP> where <APP as Application>::Params: Send, Self:Send {
+    fn drop(&mut self) {
+        println!("Dropping com loop");
+    }
+}
+
 pub struct DatabaseCommunicationConfig {
     pub listen_address: String,
     pub multicast_address: String,
@@ -511,6 +533,11 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
     }
 
     pub async fn run(mut self) -> Result<()> {
+        let result = self.run2().await;
+        println!("run result {:?}", result);
+        result
+    }
+    pub async fn run2(mut self) -> Result<()> {
         self.nextsend.clear();
         loop {
 
@@ -561,8 +588,28 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                     match cmd {
                         Cmd::AddMessage(time, msg,result) => {
                             let mut database = self.database.lock().unwrap();
+                            let mut temp = vec![];
+                            msg.serialize(&mut temp); //TODO: get rid of this serialization
                             let res = database.append_local_opt(time, msg);
-                            _ = result.send(res);
+
+                            match res {
+
+                                Ok(res) => {
+                                    let msg: APP::Message = APP::Message::deserialize(&temp).unwrap();
+                                    self.outbuf.push_back(
+                                        DistributorMessage::Message(SerializedMessage::new(
+                                            Message {
+                                                header: res.clone(),
+                                                payload: msg
+                                            }
+                                        )?, false)
+                                    );
+                                    _ = result.send(Ok(()));
+                                }
+                                Err(err) => {
+                                    _ = result.send(Err(err));
+                                }
+                            }
                         }
                     }
                 }
@@ -608,19 +655,22 @@ where <APP as Application>::Params: Send,
         match self.cmd_tx.send(Cmd::AddMessage(time, msg, response_tx)).await {
             Ok(()) => {}
             Err(err) => {
-                bail!("Failed to AddMessage");
+                bail!("Failed to AddMessage - background thread no longer running");
             }
         }
         response_rx.await??;
         Ok(())
     }
-    /// Must *not* be called from within a tokio runtime
     pub fn blocking_add_message_at(&self, time: DateTime<Utc>, msg: APP::Message) -> Result<()> {
+        self.blocking_add_message(Some(time), msg)
+    }
+    /// Must *not* be called from within a tokio runtime.
+    pub fn blocking_add_message(&self, time: Option<DateTime<Utc>>, msg: APP::Message) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
-        match self.cmd_tx.blocking_send(Cmd::AddMessage(Some(time), msg, response_tx)) {
+        match self.cmd_tx.blocking_send(Cmd::AddMessage(time, msg, response_tx)) {
             Ok(()) => {}
             Err(err) => {
-                bail!("Failed to AddMessage");
+                bail!("Failed to AddMessage - background thread no longer running");
             }
         }
         response_rx.blocking_recv()??;
@@ -646,22 +696,22 @@ where <APP as Application>::Params: Send,
         db.set_projection_time_limit(limit)
     }
 
-    pub async fn new(
+    /// Spawns the communication system as a future on the current tokio runtime.
+    pub async fn async_tokio_new(
         database: Database<APP>,
         config: DatabaseCommunicationConfig,
-    ) -> DatabaseCommunication<APP> {
+    ) -> Result<DatabaseCommunication<APP>> {
         let (sender_tx, mut sender_rx) = tokio::sync::mpsc::channel(1000);
         let (receiver_tx, mut receiver_rx) = tokio::sync::mpsc::channel(1000);
         let sender_loop = MulticasterSenderLoop::new(
-            config.listen_address.parse().unwrap(),
-            config.multicast_address.parse().unwrap(),
+            config.listen_address.parse().context(format!("parsing listen address {}", config.listen_address))?,
+            config.multicast_address.parse().context(format!("parsing multicast address {}", config.multicast_address))?,
             receiver_tx,
             sender_rx,
             config.bandwidth_limit_bytes_per_second,
             config.mtu,
         )
-        .await
-        .unwrap();
+        .await?;
         let jh = spawn(sender_loop.run());
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(100);
@@ -683,8 +733,39 @@ where <APP as Application>::Params: Send,
 
         spawn(main.run());
 
-        DatabaseCommunication { database, cmd_tx }
+        Ok(DatabaseCommunication { database, cmd_tx })
     }
+
+    fn start_async_runtime(database: Database<APP>, config: DatabaseCommunicationConfig) -> Result<(Runtime, DatabaseCommunication<APP>)> {
+        let mut runtime = Runtime::new()?;
+        let com: DatabaseCommunication<APP> = runtime.block_on(Self::async_tokio_new(database, config))?;
+        Ok((runtime, com))
+    }
+
+    pub fn new(
+        database: Database<APP>,
+        config: DatabaseCommunicationConfig,
+    ) -> Result<DatabaseCommunication<APP>> {
+        let (res_tx,res_rx) = tokio::sync::oneshot::channel();
+        thread::spawn(move||{
+            match Self::start_async_runtime(database, config) {
+                Ok((runtime,app)) => {
+                    res_tx.send(Ok(app));
+                    runtime.block_on(std::future::pending::<()>());
+                    println!("Dropping runtime");
+                }
+                Err(err) => {
+                    res_tx.send(Err(err));
+                }
+            }
+        });
+
+        let app = res_rx.blocking_recv()??;
+        Ok(app)
+    }
+
+
+
 }
 
 #[cfg(test)]

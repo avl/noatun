@@ -1399,6 +1399,10 @@ impl<M> OnDiskMessageStore<M> {
         let initial_file_position = info.file.stream_position()?;
 
         let (index_header, index) = Self::header_and_index_mut_uninit(&mut self.index_mmap, len)?;
+        /*println!("Inserting into:");
+        for i in index.iter() {
+            println!("Index: {}", i.message);
+        }*/
 
         let mut last_msg_id = None;
         let mut carry_buffer: VecDeque<IndexEntry> = VecDeque::with_capacity(len);
@@ -1413,6 +1417,7 @@ impl<M> OnDiskMessageStore<M> {
         let mut first_index_actually_inserted = None;
 
         let mut parents: Vec<MessageId> = vec![];
+            println!("Start of loop. cur_index ={}, first input message: {:?}", cur_index, first_input_message.id());
 
         let mut cur_input_message = Some(first_input_message);
         let mut actual_inserted_entries = 0;
@@ -1420,6 +1425,9 @@ impl<M> OnDiskMessageStore<M> {
         let mut remaining_child_assignments = RemainingChildAssignments::default();
 
         loop {
+            /*if let Some(cur_input_message) = &cur_input_message {
+                println!("Start of loop, cur input msg: {:?}", cur_input_message.header.id);
+            }*/
             if carry_buffer.is_empty() && cur_input_message.is_none() {
                 break;
             }
@@ -1467,10 +1475,15 @@ impl<M> OnDiskMessageStore<M> {
                 Cases::NextFromCurrent => {
                     if present_id == cur_input_message.as_ref().map(|x| x.id()) {
                         cur_input_message = messages.next();
+                        cur_index += 1;
                         eprintln!("Duplicate id detected");
                         continue;
                     }
-                    unreachable!("This shouldn't, logically, happen");
+                    // We get here if a previous item was a duplicate. There's no copying to be done
+                    cur_index += 1;
+                    continue;
+                    /*dbg!(&cur_input_message, &present_id,&carry_buffer,&cases,&now_case, &now_message_id);
+                    unreachable!("This shouldn't, logically, happen");*/
                 }
                 Cases::NextFromInput => {
                     let msg = cur_input_message.take().unwrap();
