@@ -196,7 +196,7 @@ impl<APP: Application> Projector<APP> {
         real_time_now: DateTime<Utc>,
         max_project_to: Option<DateTime<Utc>>,
     ) -> Result<()> {
-        println!("Max project to : {:?}", max_project_to);
+        //println!("Max project to : {:?}", max_project_to);
         let cutoff = self.cut_off_config.nominal_cutoff(real_time_now);
 
         let cur_seqnr = context.next_seqnr();

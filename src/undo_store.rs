@@ -71,8 +71,8 @@ impl UndoLog {
             while let Some((new_len, item)) = Self::parse1(mmap.map()) {
                 match cb(item) {
                     HowToProceed::Error => {
-                        eprintln!("HowToProceed::Error");
-                        return false;
+                        panic!("HowToProceed::Error");
+                        //return false;
                     }
                     HowToProceed::DontPopAndStop => {
                         return true;
@@ -82,8 +82,8 @@ impl UndoLog {
                     }
                 }
             }
-            eprintln!("Rewind failed - couldn't reach desired time!");
-            false
+            panic!("Rewind failed - couldn't reach desired time!");
+            //false
         })
     }
     fn parse1(data: &[u8]) -> Option<(usize /*new size*/, UndoLogEntry)> {

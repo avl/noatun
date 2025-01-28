@@ -122,7 +122,7 @@ pub struct MainDbAuxHeader {
     uses: RawDatabaseVec<RegistrarInfo>,
 }
 
-pub struct DatabaseContextData {
+pub(crate) struct DatabaseContextData {
     main_db_mmap: FileAccessor,
     root_index: Option<GenPtr>,
     undo_log: UndoLog,

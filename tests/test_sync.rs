@@ -1,6 +1,6 @@
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::DatabaseCell;
-use noatun::{disable_multi_instance_blocker, AnyBitPattern, Application, Database, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
+use noatun::{AnyBitPattern, Application, Database, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
 use savefile::{Deserializer, Serializer};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
@@ -94,12 +94,6 @@ impl Application for Maze {
 #[ignore]
 async fn test_sync_app() {
     let local = tokio::task::LocalSet::new();
-    unsafe {
-        // # SAFETY
-        // We don't mix up DatabaseContext objects from different databases.
-        // (This isn't exactly easy to do by accident, and we don't).
-        disable_multi_instance_blocker();
-    }
 
     local
         .run_until(async move {

@@ -375,7 +375,7 @@ impl<T:Pod+ 'static> RawDatabaseVec<T> {
     pub fn is_empty(&self) -> bool {
         self.length == 0
     }
-    pub fn grow(&mut self, ctx: &mut DatabaseContextData, new_length: usize) {
+    pub(crate) fn grow(&mut self, ctx: &mut DatabaseContextData, new_length: usize) {
         if new_length <= self.length {
             return;
         }

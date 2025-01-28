@@ -8,7 +8,7 @@ use crate::update_head_tracker::UpdateHeadTracker;
 use crate::{
     Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageComponent,
     MessageHeader, MessageId, MessagePayload, MultiInstanceThreadBlocker, Object, Pointer, Target,
-    CONTEXT, MULTI_INSTANCE_BLOCKER,
+    CONTEXT
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -314,7 +314,7 @@ impl<APP: Application> Database<APP> {
         let time = time.unwrap_or_else(||self.now());
         let mut new_id = MessageId::generate_for_time(time)?;
 
-        if new_id.timestamp() == self.prev_local.timestamp() {
+        if new_id.timestamp() == self.prev_local.timestamp() && new_id <= self.prev_local {
             new_id = self.prev_local.successor();
         }
         self.prev_local = new_id;
@@ -375,26 +375,6 @@ impl<APP: Application> Database<APP> {
         Ok(())
     }
 
-    fn set_multi_instance_block() {
-        #[cfg(not(test))]
-        {
-            match MULTI_INSTANCE_BLOCKER.get() {
-                MultiInstanceThreadBlocker::Idle => {
-                    MULTI_INSTANCE_BLOCKER.set(MultiInstanceThreadBlocker::InstanceActive);
-                }
-                MultiInstanceThreadBlocker::InstanceActive => {
-                    panic!(
-                        "Noatun: Multiple active DB-roots in the same thread are not allowed.\n\
-                    You can disable this diagnostic by calling the unsafe method disable_multi_instance_blocker().\n\
-                    Note, unsoundness can then occur if DatabaseContext from one instance is used by data \
-                    for other."
-                    );
-                }
-                MultiInstanceThreadBlocker::Disabled => {}
-            }
-        }
-    }
-
     /// Create a database residing entirely in memory.
     /// This is mostly useful for tests
     // TODO: Use builder pattern?
@@ -405,7 +385,7 @@ impl<APP: Application> Database<APP> {
         projection_time_limit: Option<DateTime<Utc>>,
         params: APP::Params,
     ) -> Result<Database<APP>> {
-        Self::set_multi_instance_block();
+
         let mut disk = InMemoryDisk::default();
         let target = Target::CreateNew(PathBuf::default());
         let mut ctx = DatabaseContextData::new(&mut disk, &target, max_size)
@@ -438,7 +418,7 @@ impl<APP: Application> Database<APP> {
         projection_time_limit: Option<DateTime<Utc>>,
         params: APP::Params,
     ) -> Result<Database<APP>> {
-        Self::set_multi_instance_block();
+
         let mut disk = StandardDisk;
 
         let mut ctx = DatabaseContextData::new(&mut disk, &target, max_file_size)
@@ -466,23 +446,5 @@ impl<APP: Application> Database<APP> {
             time_override: None,
             projection_time_limit,
         })
-    }
-}
-impl<APP: Application> Drop for Database<APP> {
-    fn drop(&mut self) {
-        #[cfg(test)]
-        {
-            return;
-        }
-
-        match MULTI_INSTANCE_BLOCKER.get() {
-            MultiInstanceThreadBlocker::InstanceActive => {
-                MULTI_INSTANCE_BLOCKER.set(MultiInstanceThreadBlocker::Idle);
-            }
-            MultiInstanceThreadBlocker::Idle => {
-                eprintln!("Unexpected condition: MultiInstanceThreadBlocker was Idle, though we were running.");
-            }
-            MultiInstanceThreadBlocker::Disabled => {}
-        }
     }
 }

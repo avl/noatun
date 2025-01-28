@@ -29,10 +29,10 @@ pub use database::Database;
 use fs2::FileExt;
 use indexmap::IndexMap;
 use memmap2::MmapMut;
-pub use projection_store::DatabaseContextData;
+pub(crate) use projection_store::DatabaseContextData;
 use rand::RngCore;
 use savefile::Deserializer;
-use savefile_derive::Savefile;
+pub use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
 pub use serde_derive;
 use std::cell::{Cell, OnceCell};
@@ -918,13 +918,7 @@ enum MultiInstanceThreadBlocker {
     Disabled,
 }
 
-thread_local! {
-    pub(crate) static MULTI_INSTANCE_BLOCKER: Cell<MultiInstanceThreadBlocker> = const { Cell::new(MultiInstanceThreadBlocker::Idle) };
-}
 
-pub unsafe fn disable_multi_instance_blocker() {
-    MULTI_INSTANCE_BLOCKER.set(MultiInstanceThreadBlocker::Disabled);
-}
 
 #[derive(Clone)]
 pub enum Target {

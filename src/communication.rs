@@ -467,6 +467,7 @@ impl MulticasterSenderLoop {
 
 enum Cmd<APP: Application> {
     AddMessage(Option<DateTime<Utc>>, APP::Message, oneshot::Sender<Result<()>>),
+    Quit(std::sync::mpsc::Sender<()>)
 }
 
 struct DatabaseCommunicationLoop<APP: Application+Send> where <APP as Application>::Params: Send, Self:Send{
@@ -534,10 +535,20 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
 
     pub async fn run(mut self) -> Result<()> {
         let result = self.run2().await;
-        println!("run result {:?}", result);
-        result
+        match result {
+            Ok(Some(sender)) => {
+                sender.send(()).unwrap();
+                Ok(())
+            }
+            Ok(None) => {
+                Ok(())
+            }
+            Err(err) => {
+                Err(err)
+            }
+        }
     }
-    pub async fn run2(mut self) -> Result<()> {
+    pub async fn run2(mut self) -> Result<Option<std::sync::mpsc::Sender<()>>> {
         self.nextsend.clear();
         loop {
 
@@ -580,12 +591,15 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                     self.next_periodic += Self::PERIODIC_MSG_INTERVAL;
                 }
                 cmd = self.cmd_rx.recv() => {
-                    println!("Cmd received");
+                    //println!("Cmd received");
                     let Some(cmd) = cmd else {
                         eprintln!("Done"); //TODO
-                        return Ok(()); //Done
+                        return Ok(None); //Done
                     };
                     match cmd {
+                        Cmd::Quit(sender) => {
+                            return Ok(Some(sender));
+                        }
                         Cmd::AddMessage(time, msg,result) => {
                             let mut database = self.database.lock().unwrap();
                             let mut temp = vec![];
@@ -635,7 +649,27 @@ struct NoatunRuntime {
 pub struct DatabaseCommunication<APP: Application> {
     database: Arc<Mutex<Database<APP>>>,
     cmd_tx: Sender<Cmd<APP>>,
+}
+impl<APP:Application> DatabaseCommunication<APP> {
 
+    fn close(&mut self) {
+        let (oneshot_tx, oneshot_rx) = std::sync::mpsc::channel();
+        let _ = self.cmd_tx.send(Cmd::Quit(oneshot_tx));
+        match oneshot_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(_) => {}
+            Err(err) => {
+                eprintln!("Couldn't shut down DatabaseCommunication gracefully.");
+            }
+        }
+    }
+}
+
+impl<APP:Application> Drop for DatabaseCommunication<APP> {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.database) > 1 {
+            self.close();
+        }
+    }
 }
 
 impl<APP: Application + 'static+Send> DatabaseCommunication<APP>
@@ -682,6 +716,9 @@ where <APP as Application>::Params: Send,
     }
     pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
         self.database.lock().unwrap().get_all_messages()
+    }
+    pub fn get_update_heads(&self) -> Vec<crate::MessageId> {
+        self.database.lock().unwrap().get_update_heads().iter().copied().collect()
     }
     /// TODO: Probably remove this, it should never be necessary
     pub fn reproject(&mut self) {
