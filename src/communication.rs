@@ -680,6 +680,13 @@ where <APP as Application>::Params: Send,
         let db = self.database.lock().unwrap();
         db.with_root(f)
     }
+    pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
+        self.database.lock().unwrap().get_all_messages()
+    }
+    /// TODO: Probably remove this, it should never be necessary
+    pub fn reproject(&mut self) {
+        self.database.lock().unwrap().reproject();
+    }
     pub fn with_root_preview<R>(
         &self,
         time: DateTime<Utc>,
