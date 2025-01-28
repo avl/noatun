@@ -1,0 +1,107 @@
+use std::io::Write;
+use std::pin::Pin;
+use std::time::Duration;
+use savefile_derive::Savefile;
+use crate::data_types::*;
+use crate::{msg_deserialize, msg_serialize, Application, Database, MessagePayload, NoatunTime};
+use crate::Object;
+use rand::prelude::SliceRandom;
+use chrono::Utc;
+use datetime_literal::datetime;
+
+noatun_object!(
+    struct SubObj {
+        pod counter: u32,
+        object subsub: DatabaseVec<DatabaseCell<u32>>,
+    }
+);
+
+impl PartialEq for SubObjDetached {
+    fn eq(&self, other: &Self) -> bool {
+        self.counter  == other.counter
+    }
+}
+
+noatun_object!(
+    struct TestDb {
+
+        object items: DatabaseVec<SubObj>,
+    }
+);
+
+
+
+#[derive(Savefile, Debug, Clone)]
+pub struct TestMessage {
+    insert: u32
+}
+
+impl MessagePayload for TestMessage {
+    type Root = TestDb;
+
+    fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
+        root.items_mut().push(
+            SubObjDetached {
+                counter: self.insert,
+                subsub: vec![1],
+            }
+        );
+    }
+
+    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
+    where
+        Self: Sized
+    {
+        Ok(msg_deserialize(&buf)?)
+    }
+
+    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
+        msg_serialize(self, writer)
+    }
+}
+
+impl Application for TestDb {
+    type Message = TestMessage;
+    type Params = ();
+
+    fn initialize_root<'a>(params: &Self::Params) -> Pin<&'a mut Self> {
+        unsafe {
+            TestDb::allocate_from_detached(&TestDbDetached { items: vec![] })
+        }
+    }
+}
+
+#[test]
+fn test() {
+
+    for _ in 0..10 {
+
+        let fake_time = datetime!(2024-01-01 00:00:00 Z);
+        const TIME_LIMIT: usize = 15;
+        const NUM_MSGS: usize = 20;
+
+        let limit_time = fake_time + Duration::from_secs(TIME_LIMIT as u64);
+        let mut db = Database::create_in_memory(1_000_000,Duration::from_secs(3600),Some(fake_time),Some(limit_time),()).unwrap();
+
+        let mut msgs:Vec<TestMessage> = (0..NUM_MSGS).map(|x|TestMessage{insert:x as u32}).collect();
+        let mut orig:Vec<SubObjDetached> = msgs.iter().map(|x|SubObjDetached{counter:x.insert, subsub: vec![1]}).collect();
+        msgs.shuffle(&mut rand::thread_rng());
+
+        let mut then = fake_time;
+        for msg in msgs.iter() {
+            let at = then + Duration::from_secs(msg.insert as u64);
+            db.append_local_at(at, msg.clone()).unwrap();
+        }
+
+        db.with_root(|root:&TestDb| -> () {
+            assert_eq!(&root.items.detach(), &orig[0..=TIME_LIMIT]);
+        });
+
+        db.set_projection_time_limit(fake_time + Duration::from_secs(1000)).unwrap();
+        db.with_root(|root:&TestDb| -> () {
+            assert_eq!(&root.items.detach(), &orig);
+        });
+
+    }
+
+}

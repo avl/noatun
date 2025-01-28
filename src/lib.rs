@@ -639,7 +639,7 @@ macro_rules! noatun_object {
     ( setter pod $name:ident $typ: ty  ) => {
         $crate::paste!(
             pub fn [<set_ $name>](self: ::std::pin::Pin<&mut Self>, val: $typ) {
-                unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().$name).set(val); }
+                unsafe { ::std::pin::Pin::new_unchecked(&mut self.get_unchecked_mut().$name).set(val); }
             }
         );
     };
@@ -657,7 +657,7 @@ macro_rules! noatun_object {
         &<$typ as $crate::Object>::DetachedType
     };
     ( new_assign_field object $self:ident $name: ident $typ: ty ) => {
-        unsafe { <_ as $crate::Object>::init_from_detached(Pin::new_unchecked(&mut $self.$name), $name); }
+        unsafe { <_ as $crate::Object>::init_from_detached(::std::pin::Pin::new_unchecked(&mut $self.$name), $name); }
     };
     ( getter object $name:ident $typ: ty  ) => {
         pub fn $name(&self) -> &$typ {
@@ -674,7 +674,7 @@ macro_rules! noatun_object {
     };
 
     ( declare_detached_struct $n_detached:ident fields $( $kind:ident $name: ident $typ:ty ),* ) => {
-        #[derive(Debug,Clone,$crate::serde_derive::Serialize, $crate::serde_derive::Deserialize, Savefile)]
+        #[derive(Debug,Clone,$crate::serde_derive::Serialize, $crate::serde_derive::Deserialize, $crate::Savefile)]
 
         pub struct $n_detached
         {
@@ -725,14 +725,14 @@ macro_rules! noatun_object {
                 )*
 
                 $crate::paste! {
-                    pub fn pin_project<'a>(self: Pin<&'a mut Self>) -> [<$n PinProject>]<'a> {
+                    pub fn pin_project<'a>(self: ::std::pin::Pin<&'a mut Self>) -> [<$n PinProject>]<'a> {
                         unsafe {
                             let $n {
                                 $($name),* , ..
                             } = self.get_unchecked_mut();
 
                             [<$n PinProject>] {
-                                $($name: Pin::new_unchecked($name)),*
+                                $($name: ::std::pin::Pin::new_unchecked($name)),*
 
                             }
                         }
@@ -763,24 +763,24 @@ macro_rules! noatun_object {
                 fn init_from_detached(mut self: ::std::pin::Pin<&mut Self>, detached: &Self::DetachedType) {
                     $(
                     unsafe {
-                        Pin::new_unchecked(&mut self.as_mut().get_unchecked_mut().$name).init_from_detached(&detached.$name);
+                        ::std::pin::Pin::new_unchecked(&mut self.as_mut().get_unchecked_mut().$name).init_from_detached(&detached.$name);
 
                     }
                     )*
                 }
 
                 unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> ::std::pin::Pin<&'a mut Self> {
-                    let mut ret: ::std::pin::Pin<&mut Self> = NoatunContext.allocate_pod();
+                    let mut ret: ::std::pin::Pin<&mut Self> = $crate::NoatunContext.allocate_pod();
                     ret.as_mut().init_from_detached(detached);
                     ret
                 }
 
                 unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-                    unsafe { NoatunContext.access_object(index) }
+                    unsafe { $crate::NoatunContext.access_object(index) }
                 }
 
-                unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-                    unsafe { NoatunContext.access_object_mut(index) }
+                unsafe fn access_mut<'a>(index: Self::Ptr) -> ::std::pin::Pin<&'a mut Self> {
+                    unsafe { $crate::NoatunContext.access_object_mut(index) }
                 }
             }
 
@@ -1024,13 +1024,16 @@ noatun_object!(
     }
 );
 
-fn msg_serialize<T: savefile::Serialize + savefile::Packed>(
+// TODO: Make sure we haven't hardcoded the use of Savefile
+pub fn msg_serialize<T: savefile::Serialize + savefile::Packed>(
     obj: &T,
     mut writer: impl Write,
 ) -> anyhow::Result<()> {
     Ok(savefile::Serializer::bare_serialize(&mut writer, 0, obj)?)
 }
-fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(buf: &[u8]) -> anyhow::Result<T> {
+
+// TODO: Make sure we haven't hardcoded the use of Savefile
+pub fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(buf: &[u8]) -> anyhow::Result<T> {
     Ok(Deserializer::bare_deserialize(
         &mut std::io::Cursor::new(buf),
         0,
@@ -1061,6 +1064,7 @@ mod tests {
 
     mod distributor_tests;
     mod tests_using_noatun_object_macro;
+    mod fuzz_test_insert;
 
     #[test]
     fn test_mmap_big() {

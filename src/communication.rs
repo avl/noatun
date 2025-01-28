@@ -800,21 +800,36 @@ mod tests {
 
     #[tokio::test]
     async fn test_sender() {
-        let (sender_tx, mut sender_rx) = tokio::sync::mpsc::channel(1000);
-        let (receiver_tx, mut receiver_rx) = tokio::sync::mpsc::channel(1000);
+        let (sender_tx1, mut sender_rx1) = tokio::sync::mpsc::channel(1000);
+        let (receiver_tx1, mut receiver_rx1) = tokio::sync::mpsc::channel(1000);
 
-        let mloop = MulticasterSenderLoop::new(
+        let mloop1 = MulticasterSenderLoop::new(
             "127.0.0.1:0".parse().unwrap(),
             "230.230.230.230:7777".parse().unwrap(),
-            receiver_tx,
-            sender_rx,
+            receiver_tx1,
+            sender_rx1,
             1000,
             200,
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
 
-        let jh = spawn(mloop.run());
+        let (sender_tx2, mut sender_rx2) = tokio::sync::mpsc::channel(1000);
+        let (receiver_tx2, mut receiver_rx2) = tokio::sync::mpsc::channel(1000);
+
+        let mloop2 = MulticasterSenderLoop::new(
+            "127.0.0.1:0".parse().unwrap(),
+            "230.230.230.230:7777".parse().unwrap(),
+            receiver_tx2,
+            sender_rx2,
+            1000,
+            200,
+        )
+            .await
+            .unwrap();
+
+        let jh1 = spawn(mloop1.run());
+        let jh2 = spawn(mloop2.run());
 
         println!("About to send");
         for packet in [
@@ -824,13 +839,15 @@ mod tests {
             vec![4u8; 1000],
             vec![5u8; 10000],
         ] {
-            sender_tx.send(packet.clone()).await.unwrap();
+            sender_tx1.send(packet.clone()).await.unwrap();
             println!("About to recv");
-            let got = receiver_rx.recv().await.unwrap();
+            let got = receiver_rx2.recv().await.unwrap();
             assert_eq!(got, packet);
         }
         println!("quitting");
-        drop(sender_tx);
-        jh.await.unwrap();
+        drop(sender_tx1);
+        drop(sender_tx2);
+        jh1.await.unwrap();
+        jh2.await.unwrap();
     }
 }
