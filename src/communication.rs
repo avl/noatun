@@ -19,22 +19,112 @@ use std::net::{IpAddr, SocketAddr};
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread;
+use std::{io, thread};
+use std::fmt::Debug;
+use std::hash::Hash;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use tokio::net::UdpSocket;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::spawn_local;
 use tokio::{select, spawn};
+use tokio::net::{ToSocketAddrs, UdpSocket};
 use tokio::runtime::{Builder, Runtime};
+use crate::communication::udp::TokioUdpDriver;
+
+pub mod udp {
+    use std::fmt::Debug;
+    use std::net::{IpAddr, SocketAddr};
+    use anyhow::{bail, Context};
+    use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, Type};
+    use tokio::net::{ToSocketAddrs, UdpSocket};
+    use crate::communication::{CommunicationReceiveSocket, CommunicationSendSocket, CommunicationDriver};
+
+    impl CommunicationDriver for TokioUdpDriver {
+        type Receiver = tokio::net::UdpSocket;
+        type Sender = CommunicationUdpSendSocket;
+        type Endpoint = SocketAddr;
+
+        async fn initialize(&mut self, bind_address: &str, multicast_group: &str, mtu: usize) -> anyhow::Result<(Self::Sender, Self::Receiver)> {
+
+            let multicast_group:SocketAddr = multicast_group.parse().context(format!("parsing multicast group {}", multicast_group))?;
+            let bind_address:SocketAddr = bind_address.parse().context(format!("parsing listening/bind address {}", bind_address))?;
+            let send_socket = UdpSocket::bind(bind_address).await?;
+            let udp = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+            if mtu >= u16::MAX as usize {
+                bail!("Maximum MTU supported by noatun is 65534");
+            }
+            udp.set_reuse_address(true)?;
+            udp.set_multicast_loop_v4(true);
+            println!("Binding to group {:?}", multicast_group);
+            udp.bind(&multicast_group.into())?;
+            udp.set_nonblocking(true);
+            let receive_socket = UdpSocket::from_std(udp.into())?;
+
+
+
+            match (multicast_group.ip(), bind_address.ip()) {
+                (IpAddr::V4(multicast_ipv4), IpAddr::V4(bind_ipv4)) => {
+                    println!("Joining multicast group {} on if {}", multicast_ipv4, bind_ipv4);
+                    receive_socket.join_multicast_v4(multicast_ipv4, bind_ipv4);
+                    receive_socket.set_multicast_loop_v4(true);
+                }
+                (IpAddr::V6(multicast_ipv6), IpAddr::V6(bind_ipv6)) => {
+                    receive_socket.join_multicast_v6(&multicast_ipv6, 0);
+                    receive_socket.set_multicast_loop_v6(true);
+                }
+                _ => {
+                    panic!(
+                        "Bind address and multicast group used different address family. They must both be ipv4 or both ipv6."
+                    );
+                }
+            }
+
+            Ok((
+
+                CommunicationUdpSendSocket {
+                    socket: send_socket,
+                    multicast_addr: multicast_group
+                },
+                receive_socket))
+        }
+
+        fn parse_endpoint(s: &str) -> anyhow::Result<Self::Endpoint> {
+            Ok(s.parse()?) //TODO: error context
+        }
+    }
+    pub struct TokioUdpDriver;
+    pub struct CommunicationUdpSendSocket {
+        multicast_addr: SocketAddr,
+        socket: UdpSocket,
+    }
+    impl CommunicationSendSocket<SocketAddr> for CommunicationUdpSendSocket {
+        fn local_addr(&self) -> anyhow::Result<SocketAddr> {
+            Ok(self.socket.local_addr()?)
+        }
+
+        async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+
+            UdpSocket::send_to(&self.socket, buf, self.multicast_addr).await
+        }
+    }
+
+    impl CommunicationReceiveSocket<SocketAddr> for tokio::net::UdpSocket {
+        async fn recv_buf_from<B: bytes::BufMut+Send>(&mut self, buf: &mut B) -> std::io::Result<(usize, SocketAddr)> {
+            UdpSocket::recv_buf_from(self, buf).await
+        }
+    }
+
+}
+
 
 #[derive(Savefile, Debug)]
-enum NetworkPacket {
+enum NetworkPacket<Endpoint> {
     Data(TransmittedEntity),
-    Retransmit { who: IpAddr, what: Vec<u64> },
+    Retransmit { who: Endpoint, what: Vec<u64> },
 }
+
 
 const IP_HEADER_SIZE: usize = 20;
 const UDP_HEADER_SIZE: usize = 8;
@@ -44,6 +134,25 @@ const APPROX_HEADER_SIZE: usize = IP_HEADER_SIZE
     + UDP_HEADER_SIZE
     + NOATUN_NETWORK_PACKET_OVERHEAD
     + NOATUN_TRANSMITTED_ENTITY_OVERHEAD;
+
+#[allow(async_fn_in_trait)] //For now
+pub trait CommunicationDriver : Sync + Send {
+    type Receiver: CommunicationReceiveSocket<Self::Endpoint>+Send+Sync;
+    type Sender: CommunicationSendSocket<Self::Endpoint>+Send+Sync;
+    type Endpoint: Eq+Debug+Hash+Serialize+Deserialize+Packed+Send+Sync;
+    async fn initialize(&mut self, bind_address: &str, multicast_group: &str, mtu: usize) -> Result<(Self::Sender, Self::Receiver)>;
+    fn parse_endpoint(s: &str) -> Result<Self::Endpoint>;
+}
+#[allow(async_fn_in_trait)] //For now
+pub trait CommunicationReceiveSocket<Endpoint: PartialEq+Debug+Send> {
+    fn recv_buf_from<B: bytes::buf::BufMut+Send>(&mut self, buf: &mut B) -> impl std::future::Future<Output = std::io::Result<(usize, Endpoint)>> + Send;
+
+}
+#[allow(async_fn_in_trait)] //For now
+pub trait CommunicationSendSocket<Endpoint: PartialEq+Debug+Send> {
+    fn local_addr(&self) -> Result<Endpoint>;
+    fn send_to(&mut self, buf: &[u8]) -> impl std::future::Future<Output = io::Result<usize>> + Send ;
+}
 
 #[derive(Debug)]
 struct TransmittedEntity {
@@ -212,14 +321,13 @@ impl ReceiveTrack {
     }
 }
 
-struct MulticasterSenderLoop {
-    send_socket: UdpSocket,
-    receive_socket: UdpSocket,
-    bind_address: IpAddr,
-    multicast_group: SocketAddr,
+struct MulticasterSenderLoop<Socket: CommunicationDriver> {
+    send_socket: Socket::Sender,
+    receive_socket: Socket::Receiver,
+    bind_address: Socket::Endpoint,
     history: VecDeque<SortableTransmittedEntity>,
     queue: VecDeque<SortableTransmittedEntity>,
-    receive_track: IndexMap<SocketAddr, ReceiveTrack>,
+    receive_track: IndexMap<Socket::Endpoint, ReceiveTrack>,
     /// Sent to net
     message_rx: Receiver<Vec<u8>>,
     /// Received from net
@@ -230,57 +338,36 @@ struct MulticasterSenderLoop {
     max_payload_per_packet: usize,
     next_send_seq: u64,
 }
-impl Drop for MulticasterSenderLoop {
+impl<Socket: CommunicationDriver> Drop for MulticasterSenderLoop<Socket> {
     fn drop(&mut self) {
         println!("Dropping MulticasterSenderLoop loop");
     }
 }
 
-impl MulticasterSenderLoop {
+impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
     pub async fn new(
-        bind_address: SocketAddr,
-        multicast_group: SocketAddr,
+        driver: &mut Socket,
+        bind_address: &str,
+        multicast_group: &str,
         message_tx: Sender<Vec<u8>>,
         message_rx: Receiver<Vec<u8>>,
         bandwidth_bytes_per_second: u64,
         mtu: usize,
-    ) -> Result<MulticasterSenderLoop> {
-        let send_socket = UdpSocket::bind(bind_address).await?;
-        let udp = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-        if mtu >= u16::MAX as usize {
-            bail!("Maximum MTU supported by noatun is 65534");
-        }
-        udp.set_reuse_address(true)?;
-        udp.set_multicast_loop_v4(true);
-        println!("Binding to group {:?}", multicast_group);
-        udp.bind(&multicast_group.into())?;
-        udp.set_nonblocking(true);
-        let receive_socket = UdpSocket::from_std(udp.into())?;
+    ) -> Result<MulticasterSenderLoop<Socket>> {
 
+
+        let (send_socket, receive_socket) = driver.initialize(
+            bind_address, multicast_group, mtu
+        ).await?;
         let max_payload_per_packet = mtu.saturating_sub(APPROX_HEADER_SIZE);
         println!("Send socket bind-address: {:?}", send_socket.local_addr()?);
-        match (multicast_group.ip(), bind_address.ip()) {
-            (IpAddr::V4(multicast_ipv4), IpAddr::V4(bind_ipv4)) => {
-                println!("Joining multicast group {} on if {}", multicast_ipv4, bind_ipv4);
-                receive_socket.join_multicast_v4(multicast_ipv4, bind_ipv4);
-                receive_socket.set_multicast_loop_v4(true);
-            }
-            (IpAddr::V6(multicast_ipv6), IpAddr::V6(bind_ipv6)) => {
-                receive_socket.join_multicast_v6(&multicast_ipv6, 0);
-                receive_socket.set_multicast_loop_v6(true);
-            }
-            _ => {
-                panic!(
-                    "Bind address and multicast group used different address family. They must both be ipv4 or both ipv6."
-                );
-            }
-        }
+
         if max_payload_per_packet < 100 {
             bail!("Unreasonably small MTU specified: {}", mtu);
         }
         Ok(Self {
+            bind_address: send_socket.local_addr()?,
             send_socket,
-            bind_address: bind_address.ip(),
             receive_socket,
             history: Default::default(),
             queue: Default::default(),
@@ -292,7 +379,6 @@ impl MulticasterSenderLoop {
             recvbuf: Vec::with_capacity(mtu),
             max_payload_per_packet,
             next_send_seq: 0,
-            multicast_group,
         })
     }
     pub fn send_buf(
@@ -387,7 +473,7 @@ impl MulticasterSenderLoop {
                     let mut temp = vec![];
                     // Consider if savefile really is the best here. Some more efficiency
                     // wouldn't hurt!
-                    Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::Data(x.entity))
+                    Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::<Socket::Endpoint>::Data(x.entity))
                         .unwrap();
                     temp
                 });
@@ -398,7 +484,7 @@ impl MulticasterSenderLoop {
                     //println!("Sending {} bytes on wire", tosend.len());
                     match self
                         .send_socket
-                        .send_to(tosend, &self.multicast_group)
+                        .send_to(tosend)
                         .await
                     {
                         Ok(sent) => {
@@ -437,7 +523,7 @@ impl MulticasterSenderLoop {
                         }
                         println!("Received {} byte packet: {:?}", size, self.recvbuf);
                         assert_eq!(size, self.recvbuf.len());
-                        let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0)  else {
+                        let Ok(packet): Result<NetworkPacket<Socket::Endpoint>,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0)  else {
                             eprintln!("Invalid packet received");
                             continue;
                         };
@@ -741,15 +827,17 @@ where <APP as Application>::Params: Send,
     }
 
     /// Spawns the communication system as a future on the current tokio runtime.
-    pub async fn async_tokio_new(
+    pub async fn async_tokio_new<Driver:CommunicationDriver+'static>(
+        driver: &mut Driver,
         database: Database<APP>,
         config: DatabaseCommunicationConfig,
     ) -> Result<DatabaseCommunication<APP>> {
         let (sender_tx, mut sender_rx) = tokio::sync::mpsc::channel(1000);
         let (receiver_tx, mut receiver_rx) = tokio::sync::mpsc::channel(1000);
         let sender_loop = MulticasterSenderLoop::new(
-            config.listen_address.parse().context(format!("parsing listen address {}", config.listen_address))?,
-            config.multicast_address.parse().context(format!("parsing multicast address {}", config.multicast_address))?,
+            driver,
+            &config.listen_address,
+            &config.multicast_address,
             receiver_tx,
             sender_rx,
             config.bandwidth_limit_bytes_per_second,
@@ -780,9 +868,9 @@ where <APP as Application>::Params: Send,
         Ok(DatabaseCommunication { database, cmd_tx })
     }
 
-    fn start_async_runtime(database: Database<APP>, config: DatabaseCommunicationConfig) -> Result<(Runtime, DatabaseCommunication<APP>)> {
+    fn start_async_runtime<Driver:CommunicationDriver+Sync+Send+'static>(driver: &mut Driver, database: Database<APP>, config: DatabaseCommunicationConfig) -> Result<(Runtime, DatabaseCommunication<APP>)> {
         let mut runtime = Runtime::new()?;
-        let com: DatabaseCommunication<APP> = runtime.block_on(Self::async_tokio_new(database, config))?;
+        let com: DatabaseCommunication<APP> = runtime.block_on(Self::async_tokio_new(driver, database, config))?;
         Ok((runtime, com))
     }
 
@@ -792,7 +880,7 @@ where <APP as Application>::Params: Send,
     ) -> Result<DatabaseCommunication<APP>> {
         let (res_tx,res_rx) = tokio::sync::oneshot::channel();
         thread::spawn(move||{
-            match Self::start_async_runtime(database, config) {
+            match Self::start_async_runtime(&mut TokioUdpDriver, database, config) {
                 Ok((runtime,app)) => {
                     res_tx.send(Ok(app));
                     runtime.block_on(std::future::pending::<()>());
@@ -817,6 +905,7 @@ mod tests {
 
     use crate::communication::{MulticasterSenderLoop, ReceiveTrack};
     use tokio::spawn;
+    use crate::communication::udp::TokioUdpDriver;
 
     #[test]
     fn reconstruct_seq_logic() {
@@ -841,8 +930,9 @@ mod tests {
         let (receiver_tx1, mut receiver_rx1) = tokio::sync::mpsc::channel(1000);
 
         let mloop1 = MulticasterSenderLoop::new(
-            "127.0.0.1:0".parse().unwrap(),
-            "230.230.230.230:7777".parse().unwrap(),
+            &mut TokioUdpDriver,
+            "127.0.0.1:0",
+            "230.230.230.230:7777",
             receiver_tx1,
             sender_rx1,
             1000,
@@ -855,8 +945,9 @@ mod tests {
         let (receiver_tx2, mut receiver_rx2) = tokio::sync::mpsc::channel(1000);
 
         let mloop2 = MulticasterSenderLoop::new(
-            "127.0.0.1:0".parse().unwrap(),
-            "230.230.230.230:7777".parse().unwrap(),
+            &mut TokioUdpDriver,
+            "127.0.0.1:0",
+            "230.230.230.230:7777",
             receiver_tx2,
             sender_rx2,
             1000,

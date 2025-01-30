@@ -673,9 +673,8 @@ macro_rules! noatun_object {
         );
     };
 
-    ( declare_detached_struct $n_detached:ident fields $( $kind:ident $name: ident $typ:ty ),* ) => {
-        #[derive(Debug,Clone,$crate::serde_derive::Serialize, $crate::serde_derive::Deserialize, $crate::Savefile)]
-
+    ( declare_detached_struct $n_detached:ident fields { $($derive_item:ident),* }  $( $kind:ident $name: ident $typ:ty ),* ) => {
+        #[derive($($derive_item,)* Debug,Clone,$crate::serde_derive::Serialize, $crate::serde_derive::Deserialize, $crate::Savefile)]
         pub struct $n_detached
         {
             $( $name : noatun_object!(declare_detached_field $kind $typ) ),*
@@ -686,7 +685,8 @@ macro_rules! noatun_object {
         $n_detached
     };
 
-    ( struct $n:ident { $( $kind:ident $name: ident : $typ:ty $(,)* )* } $(;)* ) => {
+    (    $(#[derive( $($derive_item:ident),*  )])?
+         struct $n:ident { $( $kind:ident $name: ident : $typ:ty $(,)* )* } $(;)* ) => {
 
 
             #[derive(Debug,Copy,Clone, $crate::AnyBitPattern)]
@@ -742,7 +742,7 @@ macro_rules! noatun_object {
             }
 
             $crate::paste! {
-                noatun_object!{declare_detached_struct [<$n Detached>] fields $($kind $name $typ),*}
+                noatun_object!{declare_detached_struct [<$n Detached>] fields { $($($derive_item),*)? } $($kind $name $typ),*  }
             }
 
 
@@ -1059,6 +1059,7 @@ mod tests {
     mod distributor_tests;
     mod tests_using_noatun_object_macro;
     mod fuzz_test_insert;
+    mod all_up_sync_test;
 
     #[test]
     fn test_mmap_big() {
@@ -1870,3 +1871,5 @@ mod tests {
         );
     }
 }
+
+
