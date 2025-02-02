@@ -21,7 +21,7 @@ pub struct Database<Base: Application> {
     message_store: Projector<Base>,
     // Most recently generated local id, or all zeroes.
     // Future local id's will always be greater than this.
-    prev_local: MessageId,
+    prev_local: Option<MessageId>,
     time_override: Option<DateTime<Utc>>,
     projection_time_limit: Option<DateTime<Utc>>,
     params: Base::Params,
@@ -314,12 +314,17 @@ impl<APP: Application> Database<APP> {
         let time = time.unwrap_or_else(||self.now());
         let mut new_id;
 
-        if time.timestamp_millis() as u64  == self.prev_local.timestamp() { //TODO: Fix all cases of u64 timestamps. We should probably just use i64 instead
-            new_id = self.prev_local.successor();
+        compile_error!("Still some oddities. Probably because of 'now' not matching. Analyze!")
+        if let Some(prev_local) = self.prev_local {
+            if time.timestamp_millis() as u64  == prev_local.timestamp() { //TODO: Fix all cases of u64 timestamps. We should probably just use i64 instead
+                new_id = prev_local.successor();
+            } else {
+                new_id  = MessageId::generate_for_time(time)?;
+            }
         } else {
             new_id  = MessageId::generate_for_time(time)?;
         }
-        self.prev_local = new_id;
+        self.prev_local = Some(new_id);
         /*println!(
             "At {:?}/#{} Appending {:?}",
             time,
@@ -404,7 +409,7 @@ impl<APP: Application> Database<APP> {
         ctx.mark_clean()?;
 
         Ok(Database {
-            prev_local: MessageId::ZERO,
+            prev_local: None,
             context: ctx,
             message_store,
             time_override: mock_time,
@@ -442,7 +447,7 @@ impl<APP: Application> Database<APP> {
         }
         Ok(Database {
             params,
-            prev_local: MessageId::ZERO,
+            prev_local: None,
             context: ctx,
             message_store,
             time_override: None,
