@@ -312,10 +312,12 @@ impl<APP: Application> Database<APP> {
     }
     pub fn append_local_opt(&mut self, time: Option<DateTime<Utc>>, message: APP::Message) -> Result<MessageHeader> {
         let time = time.unwrap_or_else(||self.now());
-        let mut new_id = MessageId::generate_for_time(time)?;
+        let mut new_id;
 
-        if new_id.timestamp() == self.prev_local.timestamp() && new_id <= self.prev_local {
+        if time.timestamp_millis() as u64  == self.prev_local.timestamp() { //TODO: Fix all cases of u64 timestamps. We should probably just use i64 instead
             new_id = self.prev_local.successor();
+        } else {
+            new_id  = MessageId::generate_for_time(time)?;
         }
         self.prev_local = new_id;
         /*println!(

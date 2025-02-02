@@ -422,6 +422,7 @@ impl DatabaseContextData {
         if self.next_seqnr() <= new_time {
             return;
         }
+
         //println!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
 
         let result = self.undo_log.rewind(|entry| match entry {

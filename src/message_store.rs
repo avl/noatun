@@ -1417,7 +1417,7 @@ impl<M> OnDiskMessageStore<M> {
         let mut first_index_actually_inserted = None;
 
         let mut parents: Vec<MessageId> = vec![];
-            println!("Start of loop. cur_index ={}, first input message: {:?}", cur_index, first_input_message.id());
+            //println!("Start of loop. cur_index ={}, first input message: {:?}", cur_index, first_input_message.id());
 
         let mut cur_input_message = Some(first_input_message);
         let mut actual_inserted_entries = 0;
@@ -1490,7 +1490,9 @@ impl<M> OnDiskMessageStore<M> {
 
                     index_header.cutoff.report_add(msg.header.id);
                     message_inserted(msg.id(), &msg.header.parents)?;
-                    first_index_actually_inserted = Some(cur_index);
+                    if first_index_actually_inserted.is_none() {
+                        first_index_actually_inserted = Some(cur_index);
+                    }
                     //Self::register_heads_and_tails(&mut self.update_heads, &parents, &msg.id())?;
                     if let Some(last_msg_id) = last_msg_id {
                         if last_msg_id >= msg.id() {

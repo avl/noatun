@@ -5,7 +5,7 @@ use crate::{Application, ContextGuard, Database, DatabaseContextData, Message, M
 use anyhow::{bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use libc::newlocale;
 use savefile::{
     Deserialize, Deserializer, Field, Introspect, IntrospectItem, Packed, SavefileError, Schema,
@@ -23,7 +23,9 @@ use std::{io, thread};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration};
+use tokio::time::Instant;
+use sha2::digest::typenum::private::IsEqualPrivate;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
@@ -31,6 +33,8 @@ use tokio::task::spawn_local;
 use tokio::{select, spawn};
 use tokio::net::{ToSocketAddrs, UdpSocket};
 use tokio::runtime::{Builder, Runtime};
+use tracing::{debug, error, info, instrument, trace, warn};
+use crate::communication::NetworkPacket::RetransmitRequest;
 use crate::communication::udp::TokioUdpDriver;
 
 pub mod udp {
@@ -39,6 +43,7 @@ pub mod udp {
     use anyhow::{bail, Context};
     use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, Type};
     use tokio::net::{ToSocketAddrs, UdpSocket};
+    use tracing::info;
     use crate::communication::{CommunicationReceiveSocket, CommunicationSendSocket, CommunicationDriver};
 
     impl CommunicationDriver for TokioUdpDriver {
@@ -57,7 +62,7 @@ pub mod udp {
             }
             udp.set_reuse_address(true)?;
             udp.set_multicast_loop_v4(true);
-            println!("Binding to group {:?}", multicast_group);
+            info!("Binding to group {:?}", multicast_group);
             udp.bind(&multicast_group.into())?;
             udp.set_nonblocking(true);
             let receive_socket = UdpSocket::from_std(udp.into())?;
@@ -66,7 +71,7 @@ pub mod udp {
 
             match (multicast_group.ip(), bind_address.ip()) {
                 (IpAddr::V4(multicast_ipv4), IpAddr::V4(bind_ipv4)) => {
-                    println!("Joining multicast group {} on if {}", multicast_ipv4, bind_ipv4);
+                    info!("Joining multicast group {} on if {}", multicast_ipv4, bind_ipv4);
                     receive_socket.join_multicast_v4(multicast_ipv4, bind_ipv4);
                     receive_socket.set_multicast_loop_v4(true);
                 }
@@ -121,8 +126,8 @@ pub mod udp {
 
 #[derive(Savefile, Debug)]
 enum NetworkPacket<Endpoint> {
-    Data(TransmittedEntity),
-    Retransmit { who: Endpoint, what: Vec<u64> },
+    Data(bool/*push*/, TransmittedEntitySortable),
+    RetransmitRequest { who: Endpoint, what: Vec<u64> },
 }
 
 
@@ -139,7 +144,7 @@ const APPROX_HEADER_SIZE: usize = IP_HEADER_SIZE
 pub trait CommunicationDriver : Sync + Send {
     type Receiver: CommunicationReceiveSocket<Self::Endpoint>+Send+Sync;
     type Sender: CommunicationSendSocket<Self::Endpoint>+Send+Sync;
-    type Endpoint: Eq+Debug+Hash+Serialize+Deserialize+Packed+Send+Sync;
+    type Endpoint: Eq+Debug+Hash+Serialize+Deserialize+Packed+Send+Sync+Copy;
     async fn initialize(&mut self, bind_address: &str, multicast_group: &str, mtu: usize) -> Result<(Self::Sender, Self::Receiver)>;
     fn parse_endpoint(s: &str) -> Result<Self::Endpoint>;
 }
@@ -155,14 +160,20 @@ pub trait CommunicationSendSocket<Endpoint: PartialEq+Debug+Send> {
 }
 
 #[derive(Debug)]
-struct TransmittedEntity {
+enum TransmittedEntity<Endpoint> {
+    Sortable(TransmittedEntitySortable),
+    Retransmit(u64, Endpoint)
+}
+
+#[derive(Debug, Clone)]
+struct TransmittedEntitySortable {
     seq: u16,
     data: Vec<u8>,
     // Note, u16::MAX signifies "no boundary"
     first_boundary: u16,
 }
 
-impl Introspect for TransmittedEntity {
+impl Introspect for TransmittedEntitySortable {
     fn introspect_value(&self) -> String {
         format!(
             "TransmittedEntity(#{},first_boundary={},len={})",
@@ -177,13 +188,13 @@ impl Introspect for TransmittedEntity {
     }
 }
 
-impl WithSchema for TransmittedEntity {
+impl WithSchema for TransmittedEntitySortable {
     fn schema(version: u32, context: &mut WithSchemaContext) -> Schema {
         Schema::Custom("TransmittedEntity".into())
     }
 }
-impl Packed for TransmittedEntity {}
-impl Serialize for TransmittedEntity {
+impl Packed for TransmittedEntitySortable {}
+impl Serialize for TransmittedEntitySortable {
     fn serialize(
         &self,
         serializer: &mut Serializer<impl Write>,
@@ -196,7 +207,7 @@ impl Serialize for TransmittedEntity {
         Ok(())
     }
 }
-impl Deserialize for TransmittedEntity {
+impl Deserialize for TransmittedEntitySortable {
     fn deserialize(
         deserializer: &mut Deserializer<impl Read>,
     ) -> std::result::Result<Self, SavefileError> {
@@ -212,7 +223,7 @@ impl Deserialize for TransmittedEntity {
     }
 }
 
-impl TransmittedEntity {
+impl TransmittedEntitySortable {
     fn free(&self, max_payload: usize) -> usize {
         max_payload.saturating_sub(self.data.len())
     }
@@ -221,7 +232,7 @@ impl TransmittedEntity {
 #[derive(Debug)]
 struct SortableTransmittedEntity {
     reconstructed_seq: u64,
-    entity: TransmittedEntity,
+    entity: TransmittedEntitySortable,
 }
 
 #[derive(Default)]
@@ -258,9 +269,22 @@ impl ReceiveTrack {
         expected_next + short_delta as u64
     }
 
-    async fn process(&mut self, packet: TransmittedEntity, tx: &mut Sender<Vec<u8>>) -> Result<()> {
+    async fn process<Endpoint:Hash+Eq+Debug>(&mut self, packet: TransmittedEntitySortable, packet_source: Endpoint,
+                               tx_finished_received_frame: &mut Sender<Vec<u8>>,
+                               retransmit_requests: &mut IndexMap<Endpoint, RetransmitInfo>,
+                               push: bool,
+    ) -> Result<()> {
+
+        let reconstructed_seq = self.reconstruct_seq(packet.seq);
+        /*if let Some(info) = retransmit_requests.get_mut(&packet_source) {
+            info.items.swap_remove(&reconstructed_seq);
+            if info.items.is_empty() {
+                retransmit_requests.swap_remove(&packet_source);
+            }
+        };
+         */
         let packet = SortableTransmittedEntity {
-            reconstructed_seq: self.reconstruct_seq(packet.seq),
+            reconstructed_seq,
             entity: packet,
         };
         let Err(insert_point) = self
@@ -268,16 +292,46 @@ impl ReceiveTrack {
             .binary_search_by_key(&packet.reconstructed_seq, |x| x.reconstructed_seq)
         else {
             // Already existed
-            println!("Already had packet: {:?}", &packet);
+            debug!("Already had packet: {:?}", &packet);
             return Ok(());
         };
 
         self.sorted_packets.insert(insert_point, packet);
         while let Some(first) = self.sorted_packets.front() {
+            trace!("Expected next: {}, actual (reconstructed) seq: {}",
+                self.expected_next, first.reconstructed_seq);
             if first.reconstructed_seq != self.expected_next {
+                if first.reconstructed_seq < self.expected_next {
+                    info!("duplicate packet ignored (expected {}, got {})", self.expected_next, first.reconstructed_seq);
+                    self.sorted_packets.pop_front();
+                    continue;
+                }
                 if self.expected_next == 0 {
+                    //Make sure that after a restart, we always pickup wherever the on-wire stream is
                     self.expected_next = first.reconstructed_seq;
                 } else {
+                    trace!("Appending retransmit-request for {:?} {:?}", packet_source, self.expected_next);
+                    let mut cur_missing = self.expected_next;
+                    let mut accum = retransmit_requests.entry(packet_source).or_default();
+                    for x in self.expected_next..first.reconstructed_seq  {
+                        accum.items.insert(x);
+                    }
+                    if !push {
+                        accum.wait_until = Instant::now() + Duration::from_secs(1); //TODO: Dynamic? Or configurable?
+                    }
+                    let mut cur = first.reconstructed_seq;
+                    'loop1: for key in &self.sorted_packets {
+                        while cur < key.reconstructed_seq {
+                            accum.items.insert(cur);
+                            cur += 1;
+                            if accum.items.len() > 100 {
+                                break 'loop1;
+                            }
+                        }
+                        cur = key.reconstructed_seq + 1;
+                    }
+                    assert!(accum.items.is_empty() == false);
+
                     return Ok(());
                 }
             }
@@ -287,9 +341,7 @@ impl ReceiveTrack {
                 self.accum
                     .extend(&first.entity.data[0..first.entity.first_boundary as usize]);
                 if !self.accum.is_empty() {
-                    //println!("Sending out {:?}", self.accum);
-                    tx.try_send(self.accum.iter().copied().collect()).unwrap();
-                    //println!("Send done");
+                    tx_finished_received_frame.try_send(self.accum.iter().copied().collect()).unwrap();
                     self.accum.clear();
                 }
                 let mut cur_boundary = first.entity.first_boundary as usize;
@@ -305,9 +357,7 @@ impl ReceiveTrack {
                     let mut temp = vec![0; next_size];
                     reader.read_exact(&mut temp)?;
                     if !temp.is_empty() {
-                        //println!("Sending out {:?}", temp);
-                        tx.try_send(temp).unwrap();
-                        //println!("Send done");
+                        tx_finished_received_frame.try_send(temp).unwrap();
                     }
 
                     cur_boundary += next_size;
@@ -321,12 +371,26 @@ impl ReceiveTrack {
     }
 }
 
+struct RetransmitInfo {
+    wait_until: Instant,
+    items: IndexSet<u64>
+}
+impl Default for RetransmitInfo {
+    fn default() -> Self {
+        Self {
+            wait_until: tokio::time::Instant::now(),
+            items: Default::default(),
+        }
+    }
+}
+
 struct MulticasterSenderLoop<Socket: CommunicationDriver> {
     send_socket: Socket::Sender,
     receive_socket: Socket::Receiver,
     bind_address: Socket::Endpoint,
     history: VecDeque<SortableTransmittedEntity>,
     queue: VecDeque<SortableTransmittedEntity>,
+    outgoing_retransmit_requests: IndexMap<Socket::Endpoint, RetransmitInfo>,
     receive_track: IndexMap<Socket::Endpoint, ReceiveTrack>,
     /// Sent to net
     message_rx: Receiver<Vec<u8>>,
@@ -340,7 +404,7 @@ struct MulticasterSenderLoop<Socket: CommunicationDriver> {
 }
 impl<Socket: CommunicationDriver> Drop for MulticasterSenderLoop<Socket> {
     fn drop(&mut self) {
-        println!("Dropping MulticasterSenderLoop loop");
+        info!("Dropping MulticasterSenderLoop loop");
     }
 }
 
@@ -360,7 +424,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             bind_address, multicast_group, mtu
         ).await?;
         let max_payload_per_packet = mtu.saturating_sub(APPROX_HEADER_SIZE);
-        println!("Send socket bind-address: {:?}", send_socket.local_addr()?);
+        info!("Send socket bind-address: {:?}", send_socket.local_addr()?);
 
         if max_payload_per_packet < 100 {
             bail!("Unreasonably small MTU specified: {}", mtu);
@@ -371,6 +435,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             receive_socket,
             history: Default::default(),
             queue: Default::default(),
+            outgoing_retransmit_requests: Default::default(),
             receive_track: Default::default(),
             message_rx,
             message_tx,
@@ -433,7 +498,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             reader_pos += chunk;
             queue.push_back(SortableTransmittedEntity {
                 reconstructed_seq: *next_send_seq,
-                entity: TransmittedEntity {
+                entity: TransmittedEntitySortable {
                     seq: *next_send_seq as u16,
                     data,
                     first_boundary: if is_first { 0 } else { u16::MAX },
@@ -457,11 +522,15 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                 return;
             };
             let Some(history_item) = self.history.remove(index) else {
+                warn!("history did not contain {:?}", what);
                 return;
             };
-            self.queue.push_front(history_item);
+            warn!("enqueued {:?} from history", what);
+            let (Ok(insert_point)|Err(insert_point)) = self.queue.binary_search_by_key(what, |x|x.reconstructed_seq);
+            self.queue.insert(insert_point, history_item);
         }
     }
+    #[instrument(skip(self),fields(local=?self.bind_address))]
     pub async fn run(mut self) {
         let mut cursend: Option<Vec<u8>> = None;
         loop {
@@ -469,30 +538,58 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
 
             if cursend.is_none() {
-                cursend = self.queue.pop_front().map(|x| {
+
+                if self.outgoing_retransmit_requests.is_empty() == false {
                     let mut temp = vec![];
-                    // Consider if savefile really is the best here. Some more efficiency
-                    // wouldn't hurt!
-                    Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::<Socket::Endpoint>::Data(x.entity))
-                        .unwrap();
-                    temp
-                });
+                    if let Some((first_key, first_val)) = self.outgoing_retransmit_requests.iter_mut().next() {
+                        let packet = NetworkPacket::<Socket::Endpoint>::RetransmitRequest {
+                            who: *first_key,
+                            what: first_val.items.iter().take(20).copied().collect()
+                            //If more than this are missing, we'll request them too in due time
+                        };
+                        Serializer::bare_serialize(&mut temp, 0, &packet)
+                            .unwrap();
+                        debug!("Sending raw retransmit {:?} ({} bytes)", packet, temp.len());
+                        cursend = Some(temp);
+                        first_val.items = first_val.items.iter().skip(20).copied().collect();
+                        if first_val.items.is_empty() {
+                            let first_key = *first_key;
+                            self.outgoing_retransmit_requests.swap_remove(&first_key);
+                        }
+                    }
+                }
+                if cursend.is_none() {
+                    let mut temp = vec![];
+                    cursend = self.queue.pop_front().map(|x| {
+                        // Consider if savefile really is the best here. Some more efficiency
+                        // wouldn't hurt!
+                        debug!("Sending raw seq = {:?}", x.entity.seq);
+                        Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::<Socket::Endpoint>::Data(self.queue.is_empty(), x.entity.clone())) //TODO: Optimize away this clone
+                            .unwrap();
+                        let (Ok(insert_point)|Err(insert_point)) = self.history.binary_search_by_key(&x.reconstructed_seq, |x| x.reconstructed_seq);
+                        self.history.insert(insert_point, x); //TODO: Remove from history also?
+                        if self.history.len() > 100 {
+                            self.history.pop_front();
+                        }
+                        temp
+                    });
+                }
             }
 
             let mut send = async {
                 if let Some(tosend) = cursend.as_mut() {
-                    //println!("Sending {} bytes on wire", tosend.len());
+
                     match self
                         .send_socket
                         .send_to(tosend)
                         .await
                     {
                         Ok(sent) => {
-                            //println!("Sent {} byte packet:     {:?}", sent, tosend);
+                            //trace!("Actually sent {} raw bytes", sent);
                             cursend.take();
                         }
                         Err(err) => {
-                            eprintln!("Send error: {:?}", err);
+                            error!("Send error: {:?}", err);
                         }
                     }
                 } else {
@@ -501,6 +598,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             };
             let get_cmd = self.message_rx.recv();
             select! {
+                    biased;
                     buf = get_cmd => {
                         if let Some(buf) = buf {
                             Self::send_buf(
@@ -510,36 +608,36 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                                 buf
                             );
                         } else {
-                            eprintln!("Has ended");
+                            error!("Has ended");
                             return;
                         }
                     }
                     _ = send => {
                     }
                     msg = receive => {
-                        let (size, addr) = msg.expect("network should not fail");
-                        if addr == self.send_socket.local_addr().unwrap() { //TODO: maybe remember local_addr, don't get it each time
+                        let (size, src_addr) = msg.expect("network should not fail");
+                        if src_addr == self.send_socket.local_addr().unwrap() { //TODO: maybe remember local_addr, don't get it each time
                             continue;
                         }
-                        println!("Received {} byte packet: {:?}", size, self.recvbuf);
+
                         assert_eq!(size, self.recvbuf.len());
                         let Ok(packet): Result<NetworkPacket<Socket::Endpoint>,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0)  else {
-                            eprintln!("Invalid packet received");
+                            error!("Invalid packet received");
                             continue;
                         };
-                        //println!("Deserialized into {:?}", packet);
+                        trace!("Received packet {:?}", packet);
                         match packet {
-                            NetworkPacket::Data(entity) => {
-                                //println!("TransmittedEntity");
-                                match self.receive_track.entry(addr).or_default()
-                                    .process(entity, &mut self.message_tx).await {
+                            NetworkPacket::Data(push, entity) => {
+
+                                match self.receive_track.entry(src_addr).or_default()
+                                    .process(entity, src_addr, &mut self.message_tx, &mut self.outgoing_retransmit_requests, push).await {
                                         Ok(()) => {}
                                         Err(err) => {
-                                            eprintln!("Receive error: {:?}", err);
+                                            error!("Receive error: {:?}", err);
                                     }
                                 }
                             }
-                            NetworkPacket::Retransmit{who, what  } => {
+                            NetworkPacket::RetransmitRequest{who, what  } => {
                                 if who == self.bind_address {
                                     self.queue_retransmits(&what);
                                 }
@@ -570,11 +668,12 @@ struct DatabaseCommunicationLoop<APP: Application+Send> where <APP as Applicatio
     buffered_incoming_messages: Vec<DistributorMessage>,
     outbuf: VecDeque<DistributorMessage>,
     nextsend: Vec<u8>,
+    node: String, //Address as string
 }
 
 impl<APP:Application+Send> Drop for DatabaseCommunicationLoop<APP> where <APP as Application>::Params: Send, Self:Send {
     fn drop(&mut self) {
-        println!("Dropping com loop");
+        info!("Dropping com loop");
     }
 }
 
@@ -605,7 +704,7 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
 
     fn process_packet(&mut self, packet: Vec<u8>) -> Result<()> {
         let msg: DistributorMessage = Deserializer::bare_deserialize(&mut Cursor::new(&packet), 0)?;
-        println!("Received {:?}", msg);
+        trace!("Received DistrMsg {:?}", msg);
         self.buffered_incoming_messages.push(msg);
         Ok(())
     }
@@ -634,6 +733,7 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
             }
         }
     }
+    #[instrument(skip(self), fields(node=?self.node))]
     pub async fn run2(mut self) -> Result<Option<std::sync::mpsc::Sender<()>>> {
         self.nextsend.clear();
         loop {
@@ -645,7 +745,8 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                 if buffer_len > 0 {
                     if buffer_len > 1000 || buffer_life_start.elapsed() > Duration::from_secs(2) {
                     } else {
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        info!("Sleeping 100ms, waiting for buffer to fill");
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await; //TODO: Longer sleep, maybe configurable?
                     }
                 } else {
                     std::future::pending().await
@@ -654,13 +755,15 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
 
             if self.nextsend.is_empty() && !self.outbuf.is_empty() {
                 let msg = self.outbuf.pop_front().unwrap();
-                println!("Sending {:?}", msg);
                 Serializer::bare_serialize(&mut self.nextsend, 0, &msg)?;
+                //info!("Sending {:?} as {} byte", msg, self.nextsend.len());
             }
             let sendtask = async {
                 if !self.nextsend.is_empty() {
                     let permit = self.sender_tx.reserve().await?;
+                    let l = self.nextsend.len();
                     permit.send(std::mem::take(&mut self.nextsend));
+                    //info!("Actual transmit of {} byte message", l);
                 } else {
                     std::future::pending().await
                 }
@@ -668,6 +771,7 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
             };
 
             select!(
+                biased;
                 res = sendtask => {
                     res?;
                 }
@@ -677,9 +781,9 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                     self.next_periodic += Self::PERIODIC_MSG_INTERVAL;
                 }
                 cmd = self.cmd_rx.recv() => {
-                    //println!("Cmd received");
+
                     let Some(cmd) = cmd else {
-                        eprintln!("Done"); //TODO
+                        error!("Done"); //TODO
                         return Ok(None); //Done
                     };
                     match cmd {
@@ -744,7 +848,7 @@ impl<APP:Application> DatabaseCommunication<APP> {
         match oneshot_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(_) => {}
             Err(err) => {
-                eprintln!("Couldn't shut down DatabaseCommunication gracefully.");
+                error!("Couldn't shut down DatabaseCommunication gracefully.");
             }
         }
     }
@@ -844,12 +948,15 @@ where <APP as Application>::Params: Send,
             config.mtu,
         )
         .await?;
+        let node = format!("{:?}",sender_loop.bind_address);
         let jh = spawn(sender_loop.run());
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(100);
 
         let database = Arc::new(Mutex::new(database));
+
         let main = DatabaseCommunicationLoop {
+            node,
             database: database.clone(),
             jh,
             sender_tx,
@@ -884,7 +991,7 @@ where <APP as Application>::Params: Send,
                 Ok((runtime,app)) => {
                     res_tx.send(Ok(app));
                     runtime.block_on(std::future::pending::<()>());
-                    println!("Dropping runtime");
+                    info!("Dropping runtime");
                 }
                 Err(err) => {
                     res_tx.send(Err(err));

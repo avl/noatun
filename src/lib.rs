@@ -433,7 +433,7 @@ pub trait MessagePayload: Debug  {
     fn serialize<W: Write>(&self, writer: W) -> Result<()>;
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug,Clone,PartialEq)]
 pub struct MessageHeader {
     pub id: MessageId,
     pub parents: Vec<MessageId>,
@@ -443,6 +443,12 @@ pub struct MessageHeader {
 pub struct Message<M: MessagePayload> {
     pub header: MessageHeader,
     pub payload: M,
+}
+
+impl<M:MessagePayload> PartialEq for Message<M> where M:PartialEq {
+    fn eq(&self, other: &Self) -> bool {
+        self.header == other.header && self.payload == other.payload
+    }
 }
 
 impl<M: MessagePayload> Message<M> {

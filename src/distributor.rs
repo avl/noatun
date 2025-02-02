@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::ops::Range;
+use tracing::{debug, error, info};
 // Principle
 // The node that is 'most ahead' (highest MessageId) has responsibility.
 // If knows all the heads of other node, just sends perfect updates.
@@ -344,7 +345,7 @@ impl Distributor {
             err?;
             if have_all_parents {
                 // We have all the parents, a perfect msg to request!
-                println!(
+                info!(
                     "Requesting msg.id={:?}, because we have all its parents: {:?}",
                     msg_id, msg_value.parents
                 );
@@ -409,6 +410,15 @@ impl Distributor {
         message_list: Vec<(SerializedMessage, /*need ack*/ bool)>,
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
+        for (msg,_) in message_list.iter() {
+            for parent in msg.parents.iter() {
+                if database.contains_message(*parent)? == false {
+                    compile_error!("Consider why this happens. Packet loss? What do we do?");
+                    panic!("Should never apply msg with unknown parent")
+                }
+            }
+        }
+
         let mut to_ack = vec![];
         let messages = message_list
             .into_iter()
@@ -421,13 +431,13 @@ impl Distributor {
                     Some(x)
                 }
                 Err(x) => {
-                    eprintln!("Message could not be deserialized: {:?}", x);
+                    error!("Message could not be deserialized: {:?}", x);
                     None
                 }
             })
             .inspect(|x| {
-                println!(
-                    "==========================================\nAppend message: {:?}",
+                debug!(
+                    "Append received message: {:?}",
                     x
                 );
             });

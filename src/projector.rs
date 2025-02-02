@@ -153,7 +153,7 @@ impl<APP: Application> Projector<APP> {
 
         let guard = ContextGuardMut::new(context);
 
-        println!("Applying message #{}", context.next_seqnr());
+        //println!("Applying message #{}", context.next_seqnr());
         msg.payload
             .apply(NoatunTime(msg.header.id.timestamp()), unsafe {
                 Pin::new_unchecked(root)
