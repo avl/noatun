@@ -56,7 +56,7 @@ impl UndoLog {
 
     fn access<R>(&self, f: impl FnOnce(&FileAccessor) -> R) -> R {
         let bytes = &self.store_mmap;
-        f(&bytes)
+        f(bytes)
     }
     fn access_mut<R>(&mut self, f: impl FnOnce(&mut FileAccessor) -> R) -> R {
         let mut bytes = &mut self.store_mmap;

@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::ops::Range;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 // Principle
 // The node that is 'most ahead' (highest MessageId) has responsibility.
 // If knows all the heads of other node, just sends perfect updates.
@@ -412,9 +412,12 @@ impl Distributor {
     ) -> Result<()> {
         for (msg,_) in message_list.iter() {
             for parent in msg.parents.iter() {
-                if database.contains_message(*parent)? == false {
-                    compile_error!("Consider why this happens. Packet loss? What do we do?");
-                    panic!("Should never apply msg with unknown parent")
+                if database.contains_message(*parent)? == false && !message_list.iter().map(|x|x.0.id).any(|x|x==*parent) {
+                    //compile_error!("Consider why this happens. Packet loss? What do we do?");
+
+                    //panic!("Should never apply msg with unknown parent")
+                    warn!("Could not apply message {:?} because parent {:?} is not known", msg.id, parent);
+                    return Ok(());
                 }
             }
         }

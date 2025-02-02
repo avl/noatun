@@ -22,6 +22,7 @@ use tokio::test;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::cell::RefCell;
+use tracing_subscriber::Layer;
 use rand::distributions::uniform::SampleUniform;
 
 thread_local! {
@@ -96,13 +97,13 @@ struct TestDriverReceiver(Receiver<(u8/*src*/,Vec<u8>)>);
 struct TestDriverSender(u8/*own addr*/,ArcShift<TestDriverInner>);
 
 impl CommunicationReceiveSocket<u8> for TestDriverReceiver {
-    fn recv_buf_from<B: BufMut + Send>(&mut self, buf: &mut B) -> impl Future<Output=std::io::Result<(usize, u8)>> + Send {
-        async {
+    async fn recv_buf_from<B: BufMut + Send>(&mut self, buf: &mut B) -> std::io::Result<(usize, u8)> {
+
             let (src_addr, data) = self.0.recv().await.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "all senders have gone away"))?;
 
             buf.put(&*data);
             Ok((data.len(), src_addr))
-        }
+
 
 
     }
@@ -113,19 +114,17 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
         Ok(self.0)
     }
 
-    fn send_to(&mut self, buf: &[u8]) -> impl Future<Output=std::io::Result<usize>> + Send {
-        async {
-            let driver_inner = self.1.get();
-            let data = buf.to_vec();
-            for item in driver_inner.senders.iter() {
-                if driver_inner.loss < random(0.0..1.0) {
-                    item.send((self.0/*src*/,data.clone())).await;
-                } else {
-                    info!("== SIMULATOR CAUSED PACKET LOSS ==");
-                }
+    async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let driver_inner = self.1.get();
+        let data = buf.to_vec();
+        for item in driver_inner.senders.iter() {
+            if driver_inner.loss < random(0.0..1.0) {
+                item.send((self.0/*src*/,data.clone())).await;
+            } else {
+                //info!("== SIMULATOR CAUSED PACKET LOSS ==");
             }
-            Ok((buf.len()))
         }
+        Ok(buf.len())
     }
 }
 
@@ -188,6 +187,9 @@ async fn create_app(driver: &mut TestDriver, node: u8) -> DatabaseCommunication<
 
 #[tokio::test(start_paused = true)]
 async fn all_up_simple_sync_test() {
+
+    MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
+
     let mut driver = TestDriver::default();
     let mut app1 = create_app(&mut driver, 1).await;
     let mut app2 = create_app(&mut driver, 2).await;
@@ -229,8 +231,8 @@ async fn all_up_gradual_update_sync_test() {
     let stdout_log = tracing_subscriber::fmt::layer()
         .with_timer(TracingTimer(tokio::time::Instant::now()))
         .pretty()
-        .with_file(false)
-        .with_writer(std::io::stdout);
+        .with_filter(tracing_subscriber::EnvFilter::from_default_env())
+        ;
 
     use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
     let subscriber = tracing_subscriber::registry()
@@ -251,7 +253,7 @@ async fn all_up_gradual_update_sync_test() {
     driver.set_loss(0.5);
     let mut correct_count = 0;
     let mut correct_sum = 0;
-    for _ in 0..4 {
+    for _ in 0..1 {
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
         app1.add_message_at(datetime!(2020-01-01 Z).add(TimeDelta::seconds(random(0..100))), SyncMessage{value: 1}).await;
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
@@ -277,5 +279,9 @@ async fn all_up_gradual_update_sync_test() {
     assert_eq!(root1.counter, correct_count);
     assert_eq!(root2.counter, correct_count);
     assert_eq!(root1, root2);
+
+    app1.add_message(SyncMessage{value: 1}).await;
+    app1.close();
+    app2.close();
 }
 

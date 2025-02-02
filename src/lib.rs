@@ -474,7 +474,6 @@ impl Object for DummyUnitObject {
     type DetachedOwnedType = ();
 
     fn detach(&self) -> Self::DetachedType {
-        ()
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {}
@@ -515,7 +514,10 @@ pub fn from_bytes_mut<T: FixedSizeObject>(s: &mut [u8]) -> &mut T {
     // # Safety
     // We've checked alignment and size, and those are the only requirements
     // an Object need to be valid.
-    unsafe { transmute::<*mut u8, &mut T>(s.as_mut_ptr()) }
+    unsafe {
+        &mut *s.as_mut_ptr().cast::<T>()
+        //transmute::<*mut u8, &mut T>(s.as_mut_ptr())
+    }
 }
 pub fn bytes_of<T: FixedSizeObject>(t: &T) -> &[u8] {
     // # Safety
@@ -891,7 +893,7 @@ impl<T: FixedSizeObject> Object for [T] where T::DetachedType: Sized {
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         unsafe {
-            for (dst, src) in self.get_unchecked_mut().iter_mut().zip(detached.into_iter()) {
+            for (dst, src) in self.get_unchecked_mut().iter_mut().zip(detached.iter()) {
                 Pin::new_unchecked(dst).init_from_detached(src.borrow());
             }
         }
@@ -902,7 +904,7 @@ impl<T: FixedSizeObject> Object for [T] where T::DetachedType: Sized {
         let alloc = NoatunContext.allocate_raw(bytes, align_of::<T>());
 
         let slice: &mut [T] = unsafe {slice::from_raw_parts_mut(alloc as *mut T, detached.len())};
-        for (src, dst) in detached.into_iter().zip(&mut *slice) {
+        for (src, dst) in detached.iter().zip(&mut *slice) {
             Pin::new_unchecked(dst).init_from_detached(src.borrow());
         }
         Pin::new_unchecked(slice)
@@ -1685,7 +1687,7 @@ mod tests {
         type Params = ();
 
         fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
-            unsafe { NoatunString::allocate_from_detached("hello".into()) }
+            unsafe { NoatunString::allocate_from_detached("hello") }
         }
 
         type Message = DummyMessage<NoatunString>;

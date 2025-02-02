@@ -76,7 +76,7 @@ impl MessagePayload for TestMessage {
     where
         Self: Sized
     {
-        Ok(msg_deserialize(&buf)?)
+        Ok(msg_deserialize(buf)?)
     }
 
     fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
@@ -122,14 +122,14 @@ fn test() {
         }
 
         db.force_rewind(SequenceNr::from_index(0));
-        db.with_root(|root:&TestDb| -> () {
+        db.with_root(|root:&TestDb| {
             assert_eq!(root.now().0, 0);
             assert_eq!(root.items().len(), 0);
         });
 
 
         db.reproject().unwrap();
-        db.with_root(|root:&TestDb| -> () {
+        db.with_root(|root:&TestDb| {
             assert_eq!(&root.items.detach(), &orig[0..=TIME_LIMIT]);
             assert!(root.now().0> 0);
         });
@@ -137,7 +137,7 @@ fn test() {
         db.reproject().unwrap();
         db.set_projection_time_limit(fake_time + Duration::from_secs(1000)).unwrap();
         db.reproject().unwrap();
-        db.with_root(|root:&TestDb| -> () {
+        db.with_root(|root:&TestDb| {
             assert_eq!(&root.items.detach(), &orig);
         });
 

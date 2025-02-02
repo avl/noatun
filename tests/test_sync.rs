@@ -6,6 +6,8 @@ use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::pin::Pin;
 use std::time::Duration;
+use noatun::communication::udp::TokioUdpDriver;
+
 #[derive(Savefile, Debug)]
 struct MazeMessage {
     delta_x: i32,
@@ -110,7 +112,7 @@ async fn test_sync_app() {
                 )
                 .unwrap();
                 let comm =
-                    DatabaseCommunication::async_tokio_new(db, DatabaseCommunicationConfig::default()).await.unwrap();
+                    DatabaseCommunication::async_tokio_new(&mut TokioUdpDriver, db, DatabaseCommunicationConfig::default()).await.unwrap();
                 comms.push(comm);
             }
 

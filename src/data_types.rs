@@ -31,12 +31,12 @@ impl Object for NoatunString {
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        self.assign(&detached);
+        self.assign(detached);
     }
 
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         let mut temp: Pin<&mut Self> = NoatunContext.allocate_pod();
-        temp.as_mut().assign(&detached);
+        temp.as_mut().assign(detached);
         temp
     }
 

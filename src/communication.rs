@@ -298,9 +298,9 @@ impl ReceiveTrack {
 
         self.sorted_packets.insert(insert_point, packet);
         while let Some(first) = self.sorted_packets.front() {
-            trace!("Expected next: {}, actual (reconstructed) seq: {}",
-                self.expected_next, first.reconstructed_seq);
             if first.reconstructed_seq != self.expected_next {
+                trace!("Expected next: {}, actual (reconstructed) seq: {}",
+                    self.expected_next, first.reconstructed_seq);
                 if first.reconstructed_seq < self.expected_next {
                     info!("duplicate packet ignored (expected {}, got {})", self.expected_next, first.reconstructed_seq);
                     self.sorted_packets.pop_front();
@@ -525,7 +525,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                 warn!("history did not contain {:?}", what);
                 return;
             };
-            warn!("enqueued {:?} from history", what);
+            info!("enqueued {:?} from history", what);
             let (Ok(insert_point)|Err(insert_point)) = self.queue.binary_search_by_key(what, |x|x.reconstructed_seq);
             self.queue.insert(insert_point, history_item);
         }
@@ -563,7 +563,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                     cursend = self.queue.pop_front().map(|x| {
                         // Consider if savefile really is the best here. Some more efficiency
                         // wouldn't hurt!
-                        debug!("Sending raw seq = {:?}", x.entity.seq);
+                        //debug!("Sending raw seq = {:?}", x.entity.seq);
                         Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::<Socket::Endpoint>::Data(self.queue.is_empty(), x.entity.clone())) //TODO: Optimize away this clone
                             .unwrap();
                         let (Ok(insert_point)|Err(insert_point)) = self.history.binary_search_by_key(&x.reconstructed_seq, |x| x.reconstructed_seq);
@@ -608,7 +608,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                                 buf
                             );
                         } else {
-                            error!("Has ended");
+                            info!("cmd-channel gone, background task shutting down");
                             return;
                         }
                     }
@@ -625,7 +625,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                             error!("Invalid packet received");
                             continue;
                         };
-                        trace!("Received packet {:?}", packet);
+                        //trace!("Received packet {:?}", packet);
                         match packet {
                             NetworkPacket::Data(push, entity) => {
 
@@ -771,7 +771,6 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
             };
 
             select!(
-                biased;
                 res = sendtask => {
                     res?;
                 }
@@ -781,9 +780,7 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                     self.next_periodic += Self::PERIODIC_MSG_INTERVAL;
                 }
                 cmd = self.cmd_rx.recv() => {
-
                     let Some(cmd) = cmd else {
-                        error!("Done"); //TODO
                         return Ok(None); //Done
                     };
                     match cmd {
@@ -827,7 +824,7 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                     self.process_messages()?;
                 }
 
-            )
+            );
         }
     }
 }
@@ -840,33 +837,32 @@ pub struct DatabaseCommunication<APP: Application> {
     database: Arc<Mutex<Database<APP>>>,
     cmd_tx: Sender<Cmd<APP>>,
 }
-impl<APP:Application> DatabaseCommunication<APP> {
 
-    fn close(&mut self) {
-        let (oneshot_tx, oneshot_rx) = std::sync::mpsc::channel();
-        let _ = self.cmd_tx.send(Cmd::Quit(oneshot_tx));
-        match oneshot_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(_) => {}
-            Err(err) => {
-                error!("Couldn't shut down DatabaseCommunication gracefully.");
-            }
-        }
-    }
-}
-
-impl<APP:Application> Drop for DatabaseCommunication<APP> {
-    fn drop(&mut self) {
-        if Arc::strong_count(&self.database) > 1 {
-            self.close();
-        }
-    }
-}
 
 impl<APP: Application + 'static+Send> DatabaseCommunication<APP>
 where <APP as Application>::Params: Send,
     <APP as Application>::Message: Send,
 
 {
+    pub async fn close(self) -> Result<()> {
+        let (oneshot_tx, oneshot_rx) = std::sync::mpsc::channel();
+        let e = self.cmd_tx.send(Cmd::Quit(oneshot_tx)).await;
+        match e {
+            Ok(_) => {}
+            Err(_err) => {
+                bail!("Instance already closed");
+            }
+        }
+        match oneshot_rx.recv_timeout(Duration::from_millis(1000)) {
+            Ok(()) => {
+                Ok(())
+            }
+            Err(_err) => {
+                bail!("Couldn't shut down DatabaseCommunication gracefully.");
+            }
+        }
+    }
+
     pub async fn add_message(&self, msg: APP::Message) -> Result<()> {
         self.add_message_impl(None, msg).await
     }
@@ -908,7 +904,7 @@ where <APP as Application>::Params: Send,
         self.database.lock().unwrap().get_all_messages()
     }
     pub fn get_update_heads(&self) -> Vec<crate::MessageId> {
-        self.database.lock().unwrap().get_update_heads().iter().copied().collect()
+        self.database.lock().unwrap().get_update_heads().to_vec()
     }
     /// TODO: Probably remove this, it should never be necessary
     pub fn reproject(&mut self) {
