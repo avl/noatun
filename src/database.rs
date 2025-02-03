@@ -314,7 +314,7 @@ impl<APP: Application> Database<APP> {
         let time = time.unwrap_or_else(||self.now());
         let mut new_id;
 
-        compile_error!("Still some oddities. Probably because of 'now' not matching. Analyze!")
+
         if let Some(prev_local) = self.prev_local {
             if time.timestamp_millis() as u64  == prev_local.timestamp() { //TODO: Fix all cases of u64 timestamps. We should probably just use i64 instead
                 new_id = prev_local.successor();
