@@ -427,6 +427,23 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
         let t = unsafe { ctx.access_pod_mut(ThinPtr(offset)) };
         t
     }
+    pub(crate) fn swap_remove(&mut self, ctx: &mut DatabaseContextData, index: usize) {
+        assert!(index < self.length);
+        if index + 1 == self.length {
+            ctx.write_pod(index, unsafe { Pin::new_unchecked(&mut self.length) });
+        } else {
+            let last_index = self.length - 1;
+            ctx.write_pod(last_index, unsafe { Pin::new_unchecked(&mut self.length) });
+
+            let src_offset = self.data + last_index * size_of::<T>();
+            let src_obj = ThinPtr(src_offset);
+
+            let dst_offset = self.data + index * size_of::<T>();
+            let dst_obj = ThinPtr(dst_offset);;
+
+            ctx.copy_sized(src_obj, dst_obj, size_of::<T>());
+        }
+    }
     pub(crate) fn write_untracked(&mut self, ctx: &mut DatabaseContextData, index: usize, val: T) {
         let offset = self.data + index * size_of::<T>();
         unsafe {
@@ -649,7 +666,6 @@ where
         NoatunContext.copy(FatPtr::from(src_ptr.0, size_of::<T>()), dst_ptr);
 
         NoatunContext.write_pod_ptr(tself.length - 1, addr_of_mut!(tself.length));
-
     }
 
     pub fn retain(&mut self, mut f: impl FnMut(Pin<&mut T>) -> bool) {

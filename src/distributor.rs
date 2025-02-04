@@ -87,6 +87,15 @@ pub enum DistributorMessage {
     Message(SerializedMessage, bool /*demand ack*/),
 }
 
+impl DistributorMessage {
+    pub(crate) fn message_id(&self) -> Option<MessageId> {
+        match self {
+            DistributorMessage::Message(msg, _) => Some(msg.id),
+            _ => None
+        }
+    }
+}
+
 struct MergedDistributorMessages {
     report_heads: IndexSet<MessageId>,
     requests: IndexMap<MessageId, /*count*/ usize>,

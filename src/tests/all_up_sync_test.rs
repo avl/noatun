@@ -18,7 +18,6 @@ use bytes::BufMut;
 use chrono::TimeDelta;
 use libc::send;
 use rand::{thread_rng, Rng};
-use tokio::test;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::cell::RefCell;
@@ -40,7 +39,8 @@ noatun_object!(
 
 #[derive(Debug, Savefile, PartialEq)]
 pub struct SyncMessage {
-    value: u32
+    value: u32,
+    reset: bool,
 }
 
 
@@ -50,10 +50,15 @@ impl MessagePayload for SyncMessage {
     fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
         let mut project = root.pin_project();
 
-        let prev_counter =  project.counter.get();
-        let prev_sum =  project.sum.get();
-        project.counter.set(prev_counter.wrapping_add(1));
-        project.sum.set(prev_sum.wrapping_add(self.value));
+        if self.reset {
+            project.counter.set(0);
+            project.sum.set(0);
+        } else {
+            let prev_counter =  project.counter.get();
+            let prev_sum =  project.sum.get();
+            project.counter.set(prev_counter.wrapping_add(1));
+            project.sum.set(prev_sum.wrapping_add(self.value));
+        }
     }
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
@@ -194,8 +199,8 @@ async fn all_up_simple_sync_test() {
     let mut app1 = create_app(&mut driver, 1).await;
     let mut app2 = create_app(&mut driver, 2).await;
 
-    app1.add_message(SyncMessage{value: 1}).await;
-    app2.add_message(SyncMessage{value: 2}).await;
+    app1.add_message(SyncMessage{value: 1, reset: false }).await;
+    app2.add_message(SyncMessage{value: 2, reset: false }).await;
 
     tokio::time::sleep(Duration::from_secs(10)).await;
 
@@ -214,6 +219,35 @@ fn random<T:SampleUniform+PartialOrd>(range: std::ops::Range<T>) -> T {
 }
 
 
+#[test]
+fn old_messages_without_effect_are_removed() {
+    let mut db: Database<SyncApp> = Database::create_in_memory(
+        10000,
+        Duration::from_secs(2*86400), // 2 days
+        Some(datetime!(2020-01-01 Z)),
+        None,
+        (),
+    )
+        .unwrap();
+    db.append_local(SyncMessage {
+        value: 1,
+        reset: false,
+    }).unwrap();
+    db.append_local(SyncMessage {
+        value: 2,
+        reset: false,
+    }).unwrap();
+    db.set_mock_time(datetime!(2020-01-02 Z));
+    assert_eq!(db.get_all_messages().unwrap().len(), 2);
+    db.set_mock_time(datetime!(2024-01-02 Z));
+    db.append_local(SyncMessage {
+        value: 0,
+        reset: true,
+    }).unwrap();
+    db.reproject().unwrap();
+
+    assert_eq!(db.get_all_messages().unwrap().len(), 1);
+}
 
 #[tokio::test(start_paused = true)]
 async fn all_up_gradual_update_sync_test() {
@@ -255,9 +289,9 @@ async fn all_up_gradual_update_sync_test() {
     let mut correct_sum = 0;
     for _ in 0..1 {
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
-        app1.add_message_at(datetime!(2020-01-01 Z).add(TimeDelta::seconds(random(0..100))), SyncMessage{value: 1}).await;
+        app1.add_message_at(datetime!(2020-01-01 Z).add(TimeDelta::seconds(random(0..100))), SyncMessage{value: 1, reset: false }).await;
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
-        app2.add_message_at(datetime!(2020-01-01 Z).add(TimeDelta::seconds(random(0..100))),SyncMessage{value: 2}).await;
+        app2.add_message_at(datetime!(2020-01-01 Z).add(TimeDelta::seconds(random(0..100))),SyncMessage{value: 2, reset: false }).await;
         correct_count += 2;
         correct_sum += 3;
     }
@@ -280,7 +314,7 @@ async fn all_up_gradual_update_sync_test() {
     assert_eq!(root2.counter, correct_count);
     assert_eq!(root1, root2);
 
-    app1.add_message(SyncMessage{value: 1}).await;
+    app1.add_message(SyncMessage{value: 1, reset: false }).await;
     app1.close();
     app2.close();
 }

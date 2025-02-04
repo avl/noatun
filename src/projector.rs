@@ -153,6 +153,10 @@ impl<APP: Application> Projector<APP> {
 
         let guard = ContextGuardMut::new(context);
 
+        if context.next_seqnr() != seqnr {
+            context.set_next_seqnr(seqnr); //TODO: Maybe we can optimize this somehow?
+        }
+
         //println!("Applying message #{}", context.next_seqnr());
         msg.payload
             .apply(NoatunTime(msg.header.id.timestamp()), unsafe {
@@ -250,11 +254,13 @@ impl<APP: Application> Projector<APP> {
                     return Ok(RunResult::Finished(last_element_was_before_cutoff));
                 }
                 let seqnr = SequenceNr::from_index(seq);
+                //println!("Projecting {}, time: {:?}, cutoff: {:?}", seq, DateTime::from_timestamp_millis(msg.id().timestamp() as i64), DateTime::from_timestamp_millis(cutoff as i64));
                 let is_before_cutoff = msg.id().timestamp() < cutoff;
                 if is_before_cutoff {
                     seen_before_cutoff = true;
                 }
                 if !is_before_cutoff && seen_before_cutoff {
+                    //println!("Need run after cutoff");
                     return Ok(RunResult::NeedRunAfterCutoff(seqnr.index()));
                 }
                 Projector::<APP>::apply_single_message(context, root, &msg, seqnr);

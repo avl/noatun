@@ -1,7 +1,7 @@
 
 use crate::distributor::{Distributor, DistributorMessage, SerializedMessage};
 
-use crate::{Application, ContextGuard, Database, DatabaseContextData, Message, MessageHeader, MessagePayload};
+use crate::{Application, ContextGuard, Database, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload};
 use anyhow::{bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
@@ -576,6 +576,8 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                 }
             }
 
+            let send_queue_empty = cursend.is_none();
+
             let mut send = async {
                 if let Some(tosend) = cursend.as_mut() {
 
@@ -599,7 +601,9 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             let get_cmd = self.message_rx.recv();
             select! {
                     biased;
-                    buf = get_cmd => {
+                    _ = send => {
+                    }
+                    buf = get_cmd, if send_queue_empty => {
                         if let Some(buf) = buf {
                             Self::send_buf(
                                 &mut self.queue,
@@ -611,8 +615,6 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                             info!("cmd-channel gone, background task shutting down");
                             return;
                         }
-                    }
-                    _ = send => {
                     }
                     msg = receive => {
                         let (size, src_addr) = msg.expect("network should not fail");
@@ -668,6 +670,7 @@ struct DatabaseCommunicationLoop<APP: Application+Send> where <APP as Applicatio
     buffered_incoming_messages: Vec<DistributorMessage>,
     outbuf: VecDeque<DistributorMessage>,
     nextsend: Vec<u8>,
+    nextsend_id: Option<MessageId>,
     node: String, //Address as string
 }
 
@@ -755,12 +758,20 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
 
             if self.nextsend.is_empty() && !self.outbuf.is_empty() {
                 let msg = self.outbuf.pop_front().unwrap();
+                self.nextsend_id = msg.message_id();
                 Serializer::bare_serialize(&mut self.nextsend, 0, &msg)?;
+
                 //info!("Sending {:?} as {} byte", msg, self.nextsend.len());
             }
             let sendtask = async {
                 if !self.nextsend.is_empty() {
                     let permit = self.sender_tx.reserve().await?;
+                    if let Some(nextsend_id) = self.nextsend_id
+                    {
+                        let mut db = self.database.lock().unwrap();
+                        db.mark_transmitted(nextsend_id);
+                        self.nextsend_id = None;
+                    }
                     let l = self.nextsend.len();
                     permit.send(std::mem::take(&mut self.nextsend));
                     //info!("Actual transmit of {} byte message", l);
@@ -964,6 +975,7 @@ where <APP as Application>::Params: Send,
             buffered_incoming_messages: vec![],
             outbuf: Default::default(),
             nextsend: vec![],
+            nextsend_id: None,
         };
 
         spawn(main.run());

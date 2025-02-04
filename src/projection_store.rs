@@ -33,16 +33,23 @@ mod registrar_info {
     use bumpalo::Bump;
     use bytemuck::{Pod, Zeroable};
     use indexmap::IndexMap;
-    use std::fmt::Debug;
+    use std::fmt::{Debug, Formatter};
     use std::pin::Pin;
     use crate::message_store::OnDiskMessageStore;
     use crate::sequence_nr::SequenceNr;
     use crate::{DatabaseContextData, MessagePayload, NoatunContext, Target, ThinPtr};
 
-    #[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
+    #[derive(Clone, Copy, Default, Pod, Zeroable)]
     #[repr(C)]
     pub(crate) struct RegistrarInfo {
         uses: u32,
+    }
+    impl Debug for RegistrarInfo {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} (opaque: {})",
+                self.get_use(), self.get_opaque()
+            )
+        }
     }
     impl RegistrarInfo {
         pub fn get_opaque(&self) -> bool {
@@ -70,6 +77,7 @@ mod registrar_info {
                 return;
             }
             //TODO: We could have a special "dec 1" noatun primitive.
+            //println!("Wite pod {:?}", self.uses - 1);
             context.write_pod(self.uses - 1, unsafe{Pin::new_unchecked(&mut self.uses)});
         }
     }
@@ -921,14 +929,26 @@ impl DatabaseContextData {
                             "Can't delete {:?} because it's observed by {:?}",
                             msg, observer
                         );*/
+
+                        //TODO:  We could remember that we have an unused item that
+                        //we couldn't remove because it was being observed, so that if/when
+                        //the observer is removed, we can complete this removal.
+                        //The problem is that there could be very many 'unused' messages at any one time,
+                        //and we can't scan through all of them after every projection.
+
+                        //What we _could_ do is to track the dependencies, so that when we
+                        //finally delete 'observer', we can follow a linked list and find 'msg' again.
                         continue 'outer;
                     }
                 }
             } else {
+
                 /*println!(
                     "Can't delete {:?}, because we can't know if someone will use its output",
                     msg
                 );*/
+                // We could put these on a list of 'waiting' items, that can be deleted
+                // after the cutoff period elapses.
                 continue 'outer;
             }
 

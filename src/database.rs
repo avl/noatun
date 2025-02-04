@@ -200,6 +200,7 @@ impl<APP: Application> Database<APP> {
 
         self.message_store.rewind(&mut self.context, 0)?;
 
+
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
