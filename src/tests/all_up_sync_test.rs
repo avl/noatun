@@ -244,10 +244,12 @@ fn old_messages_without_effect_are_removed() {
         value: 0,
         reset: true,
     }).unwrap();
-    db.reproject().unwrap();
+    //db.reproject().unwrap();
 
     assert_eq!(db.get_all_messages().unwrap().len(), 1);
 }
+
+
 
 #[tokio::test(start_paused = true)]
 async fn all_up_gradual_update_sync_test() {

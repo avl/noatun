@@ -19,7 +19,7 @@ use std::cell::{RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::mem::{offset_of, transmute_copy};
+use std::mem::{offset_of, take, transmute_copy};
 use std::ops::Range;
 use std::path::Path;
 use std::slice::SliceIndex;
@@ -123,10 +123,17 @@ pub struct MainDbHeader {
     last_boot: [u8; 16],
 }
 
+#[derive(Debug, Clone, Copy, Zeroable, Pod)]
+#[repr(C)]
+struct DepTrackEntry {
+    dep: ThinPtr,
+    reverse_dep: ThinPtr,
+}
+
 #[derive(Debug, Clone, Copy, Default, Zeroable, Pod)]
 #[repr(C)]
 pub struct MainDbAuxHeader {
-    deptrack_keys: RawDatabaseVec<ThinPtr>,
+    deptrack_keys: RawDatabaseVec<DepTrackEntry>,
     uses: RawDatabaseVec<RegistrarInfo>,
 }
 
@@ -180,8 +187,10 @@ pub(crate) struct DepTrackLinkedListEntry {
     // TODO: Possibly make this struct 4-byte aligned, and remove the padding
     pub next: ThinPtr,
     pub seq: SequenceNr,
-    pub padding: u32,
+    pub opaque: u32,
 }
+
+
 
 impl DatabaseContextData {
     fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr) {
@@ -196,7 +205,8 @@ impl DatabaseContextData {
         if observee.index() >= keys.len() {
             keys.grow(self, observee.index() + 1);
         }
-        let key_place = keys.get_mut(self, observee.index());
+        let key_place = unsafe { keys.get_mut(self, observee.index())
+            .map_unchecked_mut(|x|&mut x.dep) };
 
         let mut new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod_internal();
 
@@ -206,11 +216,36 @@ impl DatabaseContextData {
         let new_entry_index = self.index_of_sized(new_entry);
         self.write_pod(new_entry_index, key_place);
     }
+    fn record_reverse_dependency(&mut self, observee: SequenceNr, observer: SequenceNr, opaque: bool) {
+        assert!(observee.is_valid());
+        assert!(observer.is_valid());
+
+        // #Safety:
+        // No code holds this reference while calling other code that does.
+        // Generally, it is not long held.
+        let keys = unsafe { self.get_deptrack_keys() };
+
+        if observer.index() >= keys.len() {
+            keys.grow(self, observer.index() + 1);
+        }
+        let key_place = unsafe { keys.get_mut(self, observer.index())
+            .map_unchecked_mut(|x|&mut x.reverse_dep) };
+
+        let mut new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod_internal();
+
+        self.write_pod(*key_place, unsafe{Pin::new_unchecked(&mut new_entry.next)});
+        self.write_pod(observee,   unsafe{Pin::new_unchecked(&mut new_entry.seq)});
+        self.write_pod(opaque as u32,   unsafe{Pin::new_unchecked(&mut new_entry.opaque)});
+
+        let new_entry_index = self.index_of_sized(new_entry);
+        self.write_pod(new_entry_index, key_place);
+    }
+
     fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> + '_ {
-        let keys: &RawDatabaseVec<ThinPtr> = &self.get_aux_header().deptrack_keys;
+        let keys: &RawDatabaseVec<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observee.index() < keys.len() {
-            *keys.get_mut(self, observee.index())
+            keys.get_mut(self, observee.index()).dep
         } else {
             ThinPtr(0)
         };
@@ -222,6 +257,26 @@ impl DatabaseContextData {
             let entry: &DepTrackLinkedListEntry = unsafe { self.access_pod(cur) };
             cur = entry.next;
             Some(entry.seq)
+        })
+    }
+
+    //TODO: Maybe elliminate this code duplication
+    fn read_reverse_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = (SequenceNr, /*opaque*/bool)> + '_ {
+        let keys: &RawDatabaseVec<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
+
+        let mut cur: ThinPtr = if observee.index() < keys.len() {
+            keys.get_mut(self, observee.index()).reverse_dep
+        } else {
+            ThinPtr(0)
+        };
+
+        iter::from_fn(move || {
+            if cur.0 == 0 {
+                return None;
+            }
+            let entry: &DepTrackLinkedListEntry = unsafe { self.access_pod(cur) };
+            cur = entry.next;
+            Some((entry.seq, entry.opaque!=0))
         })
     }
 
@@ -324,11 +379,11 @@ impl DatabaseContextData {
         let aux_header: &MainDbAuxHeader = bytemuck::from_bytes(slice);
         aux_header
     }
-    unsafe fn get_deptrack_keys<'a>(&self) -> &'a mut RawDatabaseVec<ThinPtr> {
+    unsafe fn get_deptrack_keys<'a>(&self) -> &'a mut RawDatabaseVec<DepTrackEntry> {
         unsafe {
             &mut *(self.main_db_mmap.map_mut_ptr().wrapping_add(
                 size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, deptrack_keys),
-            ) as *mut RawDatabaseVec<ThinPtr>)
+            ) as *mut RawDatabaseVec<DepTrackEntry>)
         }
     }
     unsafe fn get_uses<'a>(&self) -> &'a mut RawDatabaseVec<RegistrarInfo> {
@@ -912,12 +967,13 @@ impl DatabaseContextData {
         messages: &mut OnDiskMessageStore<M>,
         is_before_cutoff: bool,
     ) -> anyhow::Result<Vec<SequenceNr>> {
-        self.unused_messages.sort(); //Sort in seq-nr order
+        let mut unused_messages = take(&mut self.unused_messages);
+        unused_messages.sort(); //Sort in seq-nr order
         let mut deleted = Vec::new();
-        let mut parent_lists = Bump::new();
+        let mut deferred = Vec::new();
 
         //println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
-        'outer: for msg in self.unused_messages.iter().rev() {
+        'outer: while let Some(msg) = unused_messages.pop() {
             if msg.opaque {
                 // This can be deleted
             } else if !messages.may_have_been_transmitted(msg.seq)? || is_before_cutoff {
@@ -930,11 +986,10 @@ impl DatabaseContextData {
                             msg, observer
                         );*/
 
-                        //TODO:  We could remember that we have an unused item that
-                        //we couldn't remove because it was being observed, so that if/when
-                        //the observer is removed, we can complete this removal.
-                        //The problem is that there could be very many 'unused' messages at any one time,
-                        //and we can't scan through all of them after every projection.
+
+                        deferred.push(move|tself: &mut DatabaseContextData|{
+                            tself.record_reverse_dependency(msg.seq, observer, msg.opaque);
+                        });
 
                         //What we _could_ do is to track the dependencies, so that when we
                         //finally delete 'observer', we can follow a linked list and find 'msg' again.
@@ -943,20 +998,27 @@ impl DatabaseContextData {
                 }
             } else {
 
-                /*println!(
-                    "Can't delete {:?}, because we can't know if someone will use its output",
-                    msg
-                );*/
+
+                // TODO:  We could remember that we have an unused item that
+                // we couldn't remove because it was not beyond cutoff.
                 // We could put these on a list of 'waiting' items, that can be deleted
                 // after the cutoff period elapses.
                 continue 'outer;
             }
 
             println!("Deleting {:?}", msg);
+            for (revdep, opaque) in self.read_reverse_dependency(msg.seq) {
+                unused_messages.push(UnusedInfo {
+                    seq: revdep,
+                    opaque,
+                });
+            }
 
             deleted.push(msg.seq);
         }
-        self.unused_messages.clear();
+        for action in deferred {
+            action(self);
+        }
 
         // 'deleted' ends up in reverse seqnr-order
         // iterate in seq-nr order.
