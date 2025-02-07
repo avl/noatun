@@ -5,11 +5,7 @@ use crate::message_store::IndexEntry;
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{
-    Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageComponent,
-    MessageHeader, MessageId, MessagePayload, MultiInstanceThreadBlocker, Object, Pointer, Target,
-    CONTEXT
-};
+use crate::{Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageComponent, MessageHeader, MessageId, MessagePayload, MultiInstanceThreadBlocker, NoatunTime, Object, Pointer, Target, CONTEXT};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -25,11 +21,19 @@ pub struct Database<Base: Application> {
     time_override: Option<DateTime<Utc>>,
     projection_time_limit: Option<DateTime<Utc>>,
     params: Base::Params,
+
 }
 
 //TODO: Make the modules in this file be distinct files
 
 impl<APP: Application> Database<APP> {
+
+
+    fn maybe_advance_cutoff(&mut self) -> Result<()> {
+        self.message_store.maybe_advance_cutoff(self.noatun_now(), &mut self.context)
+    }
+
+
     pub(crate) fn force_rewind(&mut self, index: SequenceNr) {
         self.context.rewind(index)
     }
@@ -122,6 +126,9 @@ impl<APP: Application> Database<APP> {
 
     pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
         self.time_override.unwrap_or_else(Utc::now)
+    }
+    pub(crate) fn noatun_now(&self) -> NoatunTime {
+        NoatunTime(self.now().timestamp_millis() as u64)
     }
 
     pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
@@ -364,6 +371,8 @@ impl<APP: Application> Database<APP> {
                 &self.params,
             )?;
         }
+
+        self.maybe_advance_cutoff()?;
 
         self.message_store
             .push_messages(&mut self.context, messages, local);

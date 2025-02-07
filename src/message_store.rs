@@ -3,7 +3,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::sha2;
-use crate::{Database, Message, MessageHeader, MessageId, MessagePayload, Target};
+use crate::{Database, Message, MessageHeader, MessageId, MessagePayload, NoatunTime, Target};
 use anyhow::{anyhow, bail, Context, Result};
 use bytemuck::{Pod, Zeroable};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -970,6 +970,22 @@ impl<M> OnDiskMessageStore<M> {
         }
         let (Ok(i) | Err(i)) = message_index.binary_search_by_key(&id, |x| x.message);
         Ok(i)
+    }
+    /// Return the greatest index such that all messages with a smaller index occur before
+    /// time. All returned messages will be < time, and all messages before < time will have
+    /// a smaller index. If there are no messages, this returns 0.
+    /// If all messages are < time, this returns an index "one after the end".
+    pub fn get_index_after(&self, time: NoatunTime) -> Result<SequenceNr> {
+        let (header, message_index) = self.header_and_index().context("opening index file")?;
+        let needle = MessageId::from_parts_raw(time.0, [0;10])?;
+        match message_index.binary_search_by_key(&needle, |x| x.message) {
+            Ok(needle_index) => {
+                Ok(SequenceNr::from_index(needle_index))
+            }
+            Err(index) => {
+                Ok(SequenceNr::from_index(index))
+            }
+        }
     }
 
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {

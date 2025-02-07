@@ -13,6 +13,7 @@ use std::ops::{Deref, Index, Range};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
+use tracing_subscriber::registry::Data;
 
 #[derive(Copy, Clone, Debug, AnyBitPattern)]
 #[repr(C)]
@@ -307,8 +308,11 @@ impl<T: Pod> Object for DatabaseCell<T> {
         unsafe { NoatunContext.access_object_mut(index) }
     }
 }
+
+/// Like DatabaseVec, but for crate internal use. Does not track
+/// accesses. (Does not track dependencies between messages).
 #[repr(C)]
-pub struct RawDatabaseVec<T> {
+pub(crate) struct RawDatabaseVec<T> {
     length: usize,
     capacity: usize,
     data: usize,
@@ -388,6 +392,30 @@ impl<T:Pod+ 'static> RawDatabaseVec<T> {
 
 }
 impl<T: Pod + 'static> RawDatabaseVec<T> {
+    pub fn retain(&mut self, ctx: &mut DatabaseContextData, mut f: impl FnMut(&mut T) -> bool) {
+        let mut read_offset = 0;
+        let mut write_offset = 0;
+        let mut new_len = self.length;
+
+        while read_offset < self.length {
+            let read_ptr = ThinPtr(self.data + read_offset * size_of::<T>());
+            let val: Pin<&mut T> = unsafe { ctx.access_pod_mut(read_ptr) };
+            let retain = f(unsafe  { val.get_unchecked_mut() });
+            if !retain {
+                new_len -= 1;
+                read_offset += 1;
+            } else {
+                if read_offset != write_offset {
+                    let write_ptr = ThinPtr(self.data + write_offset * size_of::<T>());
+                    NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>());
+                }
+                read_offset += 1;
+                write_offset += 1;
+            }
+        }
+        NoatunContext.write_pod_ptr(new_len, addr_of_mut!(self.length));
+    }
+
     pub(crate) fn get_slice(&self, context: &DatabaseContextData, range: Range<usize>) -> &[T] {
         let offset = self.data + range.start * size_of::<T>();
         let len = range.end - range.start;

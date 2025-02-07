@@ -20,9 +20,45 @@ pub(crate) struct Projector<APP: Application> {
     head_tracker: UpdateHeadTracker,
     phantom_data: PhantomData<APP>,
     cut_off_config: CutOffConfig,
+
 }
 
 impl<APP: Application> Projector<APP> {
+
+    pub(crate) fn maybe_advance_cutoff(&mut self, now: NoatunTime, context: &mut DatabaseContextData) -> Result<()> {
+        let cutoff = unsafe { context.get_current_cutoff() };
+
+        //TODO: Overflow?
+        let new_cutoff = (now - self.cut_off_config.age).prev_multiple_of(self.cut_off_config.stride);
+
+        if *cutoff >= new_cutoff {
+            return Ok(()); //Nothing to do
+        }
+        let cutoff_index = self.messages.get_index_after(new_cutoff)?;
+
+        let mut unused_list = unsafe { context.get_unused_list() };
+        debug_assert!(unused_list.get_full_slice(context).is_sorted());
+        let mut process_now = vec![];
+        unused_list.retain(context,  |x|{
+            if x.last_overwriter < cutoff_index {
+                process_now.push(*x);
+                false
+            } else {
+                true
+            }
+        });
+
+
+        let must_remove = context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?;
+        for index in must_remove {
+            self.messages.mark_deleted_by_index(index);
+            //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
+        }
+
+        context.write_pod_ptr(new_cutoff, cutoff as *mut _);
+        Ok(())
+    }
+
     pub fn get_upstream_of(
         &self,
         message_id: impl DoubleEndedIterator<Item = (MessageId, usize)>,
@@ -201,7 +237,7 @@ impl<APP: Application> Projector<APP> {
         max_project_to: Option<DateTime<Utc>>,
     ) -> Result<()> {
         //println!("Max project to : {:?}", max_project_to);
-        let cutoff = self.cut_off_config.nominal_cutoff(real_time_now);
+        //let cutoff = self.cut_off_config.nominal_cutoff(real_time_now);
 
         let cur_seqnr = context.next_seqnr();
 
@@ -216,66 +252,33 @@ impl<APP: Application> Projector<APP> {
             Some(max_project_to) => max_project_to.timestamp_millis().try_into()?,
         };
 
-        match do_run::<APP>(context, root, first_run, cutoff, max_project_to)? {
-            RunResult::NeedRunAfterCutoff(next_run_start) => {
-                remove_stale_messages(self, context, true);
-                let second_run = self.messages.query_by_index(next_run_start)?;
-                let RunResult::Finished(before_cutoff) =
-                    do_run::<APP>(context, root, second_run, cutoff, max_project_to)?
-                else {
-                    unreachable!(
-                        "Second run _also_ encountered elements that were both before and after cutoff!"
-                    )
-                };
-                remove_stale_messages(self, context, before_cutoff);
-            }
-            RunResult::Finished(before_cutoff) => {
-                remove_stale_messages(self, context, before_cutoff);
-            }
-        }
-
-        enum RunResult {
-            NeedRunAfterCutoff(usize),
-            Finished(bool /*before cutoff*/),
-        }
+        do_run::<APP>(context, root, first_run, max_project_to)?;
+        remove_stale_messages(self, context)?;
 
         /// If returns true, need to finalize before-cutoff-part, then continue at given index
         fn do_run<APP: Application>(
             context: &mut DatabaseContextData,
             root: &mut APP,
             items: impl Iterator<Item = (usize, Message<APP::Message>)>,
-            cutoff: u64,
             max_project_to: u64,
-        ) -> Result<RunResult> {
-            let mut seen_before_cutoff = false;
-            let mut last_element_was_before_cutoff = false;
+        ) -> Result<()> {
             for (seq, msg) in items {
                 if msg.header.id.timestamp() > max_project_to {
-                    return Ok(RunResult::Finished(last_element_was_before_cutoff));
+                    return Ok(());
                 }
                 let seqnr = SequenceNr::from_index(seq);
                 //println!("Projecting {}, time: {:?}, cutoff: {:?}", seq, DateTime::from_timestamp_millis(msg.id().timestamp() as i64), DateTime::from_timestamp_millis(cutoff as i64));
-                let is_before_cutoff = msg.id().timestamp() < cutoff;
-                if is_before_cutoff {
-                    seen_before_cutoff = true;
-                }
-                if !is_before_cutoff && seen_before_cutoff {
-                    //println!("Need run after cutoff");
-                    return Ok(RunResult::NeedRunAfterCutoff(seqnr.index()));
-                }
                 Projector::<APP>::apply_single_message(context, root, &msg, seqnr);
-                last_element_was_before_cutoff = is_before_cutoff;
             }
-            Ok(RunResult::Finished(last_element_was_before_cutoff))
+            Ok(())
         }
 
         fn remove_stale_messages<APP: Application>(
             tself: &mut Projector<APP>,
             context: &mut DatabaseContextData,
-            before_cutoff: bool,
         ) -> Result<()> {
             let must_remove =
-                context.calculate_stale_messages(&mut tself.messages, before_cutoff)?;
+                context.calculate_stale_messages(&mut tself.messages)?;
             for index in must_remove {
                 tself.messages.mark_deleted_by_index(index);
                 //*self.messages.get_index_mut(index.index()).unwrap().1 = None;

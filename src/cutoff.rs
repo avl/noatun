@@ -1,5 +1,5 @@
 use crate::message_store::IndexEntry;
-use crate::MessageId;
+use crate::{MessageId, NoatunTime};
 use bytemuck::{Pod, Zeroable};
 use chrono::{DateTime, Utc};
 use savefile_derive::Savefile;
@@ -8,15 +8,15 @@ pub(crate) struct CutOffConfig {
     /// The approximate time in history at which all nodes must have been in sync.
     /// I.e, all nodes are expected to eventually sync up. I.e, all nodes are expected
     /// to have all messages created prior to (now - interval_ms).next_multiple_of(grace_period_ms)
-    age: u64,
-    stride: u64,
+    pub(crate) age: NoatunTime,
+    pub(crate) stride: NoatunTime,
 }
 
 impl Default for CutOffConfig {
     fn default() -> Self {
         Self {
-            age: 86_400_000,
-            stride: 3_600_000,
+            age: NoatunTime(86_400_000),
+            stride: NoatunTime(3_600_000),
         }
     }
 }
@@ -99,13 +99,13 @@ impl CutOffState {
     }
     /// Now rounded to the nearest multiple of stride
     fn nominal_now(now: u64, config: &CutOffConfig) -> u64 {
-        now.saturating_sub(config.stride / 2)
-            .next_multiple_of(config.stride)
+        now.saturating_sub(config.stride.0 / 2)
+            .next_multiple_of(config.stride.0)
     }
     pub fn advance_time(&mut self, now: u64, config: &CutOffConfig, messages: &[IndexEntry]) {
         let nominal_now = Self::nominal_now(now, config);
-        let prior = nominal_now.saturating_sub(config.stride);
-        let next = nominal_now.saturating_add(config.stride);
+        let prior = nominal_now.saturating_sub(config.stride.0);
+        let next = nominal_now.saturating_add(config.stride.0);
 
         self.stamps[0].adjust_forward_to(prior, messages);
         self.stamps[1].adjust_forward_to(nominal_now, messages);

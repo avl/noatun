@@ -42,7 +42,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::marker::PhantomData;
 use std::mem::{transmute, transmute_copy};
-use std::ops::{Add, Deref, Range};
+use std::ops::{Add, Deref, Range, Sub};
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -391,7 +391,31 @@ impl Debug for NoatunTime {
     }
 }
 
+impl Add for NoatunTime {
+    type Output = NoatunTime;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        NoatunTime(self.0 + rhs.0)
+    }
+}
+
+impl Sub for NoatunTime {
+    type Output = NoatunTime;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        NoatunTime(self.0 - rhs.0)
+    }
+}
+
 impl NoatunTime {
+    pub fn next_multiple_of(self, other: NoatunTime) -> NoatunTime {
+        //TODO: Checked arithmetic
+        NoatunTime(self.0.next_multiple_of(other.0))
+    }
+    pub fn prev_multiple_of(self, other: NoatunTime) -> NoatunTime {
+        //TODO: Checked arithmetic
+        NoatunTime(self.0.next_multiple_of(other.0)-other.0)
+    }
     pub fn successor(&self) -> NoatunTime {
         NoatunTime(self.0 + 1)
     }
