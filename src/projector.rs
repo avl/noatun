@@ -1,4 +1,4 @@
-use crate::cutoff::{CutOffConfig, CutoffHash};
+use crate::cutoff::{Acceptability, CutOffConfig, CutOffHashPos, CutOffState, CutOffTime, CutoffHash};
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::{IndexEntry, OnDiskMessageStore};
@@ -25,16 +25,13 @@ pub(crate) struct Projector<APP: Application> {
 
 impl<APP: Application> Projector<APP> {
 
-    pub(crate) fn maybe_advance_cutoff(&mut self, now: NoatunTime, context: &mut DatabaseContextData) -> Result<()> {
-        let cutoff = unsafe { context.get_current_cutoff() };
+    pub(crate) fn advance_cutoff(&mut self, new_cutoff_at: CutOffTime, context: &mut DatabaseContextData) -> Result<()> {
+        let old_cutoff = unsafe { context.get_current_cutoff() };
 
-        //TODO: Overflow?
-        let new_cutoff = (now - self.cut_off_config.age).prev_multiple_of(self.cut_off_config.stride);
-
-        if *cutoff >= new_cutoff {
+        if *old_cutoff >= new_cutoff_at {
             return Ok(()); //Nothing to do
         }
-        let cutoff_index = self.messages.get_index_after(new_cutoff)?;
+        let cutoff_index = self.messages.get_index_after(new_cutoff_at.to_noatun_time())?;
 
         let mut unused_list = unsafe { context.get_unused_list() };
         debug_assert!(unused_list.get_full_slice(context).is_sorted());
@@ -48,14 +45,12 @@ impl<APP: Application> Projector<APP> {
             }
         });
 
-
-        let must_remove = context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?;
+        let must_remove = context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?; //TODO: Rename
         for index in must_remove {
             self.messages.mark_deleted_by_index(index);
-            //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
         }
 
-        context.write_pod_ptr(new_cutoff, cutoff as *mut _);
+        context.write_pod_ptr(new_cutoff_at, old_cutoff as *mut _);
         Ok(())
     }
 
@@ -77,12 +72,15 @@ impl<APP: Application> Projector<APP> {
         self.messages.get_messages_at_or_after(message, count)
     }
 
-    pub fn nominal_cutoffhash(&self) -> Result<CutoffHash> {
-        self.messages.nominal_cutoffhash()
+    pub fn current_cutoff_hash(&self) -> Result<CutOffHashPos> {
+        self.messages.current_cutoff_hash()
+    }
+    pub fn nominal_cutoff_time(&self, now: NoatunTime) -> CutOffTime {
+        self.cut_off_config.nominal_cutoff(CutOffTime::from_noatun_time(now))
     }
 
-    pub fn is_acceptable_cutoff_hash(&self, hash: CutoffHash) -> Result<bool> {
-        self.messages.is_acceptable_cutoff_hash(hash)
+    pub fn is_acceptable_cutoff_hash(&self, now: NoatunTime,  hash: CutOffHashPos) -> Result<Acceptability> {
+        self.messages.is_acceptable_cutoff_hash(now, hash, &self.cut_off_config)
     }
 
     pub(crate) fn contains_message(&self, id: MessageId) -> Result<bool> {
@@ -195,7 +193,7 @@ impl<APP: Application> Projector<APP> {
 
         //println!("Applying message #{}", context.next_seqnr());
         msg.payload
-            .apply(NoatunTime(msg.header.id.timestamp()), unsafe {
+            .apply(msg.header.id.timestamp(), unsafe {
                 Pin::new_unchecked(root)
             }); //TODO: Handle panics in apply gracefully
         drop(guard);
@@ -222,9 +220,9 @@ impl<APP: Application> Projector<APP> {
 
     /// Returns the first index _after_ the given time.
     /// I.e, rewinding to this index will leave only messages at time and before.
-    pub(crate) fn get_index_of_time(&mut self, time: DateTime<Utc>) -> Result<usize> {
-        let stamp = time.timestamp_millis() as u64;
-        let key = MessageId::from_parts_raw(stamp + 1, [0; 10])?;
+    pub(crate) fn get_index_of_time(&mut self, time: NoatunTime) -> Result<usize> {
+        //let stamp = time.timestamp_millis() as u64;
+        let key = MessageId::from_parts_raw(time.as_ms() + 1, [0; 10])?;
         let index = self.messages.get_insertion_point(key)?;
         Ok(index)
     }
@@ -233,8 +231,8 @@ impl<APP: Application> Projector<APP> {
         &mut self,
         context: &mut DatabaseContextData,
         root: &mut APP,
-        real_time_now: DateTime<Utc>,
-        max_project_to: Option<DateTime<Utc>>,
+        real_time_now: NoatunTime,
+        max_project_to: Option<NoatunTime>,
     ) -> Result<()> {
         //println!("Max project to : {:?}", max_project_to);
         //let cutoff = self.cut_off_config.nominal_cutoff(real_time_now);
@@ -248,8 +246,8 @@ impl<APP: Application> Projector<APP> {
             .query_by_index(context.next_seqnr().try_index().unwrap())?;
 
         let max_project_to = match max_project_to {
-            None => u64::MAX,
-            Some(max_project_to) => max_project_to.timestamp_millis().try_into()?,
+            None => NoatunTime::MAX,
+            Some(max_project_to) => max_project_to,
         };
 
         do_run::<APP>(context, root, first_run, max_project_to)?;
@@ -260,7 +258,7 @@ impl<APP: Application> Projector<APP> {
             context: &mut DatabaseContextData,
             root: &mut APP,
             items: impl Iterator<Item = (usize, Message<APP::Message>)>,
-            max_project_to: u64,
+            max_project_to: NoatunTime,
         ) -> Result<()> {
             for (seq, msg) in items {
                 if msg.header.id.timestamp() > max_project_to {

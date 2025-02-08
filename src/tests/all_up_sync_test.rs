@@ -172,7 +172,7 @@ async fn create_app(driver: &mut TestDriver, node: u8) -> DatabaseCommunication<
     let mut db: Database<SyncApp> = Database::create_in_memory(
         10000,
         Duration::from_secs(1000),
-        Some(datetime!(2020-01-01 Z)),
+        Some(datetime!(2020-01-01 Z).into()),
         None,
         (),
     )
@@ -224,7 +224,7 @@ fn old_messages_without_effect_are_removed() {
     let mut db: Database<SyncApp> = Database::create_in_memory(
         10000,
         Duration::from_secs(2*86400), // 2 days
-        Some(datetime!(2020-01-01 Z)),
+        Some(datetime!(2020-01-01 Z).into()),
         None,
         (),
     )
@@ -237,9 +237,9 @@ fn old_messages_without_effect_are_removed() {
         value: 2,
         reset: false,
     }).unwrap();
-    db.set_mock_time(datetime!(2020-01-02 Z));
+    db.set_mock_time(datetime!(2020-01-02 Z).into());
     assert_eq!(db.get_all_messages().unwrap().len(), 2);
-    db.set_mock_time(datetime!(2024-01-02 Z));
+    db.set_mock_time(datetime!(2024-01-02 Z).into());
     db.append_local(SyncMessage {
         value: 0,
         reset: true,
@@ -291,9 +291,9 @@ async fn all_up_gradual_update_sync_test() {
     let mut correct_sum = 0;
     for _ in 0..1 {
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
-        app1.add_message_at(datetime!(2020-01-01 Z).add(TimeDelta::seconds(random(0..100))), SyncMessage{value: 1, reset: false }).await;
+        app1.add_message_at(datetime!(2020-01-01 Z).add(TimeDelta::seconds(random(0..100))).into(), SyncMessage{value: 1, reset: false }).await;
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
-        app2.add_message_at(datetime!(2020-01-01 Z).add(TimeDelta::seconds(random(0..100))),SyncMessage{value: 2, reset: false }).await;
+        app2.add_message_at(datetime!(2020-01-01 Z).add(TimeDelta::seconds(random(0..100))).into(),SyncMessage{value: 2, reset: false }).await;
         correct_count += 2;
         correct_sum += 3;
     }

@@ -1,7 +1,7 @@
 
 use crate::distributor::{Distributor, DistributorMessage, SerializedMessage};
 
-use crate::{Application, ContextGuard, Database, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload};
+use crate::{Application, ContextGuard, Database, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, NoatunTime};
 use anyhow::{bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
@@ -20,7 +20,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::{io, thread};
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::thread::JoinHandle;
 use std::time::{Duration};
@@ -144,7 +144,7 @@ const APPROX_HEADER_SIZE: usize = IP_HEADER_SIZE
 pub trait CommunicationDriver : Sync + Send {
     type Receiver: CommunicationReceiveSocket<Self::Endpoint>+Send+Sync;
     type Sender: CommunicationSendSocket<Self::Endpoint>+Send+Sync;
-    type Endpoint: Eq+Debug+Hash+Serialize+Deserialize+Packed+Send+Sync+Copy;
+    type Endpoint: Eq+Debug+Hash+Serialize+Deserialize+Packed+Send+Sync+Copy+Display;
     async fn initialize(&mut self, bind_address: &str, multicast_group: &str, mtu: usize) -> Result<(Self::Sender, Self::Receiver)>;
     fn parse_endpoint(s: &str) -> Result<Self::Endpoint>;
 }
@@ -652,7 +652,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
 }
 
 enum Cmd<APP: Application> {
-    AddMessage(Option<DateTime<Utc>>, APP::Message, oneshot::Sender<Result<()>>),
+    AddMessage(Option<NoatunTime>, APP::Message, oneshot::Sender<Result<()>>),
     Quit(std::sync::mpsc::Sender<()>)
 }
 
@@ -878,10 +878,10 @@ where <APP as Application>::Params: Send,
         self.add_message_impl(None, msg).await
     }
 
-    pub async fn add_message_at(&self, time: DateTime<Utc>, msg: APP::Message) -> Result<()> {
+    pub async fn add_message_at(&self, time: NoatunTime, msg: APP::Message) -> Result<()> {
         self.add_message_impl(Some(time), msg).await
     }
-    async fn add_message_impl(&self, time: Option<DateTime<Utc>>, msg: APP::Message) -> Result<()> {
+    async fn add_message_impl(&self, time: Option<NoatunTime>, msg: APP::Message) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         match self.cmd_tx.send(Cmd::AddMessage(time, msg, response_tx)).await {
             Ok(()) => {}
@@ -892,11 +892,11 @@ where <APP as Application>::Params: Send,
         response_rx.await??;
         Ok(())
     }
-    pub fn blocking_add_message_at(&self, time: DateTime<Utc>, msg: APP::Message) -> Result<()> {
+    pub fn blocking_add_message_at(&self, time: NoatunTime, msg: APP::Message) -> Result<()> {
         self.blocking_add_message(Some(time), msg)
     }
     /// Must *not* be called from within a tokio runtime.
-    pub fn blocking_add_message(&self, time: Option<DateTime<Utc>>, msg: APP::Message) -> Result<()> {
+    pub fn blocking_add_message(&self, time: Option<NoatunTime>, msg: APP::Message) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         match self.cmd_tx.blocking_send(Cmd::AddMessage(time, msg, response_tx)) {
             Ok(()) => {}
@@ -932,7 +932,7 @@ where <APP as Application>::Params: Send,
         db.with_root_preview(time, preview, f)
     }
 
-    pub fn set_projection_time_limit(&mut self, limit: DateTime<Utc>) -> Result<()> {
+    pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
         let mut db = self.database.lock().unwrap();
         db.set_projection_time_limit(limit)
     }
@@ -955,7 +955,7 @@ where <APP as Application>::Params: Send,
             config.mtu,
         )
         .await?;
-        let node = format!("{:?}",sender_loop.bind_address);
+        let node = sender_loop.bind_address.to_string();
         let jh = spawn(sender_loop.run());
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(100);
@@ -963,12 +963,12 @@ where <APP as Application>::Params: Send,
         let database = Arc::new(Mutex::new(database));
 
         let main = DatabaseCommunicationLoop {
+            distributor: Distributor::new(&node),
             node,
             database: database.clone(),
             jh,
             sender_tx,
             receiver_rx,
-            distributor: Default::default(),
             cmd_rx,
             buffer_life_start: Instant::now(),
             next_periodic: tokio::time::Instant::now(),

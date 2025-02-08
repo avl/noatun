@@ -117,7 +117,7 @@ impl<T: Copy + Pod> DatabaseOption<T> {
             NoatunContext.write_pod(0, Pin::new(&mut self.present));
         }
 
-        c.update_registrar_ptr(addr_of_mut!(self.registrar), false);
+        c.update_registrar_ptr(addr_of_mut!(self.registrar));
     }
     pub fn get(&self) -> Option<T> {
         NoatunContext.observe_registrar(self.registrar);
@@ -221,7 +221,7 @@ impl<T: Pod> DatabaseCell<T> {
         let index = c.index_of(tself);
         //context.write(index, bytes_of(&new_value));
         c.write_pod_ptr(new_value, addr_of_mut!(tself.value));
-        c.update_registrar_ptr(addr_of_mut!(tself.registrar), false);
+        c.update_registrar_ptr(addr_of_mut!(tself.registrar));
     }
 }
 
@@ -262,7 +262,7 @@ impl<T: Pod> OpaqueCell<T> {
         let index = NoatunContext.index_of(tself);
         //context.write(index, bytes_of(&new_value));
         NoatunContext.write_pod(new_value, unsafe{Pin::new_unchecked(&mut tself.value)});
-        NoatunContext.update_registrar(&mut tself.registrar, true);
+        NoatunContext.update_registrar(&mut tself.registrar);
     }
 }
 
@@ -674,7 +674,7 @@ where
         } else {
             NoatunContext.write_pod_ptr(tself.length + 1, addr_of_mut!(tself.length));
         }
-        NoatunContext.update_registrar(&mut tself.length_registrar, false);
+        NoatunContext.update_registrar(&mut tself.length_registrar);
         tself.get_mut_internal(tself.length - 1)
     }
 

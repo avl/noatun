@@ -1,4 +1,4 @@
-use crate::cutoff::{CutOffState, CutoffHash};
+use crate::cutoff::{Acceptability, CutOffConfig, CutOffHashPos, CutOffState, CutOffTime, CutoffHash};
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
@@ -1770,9 +1770,11 @@ impl<M> OnDiskMessageStore<M> {
 
         Ok(this)
     }
-    pub fn nominal_cutoffhash(&self) -> Result<CutoffHash> {
+
+
+    pub fn current_cutoff_hash(&self) -> Result<CutOffHashPos> {
         let (header, _index) = self.header_and_index()?;
-        Ok(header.cutoff.nominal_hash())
+        Ok(header.cutoff.get_hash())
     }
 
     pub(crate) fn get_messages_at_or_after(
@@ -1789,9 +1791,9 @@ impl<M> OnDiskMessageStore<M> {
         Ok(result)
     }
 
-    pub fn is_acceptable_cutoff_hash(&self, hash: CutoffHash) -> Result<bool> {
+    pub fn is_acceptable_cutoff_hash(&self, now: NoatunTime, hash: CutOffHashPos, cutoff_config: &CutOffConfig) -> Result<Acceptability> {
         let (header, _index) = self.header_and_index()?;
-        Ok(header.cutoff.is_acceptable_cutoff_hash(hash))
+        Ok(header.cutoff.is_acceptable_cutoff_hash(now, hash, cutoff_config))
     }
 }
 

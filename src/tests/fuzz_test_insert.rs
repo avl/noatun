@@ -100,7 +100,7 @@ fn test() {
 
     for _ in 0..20 {
 
-        let fake_time = datetime!(2024-01-01 00:00:00 Z);
+        let fake_time = datetime!(2024-01-01 00:00:00 Z).into();
         const TIME_LIMIT: usize = 15;
         const NUM_MSGS: usize = 20;
 

@@ -1,6 +1,6 @@
-use crate::cutoff::CutoffHash;
+use crate::cutoff::{Acceptability, CutOffHashPos, CutoffHash};
 use crate::message_store::{ReadPod, WritePod};
-use crate::{Application, Database, Message, MessageHeader, MessageId, MessagePayload};
+use crate::{Application, CutOffState, Database, Message, MessageHeader, MessageId, MessagePayload, NoatunTime};
 use anyhow::Result;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use indexmap::{IndexMap, IndexSet};
@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::ops::Range;
+use arrayvec::ArrayString;
 use tracing::{debug, error, info, warn};
 // Principle
 // The node that is 'most ahead' (highest MessageId) has responsibility.
@@ -62,7 +63,7 @@ pub struct MessageSubGraphNodeValue {
 #[derive(Debug, Savefile, Clone)]
 pub enum DistributorMessage {
     /// Report all update heads for the sender
-    ReportHeads(CutoffHash, Vec<MessageId>),
+    ReportHeads(CutOffHashPos, Vec<MessageId>, ArrayString<10>),
     /// A query if the listed messages are known.
     /// If they are, they should be requested by SyncAllRequest.
     /// The id of this query is the xor of all these message ids
@@ -111,23 +112,43 @@ enum SyncAllState {
     QueryActive(MessageId, MessageId, IndexSet<MessageId>),
 }
 
+#[derive(Debug, Default)]
+pub struct DistributorState {
+    nominal: HashSet<ArrayString<10>>,
+    most_recent_clockdrift: HashMap<ArrayString<10>, NoatunTime>,
+    most_recent_unsynced: HashMap<ArrayString<10>, NoatunTime>,
+}
+
 pub struct Distributor {
     // A sync-all request is in progress.
     // It sends all Messages in MessageId-order (which guarantees that all
     // parents will be sent before any children.
     sync_all_inprogress: SyncAllState,
+
+    distributor_state: DistributorState,
+    own_name: ArrayString<10>,
 }
 
-impl Default for Distributor {
-    fn default() -> Self {
-        Self::new()
+
+pub fn truncate_to_arraystring(name: &str) -> ArrayString<10> {
+    if name.len() <= 10 {
+        return name.try_into().unwrap();
     }
+    for i in (0..10).rev() {
+        if name.is_char_boundary(i) {
+            return name.split_at(i).0.try_into().unwrap();
+        }
+    }
+    "?".try_into().unwrap()
 }
+
 impl Distributor {
     const BATCH_SIZE: usize = 20;
-    pub fn new() -> Distributor {
+    pub fn new(node_name: &str) -> Distributor {
         Self {
             sync_all_inprogress: SyncAllState::NotActive,
+            distributor_state: DistributorState::default(),
+            own_name: truncate_to_arraystring(node_name)
         }
     }
 
@@ -137,8 +158,9 @@ impl Distributor {
         database: &Database<APP>,
     ) -> Result<Vec<DistributorMessage>> {
         let mut temp = vec![DistributorMessage::ReportHeads(
-            database.nominal_cutoffhash()?,
+            database.nominal_cutoff_state()?,
             database.get_update_heads().to_vec(),
+            self.own_name
         )];
         let sync_from = match &self.sync_all_inprogress {
             SyncAllState::NotActive => None,
@@ -184,11 +206,22 @@ impl Distributor {
                     accumulated_sync_all_requests.extend(requests);
                 }
 
-                DistributorMessage::ReportHeads(cutoff_hash, heads) => {
-                    if database.is_acceptable_cutoff_hash(cutoff_hash)? {
-                        accumulated_heads.extend(heads);
-                    } else {
-                        self.sync_all_inprogress = SyncAllState::Starting;
+                DistributorMessage::ReportHeads(cutoff_hash, heads, src) => {
+
+                    accumulated_heads.extend(heads);
+                    match database.is_acceptable_cutoff_hash(cutoff_hash, )? {
+                        Acceptability::Nominal => {
+                        }
+                        Acceptability::Unacceptable => {
+                            self.distributor_state.most_recent_unsynced.insert(src, database.noatun_now());
+                            self.sync_all_inprogress = SyncAllState::Starting;
+                        }
+                        Acceptability::Undecided(advance) => {
+                            database.advance_cutoff(advance)?;
+                        }
+                        Acceptability::UnacceptablePeerClockDrift => {
+                            self.distributor_state.most_recent_clockdrift.insert(src, database.noatun_now());
+                        }
                     }
                 }
                 DistributorMessage::RequestUpstream { query } => {
@@ -459,5 +492,19 @@ impl Distributor {
             output.push(DistributorMessage::SyncAllAck(to_ack));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_to_arraystring;
+    #[test]
+    fn do_test_truncate() {
+        assert_eq!(&truncate_to_arraystring("abcd"), "abcd");
+        assert_eq!(&truncate_to_arraystring("0123456789"), "0123456789");
+        assert_eq!(&truncate_to_arraystring("0123456789A"), "0123456789");
+        assert_eq!(&truncate_to_arraystring("012345678﷽"), "012345678");
+        assert_eq!(&truncate_to_arraystring("01234567◌"), "01234567");
+
     }
 }

@@ -52,7 +52,7 @@ use std::borrow::Borrow;
 use std::slice::SliceIndex;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
-
+pub use cutoff::CutOffState;
 mod disk_abstraction;
 mod message_store;
 mod projection_store;
@@ -158,10 +158,10 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_raw(size, align) }
     }
-    pub fn update_registrar(&self, registrar: &mut SequenceNr, value: bool) {
+    pub fn update_registrar(&self, registrar: &mut SequenceNr) {
         let context_ptr = get_context_mut_ptr();
         unsafe {
-            (*context_ptr).update_registrar(registrar, value);
+            (*context_ptr).update_registrar(registrar);
         }
     }
     pub fn write_pod<T: Pod>(&self, value: T, dest: Pin<&mut T>) {
@@ -257,7 +257,7 @@ impl Display for MessageId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let time_ms = self.timestamp();
 
-        let time = chrono::DateTime::from_timestamp_millis(time_ms as i64).unwrap();
+        let time = chrono::DateTime::from_timestamp_millis(time_ms.as_ms() as i64).unwrap();
 
         let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
         write!(
@@ -325,36 +325,25 @@ impl MessageId {
         }
     }
 
-    pub fn generate_for_time(time: DateTime<Utc>) -> Result<MessageId> {
+    pub fn generate_for_time(time: NoatunTime) -> Result<MessageId> {
         let mut random_part = [0u8; 10];
         rand::thread_rng().fill_bytes(&mut random_part);
         Self::from_parts(time, random_part)
     }
-    pub fn from_parts_for_test(time: DateTime<Utc>, random: u64) -> MessageId {
+    pub fn from_parts_for_test(time: NoatunTime, random: u64) -> MessageId {
         let mut data = [0u8; 10];
         data[2..10].copy_from_slice(&random.to_le_bytes());
 
         Self::from_parts(time, data).unwrap()
     }
-    pub fn timestamp(&self) -> u64 {
+    pub fn timestamp(&self) -> NoatunTime {
         let restes = (self.data[0] as u64) + (((self.data[1] & 0xffff) as u64) << 32);
-        restes
+        NoatunTime(restes)
     }
-    pub fn from_parts(time: DateTime<Utc>, random: [u8; 10]) -> Result<MessageId> {
+    pub fn from_parts(time: NoatunTime, random: [u8; 10]) -> Result<MessageId> {
         let t: u64 = time
-            .timestamp_millis()
-            .try_into()
-            .context("Time value is out of range. Value must be ")?;
-        if t >= 1 << 48 {
-            bail!("Time value is too large");
-        }
-        let mut data = [0u8; 16];
-        data[0..6].copy_from_slice(&t.to_le_bytes()[0..6]);
-        data[6..16].copy_from_slice(&random);
-
-        Ok(MessageId {
-            data: bytemuck::cast(data),
-        })
+            .as_ms();
+        Self::from_parts_raw(t, random)
     }
     pub fn from_parts_raw(time: u64, random: [u8; 10]) -> Result<MessageId> {
         if time >= 1 << 48 {
@@ -373,6 +362,37 @@ impl MessageId {
 #[derive(Clone, Copy, Pod, Zeroable,PartialEq,Eq,PartialOrd,Ord,Hash, serde_derive::Serialize, serde_derive::Deserialize, Savefile)]
 #[repr(C)]
 pub struct NoatunTime(pub u64);
+
+impl Add<Duration> for NoatunTime {
+    type Output = NoatunTime;
+    fn add(self, rhs: Duration) -> Self::Output {
+        NoatunTime(self.0 + rhs.as_millis() as u64)
+    }
+}
+impl Add<NoatunTime> for Duration {
+    type Output = NoatunTime;
+    fn add(self, rhs: NoatunTime) -> Self::Output {
+        NoatunTime(rhs.0 + self.as_millis() as u64)
+    }
+}
+
+
+impl From<DateTime<Utc>> for NoatunTime {
+    fn from(value: DateTime<Utc>) -> Self {
+        let ms = value.timestamp_millis();
+        if ms < 0 {
+            NoatunTime(0)
+        } else {
+            NoatunTime(ms as u64)
+        }
+    }
+}
+impl From<NoatunTime> for DateTime<Utc> {
+    fn from(value:NoatunTime) -> Self {
+        value.to_datetime()
+    }
+}
+
 
 impl Display for NoatunTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -408,6 +428,7 @@ impl Sub for NoatunTime {
 }
 
 impl NoatunTime {
+
     pub fn next_multiple_of(self, other: NoatunTime) -> NoatunTime {
         //TODO: Checked arithmetic
         NoatunTime(self.0.next_multiple_of(other.0))
@@ -441,7 +462,7 @@ impl NoatunTime {
         //TODO: Don't panic here!
         DateTime::<Utc>::from_timestamp_millis(self.0 as i64).unwrap()
     }
-    pub fn from_datetime(t: DateTime<Utc>) -> NoatunTime {
+    pub const fn from_datetime(t: DateTime<Utc>) -> NoatunTime {
         NoatunTime(t.timestamp_millis() as u64)
     }
 }
@@ -1322,7 +1343,7 @@ mod tests {
             true,
             10000,
             Duration::from_secs(1000),
-            Some(datetime!(2024-01-02 00:00:00 Z)),
+            Some(datetime!(2024-01-02 00:00:00 Z).into()),
             (),
         )
         .unwrap();
@@ -1330,7 +1351,7 @@ mod tests {
         db.append_single(
             CounterMessage {
                 parent: vec![],
-                id: MessageId::from_parts(datetime!(2024-01-01 00:00:00 Z), [0; 10]).unwrap(),
+                id: MessageId::from_parts(datetime!(2024-01-01 00:00:00 Z).into(), [0; 10]).unwrap(),
                 inc1: 1,
                 set1: 0,
             }
@@ -1344,7 +1365,7 @@ mod tests {
         db.append_single(
             CounterMessage {
                 parent: vec![],
-                id: MessageId::from_parts(datetime!(2024-01-02 00:00:00 Z), [0; 10]).unwrap(),
+                id: MessageId::from_parts(datetime!(2024-01-02 00:00:00 Z).into(), [0; 10]).unwrap(),
                 inc1: 1,
                 set1: 0,
             }
@@ -1355,7 +1376,7 @@ mod tests {
         db.append_single(
             CounterMessage {
                 parent: vec![],
-                id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z), [0; 10]).unwrap(),
+                id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z).into(), [0; 10]).unwrap(),
                 inc1: 1, //This is never projected, because of time limit
                 set1: 0,
             }
@@ -1373,7 +1394,7 @@ mod tests {
             datetime!(2024-01-03 00:00:00 Z),
             [CounterMessage {
                 parent: vec![],
-                id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z), [0; 10]).unwrap(),
+                id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z).into(), [0; 10]).unwrap(),
                 inc1: 2,
                 set1: 0,
             }]
@@ -1451,7 +1472,7 @@ mod tests {
         let mut db: Database<CounterObject> = Database::create_in_memory(
             10000,
             Duration::from_secs(1000),
-            Some(datetime!(2021-01-01 Z)),
+            Some(datetime!(2021-01-01 Z).into()),
             None,
             (),
         )
@@ -1506,13 +1527,13 @@ mod tests {
         let mut db: Database<CounterObject> = Database::create_in_memory(
             10000,
             Duration::from_secs(1000),
-            Some(datetime!(2024-01-01 Z)),
+            Some(datetime!(2024-01-01 Z).into()),
             None,
             (),
         )
         .unwrap();
 
-        let m1 = MessageId::from_parts(datetime!(2024-01-01 Z), [0u8; 10]).unwrap();
+        let m1 = MessageId::from_parts(datetime!(2024-01-01 Z).into(), [0u8; 10]).unwrap();
         db.append_single(
             CounterMessage {
                 parent: vec![],
@@ -1525,7 +1546,7 @@ mod tests {
         )
         .unwrap();
         db.mark_transmitted(m1).unwrap();
-        let m2 = MessageId::from_parts(datetime!(2024-01-01 Z), [1u8; 10]).unwrap();
+        let m2 = MessageId::from_parts(datetime!(2024-01-01 Z).into(), [1u8; 10]).unwrap();
         db.append_single(
             CounterMessage {
                 parent: vec![MessageId::new_debug(0x100)],
@@ -1537,10 +1558,10 @@ mod tests {
             true,
         )
         .unwrap();
-        db.set_mock_time(datetime!(2024-01-10 Z));
+        db.set_mock_time(datetime!(2024-01-10 Z).into());
         db.reproject().unwrap();
         println!("Appending 2nd");
-        let m3 = MessageId::from_parts(datetime!(2024-01-10 Z), [2u8; 10]).unwrap();
+        let m3 = MessageId::from_parts(datetime!(2024-01-10 Z).into(), [2u8; 10]).unwrap();
         db.append_single(
             CounterMessage {
                 parent: vec![MessageId::new_debug(0x101)],
@@ -1601,7 +1622,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut d = distributor::Distributor::new();
+        let mut d = distributor::Distributor::new("1");
 
         println!("Heads: {:?}", d.get_periodic_message(&db));
 
@@ -1666,7 +1687,7 @@ mod tests {
             Database::create_in_memory(
                 1000,
                 Duration::from_secs(1000),
-                Some(datetime!(2021-01-01 Z)),
+                Some(datetime!(2021-01-01 Z).into()),
                 None,
                 (),
             )
@@ -1682,7 +1703,7 @@ mod tests {
         let mut db: Database<DatabaseObjectHandle<DatabaseCell<u32>>> = Database::create_in_memory(
             1000,
             Duration::from_secs(1000),
-            Some(datetime!(2021-01-01 Z)),
+            Some(datetime!(2021-01-01 Z).into()),
             None,
             (),
         )
@@ -1787,7 +1808,7 @@ mod tests {
         let mut db: Database<DatabaseVec<CounterObject>> = Database::create_in_memory(
             10000,
             Duration::from_secs(1000),
-            Some(datetime!(2021-01-01 Z)),
+            Some(datetime!(2021-01-01 Z).into()),
             None,
             (),
         )

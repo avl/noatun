@@ -3,26 +3,27 @@ use crate::{MessageId, NoatunTime};
 use bytemuck::{Pod, Zeroable};
 use chrono::{DateTime, Utc};
 use savefile_derive::Savefile;
+use anyhow::{anyhow, Result};
 
 pub(crate) struct CutOffConfig {
     /// The approximate time in history at which all nodes must have been in sync.
     /// I.e, all nodes are expected to eventually sync up. I.e, all nodes are expected
     /// to have all messages created prior to (now - interval_ms).next_multiple_of(grace_period_ms)
-    pub(crate) age: NoatunTime,
-    pub(crate) stride: NoatunTime,
+    pub(crate) age: CutOffTime,
+    pub(crate) stride: CutOffTime,
 }
 
 impl Default for CutOffConfig {
     fn default() -> Self {
         Self {
-            age: NoatunTime(86_400_000),
-            stride: NoatunTime(3_600_000),
+            age: CutOffTime(1440),
+            stride: CutOffTime(60),
         }
     }
 }
 impl CutOffConfig {
-    pub fn nominal_cutoff(&self, time_now: DateTime<Utc>) -> u64 {
-        CutOffState::nominal_now(time_now.timestamp_millis() as u64, self) //TODO: Try_into
+    pub fn nominal_cutoff(&self, time_now: CutOffTime) -> CutOffTime {
+        CutOffState::nominal_cutoff(time_now, self) //TODO: Try_into
     }
 }
 
@@ -52,27 +53,77 @@ impl CutoffHash {
     }
 }
 
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct CutOffInterval(u32);
+
+impl CutOffInterval {
+    pub fn from_minutes(minutes: u32) -> Self {
+        CutOffInterval(minutes)
+    }
+    pub fn from_hours(hours: u32) -> Result<Self> {
+        Ok(CutOffInterval(hours.checked_mul(60).ok_or_else(||anyhow!("hours value out of range"))?))
+    }
+    pub fn from_days(days: u32) -> Result<Self> {
+        let minutes = days.checked_mul(24*60).ok_or_else(||anyhow!("days value out of range"))?;
+        Ok(CutOffInterval(minutes))
+    }
+
+}
+#[derive(Clone, Copy, Debug, Pod, Zeroable, Savefile,PartialEq,Eq,PartialOrd,Ord, Default)]
 #[repr(C)]
-struct CutOffHashPos {
+pub struct CutOffTime(u32/*minutes since unix epoch*/);
+
+impl From<CutOffTime> for NoatunTime {
+    fn from(value: CutOffTime) -> Self {
+        NoatunTime((value.0 as u64) * (60*1000))
+    }
+}
+
+impl CutOffTime {
+    pub fn saturating_sub(self, other: CutOffTime) -> CutOffTime {
+        CutOffTime(self.0.saturating_sub(other.0))
+    }
+    pub fn from_noatun_time(noatun_time: NoatunTime) -> CutOffTime {
+        // NoatunTime time has a range of millions of years into the future.
+        // CutOffTime only has a range of "just" thousands of years.
+        // Let's not make from_noatun_time fallible just because of this
+        match (noatun_time.0 / (60*1000)).try_into() {
+            Ok(minutes) => CutOffTime(minutes),
+            Err(_) => {
+                CutOffTime(u32::MAX)
+            }
+        }
+    }
+    pub fn to_noatun_time(self) -> NoatunTime {
+        NoatunTime(((self.0 as u64) * (60*1000)))
+    }
+    pub fn truncate_from(noatun_time: NoatunTime) -> Result<CutOffTime> {
+        Ok(CutOffTime((noatun_time.0/(1000*60)).try_into()?))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Pod, Zeroable, Savefile, PartialEq, Eq)]
+#[repr(C)]
+pub struct CutOffHashPos {
     hash: CutoffHash,
-    before_time: u64,
+    /// Era
+    pub(crate) before_time: CutOffTime,
+    padding: u32,
 }
 
 impl CutOffHashPos {
-    fn adjust_forward_to(&mut self, time: u64, messages: &[IndexEntry]) {
+    fn adjust_forward_to(&mut self, time: CutOffTime, messages: &[IndexEntry]) {
         assert!(self.before_time <= time);
         if self.before_time == time {
             return; //Nothing to do
         }
-        let prior = MessageId::from_parts_raw(self.before_time, [0u8; 10]).unwrap();
+        let prior = MessageId::from_parts(self.before_time.into(), [0u8; 10]).unwrap();
         let mut cur_index = match messages.binary_search_by_key(&prior, |x| x.message) {
             Ok(hit) => hit,
             Err(insloc) => insloc,
         };
         while cur_index < messages.len() {
             let cur = &messages[cur_index];
-            if cur.message.timestamp() >= time {
+            if cur.message.timestamp() >= time.into() {
                 // Done
                 return;
             }
@@ -83,33 +134,56 @@ impl CutOffHashPos {
     }
 }
 
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable,Savefile)]
 #[repr(C)]
-pub(crate) struct CutOffState {
+pub struct CutOffState {
     /// The prior, the current, and the upcoming,
-    stamps: [CutOffHashPos; 3],
+    stamps: CutOffHashPos,
+}
+
+pub enum Acceptability {
+    /// The hashes are identical. This is the nominal case
+    Nominal,
+    /// The hashes are definitely incompatible
+    Unacceptable,
+    /// A peer clock appears to be more than one 'stride' off. I.e, if the
+    /// cutoff stride is 60 minutes, and we get this error, a peer has a clock that is more
+    /// than 60 minutes off.
+    /// This condition means our node and the peer are not on nearby eras, and consistency
+    /// cannot be determined. It is possible the nodes are actually in sync, we just can't know.
+    UnacceptablePeerClockDrift,
+    /// The peer hash is from a later era. We need to advance to that era, to determine
+    /// if the hashes are compatible or not.
+    Undecided(CutOffTime/*peer era*/)
 }
 
 impl CutOffState {
-    pub fn is_acceptable_cutoff_hash(&self, hash: CutoffHash) -> bool {
-        self.stamps.iter().any(|x| x.hash == hash)
+    pub fn get_hash(&self) -> CutOffHashPos {
+        self.stamps
+    }
+    pub(crate) fn is_acceptable_cutoff_hash(&self, now: NoatunTime, peer_hash: CutOffHashPos, config: &CutOffConfig) -> Acceptability {
+        if self.stamps == peer_hash {
+            return Acceptability::Nominal;
+        }
+        if self.stamps.before_time < peer_hash.before_time
+        {
+            if self.stamps.before_time < peer_hash.before_time.saturating_sub(config.stride) {}
+
+            return Acceptability::Undecided(peer_hash.before_time);
+        }
+        return Acceptability::Unacceptable;
     }
     pub fn nominal_hash(&self) -> CutoffHash {
-        self.stamps[1].hash
+        self.stamps.hash
     }
     /// Now rounded to the nearest multiple of stride
-    fn nominal_now(now: u64, config: &CutOffConfig) -> u64 {
-        now.saturating_sub(config.stride.0 / 2)
-            .next_multiple_of(config.stride.0)
+    fn nominal_cutoff(now: CutOffTime, config: &CutOffConfig) -> CutOffTime {
+        CutOffTime(now.0.saturating_sub(config.age.0+config.stride.0)
+            .next_multiple_of(config.stride.0))
     }
-    pub fn advance_time(&mut self, now: u64, config: &CutOffConfig, messages: &[IndexEntry]) {
-        let nominal_now = Self::nominal_now(now, config);
-        let prior = nominal_now.saturating_sub(config.stride.0);
-        let next = nominal_now.saturating_add(config.stride.0);
 
-        self.stamps[0].adjust_forward_to(prior, messages);
-        self.stamps[1].adjust_forward_to(nominal_now, messages);
-        self.stamps[2].adjust_forward_to(next, messages);
+    pub(crate) fn advance_time(&mut self, now: CutOffTime, config: &CutOffConfig, messages: &[IndexEntry]) {
+        self.stamps.adjust_forward_to(now, messages);
     }
 
     pub fn report_add(&mut self, message_id: MessageId) {
@@ -122,16 +196,14 @@ impl CutOffState {
     /// Add and delete are logically identical ops (because xor)
     fn apply(&mut self, message_id: MessageId) {
         let t = message_id.timestamp();
-        for pos in &mut self.stamps {
-            if t < pos.before_time {
-                pos.hash.xor_with_msg(message_id);
-            }
+        if t < self.stamps.before_time.to_noatun_time() {
+            self.stamps.hash.xor_with_msg(message_id);
         }
     }
 }
 #[cfg(test)]
 mod tests {
-    use super::{CutOffHashPos, CutoffHash};
+    use super::{CutOffHashPos, CutOffTime, CutoffHash};
     use crate::message_store::IndexEntry;
     use crate::MessageId;
 
@@ -139,11 +211,12 @@ mod tests {
     fn test_advance_pos() {
         let mut pos = CutOffHashPos {
             hash: CutoffHash::from(MessageId::new_debug(0)),
-            before_time: 100,
+            before_time: CutOffTime(100),
+            padding: 0,
         };
 
         pos.adjust_forward_to(
-            201,
+            CutOffTime(201),
             &[IndexEntry {
                 message: MessageId::from_parts_raw(200, [0u8; 10]).unwrap(),
                 file_offset: crate::message_store::FileOffset::deleted(),

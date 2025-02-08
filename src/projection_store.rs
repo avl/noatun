@@ -25,7 +25,7 @@ use std::{iter, slice};
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
 use crate::sequence_nr::SequenceNr;
 use std::pin::Pin;
-use crate::cutoff::CutoffHash;
+use crate::cutoff::{CutOffTime, CutoffHash};
 
 mod registrar_info {
     use crate::disk_abstraction::Disk;
@@ -45,18 +45,12 @@ mod registrar_info {
     }
     impl Debug for RegistrarInfo {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{} (opaque: {})",
-                self.get_use(), self.get_opaque()
+            write!(f, "{}",
+                self.get_use()
             )
         }
     }
     impl RegistrarInfo {
-        pub fn get_opaque(&self) -> bool {
-            self.uses & 0x8000_0000 == 0
-        }
-        pub fn set_non_opaque(&mut self) {
-            self.uses |= 0x8000_0000;
-        }
         pub fn get_use(&self) -> u32 {
             self.uses & 0x7FFF_FFFF
         }
@@ -87,8 +81,6 @@ mod registrar_info {
     pub struct UnusedInfo {
         /// The message that is no longer used (to be deleted, possibly)
         pub seq: SequenceNr,
-        /// True if the above message only wrote opaque data
-        pub opaque: u32,
         /// The message that finally overwrote the last part of 'seq', meaning
         /// it no longer affects the state. Note that other messages may
         /// in turn depend on this 'last_overwriter', so it's not 100% sure
@@ -141,7 +133,8 @@ pub struct MainDbAuxHeader {
     deptrack_keys: RawDatabaseVec<DepTrackEntry>,
     uses: RawDatabaseVec<RegistrarInfo>,
     unused_messages: RawDatabaseVec<UnusedInfo>,
-    cutoff: NoatunTime,
+    cutoff: CutOffTime,
+    padding: u32,
 }
 
 impl Default for MainDbAuxHeader {
@@ -150,7 +143,8 @@ impl Default for MainDbAuxHeader {
             deptrack_keys: Default::default(),
             uses: Default::default(),
             unused_messages: Default::default(),
-            cutoff: NoatunTime(0),
+            cutoff: CutOffTime::default(),
+            padding: 0,
         }
     }
 }
@@ -205,7 +199,7 @@ pub(crate) struct DepTrackLinkedListEntry {
     // TODO: Possibly make this struct 4-byte aligned, and remove the padding
     pub next: ThinPtr,
     pub seq: SequenceNr,
-    pub opaque: u32,
+    pub padding: u32,
 }
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -214,9 +208,7 @@ pub(crate) struct ReverseDepTrackLinkedListEntry {
     // TODO: Possibly make this struct 4-byte aligned, and remove the padding
     pub next: ThinPtr,
     pub seq: SequenceNr,
-    pub opaque: u32,
     pub last_overwriter: SequenceNr,
-    pub padding: u32,
 }
 
 
@@ -245,7 +237,7 @@ impl DatabaseContextData {
         let new_entry_index = self.index_of_sized(new_entry);
         self.write_pod(new_entry_index, key_place);
     }
-    fn record_reverse_dependency(&mut self, observee: SequenceNr, observer: SequenceNr, opaque: bool, last_overwriter: SequenceNr) {
+    fn record_reverse_dependency(&mut self, observee: SequenceNr, observer: SequenceNr, last_overwriter: SequenceNr) {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
 
@@ -264,7 +256,6 @@ impl DatabaseContextData {
 
         self.write_pod(*key_place, unsafe{Pin::new_unchecked(&mut new_entry.next)});
         self.write_pod(observee,   unsafe{Pin::new_unchecked(&mut new_entry.seq)});
-        self.write_pod(opaque as u32,   unsafe{Pin::new_unchecked(&mut new_entry.opaque)});
         self.write_pod(last_overwriter,   unsafe{Pin::new_unchecked(&mut new_entry.last_overwriter)});
 
         let new_entry_index = self.index_of_sized(new_entry);
@@ -291,7 +282,7 @@ impl DatabaseContextData {
     }
 
     //TODO: Maybe elliminate this code duplication
-    fn read_reverse_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = (SequenceNr, /*opaque*/bool, SequenceNr /* last overwriter */)> + '_ {
+    fn read_reverse_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = (SequenceNr, SequenceNr /* last overwriter */)> + '_ {
         let keys: &RawDatabaseVec<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observee.index() < keys.len() {
@@ -306,7 +297,7 @@ impl DatabaseContextData {
             }
             let entry: &ReverseDepTrackLinkedListEntry = unsafe { self.access_pod(cur) };
             cur = entry.next;
-            Some((entry.seq, entry.opaque!=0, entry.last_overwriter))
+            Some((entry.seq, entry.last_overwriter))
         })
     }
 
@@ -400,11 +391,11 @@ impl DatabaseContextData {
         self.unused_messages.clear();
     }
 
-    pub(crate) unsafe fn get_current_cutoff<'a>(&self) -> &'a mut NoatunTime {
+    pub(crate) unsafe fn get_current_cutoff<'a>(&self) -> &'a mut CutOffTime {
         unsafe {
             &mut *(self.main_db_mmap.map_mut_ptr().wrapping_add(
                 size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, cutoff),
-            ) as *mut NoatunTime)
+            ) as *mut CutOffTime)
         }
     }
 
@@ -915,7 +906,7 @@ impl DatabaseContextData {
             .collect())
     }
 
-    pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr, opaque: bool) {
+    pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr) {
         let current_registrar = self.next_seqnr();
         if registrar_point.is_valid() {
             self.rt_decrease_use(unsafe { *registrar_point }, current_registrar);
@@ -924,14 +915,11 @@ impl DatabaseContextData {
             // We're in the 'initialize root' method
             return;
         }
-        if !opaque {
-            self.rt_set_non_opaque(current_registrar);
-        }
         self.rt_increase_use(current_registrar);
 
         self.write_pod(current_registrar, Pin::new(registrar_point))
     }
-    pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
+    pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr) {
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
         let current_registrar = self.next_seqnr();
         if registrar_point_value.is_valid() {
@@ -940,9 +928,6 @@ impl DatabaseContextData {
         if current_registrar.is_invalid() {
             // We're in the 'initialize root' method
             return;
-        }
-        if !opaque {
-            self.rt_set_non_opaque(current_registrar);
         }
         self.rt_increase_use(current_registrar);
 
@@ -979,7 +964,6 @@ impl DatabaseContextData {
             // that did not actually modify any state at all during its projection.
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
-                opaque: true as u32,
                 last_overwriter: message_id,
             });
             return;
@@ -991,7 +975,6 @@ impl DatabaseContextData {
             // after having been projected.
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
-                opaque: track.get_opaque() as u32,
                 last_overwriter: message_id,
             });
         }
@@ -1020,16 +1003,6 @@ impl DatabaseContextData {
         }
     }
 
-    /// Apply up-to-but-not-including 'up_to'
-    pub(crate) fn apply_old_unused<M:MessagePayload+ Debug>(&mut self, up_to: NoatunTime,
-                                   messages: &mut OnDiskMessageStore<M>) -> Result<()> {
-        let message_index = messages.get_index_after(up_to)?;
-
-        //let cutoff_seqnr = self.
-
-        todo!()
-    }
-
     /// Called in two situations:
     /// 1) Immediately when noticing a message is stale
     /// 2) During advancement of the cutoff time.
@@ -1046,8 +1019,8 @@ impl DatabaseContextData {
 
         //println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
         'outer: while let Some(msg) = unused_messages.pop() {
-            if !messages.may_have_been_transmitted(msg.seq)? || msg.opaque != 0 || after_cutoff {
-                if msg.opaque == 0 {
+            if !messages.may_have_been_transmitted(msg.seq)? || after_cutoff {
+                {
                     for observer in self.read_dependency(msg.seq) {
                         if !deleted.contains(&observer) {
                             // 'msg' can't be deleted, because it's observed by
@@ -1059,7 +1032,7 @@ impl DatabaseContextData {
 
 
                             deferred.push(move|tself: &mut DatabaseContextData|{
-                                tself.record_reverse_dependency(msg.seq, observer, msg.opaque!=0, msg.last_overwriter);
+                                tself.record_reverse_dependency(msg.seq, observer, msg.last_overwriter);
                             });
 
                             continue 'outer;
@@ -1076,11 +1049,10 @@ impl DatabaseContextData {
             }
 
             println!("Deleting {:?}", msg);
-            for (revdep, opaque, last_overwriter) in self.read_reverse_dependency(msg.seq) {
+            for (revdep, last_overwriter) in self.read_reverse_dependency(msg.seq) {
                 unused_messages.push(UnusedInfo {
                     seq: revdep,
-                    opaque: opaque as u32,
-                    last_overwriter: last_overwriter,
+                    last_overwriter
                 });
             }
 
@@ -1111,13 +1083,13 @@ impl DatabaseContextData {
         }
         uses.get_mut(self, registrar.index()).increase_use(self);
     }
-    pub(crate) fn rt_set_non_opaque(&mut self, registrar: SequenceNr) {
+    /*pub(crate) fn rt_set_non_opaque(&mut self, registrar: SequenceNr) {
         let uses = unsafe { self.get_uses() };
         if uses.len() <= registrar.index() {
             uses.grow(self, registrar.index() + 1);
         }
         uses.get_mut(self, registrar.index()).set_non_opaque();
-    }
+    }*/
     pub(crate) fn rt_decrease_use(&mut self, registrar: SequenceNr, overwriter: SequenceNr) {
         let uses = unsafe { self.get_uses() };
         let mut cur = uses.get_mut(self, registrar.index());
@@ -1129,7 +1101,7 @@ impl DatabaseContextData {
             // This is the normal way messages end up in 'unused_messags'
             self.unused_messages.push(UnusedInfo {
                 seq: registrar,
-                opaque: cur.get_opaque() as u32,
+                //opaque: cur.get_opaque() as u32,
                 last_overwriter: overwriter,
             });
         }

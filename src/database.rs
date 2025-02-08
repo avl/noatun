@@ -1,4 +1,4 @@
-use crate::cutoff::CutoffHash;
+use crate::cutoff::{Acceptability, CutOffHashPos, CutOffState, CutOffTime, CutoffHash};
 use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
 use crate::disk_access::FileAccessor;
 use crate::message_store::IndexEntry;
@@ -18,8 +18,8 @@ pub struct Database<Base: Application> {
     // Most recently generated local id, or all zeroes.
     // Future local id's will always be greater than this.
     prev_local: Option<MessageId>,
-    time_override: Option<DateTime<Utc>>,
-    projection_time_limit: Option<DateTime<Utc>>,
+    time_override: Option<NoatunTime>,
+    projection_time_limit: Option<NoatunTime>,
     params: Base::Params,
 
 }
@@ -30,8 +30,19 @@ impl<APP: Application> Database<APP> {
 
 
     fn maybe_advance_cutoff(&mut self) -> Result<()> {
-        self.message_store.maybe_advance_cutoff(self.noatun_now(), &mut self.context)
+        let now = self.noatun_now();
+        let nominal_cutoff_time = self.message_store.nominal_cutoff_time(now);
+        let current_cutoff = self.message_store.current_cutoff_hash()?;
+        if nominal_cutoff_time > current_cutoff.before_time {
+            self.advance_cutoff(nominal_cutoff_time)?;
+        }
+        Ok(())
     }
+
+    pub fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
+
+        self.message_store.advance_cutoff(new_cutoff, &mut self.context)
+   }
 
 
     pub(crate) fn force_rewind(&mut self, index: SequenceNr) {
@@ -65,11 +76,11 @@ impl<APP: Application> Database<APP> {
         self.message_store.get_messages_after(message, count)
     }
 
-    pub fn is_acceptable_cutoff_hash(&self, hash: CutoffHash) -> Result<bool> {
-        self.message_store.is_acceptable_cutoff_hash(hash)
+    pub fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
+        self.message_store.is_acceptable_cutoff_hash(self.noatun_now(), hash)
     }
-    pub fn nominal_cutoffhash(&self) -> Result<CutoffHash> {
-        self.message_store.nominal_cutoffhash()
+    pub fn nominal_cutoff_state(&self) -> Result<CutOffHashPos> {
+        self.message_store.current_cutoff_hash()
     }
 
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
@@ -90,7 +101,7 @@ impl<APP: Application> Database<APP> {
         preview: impl Iterator<Item = APP::Message>,
         f: impl FnOnce(&APP) -> R,
     ) -> Result<R> {
-        let now = self.now();
+        let now = self.noatun_now();
         if !self.context.mark_dirty()? {
             // Recovery needed
             Self::recover(
@@ -124,15 +135,13 @@ impl<APP: Application> Database<APP> {
         f(root)
     }
 
-    pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
-        self.time_override.unwrap_or_else(Utc::now)
-    }
+
     pub(crate) fn noatun_now(&self) -> NoatunTime {
-        NoatunTime(self.now().timestamp_millis() as u64)
+        self.time_override.unwrap_or_else(||NoatunTime::now())
     }
 
     pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
-        let now = self.now();
+        let now = self.noatun_now();
         if !self.context.mark_dirty()? {
             // Recovery needed
             Self::recover(
@@ -154,8 +163,8 @@ impl<APP: Application> Database<APP> {
         Ok(t)
     }
 
-    pub fn set_projection_time_limit(&mut self, limit: DateTime<Utc>) -> Result<()> {
-        let now = self.now();
+    pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
+        let now = self.noatun_now();
         // TODO: Remove duplication. There are many methods that have exact this
         // code
         if !self.context.mark_dirty()? {
@@ -192,7 +201,7 @@ impl<APP: Application> Database<APP> {
     }
 
     pub fn reproject(&mut self) -> Result<()> {
-        let now = self.now();
+        let now = self.noatun_now();
         // TODO: Reduce code duplication - mark_dirty etc exists in many methods
         if !self.context.mark_dirty()? {
             // Recovery needed
@@ -227,8 +236,8 @@ impl<APP: Application> Database<APP> {
     fn recover(
         context: &mut DatabaseContextData,
         message_store: &mut Projector<APP>,
-        time_now: chrono::DateTime<Utc>,
-        projection_time_limit: Option<DateTime<Utc>>,
+        time_now: NoatunTime,
+        projection_time_limit: Option<NoatunTime>,
         params: &APP::Params,
     ) -> Result<()> {
         context.clear()?;
@@ -260,7 +269,7 @@ impl<APP: Application> Database<APP> {
         overwrite_existing: bool,
         max_file_size: usize,
         cutoff_interval: Duration,
-        projection_time_limit: Option<DateTime<Utc>>,
+        projection_time_limit: Option<NoatunTime>,
         params: APP::Params,
     ) -> Result<Database<APP>> {
         Self::create(
@@ -279,7 +288,7 @@ impl<APP: Application> Database<APP> {
         path: impl AsRef<Path>,
         max_file_size: usize,
         cutoff_interval: Duration,
-        projection_time_limit: Option<DateTime<Utc>>,
+        projection_time_limit: Option<NoatunTime>,
         params: APP::Params,
     ) -> Result<Database<APP>> {
         Self::create(
@@ -303,7 +312,7 @@ impl<APP: Application> Database<APP> {
 
     /// Set the current time to the given value.
     /// This does not update the system time, it only affects the time for Noatun.
-    pub fn set_mock_time(&mut self, time: DateTime<Utc>) {
+    pub fn set_mock_time(&mut self, time: NoatunTime) {
         self.time_override = Some(time);
     }
 
@@ -315,16 +324,16 @@ impl<APP: Application> Database<APP> {
     pub fn append_local(&mut self, message: APP::Message) -> Result<MessageHeader> {
         self.append_local_opt(None, message)
     }
-    pub fn append_local_at(&mut self, time: DateTime<Utc>, message: APP::Message) -> Result<MessageHeader> {
+    pub fn append_local_at(&mut self, time: NoatunTime, message: APP::Message) -> Result<MessageHeader> {
         self.append_local_opt(Some(time), message)
     }
-    pub fn append_local_opt(&mut self, time: Option<DateTime<Utc>>, message: APP::Message) -> Result<MessageHeader> {
-        let time = time.unwrap_or_else(||self.now());
+    pub fn append_local_opt(&mut self, time: Option<NoatunTime>, message: APP::Message) -> Result<MessageHeader> {
+        let time = time.unwrap_or_else(||self.noatun_now());
         let mut new_id;
 
 
         if let Some(prev_local) = self.prev_local {
-            if time.timestamp_millis() as u64  == prev_local.timestamp() { //TODO: Fix all cases of u64 timestamps. We should probably just use i64 instead
+            if time  == prev_local.timestamp() { //TODO: Fix all cases of u64 timestamps. We should probably just use i64 instead
                 new_id = prev_local.successor();
             } else {
                 new_id  = MessageId::generate_for_time(time)?;
@@ -360,7 +369,7 @@ impl<APP: Application> Database<APP> {
         messages: impl Iterator<Item = Message<APP::Message>>,
         local: bool,
     ) -> Result<()> {
-        let now = self.now();
+        let now = self.noatun_now();
         if !self.context.mark_dirty()? {
             // Recovery needed
             Self::recover(
@@ -398,8 +407,8 @@ impl<APP: Application> Database<APP> {
     pub fn create_in_memory(
         max_size: usize,
         cutoff_interval: Duration,
-        mock_time: Option<chrono::DateTime<Utc>>,
-        projection_time_limit: Option<DateTime<Utc>>,
+        mock_time: Option<NoatunTime>,
+        projection_time_limit: Option<NoatunTime>,
         params: APP::Params,
     ) -> Result<Database<APP>> {
 
@@ -412,7 +421,7 @@ impl<APP: Application> Database<APP> {
         Self::recover(
             &mut ctx,
             &mut message_store,
-            mock_time.unwrap_or_else(Utc::now),
+            mock_time.unwrap_or_else(NoatunTime::now),
             projection_time_limit,
             &params,
         )?;
@@ -432,7 +441,7 @@ impl<APP: Application> Database<APP> {
         target: Target,
         max_file_size: usize,
         cutoff_interval: Duration,
-        projection_time_limit: Option<DateTime<Utc>>,
+        projection_time_limit: Option<NoatunTime>,
         params: APP::Params,
     ) -> Result<Database<APP>> {
 
@@ -449,7 +458,7 @@ impl<APP: Application> Database<APP> {
             Self::recover(
                 &mut ctx,
                 &mut message_store,
-                Utc::now(),
+                NoatunTime::now(),
                 projection_time_limit,
                 &params,
             )?;
