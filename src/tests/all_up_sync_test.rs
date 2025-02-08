@@ -23,6 +23,7 @@ use rand::SeedableRng;
 use std::cell::RefCell;
 use tracing_subscriber::Layer;
 use rand::distributions::uniform::SampleUniform;
+use crate::cutoff::CutOffDuration;
 
 thread_local! {
     pub static MY_THREAD_RNG: RefCell<Option<SmallRng>> = const { RefCell::new(None) };
@@ -171,7 +172,7 @@ async fn create_app(driver: &mut TestDriver, node: u8) -> DatabaseCommunication<
 
     let mut db: Database<SyncApp> = Database::create_in_memory(
         10000,
-        Duration::from_secs(1000),
+        CutOffDuration::from_minutes(15),
         Some(datetime!(2020-01-01 Z).into()),
         None,
         (),
@@ -223,31 +224,39 @@ fn random<T:SampleUniform+PartialOrd>(range: std::ops::Range<T>) -> T {
 fn old_messages_without_effect_are_removed() {
     let mut db: Database<SyncApp> = Database::create_in_memory(
         10000,
-        Duration::from_secs(2*86400), // 2 days
-        Some(datetime!(2020-01-01 Z).into()),
+        CutOffDuration::from_days(2).unwrap(), // 2 days
+        Some(datetime!(2020-01-01 00:01:00 Z).into()),
         None,
         (),
     )
         .unwrap();
+compile_error!("Continue here! Make more exhaustive. Combine with comms! Check the actual cutoff-hash xors, are they correct?")
     db.append_local(SyncMessage {
         value: 1,
         reset: false,
     }).unwrap();
+    println!("Set time 1");
+    db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into());
     db.append_local(SyncMessage {
         value: 2,
         reset: false,
     }).unwrap();
-    db.set_mock_time(datetime!(2020-01-02 Z).into());
+    println!("Set time 2");
+    db.set_mock_time(datetime!(2020-01-02 00:00:00 Z).into());
     assert_eq!(db.get_all_messages().unwrap().len(), 2);
+
+
     db.set_mock_time(datetime!(2024-01-02 Z).into());
-    db.append_local(SyncMessage {
+    let last = db.append_local(SyncMessage {
         value: 0,
         reset: true,
     }).unwrap();
-    //db.reproject().unwrap();
 
-    assert_eq!(db.get_all_messages().unwrap().len(), 1);
+    let all_msgs = db.get_all_messages().unwrap();
+    assert_eq!(all_msgs.len(), 1);
+    assert_eq!(all_msgs[0].header.id,last.id);
 }
+
 
 
 

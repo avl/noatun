@@ -1,4 +1,4 @@
-use crate::cutoff::{Acceptability, CutOffHashPos, CutOffState, CutOffTime, CutoffHash};
+use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffState, CutOffTime, CutoffHash};
 use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
 use crate::disk_access::FileAccessor;
 use crate::message_store::IndexEntry;
@@ -268,7 +268,7 @@ impl<APP: Application> Database<APP> {
         path: impl AsRef<Path>,
         overwrite_existing: bool,
         max_file_size: usize,
-        cutoff_interval: Duration,
+        cutoff_interval: CutOffDuration,
         projection_time_limit: Option<NoatunTime>,
         params: APP::Params,
     ) -> Result<Database<APP>> {
@@ -287,7 +287,7 @@ impl<APP: Application> Database<APP> {
     pub fn open(
         path: impl AsRef<Path>,
         max_file_size: usize,
-        cutoff_interval: Duration,
+        cutoff_interval: CutOffDuration,
         projection_time_limit: Option<NoatunTime>,
         params: APP::Params,
     ) -> Result<Database<APP>> {
@@ -406,7 +406,7 @@ impl<APP: Application> Database<APP> {
     // TODO: Use builder pattern?
     pub fn create_in_memory(
         max_size: usize,
-        cutoff_interval: Duration,
+        cutoff_interval: CutOffDuration,
         mock_time: Option<NoatunTime>,
         projection_time_limit: Option<NoatunTime>,
         params: APP::Params,
@@ -440,7 +440,7 @@ impl<APP: Application> Database<APP> {
     fn create(
         target: Target,
         max_file_size: usize,
-        cutoff_interval: Duration,
+        cutoff_interval: CutOffDuration,
         projection_time_limit: Option<NoatunTime>,
         params: APP::Params,
     ) -> Result<Database<APP>> {

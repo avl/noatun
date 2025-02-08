@@ -1,27 +1,39 @@
+use std::fmt::{Debug, Formatter};
 use crate::message_store::IndexEntry;
 use crate::{MessageId, NoatunTime};
 use bytemuck::{Pod, Zeroable};
 use chrono::{DateTime, Utc};
 use savefile_derive::Savefile;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 
 pub(crate) struct CutOffConfig {
     /// The approximate time in history at which all nodes must have been in sync.
     /// I.e, all nodes are expected to eventually sync up. I.e, all nodes are expected
     /// to have all messages created prior to (now - interval_ms).next_multiple_of(grace_period_ms)
-    pub(crate) age: CutOffTime,
-    pub(crate) stride: CutOffTime,
+    pub(crate) age: CutOffDuration,
+    pub(crate) stride: CutOffDuration,
 }
 
 impl Default for CutOffConfig {
     fn default() -> Self {
         Self {
-            age: CutOffTime(1440),
-            stride: CutOffTime(60),
+            age: CutOffDuration(1440),
+            stride: CutOffDuration(60),
         }
     }
 }
 impl CutOffConfig {
+    pub fn new(age: CutOffDuration) -> Result<Self> {
+        if age.0 < 4 {
+            bail!("CutOffConfig::new called with an invalid value '{:?}'. Minimum cutoff time is 4 minutes.", age);
+        }
+        let stride = CutOffDuration((age.0/10).max(1));
+        println!("Stride: {:?}", stride);
+        Ok(Self{
+            age,
+            stride,
+        })
+    }
     pub fn nominal_cutoff(&self, time_now: CutOffTime) -> CutOffTime {
         CutOffState::nominal_cutoff(time_now, self) //TODO: Try_into
     }
@@ -56,21 +68,40 @@ impl CutoffHash {
 pub struct CutOffInterval(u32);
 
 impl CutOffInterval {
+
+}
+
+#[derive(Clone,Copy,PartialEq,Eq)]
+pub struct CutOffDuration(u32);
+
+impl Debug for CutOffDuration {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} minutes", self.0)
+    }
+}
+
+impl CutOffDuration {
     pub fn from_minutes(minutes: u32) -> Self {
-        CutOffInterval(minutes)
+        Self(minutes)
     }
     pub fn from_hours(hours: u32) -> Result<Self> {
-        Ok(CutOffInterval(hours.checked_mul(60).ok_or_else(||anyhow!("hours value out of range"))?))
+        Ok(Self(hours.checked_mul(60).ok_or_else(||anyhow!("hours value out of range"))?))
     }
     pub fn from_days(days: u32) -> Result<Self> {
         let minutes = days.checked_mul(24*60).ok_or_else(||anyhow!("days value out of range"))?;
-        Ok(CutOffInterval(minutes))
+        Ok(Self(minutes))
     }
-
 }
-#[derive(Clone, Copy, Debug, Pod, Zeroable, Savefile,PartialEq,Eq,PartialOrd,Ord, Default)]
+
+#[derive(Clone, Copy, Pod, Zeroable, Savefile,PartialEq,Eq,PartialOrd,Ord, Default)]
 #[repr(C)]
 pub struct CutOffTime(u32/*minutes since unix epoch*/);
+
+impl Debug for CutOffTime {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CutOffTime({:?})", self.to_noatun_time())
+    }
+}
 
 impl From<CutOffTime> for NoatunTime {
     fn from(value: CutOffTime) -> Self {
@@ -79,7 +110,7 @@ impl From<CutOffTime> for NoatunTime {
 }
 
 impl CutOffTime {
-    pub fn saturating_sub(self, other: CutOffTime) -> CutOffTime {
+    pub fn saturating_sub(self, other: CutOffDuration) -> CutOffTime {
         CutOffTime(self.0.saturating_sub(other.0))
     }
     pub fn from_noatun_time(noatun_time: NoatunTime) -> CutOffTime {

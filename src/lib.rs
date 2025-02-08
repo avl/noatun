@@ -52,7 +52,7 @@ use std::borrow::Borrow;
 use std::slice::SliceIndex;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
-pub use cutoff::CutOffState;
+pub use cutoff::{CutOffState, CutOffDuration};
 mod disk_abstraction;
 mod message_store;
 mod projection_store;
@@ -1108,6 +1108,7 @@ mod tests {
     use std::io::{Cursor, SeekFrom};
     use std::iter::once;
     use tokio::io::AsyncSeekExt;
+    use crate::cutoff::CutOffDuration;
 
     mod distributor_tests;
     mod tests_using_noatun_object_macro;
@@ -1278,7 +1279,7 @@ mod tests {
             "test/test1.bin",
             true,
             1000,
-            Duration::from_secs(1000),
+            CutOffDuration::from_minutes(15),
             None,
             (),
         )
@@ -1342,7 +1343,7 @@ mod tests {
             "test/msg_store_time_limit.bin",
             true,
             10000,
-            Duration::from_secs(1000),
+            CutOffDuration::from_minutes(15),
             Some(datetime!(2024-01-02 00:00:00 Z).into()),
             (),
         )
@@ -1416,7 +1417,7 @@ mod tests {
             "test/msg_store.bin",
             true,
             10000,
-            Duration::from_secs(1000),
+            CutOffDuration::from_minutes(15),
             None,
             (),
         )
@@ -1471,7 +1472,7 @@ mod tests {
     fn test_msg_store_inmem_miri() {
         let mut db: Database<CounterObject> = Database::create_in_memory(
             10000,
-            Duration::from_secs(1000),
+            CutOffDuration::from_minutes(15),
             Some(datetime!(2021-01-01 Z).into()),
             None,
             (),
@@ -1526,7 +1527,7 @@ mod tests {
     fn test_msg_store_after_cutoff_inmem_miri() {
         let mut db: Database<CounterObject> = Database::create_in_memory(
             10000,
-            Duration::from_secs(1000),
+            CutOffDuration::from_minutes(15),
             Some(datetime!(2024-01-01 Z).into()),
             None,
             (),
@@ -1586,7 +1587,7 @@ mod tests {
     #[test]
     fn test_cutoff_handling() {
         let mut db: Database<CounterObject> =
-            Database::create_in_memory(10000, Duration::from_secs(1000), None, None, ()).unwrap();
+            Database::create_in_memory(10000, CutOffDuration::from_minutes(15), None, None, ()).unwrap();
 
         db.append_single(
             CounterMessage {
@@ -1649,7 +1650,7 @@ mod tests {
             "test/test_handle.bin",
             true,
             1000,
-            Duration::from_secs(1000),
+            CutOffDuration::from_minutes(15),
             None,
             (),
         )
@@ -1686,7 +1687,7 @@ mod tests {
         let mut db: Database<DatabaseObjectHandle<[DatabaseCell<u8>]>> =
             Database::create_in_memory(
                 1000,
-                Duration::from_secs(1000),
+                CutOffDuration::from_minutes(15),
                 Some(datetime!(2021-01-01 Z).into()),
                 None,
                 (),
@@ -1702,7 +1703,7 @@ mod tests {
     fn test_handle_miri() {
         let mut db: Database<DatabaseObjectHandle<DatabaseCell<u32>>> = Database::create_in_memory(
             1000,
-            Duration::from_secs(1000),
+            CutOffDuration::from_minutes(15),
             Some(datetime!(2021-01-01 Z).into()),
             None,
             (),
@@ -1744,7 +1745,7 @@ mod tests {
             "test/test_string0",
             true,
             10000,
-            Duration::from_secs(1000),
+            CutOffDuration::from_minutes(15),
             None,
             (),
         )
@@ -1770,7 +1771,7 @@ mod tests {
             "test/test_vec0",
             true,
             10000,
-            Duration::from_secs(1000),
+            CutOffDuration::from_minutes(15),
             None,
             (),
         )
@@ -1807,7 +1808,7 @@ mod tests {
     fn test_vec_miri0() {
         let mut db: Database<DatabaseVec<CounterObject>> = Database::create_in_memory(
             10000,
-            Duration::from_secs(1000),
+            CutOffDuration::from_minutes(15),
             Some(datetime!(2021-01-01 Z).into()),
             None,
             (),
@@ -1861,7 +1862,7 @@ mod tests {
             "test/vec_undo",
             true,
             10000,
-            Duration::from_secs(1000),
+            CutOffDuration::from_minutes(15),
             None,
             (),
         )

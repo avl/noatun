@@ -1,6 +1,6 @@
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::DatabaseCell;
-use noatun::{AnyBitPattern, Application, Database, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
+use noatun::{AnyBitPattern, Application, CutOffDuration, Database, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
 use savefile::{Deserializer, Serializer};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
@@ -106,7 +106,7 @@ async fn test_sync_app() {
                     format!("test/test_sync_app{}.bin", i),
                     true,
                     1_000_000,
-                    Duration::from_secs(86400),
+                    CutOffDuration::from_days(1).unwrap(),
                     None,
                     (),
                 )

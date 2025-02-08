@@ -1,4 +1,4 @@
-use crate::cutoff::{Acceptability, CutOffConfig, CutOffHashPos, CutOffState, CutOffTime, CutoffHash};
+use crate::cutoff::{Acceptability, CutOffConfig, CutOffDuration, CutOffHashPos, CutOffState, CutOffTime, CutoffHash};
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::{IndexEntry, OnDiskMessageStore};
@@ -33,17 +33,16 @@ impl<APP: Application> Projector<APP> {
         }
         let cutoff_index = self.messages.get_index_after(new_cutoff_at.to_noatun_time())?;
 
+        println!("Advancing cutoff from {:?} to {:?}, index = {}, comp : {}", old_cutoff, new_cutoff_at, cutoff_index, *old_cutoff >= new_cutoff_at);
         let mut unused_list = unsafe { context.get_unused_list() };
-        debug_assert!(unused_list.get_full_slice(context).is_sorted());
+        let unused_list = unused_list.get_full_slice(context);
+        let (Ok(unused_list_last)|Err(unused_list_last)) = unused_list.binary_search_by_key(&cutoff_index, |x|x.last_overwriter);
+
         let mut process_now = vec![];
-        unused_list.retain(context,  |x|{
-            if x.last_overwriter < cutoff_index {
-                process_now.push(*x);
-                false
-            } else {
-                true
-            }
-        });
+        for item in &unused_list[..unused_list_last] {
+            debug_assert!(item.last_overwriter < cutoff_index);
+            process_now.push(*item);
+        }
 
         let must_remove = context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?; //TODO: Rename
         for index in must_remove {
@@ -114,13 +113,13 @@ impl<APP: Application> Projector<APP> {
         s: &mut D,
         target: &Target,
         max_size: usize,
-        cutoff_interval: Duration,
+        cutoff_interval: CutOffDuration,
     ) -> Result<Projector<APP>> {
         Ok(Projector {
             messages: OnDiskMessageStore::new(s, target, max_size)?,
             head_tracker: UpdateHeadTracker::new(s, target)?,
             phantom_data: PhantomData,
-            cut_off_config: CutOffConfig::default(),
+            cut_off_config: CutOffConfig::new(cutoff_interval)?,
         })
     }
 

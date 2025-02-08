@@ -9,6 +9,7 @@ use insta::assert_debug_snapshot;
 use std::iter::once;
 use std::mem::swap;
 use std::time::Duration;
+use crate::cutoff::CutOffDuration;
 
 fn create_app<'a>(
     id: u64,
@@ -24,7 +25,7 @@ fn create_app<'a>(
 ) -> Database<CounterObject> {
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10000,
-        Duration::from_secs(1000),
+        CutOffDuration::from_minutes(15),
         Some(datetime!(2021-01-01 Z).into()),
         None,
         (),

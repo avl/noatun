@@ -2,14 +2,10 @@ use bytemuck::{AnyBitPattern};
 use datetime_literal::datetime;
 use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::Database;
-use noatun::{
-    Application, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime,
-    Object, ThinPtr,
-};
+use noatun::{Application, CutOffDuration, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::pin::Pin;
-use std::time::Duration;
 
 #[derive(Clone, Copy, AnyBitPattern)]
 #[repr(C)]
@@ -102,7 +98,7 @@ impl Application for CounterObject {
 fn test_counter_object_miri() {
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10_000,
-        Duration::from_secs(1000),
+        CutOffDuration::from_minutes(15),
         Some(datetime!(2023-01-01 Z).into()),
         None,
         (),

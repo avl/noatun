@@ -10,6 +10,7 @@ use rand::prelude::SliceRandom;
 use chrono::Utc;
 use datetime_literal::datetime;
 use serde_derive::{Serialize,Deserialize};
+use crate::cutoff::CutOffDuration;
 use crate::sequence_nr::SequenceNr;
 
 #[derive(Copy,Clone,Debug,Zeroable,Pod,Serialize,Deserialize,Savefile)]
@@ -105,7 +106,7 @@ fn test() {
         const NUM_MSGS: usize = 20;
 
         let limit_time = fake_time + Duration::from_secs(TIME_LIMIT as u64);
-        let mut db = Database::create_in_memory(1_000_000,Duration::from_secs(3600),Some(fake_time),Some(limit_time),()).unwrap();
+        let mut db = Database::create_in_memory(1_000_000,CutOffDuration::from_hours(1).unwrap(),Some(fake_time),Some(limit_time),()).unwrap();
 
         let mut msgs:Vec<TestMessage> = (0..NUM_MSGS).map(|x|TestMessage{insert:x as u32}).collect();
         let mut orig:Vec<SubObjDetached> = msgs.iter().map(|x|SubObjDetached{counter:x.insert, subsub: vec![

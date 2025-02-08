@@ -7,6 +7,8 @@ use savefile_derive::Savefile;
 use std::io::Write;
 use std::pin::Pin;
 use std::time::Duration;
+use crate::cutoff::CutOffDuration;
+
 noatun_object!(
     struct Customer {
         pod name: u32,
@@ -67,7 +69,7 @@ impl Application for Bank {
 fn init_bank_miri() {
     let mut db: Database<Bank> = Database::create_in_memory(
         10_000,
-        Duration::from_secs(1000),
+        CutOffDuration::from_minutes(15),
         Some(datetime!(2023-01-01 Z).into()),
         None,
         (),

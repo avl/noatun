@@ -79,13 +79,13 @@ mod registrar_info {
     #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Pod, Zeroable)]
     #[repr(C)]
     pub struct UnusedInfo {
-        /// The message that is no longer used (to be deleted, possibly)
-        pub seq: SequenceNr,
         /// The message that finally overwrote the last part of 'seq', meaning
         /// it no longer affects the state. Note that other messages may
         /// in turn depend on this 'last_overwriter', so it's not 100% sure
         /// that 'seq' can be removed.
         pub last_overwriter: SequenceNr,
+        /// The message that is no longer used (to be deleted, possibly)
+        pub seq: SequenceNr,
     }
 }
 
