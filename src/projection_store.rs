@@ -127,7 +127,7 @@ struct DepTrackEntry {
     reverse_dep: ThinPtr,
 }
 
-#[derive(Debug, Clone, Copy, Zeroable, Pod)]
+#[derive(Default, Debug, Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
 pub struct MainDbAuxHeader {
     deptrack_keys: RawDatabaseVec<DepTrackEntry>,
@@ -137,17 +137,6 @@ pub struct MainDbAuxHeader {
     padding: u32,
 }
 
-impl Default for MainDbAuxHeader {
-    fn default() -> Self {
-        Self {
-            deptrack_keys: Default::default(),
-            uses: Default::default(),
-            unused_messages: Default::default(),
-            cutoff: CutOffTime::default(),
-            padding: 0,
-        }
-    }
-}
 
 pub(crate) struct DatabaseContextData {
     main_db_mmap: FileAccessor,

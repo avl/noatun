@@ -137,7 +137,7 @@ impl<APP: Application> Database<APP> {
 
 
     pub(crate) fn noatun_now(&self) -> NoatunTime {
-        self.time_override.unwrap_or_else(||NoatunTime::now())
+        self.time_override.unwrap_or_else(NoatunTime::now)
     }
 
     pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {

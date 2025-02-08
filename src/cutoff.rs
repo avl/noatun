@@ -94,7 +94,7 @@ impl CutOffTime {
         }
     }
     pub fn to_noatun_time(self) -> NoatunTime {
-        NoatunTime(((self.0 as u64) * (60*1000)))
+        NoatunTime((self.0 as u64) * (60*1000))
     }
     pub fn truncate_from(noatun_time: NoatunTime) -> Result<CutOffTime> {
         Ok(CutOffTime((noatun_time.0/(1000*60)).try_into()?))
@@ -167,11 +167,13 @@ impl CutOffState {
         }
         if self.stamps.before_time < peer_hash.before_time
         {
-            if self.stamps.before_time < peer_hash.before_time.saturating_sub(config.stride) {}
+            if self.stamps.before_time < peer_hash.before_time.saturating_sub(config.stride) {
+                return Acceptability::UnacceptablePeerClockDrift;
+            }
 
             return Acceptability::Undecided(peer_hash.before_time);
         }
-        return Acceptability::Unacceptable;
+        Acceptability::Unacceptable
     }
     pub fn nominal_hash(&self) -> CutoffHash {
         self.stamps.hash
@@ -218,7 +220,7 @@ mod tests {
         pos.adjust_forward_to(
             CutOffTime(201),
             &[IndexEntry {
-                message: MessageId::from_parts_raw(200, [0u8; 10]).unwrap(),
+                message: MessageId::from_parts_raw(200 * 60*1000, [0u8; 10]).unwrap(),
                 file_offset: crate::message_store::FileOffset::deleted(),
                 file_total_size: 0,
             }],
@@ -226,7 +228,7 @@ mod tests {
 
         assert_eq!(
             pos.hash,
-            CutoffHash::from(MessageId::from_parts_raw(200, [0u8; 10]).unwrap())
+            CutoffHash::from(MessageId::from_parts_raw(200* 60*1000, [0u8; 10]).unwrap())
         );
     }
 }

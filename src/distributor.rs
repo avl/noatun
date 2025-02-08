@@ -134,7 +134,7 @@ pub fn truncate_to_arraystring(name: &str) -> ArrayString<10> {
     if name.len() <= 10 {
         return name.try_into().unwrap();
     }
-    for i in (0..10).rev() {
+    for i in (1..=10).rev() {
         if name.is_char_boundary(i) {
             return name.split_at(i).0.try_into().unwrap();
         }

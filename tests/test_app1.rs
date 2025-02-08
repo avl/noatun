@@ -103,7 +103,7 @@ fn test_counter_object_miri() {
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10_000,
         Duration::from_secs(1000),
-        Some(datetime!(2023-01-01 Z)),
+        Some(datetime!(2023-01-01 Z).into()),
         None,
         (),
     )

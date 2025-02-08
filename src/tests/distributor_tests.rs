@@ -38,7 +38,7 @@ fn create_app<'a>(
                 parent: parents
                     .iter()
                     .copied()
-                    .map(|x| MessageId::from_parts_for_test(x.into(), 0))
+                    .map(|x| MessageId::from_parts_for_test(x, 0))
                     .collect(),
                 inc1,
                 set1,
