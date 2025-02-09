@@ -1,4 +1,4 @@
-use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffState, CutOffTime, CutoffHash};
+use crate::cutoff::{Acceptability, CutOffConfig, CutOffDuration, CutOffHashPos, CutOffState, CutOffTime, CutoffHash};
 use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
 use crate::disk_access::FileAccessor;
 use crate::message_store::IndexEntry;
@@ -29,7 +29,8 @@ pub struct Database<Base: Application> {
 impl<APP: Application> Database<APP> {
 
 
-    fn maybe_advance_cutoff(&mut self) -> Result<()> {
+    /// TODO: Document
+    pub fn maybe_advance_cutoff(&mut self) -> Result<()> {
         let now = self.noatun_now();
         let nominal_cutoff_time = self.message_store.nominal_cutoff_time(now);
         let current_cutoff = self.message_store.current_cutoff_hash()?;
@@ -242,7 +243,7 @@ impl<APP: Application> Database<APP> {
     ) -> Result<()> {
         context.clear()?;
 
-        message_store.recover();
+        message_store.recover(time_now);
         let mmap_ptr = context.start_ptr();
         let guard = ContextGuardMut::new(context);
         let root_obj_ref = APP::initialize_root(params);

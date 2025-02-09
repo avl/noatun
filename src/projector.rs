@@ -31,18 +31,33 @@ impl<APP: Application> Projector<APP> {
         if *old_cutoff >= new_cutoff_at {
             return Ok(()); //Nothing to do
         }
+        let old_cutoff_index = self.messages.get_index_after(old_cutoff.to_noatun_time())?;
         let cutoff_index = self.messages.get_index_after(new_cutoff_at.to_noatun_time())?;
 
         println!("Advancing cutoff from {:?} to {:?}, index = {}, comp : {}", old_cutoff, new_cutoff_at, cutoff_index, *old_cutoff >= new_cutoff_at);
         let mut unused_list = unsafe { context.get_unused_list() };
         let unused_list = unused_list.get_full_slice(context);
+
+        debug_assert!(unused_list.is_sorted_by_key(|x|x.last_overwriter));
+
+        //println!("Unused list: {:?}", unused_list);
         let (Ok(unused_list_last)|Err(unused_list_last)) = unused_list.binary_search_by_key(&cutoff_index, |x|x.last_overwriter);
 
+        //println!("Last index: {}, last overwriter: {:?}", unused_list_last, cutoff_index);
         let mut process_now = vec![];
+        let mut cutoff_state = self.messages.current_cutoff_hash()?;
+        cutoff_state.before_time = new_cutoff_at;
+
+        let messages_slice = self.messages.get_messages_slice()?;
+        //println!("Advancing {:?}", old_cutoff_index.index()..cutoff_index.index());
+        for index_entry in &messages_slice[old_cutoff_index.index()..cutoff_index.index()] {
+            cutoff_state.apply(index_entry.message, "advance add");
+        }
         for item in &unused_list[..unused_list_last] {
             debug_assert!(item.last_overwriter < cutoff_index);
             process_now.push(*item);
         }
+        self.messages.set_cutoff_hash(cutoff_state);
 
         let must_remove = context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?; //TODO: Rename
         for index in must_remove {
@@ -93,9 +108,12 @@ impl<APP: Application> Projector<APP> {
             .ok_or_else(|| anyhow::anyhow!("Message not found"))?)
     }
 
-    pub fn recover(&mut self) -> Result<()> {
+    pub fn recover(&mut self, now: NoatunTime) -> Result<()> {
+        self.head_tracker.clear();
         self.messages
-            .recover(|id, parents| self.head_tracker.add_new_update_head(id, parents))
+            .recover(|id, parents| self.head_tracker.add_new_update_head(id, parents),
+            now, &self.cut_off_config
+            )
     }
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
         self.messages.get_all_message_ids()

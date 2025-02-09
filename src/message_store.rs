@@ -16,6 +16,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::{offset_of, MaybeUninit};
+use std::ops::Index;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
@@ -372,7 +373,7 @@ struct StoreHeader {
     padding: u32,
     // Compact file=1 + old file being compacted=0
     data_files: [DataFileEntry; 2],
-    cutoff: CutOffState,
+    cutoff: CutOffHashPos,
 }
 
 pub(crate) struct OnDiskMessageStore<M> {
@@ -587,6 +588,8 @@ impl<M> OnDiskMessageStore<M> {
     pub fn recover(
         &mut self,
         mut report_inserted: impl FnMut(MessageId, &[MessageId]) -> Result<()>,
+        now: NoatunTime,
+        cutoff_config: &CutOffConfig
     ) -> Result<()>
     where
         M: MessagePayload,
@@ -686,6 +689,22 @@ impl<M> OnDiskMessageStore<M> {
         }
 
         index[0..index_header.entries as usize].sort();
+
+        Self::recover_cutoff_state(now, index_header, index, cutoff_config)?;
+        Ok(())
+    }
+
+    fn recover_cutoff_state(time_now: NoatunTime, index_header: &mut StoreHeader, index: &[IndexEntry], config: &CutOffConfig) -> Result<()> {
+        let cutoff_time = config.nominal_cutoff(CutOffTime::from_noatun_time(time_now));
+        index_header.cutoff.before_time = cutoff_time;
+        index_header.cutoff.hash = CutoffHash::ZERO;
+        let cutoff_time_noatun : NoatunTime = cutoff_time.into();
+        for item in index.iter() {
+            if item.message.timestamp() >= cutoff_time_noatun {
+                break;
+            }
+            index_header.cutoff.apply(item.message, "recovery");
+        }
 
         Ok(())
     }
@@ -1070,6 +1089,13 @@ impl<M> OnDiskMessageStore<M> {
             eprintln!("Message was already deleted");
         }
 
+        Ok(())
+    }
+
+    pub fn set_cutoff_hash(&mut self, cutoff: CutOffHashPos) -> Result<()> {
+        let (header, _message_index) =
+            Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
+        header.cutoff = cutoff; //TODO: Should this really be in the message store?
         Ok(())
     }
 
@@ -1772,9 +1798,14 @@ impl<M> OnDiskMessageStore<M> {
     }
 
 
-    pub fn current_cutoff_hash(&self) -> Result<CutOffHashPos> {
+    pub fn current_cutoff_hash(&self) -> Result<CutOffHashPos> { //TODO: Name? Current is superfluous?
         let (header, _index) = self.header_and_index()?;
-        Ok(header.cutoff.get_hash())
+        Ok(header.cutoff)
+    }
+
+    pub(crate) fn get_messages_slice(&self) -> Result<&[IndexEntry]> {
+        let (header, index) = self.header_and_index()?;
+        Ok(&index[0..header.entries as usize])
     }
 
     pub(crate) fn get_messages_at_or_after(
@@ -1810,6 +1841,7 @@ mod tests {
     use std::path::Path;
     use std::pin::Pin;
     use std::time::Instant;
+    use crate::cutoff::CutOffConfig;
 
     #[derive(Debug)]
     struct OnDiskMessage {
@@ -1880,7 +1912,7 @@ mod tests {
                 OnDiskMessageStore::<OnDiskMessage>::header(&mut store.index_mmap).unwrap();
             //header.dirty_status = STATUS_NOK;
         }
-        store.recover(|_, _| Ok(())).unwrap();
+        store.recover(|_, _| Ok(()), NoatunTime::ZERO, &CutOffConfig::default()).unwrap();
 
         let msg = store
             .read_message(MessageId::new_debug(2))

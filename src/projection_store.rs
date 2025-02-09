@@ -1014,10 +1014,6 @@ impl DatabaseContextData {
                         if !deleted.contains(&observer) {
                             // 'msg' can't be deleted, because it's observed by
                             // 'observer' - i.e a later message that has not been deleted.
-                            /*println!(
-                                "Can't delete {:?} because it's observed by {:?}",
-                                msg, observer
-                            );*/
 
 
                             deferred.push(move|tself: &mut DatabaseContextData|{

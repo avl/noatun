@@ -2,7 +2,7 @@ use std::fmt::{Debug, Formatter};
 use crate::message_store::IndexEntry;
 use crate::{MessageId, NoatunTime};
 use bytemuck::{Pod, Zeroable};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use savefile_derive::Savefile;
 use anyhow::{anyhow, bail, Result};
 
@@ -28,40 +28,58 @@ impl CutOffConfig {
             bail!("CutOffConfig::new called with an invalid value '{:?}'. Minimum cutoff time is 4 minutes.", age);
         }
         let stride = CutOffDuration((age.0/10).max(1));
-        println!("Stride: {:?}", stride);
+        //println!("Stride: {:?}", stride);
         Ok(Self{
             age,
             stride,
         })
     }
     pub fn nominal_cutoff(&self, time_now: CutOffTime) -> CutOffTime {
-        CutOffState::nominal_cutoff(time_now, self) //TODO: Try_into
+        CutOffHashPos::nominal_cutoff(time_now, self) //TODO: Try_into
     }
 }
 
-#[derive(Savefile, Clone, Copy, Debug, Pod, Zeroable, PartialEq, Eq, Default)]
+#[derive(Savefile, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
 #[repr(C)]
 pub struct CutoffHash {
     values: [u64; 2],
 }
 
+impl Debug for CutoffHash {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+
+        let data: &[u32] = bytemuck::cast_slice(&self.values);
+
+        write!(
+            f,
+            "{:x}:{:x}-{:x}-{:x}-{:x}",
+            data[0],
+            data[0]&0xffff,
+            (data[1] & 0xffff0000) >> 16,
+            data[2],
+            data[3]
+        )
+    }
+}
+
 impl CutoffHash {
-    pub(crate) fn from_all(msg: &[MessageId]) -> CutoffHash {
+    pub(crate) const ZERO: CutoffHash = CutoffHash{values: [0,0]};
+    /*pub(crate) fn from_all(msg: &[MessageId]) -> CutoffHash {
         let mut temp = CutoffHash::default();
         for m in msg {
             temp.xor_with_msg(*m);
         }
         temp
-    }
-    fn from(msg: MessageId) -> CutoffHash {
+    }*/
+    pub fn from_msg(msg: MessageId) -> CutoffHash {
         bytemuck::cast(msg)
     }
     fn xor_with(&mut self, other: CutoffHash) {
         self.values[0] ^= other.values[0];
         self.values[1] ^= other.values[1];
     }
-    fn xor_with_msg(&mut self, other: MessageId) {
-        self.xor_with(CutoffHash::from(other));
+    pub(crate) fn xor_with_msg(&mut self, other: MessageId) {
+        self.xor_with(CutoffHash::from_msg(other));
     }
 }
 
@@ -135,7 +153,7 @@ impl CutOffTime {
 #[derive(Clone, Copy, Debug, Pod, Zeroable, Savefile, PartialEq, Eq)]
 #[repr(C)]
 pub struct CutOffHashPos {
-    hash: CutoffHash,
+    pub(crate) hash: CutoffHash,
     /// Era
     pub(crate) before_time: CutOffTime,
     padding: u32,
@@ -158,7 +176,7 @@ impl CutOffHashPos {
                 // Done
                 return;
             }
-            self.hash.xor_with_msg(cur.message);
+            self.apply(cur.message, "adjust forward");
             cur_index += 1;
         }
         self.before_time = time;
@@ -188,17 +206,14 @@ pub enum Acceptability {
     Undecided(CutOffTime/*peer era*/)
 }
 
-impl CutOffState {
-    pub fn get_hash(&self) -> CutOffHashPos {
-        self.stamps
-    }
+impl CutOffHashPos {
     pub(crate) fn is_acceptable_cutoff_hash(&self, now: NoatunTime, peer_hash: CutOffHashPos, config: &CutOffConfig) -> Acceptability {
-        if self.stamps == peer_hash {
+        if *self == peer_hash {
             return Acceptability::Nominal;
         }
-        if self.stamps.before_time < peer_hash.before_time
+        if self.before_time < peer_hash.before_time
         {
-            if self.stamps.before_time < peer_hash.before_time.saturating_sub(config.stride) {
+            if self.before_time < peer_hash.before_time.saturating_sub(config.stride) {
                 return Acceptability::UnacceptablePeerClockDrift;
             }
 
@@ -207,7 +222,7 @@ impl CutOffState {
         Acceptability::Unacceptable
     }
     pub fn nominal_hash(&self) -> CutoffHash {
-        self.stamps.hash
+        self.hash
     }
     /// Now rounded to the nearest multiple of stride
     fn nominal_cutoff(now: CutOffTime, config: &CutOffConfig) -> CutOffTime {
@@ -216,22 +231,26 @@ impl CutOffState {
     }
 
     pub(crate) fn advance_time(&mut self, now: CutOffTime, config: &CutOffConfig, messages: &[IndexEntry]) {
-        self.stamps.adjust_forward_to(now, messages);
+        self.adjust_forward_to(now, messages);
     }
 
     pub fn report_add(&mut self, message_id: MessageId) {
-        self.apply(message_id);
+        self.apply(message_id, "add");
     }
     pub fn report_delete(&mut self, message_id: MessageId) {
-        self.apply(message_id);
+        self.apply(message_id,"delete");
     }
 
     /// Add and delete are logically identical ops (because xor)
-    fn apply(&mut self, message_id: MessageId) {
+    pub(crate) fn apply(&mut self, message_id: MessageId, op: &str) {
         let t = message_id.timestamp();
-        if t < self.stamps.before_time.to_noatun_time() {
-            self.stamps.hash.xor_with_msg(message_id);
+        if t < self.before_time.to_noatun_time() {
+            self.hash.xor_with_msg(message_id);
+            //println!("Xoring out message {:?} ({}), giving hash: {:?}", message_id, op, self.hash);
+        } else {
+            //println!("Op at {:?} was not before cutoff-period {:?} ({})", t, self.before_time, op);
         }
+        //println!(" == {} {:?} Resulting hash: {:?}", op, message_id, self);
     }
 }
 #[cfg(test)]
@@ -243,7 +262,7 @@ mod tests {
     #[test]
     fn test_advance_pos() {
         let mut pos = CutOffHashPos {
-            hash: CutoffHash::from(MessageId::new_debug(0)),
+            hash: CutoffHash::from_msg(MessageId::new_debug(0)),
             before_time: CutOffTime(100),
             padding: 0,
         };
@@ -259,7 +278,7 @@ mod tests {
 
         assert_eq!(
             pos.hash,
-            CutoffHash::from(MessageId::from_parts_raw(200* 60*1000, [0u8; 10]).unwrap())
+            CutoffHash::from_msg(MessageId::from_parts_raw(200* 60*1000, [0u8; 10]).unwrap())
         );
     }
 }

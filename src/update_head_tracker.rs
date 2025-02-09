@@ -44,6 +44,9 @@ impl UpdateHeadTracker {
         }
         Ok(())
     }
+    pub(crate) fn clear(&mut self) {
+        self.file.fast_truncate(0);
+    }
 
     pub(crate) fn get_update_heads(&self) -> &[MessageId] {
         bytemuck::cast_slice(self.file.map())
