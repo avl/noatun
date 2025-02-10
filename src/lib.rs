@@ -369,6 +369,13 @@ impl Add<Duration> for NoatunTime {
         NoatunTime(self.0 + rhs.as_millis() as u64)
     }
 }
+impl Sub<Duration> for NoatunTime {
+    type Output = NoatunTime;
+    fn sub(self, rhs: Duration) -> Self::Output {
+        NoatunTime(self.0.saturating_sub(rhs.as_millis() as u64))
+    }
+}
+
 impl Add<NoatunTime> for Duration {
     type Output = NoatunTime;
     fn add(self, rhs: NoatunTime) -> Self::Output {
@@ -428,6 +435,11 @@ impl Sub for NoatunTime {
 }
 
 impl NoatunTime {
+
+    pub fn elapsed_ms_since(self, other: NoatunTime) -> u64 {
+        let ms =self.0.saturating_sub(other.0);
+        ms
+    }
 
     pub fn next_multiple_of(self, other: NoatunTime) -> NoatunTime {
         //TODO: Checked arithmetic

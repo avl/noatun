@@ -159,29 +159,7 @@ pub struct CutOffHashPos {
     padding: u32,
 }
 
-impl CutOffHashPos {
-    fn adjust_forward_to(&mut self, time: CutOffTime, messages: &[IndexEntry]) {
-        assert!(self.before_time <= time);
-        if self.before_time == time {
-            return; //Nothing to do
-        }
-        let prior = MessageId::from_parts(self.before_time.into(), [0u8; 10]).unwrap();
-        let mut cur_index = match messages.binary_search_by_key(&prior, |x| x.message) {
-            Ok(hit) => hit,
-            Err(insloc) => insloc,
-        };
-        while cur_index < messages.len() {
-            let cur = &messages[cur_index];
-            if cur.message.timestamp() >= time.into() {
-                // Done
-                return;
-            }
-            self.apply(cur.message, "adjust forward");
-            cur_index += 1;
-        }
-        self.before_time = time;
-    }
-}
+
 
 #[derive(Clone, Copy, Debug, Pod, Zeroable,Savefile)]
 #[repr(C)]
@@ -208,6 +186,7 @@ pub enum Acceptability {
 
 impl CutOffHashPos {
     pub(crate) fn is_acceptable_cutoff_hash(&self, now: NoatunTime, peer_hash: CutOffHashPos, config: &CutOffConfig) -> Acceptability {
+        println!("Peer hash: {:?}, self: {:?}", peer_hash, self);
         if *self == peer_hash {
             return Acceptability::Nominal;
         }
@@ -230,9 +209,6 @@ impl CutOffHashPos {
             .next_multiple_of(config.stride.0))
     }
 
-    pub(crate) fn advance_time(&mut self, now: CutOffTime, config: &CutOffConfig, messages: &[IndexEntry]) {
-        self.adjust_forward_to(now, messages);
-    }
 
     pub fn report_add(&mut self, message_id: MessageId) {
         self.apply(message_id, "add");
@@ -244,6 +220,7 @@ impl CutOffHashPos {
     /// Add and delete are logically identical ops (because xor)
     pub(crate) fn apply(&mut self, message_id: MessageId, op: &str) {
         let t = message_id.timestamp();
+
         if t < self.before_time.to_noatun_time() {
             self.hash.xor_with_msg(message_id);
             //println!("Xoring out message {:?} ({}), giving hash: {:?}", message_id, op, self.hash);
@@ -251,34 +228,5 @@ impl CutOffHashPos {
             //println!("Op at {:?} was not before cutoff-period {:?} ({})", t, self.before_time, op);
         }
         //println!(" == {} {:?} Resulting hash: {:?}", op, message_id, self);
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::{CutOffHashPos, CutOffTime, CutoffHash};
-    use crate::message_store::IndexEntry;
-    use crate::MessageId;
-
-    #[test]
-    fn test_advance_pos() {
-        let mut pos = CutOffHashPos {
-            hash: CutoffHash::from_msg(MessageId::new_debug(0)),
-            before_time: CutOffTime(100),
-            padding: 0,
-        };
-
-        pos.adjust_forward_to(
-            CutOffTime(201),
-            &[IndexEntry {
-                message: MessageId::from_parts_raw(200 * 60*1000, [0u8; 10]).unwrap(),
-                file_offset: crate::message_store::FileOffset::deleted(),
-                file_total_size: 0,
-            }],
-        );
-
-        assert_eq!(
-            pos.hash,
-            CutoffHash::from_msg(MessageId::from_parts_raw(200* 60*1000, [0u8; 10]).unwrap())
-        );
     }
 }

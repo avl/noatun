@@ -113,10 +113,11 @@ enum SyncAllState {
 }
 
 #[derive(Debug, Default)]
-pub struct DistributorState {
-    nominal: HashSet<ArrayString<10>>,
+pub struct DistributorStatus {
+    nominal: bool,
     most_recent_clockdrift: HashMap<ArrayString<10>, NoatunTime>,
     most_recent_unsynced: HashMap<ArrayString<10>, NoatunTime>,
+    have_heard_peer: bool,
 }
 
 pub struct Distributor {
@@ -125,8 +126,17 @@ pub struct Distributor {
     // parents will be sent before any children.
     sync_all_inprogress: SyncAllState,
 
-    distributor_state: DistributorState,
+    distributor_state: DistributorStatus,
     own_name: ArrayString<10>,
+}
+
+#[derive(PartialEq,Eq,Clone,Copy,Debug)]
+pub enum Status {
+    Nominal,
+    BadClocksDetected,
+    OutOfSync,
+    NoPeers,
+    Synchronizing,
 }
 
 
@@ -147,9 +157,31 @@ impl Distributor {
     pub fn new(node_name: &str) -> Distributor {
         Self {
             sync_all_inprogress: SyncAllState::NotActive,
-            distributor_state: DistributorState::default(),
+            distributor_state: DistributorStatus::default(),
             own_name: truncate_to_arraystring(node_name)
         }
+    }
+
+    pub fn get_status(&self, now: NoatunTime) -> Status {
+        for drift in self.distributor_state.most_recent_clockdrift.values() {
+            if drift.elapsed_ms_since(now) < 60000 /*TODO: Make configurable?*/{
+                return Status::BadClocksDetected;
+            }
+        }
+        for unsync in self.distributor_state.most_recent_unsynced.values() {
+            let unsync_t = unsync.elapsed_ms_since(now);
+            println!("Unsync time: {} ms", unsync_t);
+            if unsync_t < 60000 /*TODO: Make configurable?*/{
+                return Status::OutOfSync;
+            }
+        }
+        if !self.distributor_state.have_heard_peer {
+            return Status::NoPeers;
+        }
+        if self.distributor_state.nominal {
+            return Status::Nominal;
+        }
+        Status::Synchronizing
     }
 
     /// Call this to retrieve a message that should be sent periodically
@@ -198,6 +230,7 @@ impl Distributor {
         let mut accumulated_sync_all_queries = IndexSet::new();
         let mut accumulated_sync_all_requests = IndexSet::new();
         for item in input {
+            self.distributor_state.have_heard_peer = true;
             match item {
                 DistributorMessage::SyncAllQuery(query) => {
                     accumulated_sync_all_queries.extend(query);
@@ -211,6 +244,8 @@ impl Distributor {
                     accumulated_heads.extend(heads);
                     match database.is_acceptable_cutoff_hash(cutoff_hash, )? {
                         Acceptability::Nominal => {
+                            self.distributor_state.most_recent_unsynced.remove(&src);
+                            self.distributor_state.most_recent_clockdrift.remove(&src);
                         }
                         Acceptability::Unacceptable => {
                             self.distributor_state.most_recent_unsynced.insert(src, database.noatun_now());
@@ -218,6 +253,7 @@ impl Distributor {
                         }
                         Acceptability::Undecided(advance) => {
                             database.advance_cutoff(advance)?;
+                            //TODO: Are we done here? Or do we need to do some analysis to see if the advance helped?
                         }
                         Acceptability::UnacceptablePeerClockDrift => {
                             self.distributor_state.most_recent_clockdrift.insert(src, database.noatun_now());
@@ -322,7 +358,7 @@ impl Distributor {
     }
 
     fn process_reported_heads<APP: Application>(
-        &self,
+        &mut self,
         database: &mut Database<APP>,
         accumulated_heads: IndexSet<MessageId>,
         output: &mut Vec<DistributorMessage>,
@@ -338,6 +374,9 @@ impl Distributor {
             output.push(DistributorMessage::RequestUpstream {
                 query: messages_to_request,
             });
+            self.distributor_state.nominal = false;
+        } else {
+            self.distributor_state.nominal = true;
         }
         Ok(())
     }

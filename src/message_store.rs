@@ -867,6 +867,7 @@ impl<M> OnDiskMessageStore<M> {
         let mut msg_payload =
             file.with_bytes(header.payload_size as usize, |bytes| M::deserialize(bytes))??;
 
+        debug_assert_eq!(header.message_id, entry.message);
         Ok(Message {
             header: MessageHeader {
                 id: header.message_id,
@@ -1019,12 +1020,14 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: MessagePayload,
     {
-        let (_header, message_index) = self.header_and_index().context("opening index file")?;
+        let (header, message_index) = self.header_and_index().context("opening index file")?;
         let data_files = &self.data_files;
         message_index
             .iter()
             .filter(|x| !x.file_offset.is_deleted())
-            .map(|x| Self::read_msg(x, data_files, None))
+            .map(|x| {
+                Self::read_msg(x, data_files, None)
+            })
             .collect()
     }
     pub fn get_all_messages_with_children(&self) -> Result<Vec<(Message<M>, Vec<MessageId>)>>
@@ -1432,6 +1435,23 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: MessagePayload + Debug,
     {
+
+        println!("---do_append_many_sorted---");
+
+        let mut prev = None;
+        let mut messages = messages.inspect(|test|{
+            if prev.is_none() {
+                prev = Some(test.header.id);
+            } else {
+                #[cfg(debug_assertions)]
+                {
+                    if test.header.id <= prev.unwrap() {
+                        dbg!(test.header.id, prev);
+                        assert!(test.header.id > prev.unwrap());
+                    }
+                }
+            }
+        });
         let len = messages.len();
 
         if len == 0 {
@@ -1440,7 +1460,9 @@ impl<M> OnDiskMessageStore<M> {
         let info = &mut self.data_files[self.active_file.index()];
         let initial_file_position = info.file.stream_position()?;
 
-        let (index_header, index) = Self::header_and_index_mut_uninit(&mut self.index_mmap, len)?;
+        let (index_header, mmap_index) = Self::header_and_index_mut_uninit(&mut self.index_mmap, len)?;
+        Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
+
         /*println!("Inserting into:");
         for i in index.iter() {
             println!("Index: {}", i.message);
@@ -1453,12 +1475,12 @@ impl<M> OnDiskMessageStore<M> {
         let first_input_message: Message<M> = (messages.next().unwrap());
 
         let initial_index_entries = index_header.entries as usize;
-        let (Ok(first_index) | Err(first_index)) = index[0..index_header.entries as usize]
+        let (Ok(first_index) | Err(first_index)) = mmap_index[0..index_header.entries as usize]
             .binary_search_by_key(&first_input_message.id(), |x| x.message);
         let mut cur_index = first_index;
         let mut first_index_actually_inserted = None;
 
-        let mut parents: Vec<MessageId> = vec![];
+        //let mut parents: Vec<MessageId> = vec![];
             //println!("Start of loop. cur_index ={}, first input message: {:?}", cur_index, first_input_message.id());
 
         let mut cur_input_message = Some(first_input_message);
@@ -1467,17 +1489,17 @@ impl<M> OnDiskMessageStore<M> {
         let mut remaining_child_assignments = RemainingChildAssignments::default();
 
         loop {
-            /*if let Some(cur_input_message) = &cur_input_message {
+            if let Some(cur_input_message) = &cur_input_message {
                 println!("Start of loop, cur input msg: {:?}", cur_input_message.header.id);
-            }*/
+            }
             if carry_buffer.is_empty() && cur_input_message.is_none() {
                 break;
             }
 
-            let info = &mut self.data_files[self.active_file.index()];
+            //let info = &mut self.data_files[self.active_file.index()];
 
-            //dbg!(&cur_input_message, &minne);
-            let cur_index_entry = &mut index[cur_index];
+            //dbg!(&cur_input_message);
+            let cur_index_entry = &mut mmap_index[cur_index];
             let present_id = if cur_index < index_header.entries as usize {
                 Some(cur_index_entry.message)
             } else {
@@ -1489,7 +1511,7 @@ impl<M> OnDiskMessageStore<M> {
             enum Cases {
                 /// The next value that should be written to the output is the one that is already
                 /// present. I.e, a no-op. If multiple match, this matches first.
-                NextFromCurrent,
+                NextFromPresent,
                 /// The next that should be written is the current input message
                 NextFromInput,
                 /// The next should be from 'carry' - i.e, we're compacting
@@ -1497,14 +1519,14 @@ impl<M> OnDiskMessageStore<M> {
             }
 
             let cases = [
-                (Cases::NextFromCurrent, present_id),
-                (
-                    Cases::NextFromInput,
-                    cur_input_message.as_ref().map(|x| x.id()),
-                ),
+                (Cases::NextFromPresent, present_id),
                 (
                     Cases::NextFromCarry,
                     carry_buffer.front().map(|x| x.message),
+                ),
+                (
+                    Cases::NextFromInput,
+                    cur_input_message.as_ref().map(|x| x.id()),
                 ),
             ];
             let (now_case, now_message_id) = cases
@@ -1514,8 +1536,9 @@ impl<M> OnDiskMessageStore<M> {
                 .expect("There must always be some case present");
 
             match now_case {
-                Cases::NextFromCurrent => {
-                    if present_id == cur_input_message.as_ref().map(|x| x.id()) {
+                Cases::NextFromPresent => {
+                    let input_message_id = cur_input_message.as_ref().map(|x|x.id());
+                    if present_id == input_message_id {
                         cur_input_message = messages.next();
                         cur_index += 1;
                         eprintln!("Duplicate id detected");
@@ -1523,13 +1546,36 @@ impl<M> OnDiskMessageStore<M> {
                     }
                     // We get here if a previous item was a duplicate. There's no copying to be done
                     cur_index += 1;
+                    println!("Previous item was duplicate");
                     continue;
                     /*dbg!(&cur_input_message, &present_id,&carry_buffer,&cases,&now_case, &now_message_id);
                     unreachable!("This shouldn't, logically, happen");*/
                 }
+                Cases::NextFromCarry => {
+                    let temp = carry_buffer.pop_front().unwrap();
+
+                    debug_assert!(carry_buffer.iter().is_sorted_by_key(|x|x.message));
+
+                    if cur_index < initial_index_entries {
+                        let (Ok(insert_at)|Err(insert_at)) = carry_buffer.binary_search_by_key(&cur_index_entry.message,|x|x.message);
+
+                        carry_buffer.insert(insert_at, *cur_index_entry);
+                        debug_assert!(carry_buffer.iter().is_sorted_by_key(|x|x.message));
+                    }
+                    let input_message_id = cur_input_message.as_ref().map(|x|x.id());
+                    if Some(temp.message) == input_message_id {
+                        cur_input_message = messages.next();
+                        //println!("Duplicate id detected in 2nd way");
+                    }
+
+                    *cur_index_entry = temp;
+                    cur_index += 1;
+
+                }
                 Cases::NextFromInput => {
                     let msg = cur_input_message.take().unwrap();
 
+                    //println!("Next from input: {:?}", msg.header.id);
                     index_header.cutoff.report_add(msg.header.id);
                     message_inserted(msg.id(), &msg.header.parents)?;
                     if first_index_actually_inserted.is_none() {
@@ -1555,10 +1601,12 @@ impl<M> OnDiskMessageStore<M> {
                         Some(&mut remaining_child_assignments),
                     )?;
 
-                    let cur_index_entry = &mut index[cur_index];
+                    let cur_index_entry = &mut mmap_index[cur_index];
                     // Append to the index (compacting while doing so)
                     if cur_index < index_header.entries as usize {
+                        //println!("Pushing {:?} to carry, to make space for {:?}", cur_index_entry.message, msg.header.id);
                         carry_buffer.push_back(*cur_index_entry);
+                        debug_assert!(carry_buffer.iter().is_sorted_by_key(|x|x.message));
                     }
                     *cur_index_entry = IndexEntry {
                         message: msg.id(),
@@ -1573,15 +1621,9 @@ impl<M> OnDiskMessageStore<M> {
 
                     cur_input_message = messages.next();
                     actual_inserted_entries += 1;
+                    println!("Inserted item");
                 }
-                Cases::NextFromCarry => {
-                    let temp = carry_buffer.pop_front().unwrap();
-                    if cur_index < initial_index_entries {
-                        carry_buffer.push_front(*cur_index_entry);
-                    }
-                    *cur_index_entry = temp;
-                    cur_index += 1;
-                }
+
             }
         }
 
@@ -1597,10 +1639,21 @@ impl<M> OnDiskMessageStore<M> {
         let data_file = &mut index_header.data_files[self.active_file.index()];
 
         index_header.entries += actual_inserted_entries as u32;
+        //println!("Index: {:#?}", mmap_index);
+        Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
+        debug_assert!(mmap_index[0..index_header.entries as usize].is_sorted_by_key(|x|x.message));
 
         self.handle_remaining_child_assignments(remaining_child_assignments);
 
+
         Ok(first_index_actually_inserted)
+    }
+    fn check_duplicates(mmap_index: &[IndexEntry]) {
+        for (index, window) in mmap_index.windows(2).enumerate() {
+            if !(window[0].message < window[1].message) {
+                panic!("Failed condition: {:?} < {:?} at {}", window[0].message, window[1].message, index);
+            }
+        }
     }
 
     /// Compact all files to the given maximum degree of fragmentation.

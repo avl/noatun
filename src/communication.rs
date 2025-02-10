@@ -1,16 +1,13 @@
 
-use crate::distributor::{Distributor, DistributorMessage, SerializedMessage};
+use crate::distributor::{Distributor, DistributorMessage, SerializedMessage, Status};
 
 use crate::{Application, ContextGuard, Database, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, NoatunTime};
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
 use indexmap::{IndexMap, IndexSet};
 use libc::newlocale;
-use savefile::{
-    Deserialize, Deserializer, Field, Introspect, IntrospectItem, Packed, SavefileError, Schema,
-    SchemaPrimitive, SchemaStruct, Serialize, Serializer, WithSchema, WithSchemaContext,
-};
+use savefile::{get_result_schema, Deserialize, Deserializer, Field, Introspect, IntrospectItem, Packed, SavefileError, Schema, SchemaPrimitive, SchemaStruct, Serialize, Serializer, WithSchema, WithSchemaContext};
 use savefile_derive::Savefile;
 use socket2::{Domain, Protocol, SockRef, Type};
 use std::collections::VecDeque;
@@ -653,7 +650,8 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
 
 enum Cmd<APP: Application> {
     AddMessage(Option<NoatunTime>, APP::Message, oneshot::Sender<Result<()>>),
-    Quit(std::sync::mpsc::Sender<()>)
+    Quit(std::sync::mpsc::Sender<()>),
+    GetStatus(oneshot::Sender<Status>),
 }
 
 struct DatabaseCommunicationLoop<APP: Application+Send> where <APP as Application>::Params: Send, Self:Send{
@@ -782,8 +780,12 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
             };
 
             select!(
+                biased;
                 res = sendtask => {
                     res?;
+                }
+                process_incoming = buffering_timer => {
+                    self.process_messages()?;
                 }
                 periodic = tokio::time::sleep_until(self.next_periodic) => {
                     let database = self.database.lock().unwrap();
@@ -797,6 +799,11 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                     match cmd {
                         Cmd::Quit(sender) => {
                             return Ok(Some(sender));
+                        }
+                        Cmd::GetStatus(sender) => {
+                            let db = self.database.lock().unwrap();
+                            let now = db.noatun_now();
+                            sender.send(self.distributor.get_status(now)).map_err(|_|anyhow!("oneshot sender failed"))?;
                         }
                         Cmd::AddMessage(time, msg,result) => {
                             let mut database = self.database.lock().unwrap();
@@ -831,9 +838,6 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                     };
                     self.process_packet(recv_pkt)?;
                 }
-                process_incoming = buffering_timer => {
-                    self.process_messages()?;
-                }
 
             );
         }
@@ -855,6 +859,19 @@ where <APP as Application>::Params: Send,
     <APP as Application>::Message: Send,
 
 {
+    pub async fn get_status(&self) -> Result<Status> {
+        let (mut oneshot_tx,oneshot_rx) = oneshot::channel();
+        let status = self.cmd_tx.send(Cmd::GetStatus(oneshot_tx)).await;
+        match status {
+            Ok(status) => {
+                let result: Status = oneshot_rx.await?;
+                Ok(result)
+            }
+            Err(err) => {
+                bail!("Failed to send command to background thread {:?}", err);
+            }
+        }
+    }
     pub async fn close(self) -> Result<()> {
         let (oneshot_tx, oneshot_rx) = std::sync::mpsc::channel();
         let e = self.cmd_tx.send(Cmd::Quit(oneshot_tx)).await;
@@ -910,6 +927,9 @@ where <APP as Application>::Params: Send,
     pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
         let db = self.database.lock().unwrap();
         db.with_root(f)
+    }
+    pub fn set_mock_time(&mut self, time: NoatunTime) {
+        self.database.lock().unwrap().set_mock_time(time);
     }
     pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
         self.database.lock().unwrap().get_all_messages()

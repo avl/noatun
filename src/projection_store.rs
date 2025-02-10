@@ -1004,8 +1004,7 @@ impl DatabaseContextData {
 
         let mut deleted = Vec::new();
         let mut deferred = Vec::new();
-        let unused_list = unsafe { self.get_unused_list() };
-
+        let mut new_unused_list = Vec::new();
         //println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
         'outer: while let Some(msg) = unused_messages.pop() {
             if !messages.may_have_been_transmitted(msg.seq)? || after_cutoff {
@@ -1025,7 +1024,8 @@ impl DatabaseContextData {
                     }
                 }
             } else {
-                unused_list.push_untracked(self, msg);
+                //unused_list.push_untracked(self, msg);
+                new_unused_list.push(msg);
                 // TODO:  We could remember that we have an unused item that
                 // we couldn't remove because it was not beyond cutoff.
                 // We could put these on a list of 'waiting' items, that can be deleted
@@ -1043,6 +1043,13 @@ impl DatabaseContextData {
 
             deleted.push(msg.seq);
         }
+        let unused_list = unsafe { self.get_unused_list() };
+
+        for new_unused in new_unused_list.iter().rev() {
+            println!("Pushing unused: {:?}", new_unused);
+            unused_list.push_untracked(self, *new_unused);
+        }
+
         for action in deferred {
             action(self);
         }

@@ -38,6 +38,7 @@ impl<APP: Application> Projector<APP> {
         let mut unused_list = unsafe { context.get_unused_list() };
         let unused_list = unused_list.get_full_slice(context);
 
+        println!("Unused list: {:#?}", unused_list);
         debug_assert!(unused_list.is_sorted_by_key(|x|x.last_overwriter));
 
         //println!("Unused list: {:?}", unused_list);
@@ -164,6 +165,7 @@ impl<APP: Application> Projector<APP> {
     ) -> Result<bool> {
         let mut messages: Vec<Message<APP::Message>> = message.collect();
         messages.sort_unstable_by_key(|x| x.id());
+        messages.dedup_by_key(|x|x.id());
 
         self.push_sorted_messages(context, messages.into_iter(), local)
     }
