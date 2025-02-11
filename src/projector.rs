@@ -26,15 +26,13 @@ pub(crate) struct Projector<APP: Application> {
 impl<APP: Application> Projector<APP> {
 
     pub(crate) fn advance_cutoff(&mut self, new_cutoff_at: CutOffTime, context: &mut DatabaseContextData) -> Result<()> {
-        let old_cutoff = unsafe { context.get_current_cutoff() };
 
-        if *old_cutoff >= new_cutoff_at {
-            return Ok(()); //Nothing to do
-        }
-        let old_cutoff_index = self.messages.get_index_after(old_cutoff.to_noatun_time())?;
+        let mut cutoff_state = self.messages.current_cutoff_hash()?;
+
+        let old_cutoff_index = self.messages.get_index_after(cutoff_state.before_time.to_noatun_time())?;
         let cutoff_index = self.messages.get_index_after(new_cutoff_at.to_noatun_time())?;
 
-        println!("Advancing cutoff from {:?} to {:?}, index = {}, comp : {}", old_cutoff, new_cutoff_at, cutoff_index, *old_cutoff >= new_cutoff_at);
+        println!("Advancing cutoff from {:?} to {:?}, index = {}, comp : {}", cutoff_state.before_time, new_cutoff_at, cutoff_index, cutoff_state.before_time >= new_cutoff_at);
         let mut unused_list = unsafe { context.get_unused_list() };
         let unused_list = unused_list.get_full_slice(context);
 
@@ -46,7 +44,6 @@ impl<APP: Application> Projector<APP> {
 
         //println!("Last index: {}, last overwriter: {:?}", unused_list_last, cutoff_index);
         let mut process_now = vec![];
-        let mut cutoff_state = self.messages.current_cutoff_hash()?;
         cutoff_state.before_time = new_cutoff_at;
 
         let messages_slice = self.messages.get_messages_slice()?;
@@ -65,7 +62,7 @@ impl<APP: Application> Projector<APP> {
             self.messages.mark_deleted_by_index(index);
         }
 
-        context.write_pod_ptr(new_cutoff_at, old_cutoff as *mut _);
+        self.messages.set_cutoff_time(new_cutoff_at);
         Ok(())
     }
 

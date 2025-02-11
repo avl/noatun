@@ -345,7 +345,7 @@ async fn all_up_gradual_update_sync_test() {
     let mut correct_sum = 0;
     for i in 0..10 {
         println!("I = {}", i);
-        println!("Msgs: {:#?}", app1.get_all_messages().unwrap());
+        println!("Msgs1: {:#?}", app1.get_all_messages().unwrap());
         assert!(app1.get_all_messages().unwrap().is_sorted_by_key(|x|x.header.id.timestamp()));
         assert!(app2.get_all_messages().unwrap().is_sorted_by_key(|x|x.header.id.timestamp()));
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
@@ -472,7 +472,7 @@ async fn all_up_general_update_sync_test_impl(seed: u64) {
     assert_eq!(root2.counter, correct_count);
     assert_eq!(root1, root2);
 
-    compile_error!("Figure out why cutoff hash differs, even though actual messages are the same, for seed 4!")
+//    compile_error!("Figure out why cutoff hash differs, even though actual messages are the same, for seed 4!")
 
     assert_eq!(app1.get_status().await.unwrap(), Status::Nominal);
     app1.add_message(SyncMessage{value: 1, reset: false }).await;

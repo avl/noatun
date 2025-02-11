@@ -18,6 +18,7 @@ use std::marker::PhantomData;
 use std::mem::{offset_of, MaybeUninit};
 use std::ops::Index;
 use std::path::Path;
+use libc::mmap;
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 #[repr(transparent)]
@@ -693,6 +694,13 @@ impl<M> OnDiskMessageStore<M> {
         Self::recover_cutoff_state(now, index_header, index, cutoff_config)?;
         Ok(())
     }
+
+    /*fn get_cutoff_state(&mut self) -> Result<&mut CutOffHashPos> {
+        let hdr_start = self.index_mmap.map_mut_ptr();
+
+        let (hdr, entries) = Self::header_and_index_mut(&mut self.index_mmap)?;
+
+    }*/
 
     fn recover_cutoff_state(time_now: NoatunTime, index_header: &mut StoreHeader, index: &[IndexEntry], config: &CutOffConfig) -> Result<()> {
         let cutoff_time = config.nominal_cutoff(CutOffTime::from_noatun_time(time_now));
@@ -1436,7 +1444,7 @@ impl<M> OnDiskMessageStore<M> {
         M: MessagePayload + Debug,
     {
 
-        println!("---do_append_many_sorted---");
+        //println!("---do_append_many_sorted---");
 
         let mut prev = None;
         let mut messages = messages.inspect(|test|{
@@ -1461,6 +1469,18 @@ impl<M> OnDiskMessageStore<M> {
         let initial_file_position = info.file.stream_position()?;
 
         let (index_header, mmap_index) = Self::header_and_index_mut_uninit(&mut self.index_mmap, len)?;
+
+        #[cfg(debug_assertions)]
+        {
+            let mut new_cutoff = index_header.cutoff;
+            new_cutoff.hash = CutoffHash::default();
+            for msg in &mmap_index[0..index_header.entries as usize] {
+                new_cutoff.report_add(msg.message);
+            }
+            assert_eq!(new_cutoff, index_header.cutoff);
+            println!("KNOWN GOOD1");
+        }
+
         Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
 
         /*println!("Inserting into:");
@@ -1489,9 +1509,9 @@ impl<M> OnDiskMessageStore<M> {
         let mut remaining_child_assignments = RemainingChildAssignments::default();
 
         loop {
-            if let Some(cur_input_message) = &cur_input_message {
+            /*if let Some(cur_input_message) = &cur_input_message {
                 println!("Start of loop, cur input msg: {:?}", cur_input_message.header.id);
-            }
+            }*/
             if carry_buffer.is_empty() && cur_input_message.is_none() {
                 break;
             }
@@ -1512,10 +1532,10 @@ impl<M> OnDiskMessageStore<M> {
                 /// The next value that should be written to the output is the one that is already
                 /// present. I.e, a no-op. If multiple match, this matches first.
                 NextFromPresent,
-                /// The next that should be written is the current input message
-                NextFromInput,
                 /// The next should be from 'carry' - i.e, we're compacting
                 NextFromCarry,
+                /// The next that should be written is the current input message
+                NextFromInput,
             }
 
             let cases = [
@@ -1577,6 +1597,7 @@ impl<M> OnDiskMessageStore<M> {
 
                     //println!("Next from input: {:?}", msg.header.id);
                     index_header.cutoff.report_add(msg.header.id);
+
                     message_inserted(msg.id(), &msg.header.parents)?;
                     if first_index_actually_inserted.is_none() {
                         first_index_actually_inserted = Some(cur_index);
@@ -1621,7 +1642,7 @@ impl<M> OnDiskMessageStore<M> {
 
                     cur_input_message = messages.next();
                     actual_inserted_entries += 1;
-                    println!("Inserted item");
+                    //println!("Inserted item");
                 }
 
             }
@@ -1642,6 +1663,17 @@ impl<M> OnDiskMessageStore<M> {
         //println!("Index: {:#?}", mmap_index);
         Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
         debug_assert!(mmap_index[0..index_header.entries as usize].is_sorted_by_key(|x|x.message));
+
+        #[cfg(debug_assertions)]
+        {
+            let mut new_cutoff = index_header.cutoff;
+            new_cutoff.hash = CutoffHash::default();
+            for msg in &mmap_index[0..index_header.entries as usize] {
+                new_cutoff.report_add(msg.message);
+            }
+            assert_eq!(new_cutoff, index_header.cutoff);
+            println!("KNOWN GOOD");
+        }
 
         self.handle_remaining_child_assignments(remaining_child_assignments);
 
@@ -1859,6 +1891,11 @@ impl<M> OnDiskMessageStore<M> {
     pub(crate) fn get_messages_slice(&self) -> Result<&[IndexEntry]> {
         let (header, index) = self.header_and_index()?;
         Ok(&index[0..header.entries as usize])
+    }
+    pub(crate) fn set_cutoff_time(&mut self, time: CutOffTime) -> Result<()> {
+        let (header, _index) = Self::header_and_index_mut(&mut self.index_mmap)?;
+        header.cutoff.before_time = time;
+        Ok(())
     }
 
     pub(crate) fn get_messages_at_or_after(

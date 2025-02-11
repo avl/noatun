@@ -133,8 +133,6 @@ pub struct MainDbAuxHeader {
     deptrack_keys: RawDatabaseVec<DepTrackEntry>,
     uses: RawDatabaseVec<RegistrarInfo>,
     unused_messages: RawDatabaseVec<UnusedInfo>,
-    cutoff: CutOffTime,
-    padding: u32,
 }
 
 
@@ -378,14 +376,6 @@ impl DatabaseContextData {
 
     pub fn clear_unused_tracking(&mut self) {
         self.unused_messages.clear();
-    }
-
-    pub(crate) unsafe fn get_current_cutoff<'a>(&self) -> &'a mut CutOffTime {
-        unsafe {
-            &mut *(self.main_db_mmap.map_mut_ptr().wrapping_add(
-                size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, cutoff),
-            ) as *mut CutOffTime)
-        }
     }
 
     pub(crate) fn get_aux_header(&self) -> &MainDbAuxHeader {
@@ -1046,7 +1036,7 @@ impl DatabaseContextData {
         let unused_list = unsafe { self.get_unused_list() };
 
         for new_unused in new_unused_list.iter().rev() {
-            println!("Pushing unused: {:?}", new_unused);
+            //println!("Pushing unused: {:?}", new_unused);
             unused_list.push_untracked(self, *new_unused);
         }
 
