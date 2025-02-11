@@ -186,7 +186,7 @@ pub enum Acceptability {
 
 impl CutOffHashPos {
     pub(crate) fn is_acceptable_cutoff_hash(&self, now: NoatunTime, peer_hash: CutOffHashPos, config: &CutOffConfig) -> Acceptability {
-        println!("Peer hash: {:?}, self: {:?}", peer_hash, self);
+        //println!("Peer hash: {:?}, self: {:?}", peer_hash, self);
         if *self == peer_hash {
             return Acceptability::Nominal;
         }
@@ -224,10 +224,10 @@ impl CutOffHashPos {
         if t < self.before_time.to_noatun_time() {
             let prev = self.hash;
             self.hash.xor_with_msg(message_id);
-            println!("Xoring out message {:?} ({}), giving hash: {:?} (prev: {:?})", message_id, op, self.hash, prev);
+            //println!("Xoring out message {:?} ({}), giving hash: {:?} (prev: {:?})", message_id, op, self.hash, prev);
         } else {
-            println!("Op at {:?} was not before cutoff-period {:?} ({})", t, self.before_time, op);
+            //println!("Op at {:?} was not before cutoff-period {:?} ({})", t, self.before_time, op);
         }
-        println!(" == {} {:?} Resulting hash: {:?}", op, message_id, self);
+        //println!(" == {} {:?} Resulting hash: {:?}", op, message_id, self);
     }
 }

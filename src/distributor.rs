@@ -108,8 +108,10 @@ struct MergedDistributorMessages {
 enum SyncAllState {
     NotActive,
     Starting,
+    /// Query messages starting at 'MessageId', inclusive
     BeginQuery(MessageId),
-    QueryActive(MessageId, MessageId, IndexSet<MessageId>),
+    /// The current query concerns messages a..=b (i.e, note, inclusive of 'b')
+    QueryActive(/*a*/MessageId, /*b*/MessageId, IndexSet<MessageId>),
 }
 
 #[derive(Debug, Default)]
@@ -202,6 +204,7 @@ impl Distributor {
         };
         if let Some(sync_from) = sync_from {
             let cur_batch = database.get_messages_at_or_after(sync_from, Self::BATCH_SIZE)?;
+            info!("All messages after {:?} turned out to be {:?}", sync_from, cur_batch);
             if cur_batch.is_empty() {
                 self.sync_all_inprogress = SyncAllState::NotActive;
             } else {
@@ -244,18 +247,22 @@ impl Distributor {
                     accumulated_heads.extend(heads);
                     match database.is_acceptable_cutoff_hash(cutoff_hash, )? {
                         Acceptability::Nominal => {
+                            info!("Acceptability: Nominal");
                             self.distributor_state.most_recent_unsynced.remove(&src);
                             self.distributor_state.most_recent_clockdrift.remove(&src);
                         }
                         Acceptability::Unacceptable => {
+                            info!("Acceptability: Unacceptable");
                             self.distributor_state.most_recent_unsynced.insert(src, database.noatun_now());
                             self.sync_all_inprogress = SyncAllState::Starting;
                         }
                         Acceptability::Undecided(advance) => {
+                            info!("Acceptability: Undecided");
                             database.advance_cutoff(advance)?;
                             //TODO: Are we done here? Or do we need to do some analysis to see if the advance helped?
                         }
                         Acceptability::UnacceptablePeerClockDrift => {
+                            info!("Acceptability: Clockdrift");
                             self.distributor_state.most_recent_clockdrift.insert(src, database.noatun_now());
                         }
                     }
@@ -283,11 +290,14 @@ impl Distributor {
                 }
                 DistributorMessage::SyncAllAck(acked) => match &mut self.sync_all_inprogress {
                     SyncAllState::QueryActive(from, to, items) => {
-                        for ack in acked {
-                            items.swap_remove(&ack);
+                        debug!("Processing active query: {:?}..{:?}", from,to);
+                        for ack in &acked {
+                            items.swap_remove(ack);
                         }
+                        debug!("Active items: {:?}, after acks: {:?}", items, acked);
                         if items.is_empty() {
-                            self.sync_all_inprogress = SyncAllState::BeginQuery(*to);
+                            info!("Advance state of active query to {:?}", *to);
+                            self.sync_all_inprogress = SyncAllState::BeginQuery(to.successor());
                         }
                     }
                     SyncAllState::NotActive => {}
@@ -488,24 +498,34 @@ impl Distributor {
     fn process_received_messages<APP: Application>(
         &self,
         database: &mut Database<APP>,
-        message_list: Vec<(SerializedMessage, /*need ack*/ bool)>,
+        mut message_list: Vec<(SerializedMessage, /*need ack*/ bool)>,
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
-        for (msg,_) in message_list.iter() {
+        database.maybe_advance_cutoff()?;
+
+        message_list.sort_by_key(|x|x.0.id);
+        let mut chosen_messages = IndexMap::new();
+        'msg_iter: for (msg,need_ack) in message_list.into_iter() {
             for parent in msg.parents.iter() {
-                if database.contains_message(*parent)? == false && !message_list.iter().map(|x|x.0.id).any(|x|x==*parent) {
+                if database.contains_message(*parent)? == false && !chosen_messages.contains_key(parent) {
                     //compile_error!("Consider why this happens. Packet loss? What do we do?");
 
                     //panic!("Should never apply msg with unknown parent")
+                    // TODO: think more about how this check plays with the automatic stripping of parents
+                    // in 'append_many'.
+                    // There is an edge-case, where a message is removed immediately after having been
+                    // received, because it's before cutoff and it has no effect.
                     warn!("Could not apply message {:?} because parent {:?} is not known", msg.id, parent);
-                    return Ok(());
+                    continue 'msg_iter;
                 }
             }
+            chosen_messages.insert(msg.id, (msg, need_ack));
         }
+        compile_error!("Strip all parents off messages that are before cutoff. We can't keep the parent-list synced when we start changing it, and we must start changing it since we delete messages. But! We don't NEED the parent list for messages that are before the cutoff!")
 
         let mut to_ack = vec![];
-        let messages = message_list
-            .into_iter()
+        let messages = chosen_messages
+            .into_values()
             .map(|(x, need_ack)| (x.to_message(), need_ack))
             .filter_map(|(x, need_ack)| match x {
                 Ok(x) => {
@@ -526,7 +546,7 @@ impl Distributor {
                 );
             });
 
-        database.append_many(messages, false)?;
+        database.append_many(messages, false, false)?;
         if !to_ack.is_empty() {
             output.push(DistributorMessage::SyncAllAck(to_ack));
         }

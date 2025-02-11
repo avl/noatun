@@ -8,6 +8,18 @@ pub(crate) struct UpdateHeadTracker {
 }
 
 impl UpdateHeadTracker {
+    pub(crate) fn remove_update_head(&mut self, message_id: MessageId) -> Result<()> {
+        let mapping = self.file.map_mut();
+        let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
+        if let Some(index) = id_mapping.iter().position(|id| *id == message_id) {
+            if index + 1 < id_mapping.len() {
+                id_mapping.swap(index, id_mapping.len()-1);
+            }
+            let new_len = id_mapping.len() - 1; //len can't be 0, since then we couldn't have found 'message_id' in id_mapping
+            self.file.fast_truncate(new_len*size_of::<MessageId>());
+        }
+        Ok(())
+    }
     pub(crate) fn add_new_update_head(
         &mut self,
         new_message_id: MessageId,

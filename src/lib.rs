@@ -285,6 +285,10 @@ impl Debug for MessageId {
     }
 }
 
+const FOR_TEST_NON_RANDOM_ID: bool = true;
+#[cfg(test)]
+static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 impl MessageId {
     pub const ZERO: MessageId = MessageId { data: [0u32; 4] };
     pub fn min(self, other: MessageId) -> MessageId {
@@ -327,7 +331,19 @@ impl MessageId {
 
     pub fn generate_for_time(time: NoatunTime) -> Result<MessageId> {
         let mut random_part = [0u8; 10];
-        rand::thread_rng().fill_bytes(&mut random_part);
+
+        #[cfg(test)] {
+            if FOR_TEST_NON_RANDOM_ID {
+                random_part[0..8].copy_from_slice(&NON_RANDOM_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst).to_le_bytes());
+            } else {
+                rand::thread_rng().fill_bytes(&mut random_part);
+            }
+        }
+        #[cfg(not(test))] {
+            rand::thread_rng().fill_bytes(&mut random_part);
+        }
+
+
         Self::from_parts(time, random_part)
     }
     pub fn from_parts_for_test(time: NoatunTime, random: u64) -> MessageId {
@@ -1603,8 +1619,8 @@ mod tests {
 
         db.append_single(
             CounterMessage {
-                parent: vec![],
                 id: MessageId::new_debug(0x100),
+                parent: vec![],
                 inc1: 2,
                 set1: 0,
             }
@@ -1614,8 +1630,8 @@ mod tests {
         .unwrap();
         db.append_single(
             CounterMessage {
-                parent: vec![MessageId::new_debug(0x100)],
                 id: MessageId::new_debug(0x101),
+                parent: vec![MessageId::new_debug(0x100)],
                 inc1: 0,
                 set1: 42,
             }
@@ -1625,8 +1641,8 @@ mod tests {
         .unwrap();
         db.append_single(
             CounterMessage {
-                parent: vec![MessageId::new_debug(0x101)],
                 id: MessageId::new_debug(0x102),
+                parent: vec![MessageId::new_debug(0x101)],
                 inc1: 1,
                 set1: 0,
             }
@@ -1935,6 +1951,10 @@ mod tests {
                 object da: DatabaseVec<DatabaseCell<u32>>
             }
         );
+    }
+    #[test]
+    fn test_id_generation_must_be_random() {
+        assert!(!FOR_TEST_NON_RANDOM_ID);
     }
 }
 

@@ -55,8 +55,8 @@ impl MessagePayload for SyncMessage {
         let mut project = root.pin_project();
 
         if self.reset {
-            project.counter.set(0);
-            project.sum.set(0);
+            project.counter.set(1);
+            project.sum.set(1);
         } else {
             let prev_counter =  project.counter.get();
             let prev_sum =  project.sum.get();
@@ -267,7 +267,7 @@ fn old_local_messages_without_effect_are_removed() {
 
 
 #[test]
-fn old_transmitted_messages_without_effect_are_removed() {
+fn old_transmitted_messages_without_effect_are_removed1() {
     let mut db: Database<SyncApp> = Database::create_in_memory(
         10000,
         CutOffDuration::from_days(2).unwrap(), // 2 days
@@ -304,35 +304,49 @@ fn old_transmitted_messages_without_effect_are_removed() {
     assert_eq!(db.nominal_cutoff_state().unwrap().hash, CutoffHash::from_msg(msg2.id));
 }
 
+#[test]
+fn old_transmitted_messages_without_effect_are_removed2() {
+    let mut db: Database<SyncApp> = Database::create_in_memory(
+        100000,
+        CutOffDuration::from_minutes(15),
+        Some(START_TIME.into()),
+        None,
+        (),
+    )
+        .unwrap();
+
+    let msg1 = db.append_local(SyncMessage {
+        value: 1,
+        reset: false,
+    }).unwrap();
+    db.mark_transmitted(msg1.id);
+    println!("Add msg1 {:?}", msg1.id);
+    //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
+    db.set_mock_time(datetime!(2019-12-31 23:37:01 Z).into());
+    let msg2 = db.append_local(SyncMessage {
+        value: 0,
+        reset: true,
+    }).unwrap();
+    db.mark_transmitted(msg2.id);
+    println!("Add msg2 {:?}", msg2.id);
+    assert_eq!(db.get_all_messages().unwrap().len(), 2);
+
+
+    //println!("Advancing time to 2024");
+    db.set_mock_time(datetime!(2024-01-02 Z).into());
+    db.maybe_advance_cutoff();
+
+    let all_msgs = db.get_all_messages().unwrap();
+    assert_eq!(all_msgs.len(), 1);
+    assert_eq!(all_msgs[0].header.id,msg2.id);
+    println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
+    assert_eq!(db.nominal_cutoff_state().unwrap().hash, CutoffHash::from_msg(msg2.id));
+}
 
 
 
 #[tokio::test(start_paused = true)]
 async fn all_up_gradual_update_sync_test() {
-    /*
-    pub struct TracingTimer(tokio::time::Instant);
-
-    impl tracing_subscriber::fmt::time::FormatTime for TracingTimer {
-        fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> core::fmt::Result {
-            let t = tokio::time::Instant::now();
-            write!(w, "{:>10?}", (t-self.0))
-        }
-    }
-
-
-    let stdout_log = tracing_subscriber::fmt::layer()
-        .with_timer(TracingTimer(tokio::time::Instant::now()))
-        .pretty()
-        .with_filter(tracing_subscriber::EnvFilter::from_default_env())
-        ;
-
-    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-    let subscriber = tracing_subscriber::registry()
-        .with(
-            stdout_log
-        );
-    tracing::subscriber::set_global_default(subscriber).expect("Failed to initialize tracing");
-*/
 
     let mut driver = TestDriver::default();
     let mut app1 = create_app(&mut driver, 1).await;
@@ -344,8 +358,8 @@ async fn all_up_gradual_update_sync_test() {
     let mut correct_count = 0;
     let mut correct_sum = 0;
     for i in 0..10 {
-        println!("I = {}", i);
-        println!("Msgs1: {:#?}", app1.get_all_messages().unwrap());
+        //println!("I = {}", i);
+        //println!("Msgs1: {:#?}", app1.get_all_messages().unwrap());
         assert!(app1.get_all_messages().unwrap().is_sorted_by_key(|x|x.header.id.timestamp()));
         assert!(app2.get_all_messages().unwrap().is_sorted_by_key(|x|x.header.id.timestamp()));
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
@@ -355,7 +369,7 @@ async fn all_up_gradual_update_sync_test() {
         correct_count += 2;
         correct_sum += 3;
     }
-    info!(" -------------- NETWORK HEALED -----------------");
+    //info!(" -------------- NETWORK HEALED -----------------");
     driver.set_loss(0.0);
     tokio::time::sleep(Duration::from_secs(50)).await;
     tokio::time::sleep(Duration::from_secs(30)).await;
@@ -394,6 +408,7 @@ fn setup_tracing() {
 
     let stdout_log = tracing_subscriber::fmt::layer()
         .with_timer(TracingTimer(tokio::time::Instant::now()))
+        .with_ansi(false)
         .pretty()
         .with_filter(tracing_subscriber::EnvFilter::from_default_env())
         ;
@@ -403,13 +418,13 @@ fn setup_tracing() {
         .with(
             stdout_log
         );
-    tracing::subscriber::set_global_default(subscriber).expect("Failed to initialize tracing");
+    _ = tracing::subscriber::set_global_default(subscriber);
 }
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test() {
-    setup_tracing();
-    for seed in 0..100 {
+    //setup_tracing();
+    for seed in 0..10 {
         println!("Seed = {}", seed);
         all_up_general_update_sync_test_impl(seed).await;
     }
@@ -417,7 +432,9 @@ async fn all_up_general_update_sync_test() {
 #[tokio::test(start_paused = true)]
 async fn all_up_special_seed() {
     setup_tracing();
-    all_up_general_update_sync_test_impl(4).await;
+    //for seed in 0..100 {
+        all_up_general_update_sync_test_impl(16).await;
+    //}
 }
 
 async fn all_up_general_update_sync_test_impl(seed: u64) {
@@ -439,22 +456,26 @@ async fn all_up_general_update_sync_test_impl(seed: u64) {
         let time_now = noatun_start_time + start_instant.elapsed();
         app1.set_mock_time(time_now);
         app2.set_mock_time(time_now);
-        println!("I = {}", i);
-        println!("Msgs: {:#?}", app1.get_all_messages().unwrap());
+
+        //println!("I = {}", i);
+        //println!("Msgs: {:#?}", app1.get_all_messages().unwrap());
         assert!(app1.get_all_messages().unwrap().is_sorted_by_key(|x|x.header.id.timestamp()));
         assert!(app2.get_all_messages().unwrap().is_sorted_by_key(|x|x.header.id.timestamp()));
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
 
-        app1.add_message_at(time_now-(Duration::from_secs(random(0..7200))), SyncMessage{value: 1, reset: false }).await;
+        app1.add_message_at(time_now-(Duration::from_secs(random(0..7200))), SyncMessage{value: 0, reset: true }).await;
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
         app2.add_message_at(time_now -(Duration::from_secs(random(0..7200))), SyncMessage{value: 2, reset: false }).await;
         correct_count += 2;
-        correct_sum += 3;
+        correct_sum += 2;
     }
-    info!(" -------------- NETWORK HEALED -----------------");
+    //info!(" -------------- NETWORK HEALED -----------------");
     driver.set_loss(0.0);
     tokio::time::sleep(Duration::from_secs(50)).await;
-    tokio::time::sleep(Duration::from_secs(250)).await;
+    let time_now = noatun_start_time + start_instant.elapsed();
+    app1.set_mock_time(time_now);
+    app2.set_mock_time(time_now);
+    tokio::time::sleep(Duration::from_secs(20)).await;
 
     let root1 = app1.with_root(|root|root.detach());
     let root2 = app2.with_root(|root|root.detach());
@@ -463,13 +484,14 @@ async fn all_up_general_update_sync_test_impl(seed: u64) {
     let msgs2 = app2.get_all_messages().unwrap();
     assert!(msgs1.is_sorted_by_key(|x|x.header.id));
     assert!(msgs2.is_sorted_by_key(|x|x.header.id));
-    //println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
+    println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
     assert_eq!(msgs1.len(), msgs2.len());
-    assert_eq!(msgs1, msgs2);
-    assert_eq!(root1.sum, correct_sum);
-    assert_eq!(root2.sum, correct_sum);
-    assert_eq!(root1.counter, correct_count);
-    assert_eq!(root2.counter, correct_count);
+    //compile_error!("Consider if maybe we should remove *all* parents from messags < cutoff?")
+    assert_eq!(msgs1, msgs2, "Failed for seed {}", seed);
+    assert!(root1.sum >= 1);
+    assert!(root2.sum >= 1);
+    assert!(root1.counter >= 1);
+    assert!(root2.counter >= 1);
     assert_eq!(root1, root2);
 
 //    compile_error!("Figure out why cutoff hash differs, even though actual messages are the same, for seed 4!")

@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime};
+use tracing::info;
 
 pub(crate) struct Projector<APP: Application> {
     messages: OnDiskMessageStore<APP::Message>,
@@ -32,11 +33,11 @@ impl<APP: Application> Projector<APP> {
         let old_cutoff_index = self.messages.get_index_after(cutoff_state.before_time.to_noatun_time())?;
         let cutoff_index = self.messages.get_index_after(new_cutoff_at.to_noatun_time())?;
 
-        println!("Advancing cutoff from {:?} to {:?}, index = {}, comp : {}", cutoff_state.before_time, new_cutoff_at, cutoff_index, cutoff_state.before_time >= new_cutoff_at);
+        //println!("Advancing cutoff from {:?} to {:?}, index = {}, comp : {}", cutoff_state.before_time, new_cutoff_at, cutoff_index, cutoff_state.before_time >= new_cutoff_at);
         let mut unused_list = unsafe { context.get_unused_list() };
         let unused_list = unused_list.get_full_slice(context);
 
-        println!("Unused list: {:#?}", unused_list);
+        //println!("Unused list: {:#?}", unused_list);
         debug_assert!(unused_list.is_sorted_by_key(|x|x.last_overwriter));
 
         //println!("Unused list: {:?}", unused_list);
@@ -59,7 +60,7 @@ impl<APP: Application> Projector<APP> {
 
         let must_remove = context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?; //TODO: Rename
         for index in must_remove {
-            self.messages.mark_deleted_by_index(index);
+            self.messages.mark_deleted_by_index(index, &mut self.head_tracker);
         }
 
         self.messages.set_cutoff_time(new_cutoff_at);
@@ -163,6 +164,16 @@ impl<APP: Application> Projector<APP> {
         let mut messages: Vec<Message<APP::Message>> = message.collect();
         messages.sort_unstable_by_key(|x| x.id());
         messages.dedup_by_key(|x|x.id());
+        info!("Deduped list to insert: {:?}", messages);
+
+        /*for msg in messages.iter_mut() {
+            msg.header.parents.retain(|par|{
+                match self.contains_message(*par) {
+                    Ok(x) => {x}
+                    Err(_) => {false}
+                }
+            });
+        }*/
 
         self.push_sorted_messages(context, messages.into_iter(), local)
     }
@@ -180,6 +191,12 @@ impl<APP: Application> Projector<APP> {
         )? {
             if let Some(cur_main_db_next_index) = context.next_seqnr().try_index() {
                 if insert_point < cur_main_db_next_index {
+                    #[cfg(debug_assertions)]
+                    if insert_point > 0
+                    {
+                        info!("checking if insertion point {} exists: {}", insert_point, self.messages.contains_index(insert_point)?);
+                        debug_assert!(self.messages.contains_index(insert_point)?);
+                    }
                     self.rewind(context, insert_point)?;
                 }
             }
@@ -294,7 +311,7 @@ impl<APP: Application> Projector<APP> {
             let must_remove =
                 context.calculate_stale_messages(&mut tself.messages)?;
             for index in must_remove {
-                tself.messages.mark_deleted_by_index(index);
+                tself.messages.mark_deleted_by_index(index, &mut tself.head_tracker);
                 //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
             }
             Ok(())

@@ -31,6 +31,9 @@ impl<APP: Application> Database<APP> {
 
     /// TODO: Document
     pub fn maybe_advance_cutoff(&mut self) -> Result<()> {
+        // TODO: Do we need to check for dirty here? Probably not, but then we should
+        // stop checking for dirty in things like append_many. It should be enough to
+        // check on construction, right?
         let now = self.noatun_now();
         let nominal_cutoff_time = self.message_store.nominal_cutoff_time(now);
         let current_cutoff = self.message_store.current_cutoff_hash()?;
@@ -308,7 +311,7 @@ impl<APP: Application> Database<APP> {
     // TODO: Maybe change the signature of this, and some other public methods, to accept
     // a raw message payload, and hide messageId-generation from user!
     pub fn append_single(&mut self, message: Message<APP::Message>, local: bool) -> Result<()> {
-        self.append_many(std::iter::once(message), local)
+        self.append_many(std::iter::once(message), local, true)
     }
 
     /// Set the current time to the given value.
@@ -365,10 +368,19 @@ impl<APP: Application> Database<APP> {
         Ok(header)
     }
 
+    /// Unknown parents are automatically just removed. The reason is that parents can
+    /// can be removed by adding new messages (because the new messages may be before cutoff,
+    /// and may replace all effect of the parents). If this were considered a failure case,
+    /// it would be very hard to use 'append_many' correctly, since you'd have to be able to
+    /// figure out if a parent would or would not be replaced by writing the child.
+    ///
+    /// Therefore, any parents that do not exist, or cease to exist, are automatically
+    /// removed from the parent-list of any message in 'messages'.
     pub fn append_many(
         &mut self,
         messages: impl Iterator<Item = Message<APP::Message>>,
         local: bool,
+        allow_cutoff_advance: bool
     ) -> Result<()> {
         let now = self.noatun_now();
         if !self.context.mark_dirty()? {
@@ -382,7 +394,9 @@ impl<APP: Application> Database<APP> {
             )?;
         }
 
-        self.maybe_advance_cutoff()?;
+        if allow_cutoff_advance {
+            self.maybe_advance_cutoff()?;
+        }
 
         self.message_store
             .push_messages(&mut self.context, messages, local);

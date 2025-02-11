@@ -721,6 +721,7 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
 
     pub async fn run(mut self) -> Result<()> {
         let result = self.run2().await;
+        info!("Communication terminated: {:?}", result);
         match result {
             Ok(Some(sender)) => {
                 sender.send(()).unwrap();
@@ -789,7 +790,9 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                 }
                 periodic = tokio::time::sleep_until(self.next_periodic) => {
                     let database = self.database.lock().unwrap();
-                    self.outbuf.extend(self.distributor.get_periodic_message(&*database)?);
+                    let msgs = self.distributor.get_periodic_message(&*database)?;
+                    info!("Time for periodic messages: {:?}", msgs);
+                    self.outbuf.extend(msgs);
                     self.next_periodic += Self::PERIODIC_MSG_INTERVAL;
                 }
                 cmd = self.cmd_rx.recv() => {
@@ -851,6 +854,7 @@ struct NoatunRuntime {
 pub struct DatabaseCommunication<APP: Application> {
     database: Arc<Mutex<Database<APP>>>,
     cmd_tx: Sender<Cmd<APP>>,
+    node: String,
 }
 
 
@@ -928,8 +932,12 @@ where <APP as Application>::Params: Send,
         let db = self.database.lock().unwrap();
         db.with_root(f)
     }
+
+    #[instrument(skip(self),fields(node=?self.node))]
     pub fn set_mock_time(&mut self, time: NoatunTime) {
-        self.database.lock().unwrap().set_mock_time(time);
+        let mut db  = self.database.lock().unwrap();
+        db.set_mock_time(time);
+        db.maybe_advance_cutoff().unwrap();
     }
     pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
         self.database.lock().unwrap().get_all_messages()
@@ -984,7 +992,7 @@ where <APP as Application>::Params: Send,
 
         let main = DatabaseCommunicationLoop {
             distributor: Distributor::new(&node),
-            node,
+            node:node.clone(),
             database: database.clone(),
             jh,
             sender_tx,
@@ -1000,7 +1008,7 @@ where <APP as Application>::Params: Send,
 
         spawn(main.run());
 
-        Ok(DatabaseCommunication { database, cmd_tx })
+        Ok(DatabaseCommunication { database, cmd_tx, node })
     }
 
     fn start_async_runtime<Driver:CommunicationDriver+Sync+Send+'static>(driver: &mut Driver, database: Database<APP>, config: DatabaseCommunicationConfig) -> Result<(Runtime, DatabaseCommunication<APP>)> {

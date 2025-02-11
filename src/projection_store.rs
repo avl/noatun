@@ -25,6 +25,7 @@ use std::{iter, slice};
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
 use crate::sequence_nr::SequenceNr;
 use std::pin::Pin;
+use tracing::{error, info};
 use crate::cutoff::{CutOffTime, CutoffHash};
 
 mod registrar_info {
@@ -288,6 +289,17 @@ impl DatabaseContextData {
         })
     }
 
+
+    /// The next sequence number we expect to be added.
+    /// I.e, later rewinding to this sequence number would undo the event that carries
+    /// this sequece number.
+    ///
+    /// For an initialized database with no message applied, this method returns #0.
+    /// This is because message #0 is the next that is expected to be added.
+    ///
+    /// Note that it is always possible to rewind to message sequence #0, but not
+    /// necessary to any other index, since indices may not always be populated
+    /// (only after gc of the index-data structure).
     #[inline(always)]
     pub fn next_seqnr(&self) -> SequenceNr {
         let header: &MainDbHeader =
@@ -501,7 +513,7 @@ impl DatabaseContextData {
             return;
         }
 
-        //println!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
+        info!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
 
         let result = self.undo_log.rewind(|entry| match entry {
             UndoLogEntry::SetPointer(new_pointer) => {
@@ -533,6 +545,11 @@ impl DatabaseContextData {
                 } else if time > new_time {
                     HowToProceed::PopAndContinue
                 } else {
+                    error!(
+                        "Couldn't rewind time to {}, ended up back at {}",
+                        new_time, time
+                    );
+
                     panic!(
                         "Couldn't rewind time to {}, ended up back at {}",
                         new_time, time
@@ -972,7 +989,7 @@ impl DatabaseContextData {
 
     */
 
-    pub(crate) fn do_record_stale_messages<M: MessagePayload + Debug>(&mut self,
+    /*pub(crate) fn do_record_stale_messages<M: MessagePayload + Debug>(&mut self,
                                         messages: &mut OnDiskMessageStore<M>) {
 
         let unused = unsafe { self.get_unused_list() };
@@ -980,7 +997,7 @@ impl DatabaseContextData {
         for msg in unused_messages {
             unused.push_untracked(self, msg);
         }
-    }
+    }*/
 
     /// Called in two situations:
     /// 1) Immediately when noticing a message is stale
@@ -1023,7 +1040,7 @@ impl DatabaseContextData {
                 continue 'outer;
             }
 
-            println!("Deleting {:?}", msg);
+            info!("Deleting {:?}", msg);
             for (revdep, last_overwriter) in self.read_reverse_dependency(msg.seq) {
                 unused_messages.push(UnusedInfo {
                     seq: revdep,
