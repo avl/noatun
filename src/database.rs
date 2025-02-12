@@ -368,14 +368,7 @@ impl<APP: Application> Database<APP> {
         Ok(header)
     }
 
-    /// Unknown parents are automatically just removed. The reason is that parents can
-    /// can be removed by adding new messages (because the new messages may be before cutoff,
-    /// and may replace all effect of the parents). If this were considered a failure case,
-    /// it would be very hard to use 'append_many' correctly, since you'd have to be able to
-    /// figure out if a parent would or would not be replaced by writing the child.
-    ///
-    /// Therefore, any parents that do not exist, or cease to exist, are automatically
-    /// removed from the parent-list of any message in 'messages'.
+    /// For messages before the cutoff-time, all parents are removed.
     pub fn append_many(
         &mut self,
         messages: impl Iterator<Item = Message<APP::Message>>,

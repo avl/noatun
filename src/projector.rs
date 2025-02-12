@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime};
-use tracing::info;
+use tracing::{error, info};
 
 pub(crate) struct Projector<APP: Application> {
     messages: OnDiskMessageStore<APP::Message>,
@@ -48,9 +48,26 @@ impl<APP: Application> Projector<APP> {
         cutoff_state.before_time = new_cutoff_at;
 
         let messages_slice = self.messages.get_messages_slice()?;
+        let new_cutoff_at_noatun_time = new_cutoff_at.to_noatun_time();
         //println!("Advancing {:?}", old_cutoff_index.index()..cutoff_index.index());
+        let mut remove_orders = Vec::new();
         for index_entry in &messages_slice[old_cutoff_index.index()..cutoff_index.index()] {
+            if index_entry.file_offset.is_deleted() {
+                continue;
+            }
+            if let Some((_hdr, mut children_to_remove)) = self.messages.read_message_header_and_children(index_entry.message)? {
+                children_to_remove.retain(|x|x.timestamp() < new_cutoff_at_noatun_time);
+                remove_orders.push((index_entry.message, children_to_remove));
+            } else {
+                error!("Encountered deleted message in cutoff-processing");
+            }
             cutoff_state.apply(index_entry.message, "advance add");
+        }
+        for (message,children_to_remove) in remove_orders {
+            self.messages.remove_all_parents_and_some_children(
+                message,
+                &children_to_remove
+            )?;
         }
         for item in &unused_list[..unused_list_last] {
             debug_assert!(item.last_overwriter < cutoff_index);
@@ -62,6 +79,8 @@ impl<APP: Application> Projector<APP> {
         for index in must_remove {
             self.messages.mark_deleted_by_index(index, &mut self.head_tracker);
         }
+
+        self.head_tracker.remove_before_cutoff(cutoff_state.before_time.to_noatun_time());
 
         self.messages.set_cutoff_time(new_cutoff_at);
         Ok(())
@@ -88,6 +107,9 @@ impl<APP: Application> Projector<APP> {
     pub fn current_cutoff_hash(&self) -> Result<CutOffHashPos> {
         self.messages.current_cutoff_hash()
     }
+    pub fn current_cutoff_time(&self) -> Result<NoatunTime> {
+        self.messages.current_cutoff_time()
+    }
     pub fn nominal_cutoff_time(&self, now: NoatunTime) -> CutOffTime {
         self.cut_off_config.nominal_cutoff(CutOffTime::from_noatun_time(now))
     }
@@ -109,8 +131,11 @@ impl<APP: Application> Projector<APP> {
 
     pub fn recover(&mut self, now: NoatunTime) -> Result<()> {
         self.head_tracker.clear();
+        let cutoff = self.messages.current_cutoff_time()?;
         self.messages
-            .recover(|id, parents| self.head_tracker.add_new_update_head(id, parents),
+            .recover(|id, parents|
+                         self.head_tracker.add_new_update_head(id, parents, cutoff)
+,
             now, &self.cut_off_config
             )
     }
@@ -166,14 +191,12 @@ impl<APP: Application> Projector<APP> {
         messages.dedup_by_key(|x|x.id());
         info!("Deduped list to insert: {:?}", messages);
 
-        /*for msg in messages.iter_mut() {
-            msg.header.parents.retain(|par|{
-                match self.contains_message(*par) {
-                    Ok(x) => {x}
-                    Err(_) => {false}
-                }
-            });
-        }*/
+        let cutoff_time = self.messages.current_cutoff_time()?;
+        for message in messages.iter_mut() {
+            if message.header.id.timestamp() < cutoff_time {
+                message.header.parents.clear();
+            }
+        }
 
         self.push_sorted_messages(context, messages.into_iter(), local)
     }
@@ -184,9 +207,12 @@ impl<APP: Application> Projector<APP> {
         local: bool,
     ) -> Result<bool> {
         //debug_assert_eq!(self.messages.count_messages()?, context.next_seqnr().try_index().unwrap_or(0));
+        let cutoff = self.current_cutoff_time()?;
         if let Some(insert_point) = self.messages.append_many_sorted(
             messages,
-            |id, parents| self.head_tracker.add_new_update_head(id, parents),
+            |id, parents|
+                    self.head_tracker.add_new_update_head(id, parents, cutoff)
+                ,
             local,
         )? {
             if let Some(cur_main_db_next_index) = context.next_seqnr().try_index() {

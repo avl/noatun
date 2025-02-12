@@ -521,7 +521,6 @@ impl Distributor {
             }
             chosen_messages.insert(msg.id, (msg, need_ack));
         }
-        compile_error!("Strip all parents off messages that are before cutoff. We can't keep the parent-list synced when we start changing it, and we must start changing it since we delete messages. But! We don't NEED the parent list for messages that are before the cutoff!")
 
         let mut to_ack = vec![];
         let messages = chosen_messages

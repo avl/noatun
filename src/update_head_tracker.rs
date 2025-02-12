@@ -1,7 +1,8 @@
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
-use crate::MessageId;
+use crate::{MessageId, NoatunTime};
 use anyhow::Result;
+use tracing::{info, warn};
 
 pub(crate) struct UpdateHeadTracker {
     file: FileAccessor,
@@ -20,11 +21,38 @@ impl UpdateHeadTracker {
         }
         Ok(())
     }
+    pub(crate) fn remove_before_cutoff(&mut self, cutoff: NoatunTime) -> Result<()> {
+        info!("Deleting all heads before cutoff: {:?}", cutoff);
+        let mapping = self.file.map_mut();
+        let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
+        let mut index = 0;
+        let mut mapping_len = id_mapping.len();
+        while index < mapping_len {
+            if id_mapping[index].timestamp() < cutoff {
+                info!("Deleting all head: {:?}", id_mapping[index]);
+                id_mapping.swap(index, id_mapping.len()-1);
+                mapping_len -= 1;
+            } else {
+                index += 1;
+            }
+        }
+        self.file.fast_truncate(mapping_len*size_of::<MessageId>());
+
+        Ok(())
+
+    }
+
     pub(crate) fn add_new_update_head(
         &mut self,
         new_message_id: MessageId,
         subsumed: &[MessageId],
+        cutoff: NoatunTime,
     ) -> anyhow::Result<()> {
+        if new_message_id.timestamp() < cutoff {
+            warn!("Not adding update-head {:?} because cutoff {:?}", new_message_id, cutoff);  //TODO: not warn!
+            return Ok(());
+        }
+        info!("Adding update-head {:?} (cutoff {:?})", new_message_id, cutoff);  //TODO: not warn!
         let mapping = self.file.map_mut();
         let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
         let mut i = 0;

@@ -116,6 +116,10 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
             .handle
             .write_u16::<LittleEndian>(val.try_into().unwrap())?)
     }
+    pub fn clear(&mut self) -> Result<()> where T:Write {
+        self.set_len(0)?;
+        Ok(())
+    }
 
     pub fn get(&mut self, index: usize) -> Result<MessageId> {
         debug_assert!(index < self.len()?);
@@ -291,7 +295,7 @@ impl FileOffset {
     pub(crate) fn deleted() -> Self {
         Self(u64::MAX)
     }
-    fn is_deleted(self) -> bool {
+    pub(crate) fn is_deleted(self) -> bool {
         self.0 == u64::MAX
     }
     fn offset(self) -> Option<u64> {
@@ -1371,6 +1375,36 @@ impl<M> OnDiskMessageStore<M> {
         })
     }
 
+    /// This removes the affected parent/child pointers, not the actual messages being pointed to.
+    pub(crate) fn remove_all_parents_and_some_children(
+        &mut self,
+        id: MessageId,
+        children_to_remove: &[MessageId],
+    ) -> Result<()>
+    where
+        M: MessagePayload,
+    {
+        //dbg!(id,new_parents,new_children, removed_parent, removed_child);
+        let (header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
+        let Ok(index) = search_index.binary_search_by_key(&id, |x| x.message) else {
+            eprintln!("Message did not exist");
+            return Ok(());
+        };
+        if let Some((file, offset)) = search_index[index].file_offset.file_and_offset() {
+            let file = &mut self.data_files[file.index()].file;
+            let header: &FileHeaderEntry = file.access_pod(offset as usize)?;
+            let mut parents = EmbVecAccessor::new_parents(&mut *file, offset);
+            parents.clear();
+
+            let mut children = EmbVecAccessor::new_children(&mut *file, offset)?;
+            for child in children_to_remove {
+                children.remove(*child)?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn add_remove_parents_and_children(
         &mut self,
         id: MessageId,
@@ -1955,7 +1989,10 @@ impl<M> OnDiskMessageStore<M> {
         let (header, _index) = self.header_and_index()?;
         Ok(header.cutoff)
     }
-
+    pub fn current_cutoff_time(&self) -> Result<NoatunTime> { //TODO: Name? Current is superfluous?
+        let (header, _index) = self.header_and_index()?;
+        Ok(header.cutoff.before_time.to_noatun_time())
+    }
     /// Warning! The returned slice may contain deleteds messages!
     pub(crate) fn get_messages_slice(&self) -> Result<&[IndexEntry]> {
         let (header, index) = self.header_and_index()?;
