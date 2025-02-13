@@ -1014,7 +1014,7 @@ impl<M> OnDiskMessageStore<M> {
         match message_index.binary_search_by_key(&id, |x| x.message) {
             Ok(index) =>
                 if message_index[index].file_offset.is_deleted() {
-                    return Ok(None);
+                    Ok(None)
                 } else {
                     Ok(Some(index))
                 }
@@ -1103,7 +1103,7 @@ impl<M> OnDiskMessageStore<M> {
     {
         let Some((msg, children)) = self.read_message_header_and_children_by_index(delete_index)?
         else {
-            error!("Message {} was already deleted", delete_index);
+            warn!("Message {} was already deleted", delete_index);
             return Ok(());
         };
         info!("Actually mark index {} deleted: {:?} (children: {:?})", delete_index, msg.id, children);
@@ -1174,12 +1174,15 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
-    pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<()> {
+    /// Returns true if the message existed and was marked as transmitted.
+    /// If this returns false, the message didn't (any longer) exist, and must NOT be transmitted
+    pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<bool> {
         let (header, message_index) =
             Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
         let Ok(index) = message_index.binary_search_by_key(&message_id, |x| x.message) else {
             // TODO: Trace log?
-            return Ok(());
+            info!("Message to mark as transmitted no longer existed");
+            return Ok(false);
         };
         let index_entry = &message_index[index];
 
@@ -1191,7 +1194,7 @@ impl<M> OnDiskMessageStore<M> {
         } else {
             // Deleted
         }
-        Ok(())
+        Ok(true)
     }
 
     pub fn get_children_of(&self, msg: MessageId) -> Result<Vec<MessageId>> {
@@ -1784,6 +1787,7 @@ impl<M> OnDiskMessageStore<M> {
     }
     fn check_duplicates(mmap_index: &[IndexEntry]) {
         for (index, window) in mmap_index.windows(2).enumerate() {
+            #[allow(clippy::nonminimal_bool)]
             if !(window[0].message < window[1].message) {
                 panic!("Failed condition: {:?} < {:?} at {}", window[0].message, window[1].message, index);
             }

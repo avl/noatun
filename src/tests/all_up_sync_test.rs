@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::io::Write;
-use std::ops::Add;
+use std::ops::{Add, Sub};
 use std::pin::Pin;
 use std::time::Duration;
 use tracing::info;
@@ -27,6 +27,7 @@ use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::distributor::Status;
 use chrono::DateTime;
 use chrono::Utc;
+use indexmap::IndexSet;
 
 thread_local! {
     pub static MY_THREAD_RNG: RefCell<Option<SmallRng>> = const { RefCell::new(None) };
@@ -240,7 +241,7 @@ fn old_local_messages_without_effect_are_removed() {
         reset: false,
     }).unwrap();
     println!("Add msg1 {:?}", msg1.id);
-    println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
+    println!("Cutoff-hash: {:?}", db.current_cutoff_state().unwrap());
     db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into());
     let msg2 = db.append_local(SyncMessage {
         value: 2,
@@ -261,7 +262,7 @@ fn old_local_messages_without_effect_are_removed() {
     let all_msgs = db.get_all_messages().unwrap();
     assert_eq!(all_msgs.len(), 1);
     assert_eq!(all_msgs[0].header.id,last.id);
-    println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
+    println!("Cutoff-hash: {:?}", db.current_cutoff_state().unwrap());
 }
 
 
@@ -300,8 +301,8 @@ fn old_transmitted_messages_without_effect_are_removed1() {
     let all_msgs = db.get_all_messages().unwrap();
     assert_eq!(all_msgs.len(), 1);
     assert_eq!(all_msgs[0].header.id,msg2.id);
-    println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
-    assert_eq!(db.nominal_cutoff_state().unwrap().hash, CutoffHash::from_msg(msg2.id));
+    println!("Cutoff-hash: {:?}", db.current_cutoff_state().unwrap());
+    assert_eq!(db.current_cutoff_state().unwrap().hash, CutoffHash::from_msg(msg2.id));
 }
 
 #[test]
@@ -322,7 +323,7 @@ fn old_transmitted_messages_without_effect_are_removed2() {
     db.mark_transmitted(msg1.id);
     println!("Add msg1 {:?}", msg1.id);
     //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
-    db.set_mock_time(datetime!(2019-12-31 23:37:01 Z).into());
+    db.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into());
     let msg2 = db.append_local(SyncMessage {
         value: 0,
         reset: true,
@@ -339,8 +340,8 @@ fn old_transmitted_messages_without_effect_are_removed2() {
     let all_msgs = db.get_all_messages().unwrap();
     assert_eq!(all_msgs.len(), 1);
     assert_eq!(all_msgs[0].header.id,msg2.id);
-    println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
-    assert_eq!(db.nominal_cutoff_state().unwrap().hash, CutoffHash::from_msg(msg2.id));
+    println!("Cutoff-hash: {:?}", db.current_cutoff_state().unwrap());
+    assert_eq!(db.current_cutoff_state().unwrap().hash, CutoffHash::from_msg(msg2.id));
 }
 
 
@@ -424,7 +425,7 @@ fn setup_tracing() {
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test() {
     //setup_tracing();
-    for seed in 0..10 {
+    for seed in 0..100 {
         println!("Seed = {}", seed);
         all_up_general_update_sync_test_impl(seed).await;
     }
@@ -433,7 +434,7 @@ async fn all_up_general_update_sync_test() {
 async fn all_up_special_seed() {
     setup_tracing();
     //for seed in 0..100 {
-        all_up_general_update_sync_test_impl(16).await;
+        all_up_general_update_sync_test_impl(30).await;
     //}
 }
 
@@ -485,6 +486,12 @@ async fn all_up_general_update_sync_test_impl(seed: u64) {
     assert!(msgs1.is_sorted_by_key(|x|x.header.id));
     assert!(msgs2.is_sorted_by_key(|x|x.header.id));
     println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
+    let smsgs1:IndexSet<_> = msgs1.iter().map(|x|x.header.id).collect();
+    let smsgs2:IndexSet<_> = msgs2.iter().map(|x|x.header.id).collect();
+    println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
+    println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
+    println!("Only in 1: {:?}", smsgs1.sub(&smsgs2));
+    println!("Only in 2: {:?}", smsgs2.sub(&smsgs1));
     assert_eq!(msgs1.len(), msgs2.len());
     //compile_error!("Consider if maybe we should remove *all* parents from messags < cutoff?")
     assert_eq!(msgs1, msgs2, "Failed for seed {}", seed);

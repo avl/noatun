@@ -1,4 +1,3 @@
-#![allow(unused)]
 #![allow(dead_code)]
 #![allow(clippy::unnecessary_lazy_evaluations)]
 #![allow(clippy::collapsible_if)]

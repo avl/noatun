@@ -1006,7 +1006,7 @@ impl DatabaseContextData {
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
         mut unused_messages: Vec<UnusedInfo>,
-        after_cutoff: bool
+        before_cutoff: bool
     ) -> anyhow::Result<Vec<SequenceNr>> {
 
         let mut deleted = Vec::new();
@@ -1014,7 +1014,7 @@ impl DatabaseContextData {
         let mut new_unused_list = Vec::new();
         //println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
         'outer: while let Some(msg) = unused_messages.pop() {
-            if !messages.may_have_been_transmitted(msg.seq)? || after_cutoff {
+            if !messages.may_have_been_transmitted(msg.seq)? || before_cutoff {
                 {
                     for observer in self.read_dependency(msg.seq) {
                         if !deleted.contains(&observer) {
@@ -1040,7 +1040,13 @@ impl DatabaseContextData {
                 continue 'outer;
             }
 
-            info!("Deleting {:?}", msg);
+            info!("Deleting {:?} (before cutoff: {:?}), may have been transmitted: {:?}", msg, before_cutoff, messages.may_have_been_transmitted(msg.seq)?);
+            if msg.seq.index() == 15
+            {
+                println!("Num 15");
+                panic!("Num 15");
+                std::process::abort();
+            }
             for (revdep, last_overwriter) in self.read_reverse_dependency(msg.seq) {
                 unused_messages.push(UnusedInfo {
                     seq: revdep,

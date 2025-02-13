@@ -192,7 +192,7 @@ impl Distributor {
         database: &Database<APP>,
     ) -> Result<Vec<DistributorMessage>> {
         let mut temp = vec![DistributorMessage::ReportHeads(
-            database.nominal_cutoff_state()?,
+            database.current_cutoff_state()?,
             database.get_update_heads().to_vec(),
             self.own_name
         )];

@@ -83,7 +83,7 @@ impl<APP: Application> Database<APP> {
     pub fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
         self.message_store.is_acceptable_cutoff_hash(self.noatun_now(), hash)
     }
-    pub fn nominal_cutoff_state(&self) -> Result<CutOffHashPos> {
+    pub fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
         self.message_store.current_cutoff_hash()
     }
 
@@ -320,7 +320,10 @@ impl<APP: Application> Database<APP> {
         self.time_override = Some(time);
     }
 
-    pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<()> {
+
+    /// Returns true if the message still exists.
+    /// If this returns false, the message has been deleted, and *MUST* not *BE* transmitted.
+    pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<bool> {
         self.message_store.mark_transmitted(message_id)
     }
 

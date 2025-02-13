@@ -759,16 +759,20 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                 let msg = self.outbuf.pop_front().unwrap();
                 self.nextsend_id = msg.message_id();
                 Serializer::bare_serialize(&mut self.nextsend, 0, &msg)?;
-
                 //info!("Sending {:?} as {} byte", msg, self.nextsend.len());
             }
+
             let sendtask = async {
+
                 if !self.nextsend.is_empty() {
                     let permit = self.sender_tx.reserve().await?;
                     if let Some(nextsend_id) = self.nextsend_id
                     {
                         let mut db = self.database.lock().unwrap();
                         db.mark_transmitted(nextsend_id);
+                            /*if !? {
+
+                        }*/
                         self.nextsend_id = None;
                     }
                     let l = self.nextsend.len();
@@ -944,6 +948,9 @@ where <APP as Application>::Params: Send,
     }
     pub fn get_update_heads(&self) -> Vec<crate::MessageId> {
         self.database.lock().unwrap().get_update_heads().to_vec()
+    }
+    pub fn get_cutoff_time(&self) -> Result<NoatunTime> {
+        Ok(self.database.lock().unwrap().current_cutoff_state()?.before_time.to_noatun_time())
     }
     /// TODO: Probably remove this, it should never be necessary
     pub fn reproject(&mut self) {
