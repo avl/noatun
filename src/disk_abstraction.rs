@@ -1,20 +1,8 @@
 use crate::disk_access::{FileAccessor, FileBackend};
 use crate::Target;
-use anyhow::{anyhow, bail, Context, Result};
-use fs2::FileExt;
-use memmap2::MmapMut;
+use anyhow::{bail, Result};
 use std::alloc::Layout;
-use std::any::Any;
-use std::collections::HashMap;
-use std::fmt::{Debug, Formatter};
-use std::fs::{File, OpenOptions};
-use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
-use std::os::fd::{AsFd, RawFd};
-use std::path::{Path, PathBuf};
-use std::ptr::null_mut;
-use std::rc::Rc;
 use std::slice;
-use std::sync::{Arc, MutexGuard};
 /* TODO
 
 
@@ -127,7 +115,7 @@ impl InMemoryGrowableFileMapping {
     }
 
     fn truncate(&mut self, len: usize) -> Result<()> {
-        let mut backing = &mut self.backing;
+        let backing = &mut self.backing;
         if backing.used_len > len {
             unsafe { backing.map_mut()[len..].fill(0) };
             backing.used_len = len;
@@ -232,7 +220,7 @@ impl Disk for StandardDisk {
     ) -> Result<FileAccessor> {
         let path = target.path().join(format!("{}.bin", file));
         let mut overwrite = target.overwrite();
-        let mut create = target.create();
+        let create = target.create();
 
         if std::fs::metadata(&path).is_err() {
             overwrite = true;

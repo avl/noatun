@@ -1,8 +1,6 @@
 use std::fmt::{Debug, Formatter};
-use crate::message_store::IndexEntry;
 use crate::{MessageId, NoatunTime};
 use bytemuck::{Pod, Zeroable};
-use chrono::{DateTime, SecondsFormat, Utc};
 use savefile_derive::Savefile;
 use anyhow::{anyhow, bail, Result};
 

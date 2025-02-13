@@ -1,45 +1,35 @@
 
 use crate::distributor::{Distributor, DistributorMessage, SerializedMessage, Status};
 
-use crate::{Application, ContextGuard, Database, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, NoatunTime};
-use anyhow::{anyhow, bail, Context, Result};
+use crate::{Application, Database, Message, MessageId, MessagePayload, NoatunTime};
+use anyhow::{anyhow, bail, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
 use indexmap::{IndexMap, IndexSet};
-use libc::newlocale;
-use savefile::{get_result_schema, Deserialize, Deserializer, Field, Introspect, IntrospectItem, Packed, SavefileError, Schema, SchemaPrimitive, SchemaStruct, Serialize, Serializer, WithSchema, WithSchemaContext};
+use savefile::{Deserialize, Deserializer, Introspect, IntrospectItem, Packed, SavefileError, Schema, Serialize, Serializer, WithSchema, WithSchemaContext};
 use savefile_derive::Savefile;
-use socket2::{Domain, Protocol, SockRef, Type};
 use std::collections::VecDeque;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
-use std::net::{IpAddr, SocketAddr};
-use std::ops::Deref;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::{io, thread};
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
-use std::thread::JoinHandle;
 use std::time::{Duration};
 use tokio::time::Instant;
-use sha2::digest::typenum::private::IsEqualPrivate;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
-use tokio::task::spawn_local;
 use tokio::{select, spawn};
-use tokio::net::{ToSocketAddrs, UdpSocket};
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Runtime;
 use tracing::{debug, error, info, instrument, trace, warn};
-use crate::communication::NetworkPacket::RetransmitRequest;
 use crate::communication::udp::TokioUdpDriver;
 
 pub mod udp {
-    use std::fmt::Debug;
+    
     use std::net::{IpAddr, SocketAddr};
     use anyhow::{bail, Context};
-    use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, Type};
-    use tokio::net::{ToSocketAddrs, UdpSocket};
+    use socket2::{Domain, Protocol, Type};
+    use tokio::net::UdpSocket;
     use tracing::info;
     use crate::communication::{CommunicationReceiveSocket, CommunicationSendSocket, CommunicationDriver};
 
@@ -308,8 +298,8 @@ impl ReceiveTrack {
                     self.expected_next = first.reconstructed_seq;
                 } else {
                     trace!("Appending retransmit-request for {:?} {:?}", packet_source, self.expected_next);
-                    let mut cur_missing = self.expected_next;
-                    let mut accum = retransmit_requests.entry(packet_source).or_default();
+                    let cur_missing = self.expected_next;
+                    let accum = retransmit_requests.entry(packet_source).or_default();
                     for x in self.expected_next..first.reconstructed_seq  {
                         accum.items.insert(x);
                     }
@@ -575,7 +565,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
 
             let send_queue_empty = cursend.is_none();
 
-            let mut send = async {
+            let send = async {
                 if let Some(tosend) = cursend.as_mut() {
 
                     match self
@@ -719,7 +709,7 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
         Ok(())
     }
 
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(self) -> Result<()> {
         let result = self.run2().await;
         info!("Communication terminated: {:?}", result);
         match result {
@@ -743,7 +733,7 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
             // For buffered incoming messages
             let buffer_len = self.buffered_incoming_messages.len();
             let buffer_life_start = self.buffer_life_start;
-            let mut buffering_timer = async move {
+            let buffering_timer = async move {
                 if buffer_len > 0 {
                     if buffer_len > 1000 || buffer_life_start.elapsed() > Duration::from_secs(2) {
                     } else {
@@ -868,7 +858,7 @@ where <APP as Application>::Params: Send,
 
 {
     pub async fn get_status(&self) -> Result<Status> {
-        let (mut oneshot_tx,oneshot_rx) = oneshot::channel();
+        let (oneshot_tx,oneshot_rx) = oneshot::channel();
         let status = self.cmd_tx.send(Cmd::GetStatus(oneshot_tx)).await;
         match status {
             Ok(status) => {
@@ -978,8 +968,8 @@ where <APP as Application>::Params: Send,
         database: Database<APP>,
         config: DatabaseCommunicationConfig,
     ) -> Result<DatabaseCommunication<APP>> {
-        let (sender_tx, mut sender_rx) = tokio::sync::mpsc::channel(1000);
-        let (receiver_tx, mut receiver_rx) = tokio::sync::mpsc::channel(1000);
+        let (sender_tx, sender_rx) = tokio::sync::mpsc::channel(1000);
+        let (receiver_tx, receiver_rx) = tokio::sync::mpsc::channel(1000);
         let sender_loop = MulticasterSenderLoop::new(
             driver,
             &config.listen_address,
@@ -1019,7 +1009,7 @@ where <APP as Application>::Params: Send,
     }
 
     fn start_async_runtime<Driver:CommunicationDriver+Sync+Send+'static>(driver: &mut Driver, database: Database<APP>, config: DatabaseCommunicationConfig) -> Result<(Runtime, DatabaseCommunication<APP>)> {
-        let mut runtime = Runtime::new()?;
+        let runtime = Runtime::new()?;
         let com: DatabaseCommunication<APP> = runtime.block_on(Self::async_tokio_new(driver, database, config))?;
         Ok((runtime, com))
     }

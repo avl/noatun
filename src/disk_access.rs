@@ -6,8 +6,6 @@ use std::fmt::{Debug, Formatter};
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
-use std::os::fd::AsRawFd;
-use std::ptr::slice_from_raw_parts_mut;
 use std::slice;
 
 pub trait FileBackend {
@@ -340,7 +338,7 @@ impl FileAccessor {
 
         let path = target.path().join(format!("{}.bin", file));
         let mut overwrite = target.overwrite();
-        let mut create = target.create();
+        let create = target.create();
 
         if std::fs::metadata(&path).is_err() {
             overwrite = true;
@@ -375,7 +373,7 @@ impl FileAccessor {
         )
         .with_context(|| format!("failed to memory map file {}", filename))?;
 
-        let mut temp = FileAccessor {
+        let temp = FileAccessor {
             committed_size: mapping.committed_size(),
             ptr: mapping.ptr(),
             mapping: Box::new(mapping),

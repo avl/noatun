@@ -1,16 +1,12 @@
-use crate::cutoff::{Acceptability, CutOffConfig, CutOffDuration, CutOffHashPos, CutOffState, CutOffTime, CutoffHash};
+use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
-use crate::disk_access::FileAccessor;
-use crate::message_store::IndexEntry;
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
-use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageComponent, MessageHeader, MessageId, MessagePayload, MultiInstanceThreadBlocker, NoatunTime, Object, Pointer, Target, CONTEXT};
+use crate::{Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageHeader, MessageId, NoatunTime, Object, Pointer, Target};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::{Duration, SystemTime};
 
 pub struct Database<Base: Application> {
     context: DatabaseContextData,
@@ -336,7 +332,7 @@ impl<APP: Application> Database<APP> {
     }
     pub fn append_local_opt(&mut self, time: Option<NoatunTime>, message: APP::Message) -> Result<MessageHeader> {
         let time = time.unwrap_or_else(||self.noatun_now());
-        let mut new_id;
+        let new_id;
 
 
         if let Some(prev_local) = self.prev_local {
@@ -464,7 +460,7 @@ impl<APP: Application> Database<APP> {
         let is_dirty = ctx.is_dirty();
 
         let mut message_store = Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
-        let mut update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
+        let update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
         if is_dirty {
             Self::recover(
                 &mut ctx,

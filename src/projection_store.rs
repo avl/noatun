@@ -1,24 +1,16 @@
 use crate::boot_checksum::get_boot_checksum;
-use crate::data_types::{DatabaseCell, DatabaseVec, RawDatabaseVec};
-use crate::disk_abstraction::{Disk, StandardDisk};
+use crate::data_types::RawDatabaseVec;
+use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
-use crate::platform_specific::get_boot_time;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{Application, FatPtr, FixedSizeObject, GenPtr, MessageId, MessagePayload, NoatunTime, Object, Pointer, Target, ThinPtr};
+use crate::{FatPtr, FixedSizeObject, GenPtr, MessagePayload, Object, Pointer, Target, ThinPtr};
 use anyhow::{bail, Context, Result};
-use bumpalo::Bump;
 use bytemuck::{bytes_of, from_bytes, from_bytes_mut, AnyBitPattern, Pod, Zeroable};
-use indexmap::{IndexMap, IndexSet};
-use std::alloc::Layout;
 use std::any::{Any, TypeId};
-use std::cell::{RefCell};
-use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
-use std::marker::PhantomData;
 use std::mem::{offset_of, take, transmute_copy};
 use std::ops::Range;
-use std::path::Path;
 use std::slice::SliceIndex;
 use std::{iter, slice};
 
@@ -26,18 +18,17 @@ use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
 use crate::sequence_nr::SequenceNr;
 use std::pin::Pin;
 use tracing::{error, info};
-use crate::cutoff::{CutOffTime, CutoffHash};
 
 mod registrar_info {
-    use crate::disk_abstraction::Disk;
-    use bumpalo::Bump;
+    
+    
     use bytemuck::{Pod, Zeroable};
-    use indexmap::IndexMap;
+    
     use std::fmt::{Debug, Formatter};
     use std::pin::Pin;
-    use crate::message_store::OnDiskMessageStore;
+    
     use crate::sequence_nr::SequenceNr;
-    use crate::{DatabaseContextData, MessagePayload, NoatunContext, Target, ThinPtr};
+    use crate::DatabaseContextData;
 
     #[derive(Clone, Copy, Default, Pod, Zeroable)]
     #[repr(C)]
@@ -217,7 +208,7 @@ impl DatabaseContextData {
         let key_place = unsafe { keys.get_mut(self, observee.index())
             .map_unchecked_mut(|x|&mut x.dep) };
 
-        let mut new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod_internal();
+        let new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod_internal();
 
         self.write_pod(*key_place, unsafe{Pin::new_unchecked(&mut new_entry.next)});
         self.write_pod(observer,   unsafe{Pin::new_unchecked(&mut new_entry.seq)});
@@ -240,7 +231,7 @@ impl DatabaseContextData {
         let key_place = unsafe { keys.get_mut(self, observer.index())
             .map_unchecked_mut(|x|&mut x.reverse_dep) };
 
-        let mut new_entry: &mut ReverseDepTrackLinkedListEntry = self.allocate_pod_internal();
+        let new_entry: &mut ReverseDepTrackLinkedListEntry = self.allocate_pod_internal();
 
         self.write_pod(*key_place, unsafe{Pin::new_unchecked(&mut new_entry.next)});
         self.write_pod(observee,   unsafe{Pin::new_unchecked(&mut new_entry.seq)});

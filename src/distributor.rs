@@ -1,15 +1,12 @@
-use crate::cutoff::{Acceptability, CutOffHashPos, CutoffHash};
-use crate::message_store::{ReadPod, WritePod};
-use crate::{Application, CutOffState, Database, Message, MessageHeader, MessageId, MessagePayload, NoatunTime};
+use crate::cutoff::{Acceptability, CutOffHashPos};
+use crate::{Application, Database, Message, MessageHeader, MessageId, MessagePayload, NoatunTime};
 use anyhow::Result;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{ReadBytesExt, WriteBytesExt};
 use indexmap::{IndexMap, IndexSet};
-use libc::send;
 use savefile_derive::Savefile;
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
 use std::io::Cursor;
-use std::ops::Range;
 use arrayvec::ArrayString;
 use tracing::{debug, error, info, warn};
 // Principle
@@ -28,7 +25,7 @@ pub struct SerializedMessage {
 }
 impl SerializedMessage {
     pub fn to_message<M: MessagePayload>(self) -> Result<Message<M>> {
-        let mut reader = Cursor::new(&self.data);
+        let reader = Cursor::new(&self.data);
         Ok(Message {
             header: MessageHeader {
                 id: self.id,
@@ -396,7 +393,7 @@ impl Distributor {
         accumulated_heads: IndexMap<MessageId, usize>,
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
-        let mut response: IndexMap<MessageId, APP::Message> = IndexMap::new();
+        let response: IndexMap<MessageId, APP::Message> = IndexMap::new();
         let messages: Vec<MessageSubGraphNode> = database
             .get_upstream_of(accumulated_heads.into_iter())?
             .map(|(msg, query_count)| MessageSubGraphNode {

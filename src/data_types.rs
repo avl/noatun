@@ -1,11 +1,10 @@
 use std::borrow::Borrow;
 use crate::sequence_nr::SequenceNr;
 use crate::{
-    Database, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, Object, Pointer,
+    DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, Object, Pointer,
     ThinPtr, CONTEXT,
 };
 use bytemuck::{Pod,AnyBitPattern, Zeroable};
-use sha2::digest::typenum::Zero;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::mem::transmute_copy;
@@ -13,7 +12,6 @@ use std::ops::{Deref, Index, Range};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
-use tracing_subscriber::registry::Data;
 
 #[derive(Copy, Clone, Debug, AnyBitPattern)]
 #[repr(C)]
@@ -79,7 +77,7 @@ impl NoatunString {
             return;
         }
         let raw = NoatunContext.allocate_raw(value.len(),1);
-        let mut target = unsafe{slice::from_raw_parts_mut(raw, value.len())};
+        let target = unsafe{slice::from_raw_parts_mut(raw, value.len())};
         target.copy_from_slice(value.as_bytes());
         let raw_index = NoatunContext.index_of_ptr(raw);
         NoatunContext.write_pod_internal(raw_index, &mut tself.start);
@@ -678,7 +676,7 @@ where
         tself.get_mut_internal(tself.length - 1)
     }
 
-    pub fn shift_remove(mut self:Pin<&mut Self>, index: usize) {
+    pub fn shift_remove(self:Pin<&mut Self>, index: usize) {
 
         if index >= self.length {
             return;

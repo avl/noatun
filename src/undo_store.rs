@@ -1,12 +1,9 @@
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
-use crate::{MessageId, Target};
+use crate::Target;
 use anyhow::Result;
-use bytemuck::{Pod, Zeroable};
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
-use libc::epoll_params;
-use std::backtrace::Backtrace;
 use std::io::{Seek, SeekFrom, Write};
 
 #[derive(Debug)]
@@ -47,7 +44,7 @@ pub enum HowToProceed {
 
 impl UndoLog {
     pub fn new<D: Disk>(disk: &mut D, target: &Target, max_size: usize) -> Result<UndoLog> {
-        let mut file = disk.open_file(target, "undo", 0, max_size)?;
+        let file = disk.open_file(target, "undo", 0, max_size)?;
 
         Ok(UndoLog {
             store_mmap: file,
@@ -59,7 +56,7 @@ impl UndoLog {
         f(bytes)
     }
     fn access_mut<R>(&mut self, f: impl FnOnce(&mut FileAccessor) -> R) -> R {
-        let mut bytes = &mut self.store_mmap;
+        let bytes = &mut self.store_mmap;
         f(bytes)
     }
 
@@ -129,7 +126,7 @@ impl UndoLog {
         }
     }
     pub fn record(&mut self, entry: UndoLogEntry) {
-        let mut store_ref = &mut self.store_mmap;
+        let store_ref = &mut self.store_mmap;
         let store = &mut *store_ref;
         store.seek(SeekFrom::End(0)).unwrap();
         match entry {

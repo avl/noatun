@@ -6,15 +6,15 @@ pub(crate) use unix::FileMapping;
 #[cfg(unix)]
 mod unix {
     use crate::disk_access::FileBackend;
-    use anyhow::{anyhow, bail, Context, Result};
+    use anyhow::{bail, Context, Result};
     use fs2::FileExt;
-    use std::cell::Cell;
-    use std::cmp::max;
-    use std::ffi::c_void;
+    
+    
+    
     use std::fs::File;
-    use std::os::fd::{AsRawFd, RawFd};
+    use std::os::fd::AsRawFd;
     use std::process::Command;
-    use std::ptr::{null, null_mut};
+    use std::ptr::null_mut;
     use std::sync::OnceLock;
 
     #[cfg(not(miri))]

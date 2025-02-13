@@ -1,19 +1,16 @@
-use crate::cutoff::{Acceptability, CutOffConfig, CutOffDuration, CutOffHashPos, CutOffState, CutOffTime, CutoffHash};
+use crate::cutoff::{Acceptability, CutOffConfig, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::Disk;
-use crate::disk_access::FileAccessor;
-use crate::message_store::{IndexEntry, OnDiskMessageStore};
+use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
 use crate::{
-    Application, ContextGuardMut, Database, DatabaseContextData, Message, MessageHeader, MessageId,
-    MessagePayload, NoatunContext, NoatunTime, Target, CONTEXT,
+    Application, ContextGuardMut, DatabaseContextData, Message, MessageHeader, MessageId,
+    MessagePayload, NoatunContext, NoatunTime, Target,
 };
 use anyhow::Result;
-use bytemuck::{Pod, Zeroable};
 use chrono::{DateTime, Utc};
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::time::{Duration, SystemTime};
 use tracing::{error, info};
 
 pub(crate) struct Projector<APP: Application> {
@@ -34,7 +31,7 @@ impl<APP: Application> Projector<APP> {
         let cutoff_index = self.messages.get_index_after(new_cutoff_at.to_noatun_time())?;
 
         //println!("Advancing cutoff from {:?} to {:?}, index = {}, comp : {}", cutoff_state.before_time, new_cutoff_at, cutoff_index, cutoff_state.before_time >= new_cutoff_at);
-        let mut unused_list = unsafe { context.get_unused_list() };
+        let unused_list = unsafe { context.get_unused_list() };
         let unused_list = unused_list.get_full_slice(context);
 
         //println!("Unused list: {:#?}", unused_list);
