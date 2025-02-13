@@ -1,14 +1,9 @@
-use crate::distributor::DistributorMessage::Message;
 use crate::distributor::{Distributor, DistributorMessage};
 use crate::tests::{CounterMessage, CounterObject};
 use crate::{Database, MessageId, NoatunTime};
-use chrono::DateTime;
-use chrono::Utc;
 use datetime_literal::datetime;
-use insta::assert_debug_snapshot;
 use std::iter::once;
 use std::mem::swap;
-use std::time::Duration;
 use crate::cutoff::CutOffDuration;
 
 fn create_app<'a>(
@@ -209,7 +204,7 @@ fn test_distributor() {
     assert!(matches!(&result[0], DistributorMessage::Message(_, false)));
     assert_eq!(result.len(), 1);
 
-    let mut result = dist2
+    let result = dist2
         .receive_message(&mut app2, once(result.pop().unwrap()))
         .unwrap();
     println!("App2 all msgs: {:?}", app2.get_all_message_ids().unwrap());

@@ -1,12 +1,10 @@
-use crate::data_types::{DatabaseCell, DatabaseVec};
+use crate::data_types::DatabaseVec;
 use crate::{msg_deserialize, msg_serialize};
 use crate::{Application, Database, MessagePayload, NoatunContext, NoatunTime};
 use datetime_literal::datetime;
-use savefile::Deserializer;
 use savefile_derive::Savefile;
 use std::io::Write;
 use std::pin::Pin;
-use std::time::Duration;
 use crate::cutoff::CutOffDuration;
 
 noatun_object!(
@@ -51,7 +49,7 @@ impl MessagePayload for BankMessage {
         msg_deserialize(buf)
     }
 
-    fn serialize<W: Write>(&self, mut writer: W) -> anyhow::Result<()> {
+    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
         msg_serialize(self, writer)
     }
 }

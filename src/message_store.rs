@@ -2029,14 +2029,14 @@ impl<M> OnDiskMessageStore<M> {
 #[cfg(test)]
 mod tests {
     use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
-    use crate::message_store::{FileOffset, OnDiskMessageStore, STATUS_NOK, STATUS_OK, U1};
+    use crate::message_store::{FileOffset, OnDiskMessageStore, U1};
     use crate::{
-        DatabaseContextData, DummyUnitObject, Message, MessageId, MessagePayload, NoatunTime,
+        DummyUnitObject, Message, MessageId, MessagePayload, NoatunTime,
         Target,
     };
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use std::io::{Cursor, Read, Write};
-    use std::path::Path;
+    
     use std::pin::Pin;
     use std::time::Instant;
     use crate::cutoff::CutOffConfig;

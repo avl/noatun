@@ -1066,8 +1066,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_sender() {
-        let (sender_tx1, mut sender_rx1) = tokio::sync::mpsc::channel(1000);
-        let (receiver_tx1, mut receiver_rx1) = tokio::sync::mpsc::channel(1000);
+        let (sender_tx1, sender_rx1) = tokio::sync::mpsc::channel(1000);
+        let (receiver_tx1, receiver_rx1) = tokio::sync::mpsc::channel(1000);
 
         let mloop1 = MulticasterSenderLoop::new(
             &mut TokioUdpDriver,
@@ -1081,7 +1081,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (sender_tx2, mut sender_rx2) = tokio::sync::mpsc::channel(1000);
+        let (sender_tx2, sender_rx2) = tokio::sync::mpsc::channel(1000);
         let (receiver_tx2, mut receiver_rx2) = tokio::sync::mpsc::channel(1000);
 
         let mloop2 = MulticasterSenderLoop::new(

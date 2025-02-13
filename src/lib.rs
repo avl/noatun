@@ -1103,10 +1103,10 @@ mod tests {
     use crate::data_types::{DatabaseCellArrayExt, NoatunString};
     use crate::disk_access::FileAccessor;
     use crate::distributor::DistributorMessage;
-    use crate::projection_store::{MainDbAuxHeader, MainDbHeader};
+    
     use crate::sequence_nr::SequenceNr;
     use byteorder::{LittleEndian, WriteBytesExt};
-    use chrono::{NaiveDate, Utc};
+    
     use data_types::DatabaseCell;
     use data_types::DatabaseObjectHandle;
     use data_types::DatabaseVec;
@@ -1114,9 +1114,9 @@ mod tests {
     use datetime_literal::datetime;
     use savefile::{load_noschema, save_noschema};
     use savefile_derive::Savefile;
-    use sha2::{Digest, Sha256};
+    use sha2::Digest;
     use std::io::{Cursor, SeekFrom};
-    use std::iter::once;
+    
     use tokio::io::AsyncSeekExt;
     use crate::cutoff::CutOffDuration;
 
@@ -1127,7 +1127,7 @@ mod tests {
 
     #[test]
     fn test_mmap_big() {
-        let mut mmap = FileAccessor::new(
+        let mmap = FileAccessor::new(
             &Target::CreateNewOrOverwrite("test/mmap_test_big".into()),
             "mmap",
             0,
@@ -1295,7 +1295,7 @@ mod tests {
         )
         .unwrap();
 
-        db.with_root_mut(|mut counter| {
+        db.with_root_mut(|counter| {
             unsafe {
                 let counter = unsafe { counter.get_unchecked_mut() };
                 assert_eq!(counter.counter.get(), 0);
@@ -1325,7 +1325,7 @@ mod tests {
     impl MessagePayload for CounterMessage {
         type Root = CounterObject;
 
-        fn apply(&self, time: NoatunTime, mut root: Pin<&mut CounterObject>) {
+        fn apply(&self, time: NoatunTime, root: Pin<&mut CounterObject>) {
             unsafe {
                 if self.inc1 != 0 {
                     let val = root.counter.get().saturating_add_signed(self.inc1);
@@ -1656,7 +1656,7 @@ mod tests {
 
     #[test]
     fn test_handle() {
-        let mut db: Database<DatabaseObjectHandle<DatabaseCell<u32>>> = Database::create_new(
+        let db: Database<DatabaseObjectHandle<DatabaseCell<u32>>> = Database::create_new(
             "test/test_handle.bin",
             true,
             1000,
@@ -1694,7 +1694,7 @@ mod tests {
 
     #[test]
     fn test_handle_to_unsized_miri() {
-        let mut db: Database<DatabaseObjectHandle<[DatabaseCell<u8>]>> =
+        let db: Database<DatabaseObjectHandle<[DatabaseCell<u8>]>> =
             Database::create_in_memory(
                 1000,
                 CutOffDuration::from_minutes(15),
@@ -1791,10 +1791,10 @@ mod tests {
                 assert_eq!(counter_vec.len(), 0);
 
                 let new_element = counter_vec.as_mut().push_zeroed();
-                let mut new_element = counter_vec.as_mut().getmut(0);
+                let new_element = counter_vec.as_mut().getmut(0);
 
                 new_element.map_unchecked_mut(|x| &mut x.counter).set(47);
-                let mut new_element = counter_vec.as_mut().push_zeroed();
+                let new_element = counter_vec.as_mut().push_zeroed();
                 new_element.map_unchecked_mut(|x|&mut x.counter).set(48);
 
                 assert_eq!(counter_vec.len(), 2);
@@ -1829,12 +1829,12 @@ mod tests {
 
             let new_element = counter_vec.as_mut().push_zeroed();
 
-            let mut new_element = counter_vec.as_mut().getmut(0);
+            let new_element = counter_vec.as_mut().getmut(0);
 
             unsafe {
                 new_element.map_unchecked_mut(|x|&mut x.counter).set(47);
             }
-            let mut new_element = counter_vec.as_mut().push_zeroed();
+            let new_element = counter_vec.as_mut().push_zeroed();
             unsafe {
                 new_element.map_unchecked_mut(|x| &mut x.counter).set(48);
             }

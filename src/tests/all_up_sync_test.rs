@@ -1,23 +1,17 @@
-use std::collections::VecDeque;
-use std::fmt::{Debug, Formatter};
-use std::future::Future;
+use std::fmt::Debug;
 use std::io::Write;
 use std::ops::{Add, Sub};
 use std::pin::Pin;
 use std::time::Duration;
-use tracing::info;
 use datetime_literal::datetime;
 use crate::communication::{CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket, DatabaseCommunication, DatabaseCommunicationConfig};
 use tokio::sync::mpsc::{Sender, Receiver};
 use crate::{Application, Database, MessagePayload, NoatunContext, NoatunTime, Object};
-use crate::tests::CounterObject;
 use crate::Savefile;
-use std::sync::Arc;
 use arcshift::ArcShift;
 use bytes::BufMut;
 use chrono::TimeDelta;
-use libc::send;
-use rand::{thread_rng, Rng};
+use rand::Rng;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::cell::RefCell;
@@ -53,7 +47,7 @@ impl MessagePayload for SyncMessage {
     type Root = SyncApp;
 
     fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
-        let mut project = root.pin_project();
+        let project = root.pin_project();
 
         if self.reset {
             project.counter.set(1);
@@ -176,7 +170,7 @@ const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
 
 async fn create_app(driver: &mut TestDriver, node: u8) -> DatabaseCommunication<SyncApp> {
 
-    let mut db: Database<SyncApp> = Database::create_in_memory(
+    let db: Database<SyncApp> = Database::create_in_memory(
         100000,
         CutOffDuration::from_minutes(15),
         Some(START_TIME.into()),
@@ -203,8 +197,8 @@ async fn all_up_simple_sync_test() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
 
     let mut driver = TestDriver::default();
-    let mut app1 = create_app(&mut driver, 1).await;
-    let mut app2 = create_app(&mut driver, 2).await;
+    let app1 = create_app(&mut driver, 1).await;
+    let app2 = create_app(&mut driver, 2).await;
 
     app1.add_message(SyncMessage{value: 1, reset: false }).await;
     app2.add_message(SyncMessage{value: 2, reset: false }).await;
@@ -350,8 +344,8 @@ fn old_transmitted_messages_without_effect_are_removed2() {
 async fn all_up_gradual_update_sync_test() {
 
     let mut driver = TestDriver::default();
-    let mut app1 = create_app(&mut driver, 1).await;
-    let mut app2 = create_app(&mut driver, 2).await;
+    let app1 = create_app(&mut driver, 1).await;
+    let app2 = create_app(&mut driver, 2).await;
 
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
 
