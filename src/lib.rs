@@ -1178,7 +1178,7 @@ mod tests {
     }
 
     pub struct DummyMessage<T> {
-        phantom_data: PhantomData<T>,
+        phantom_data: std::marker::PhantomData<T>,
     }
     impl<T> Debug for DummyMessage<T> {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
