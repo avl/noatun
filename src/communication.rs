@@ -1,70 +1,84 @@
-
 use crate::distributor::{Distributor, DistributorMessage, SerializedMessage, Status};
 
+use crate::communication::udp::TokioUdpDriver;
 use crate::{Application, Database, Message, MessageId, MessagePayload, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
 use indexmap::{IndexMap, IndexSet};
-use savefile::{Deserialize, Deserializer, Introspect, IntrospectItem, Packed, SavefileError, Schema, Serialize, Serializer, WithSchema, WithSchemaContext};
+use savefile::{
+    Deserialize, Deserializer, Introspect, IntrospectItem, Packed, SavefileError, Schema,
+    Serialize, Serializer, WithSchema, WithSchemaContext,
+};
 use savefile_derive::Savefile;
 use std::collections::VecDeque;
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
-use std::sync::{Arc, Mutex};
-use std::{io, thread};
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
-use std::time::{Duration};
-use tokio::time::Instant;
-use tokio::sync::mpsc::error::SendError;
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use std::{io, thread};
+use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
+use tokio::time::error::Elapsed;
+use tokio::time::Instant;
 use tokio::{select, spawn};
-use tokio::runtime::Runtime;
 use tracing::{debug, error, info, instrument, trace, warn};
-use crate::communication::udp::TokioUdpDriver;
 
 pub mod udp {
-    
-    use std::net::{IpAddr, SocketAddr};
+
+    use crate::communication::{
+        CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
+    };
     use anyhow::{bail, Context};
     use socket2::{Domain, Protocol, Type};
+    use std::net::{IpAddr, SocketAddr};
     use tokio::net::UdpSocket;
     use tracing::info;
-    use crate::communication::{CommunicationReceiveSocket, CommunicationSendSocket, CommunicationDriver};
 
     impl CommunicationDriver for TokioUdpDriver {
         type Receiver = tokio::net::UdpSocket;
         type Sender = CommunicationUdpSendSocket;
         type Endpoint = SocketAddr;
 
-        async fn initialize(&mut self, bind_address: &str, multicast_group: &str, mtu: usize) -> anyhow::Result<(Self::Sender, Self::Receiver)> {
-
-            let multicast_group:SocketAddr = multicast_group.parse().context(format!("parsing multicast group {}", multicast_group))?;
-            let bind_address:SocketAddr = bind_address.parse().context(format!("parsing listening/bind address {}", bind_address))?;
+        async fn initialize(
+            &mut self,
+            bind_address: &str,
+            multicast_group: &str,
+            mtu: usize,
+        ) -> anyhow::Result<(Self::Sender, Self::Receiver)> {
+            let multicast_group: SocketAddr = multicast_group
+                .parse()
+                .context(format!("parsing multicast group {}", multicast_group))?;
+            let bind_address: SocketAddr = bind_address
+                .parse()
+                .context(format!("parsing listening/bind address {}", bind_address))?;
             let send_socket = UdpSocket::bind(bind_address).await?;
             let udp = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
             if mtu >= u16::MAX as usize {
                 bail!("Maximum MTU supported by noatun is 65534");
             }
             udp.set_reuse_address(true)?;
-            udp.set_multicast_loop_v4(true);
+            udp.set_multicast_loop_v4(true)?;
             info!("Binding to group {:?}", multicast_group);
             udp.bind(&multicast_group.into())?;
-            udp.set_nonblocking(true);
+            udp.set_nonblocking(true)?;
             let receive_socket = UdpSocket::from_std(udp.into())?;
-
-
 
             match (multicast_group.ip(), bind_address.ip()) {
                 (IpAddr::V4(multicast_ipv4), IpAddr::V4(bind_ipv4)) => {
-                    info!("Joining multicast group {} on if {}", multicast_ipv4, bind_ipv4);
-                    receive_socket.join_multicast_v4(multicast_ipv4, bind_ipv4);
-                    receive_socket.set_multicast_loop_v4(true);
+                    info!(
+                        "Joining multicast group {} on if {}",
+                        multicast_ipv4, bind_ipv4
+                    );
+                    receive_socket.join_multicast_v4(multicast_ipv4, bind_ipv4)?;
+                    receive_socket.set_multicast_loop_v4(true)?;
                 }
-                (IpAddr::V6(multicast_ipv6), IpAddr::V6(bind_ipv6)) => {
-                    receive_socket.join_multicast_v6(&multicast_ipv6, 0);
-                    receive_socket.set_multicast_loop_v6(true);
+                (IpAddr::V6(multicast_ipv6), IpAddr::V6(_bind_ipv6)) => {
+                    //TODO: Fix ipv6 multicast?
+                    receive_socket.join_multicast_v6(&multicast_ipv6, 0)?;
+                    receive_socket.set_multicast_loop_v6(true)?;
                 }
                 _ => {
                     panic!(
@@ -74,16 +88,16 @@ pub mod udp {
             }
 
             Ok((
-
                 CommunicationUdpSendSocket {
                     socket: send_socket,
-                    multicast_addr: multicast_group
+                    multicast_addr: multicast_group,
                 },
-                receive_socket))
+                receive_socket,
+            ))
         }
 
         fn parse_endpoint(s: &str) -> anyhow::Result<Self::Endpoint> {
-            Ok(s.parse()?) //TODO: error context
+            Ok(s.parse().context(format!("couldn't parse {:?}", s))?)
         }
     }
     pub struct TokioUdpDriver;
@@ -97,26 +111,25 @@ pub mod udp {
         }
 
         async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-
             UdpSocket::send_to(&self.socket, buf, self.multicast_addr).await
         }
     }
 
     impl CommunicationReceiveSocket<SocketAddr> for tokio::net::UdpSocket {
-        async fn recv_buf_from<B: bytes::BufMut+Send>(&mut self, buf: &mut B) -> std::io::Result<(usize, SocketAddr)> {
+        async fn recv_buf_from<B: bytes::BufMut + Send>(
+            &mut self,
+            buf: &mut B,
+        ) -> std::io::Result<(usize, SocketAddr)> {
             UdpSocket::recv_buf_from(self, buf).await
         }
     }
-
 }
-
 
 #[derive(Savefile, Debug)]
 enum NetworkPacket<Endpoint> {
-    Data(bool/*push*/, TransmittedEntitySortable),
+    Data(bool /*push*/, TransmittedEntitySortable),
     RetransmitRequest { who: Endpoint, what: Vec<u64> },
 }
-
 
 const IP_HEADER_SIZE: usize = 20;
 const UDP_HEADER_SIZE: usize = 8;
@@ -128,28 +141,47 @@ const APPROX_HEADER_SIZE: usize = IP_HEADER_SIZE
     + NOATUN_TRANSMITTED_ENTITY_OVERHEAD;
 
 #[allow(async_fn_in_trait)] //For now
-pub trait CommunicationDriver : Sync + Send {
-    type Receiver: CommunicationReceiveSocket<Self::Endpoint>+Send+Sync;
-    type Sender: CommunicationSendSocket<Self::Endpoint>+Send+Sync;
-    type Endpoint: Eq+Debug+Hash+Serialize+Deserialize+Packed+Send+Sync+Copy+Display;
-    async fn initialize(&mut self, bind_address: &str, multicast_group: &str, mtu: usize) -> Result<(Self::Sender, Self::Receiver)>;
+pub trait CommunicationDriver: Sync + Send {
+    type Receiver: CommunicationReceiveSocket<Self::Endpoint> + Send + Sync;
+    type Sender: CommunicationSendSocket<Self::Endpoint> + Send + Sync;
+    type Endpoint: Eq
+        + Debug
+        + Hash
+        + Serialize
+        + Deserialize
+        + Packed
+        + Send
+        + Sync
+        + Copy
+        + Display;
+    async fn initialize(
+        &mut self,
+        bind_address: &str,
+        multicast_group: &str,
+        mtu: usize,
+    ) -> Result<(Self::Sender, Self::Receiver)>;
     fn parse_endpoint(s: &str) -> Result<Self::Endpoint>;
 }
 #[allow(async_fn_in_trait)] //For now
-pub trait CommunicationReceiveSocket<Endpoint: PartialEq+Debug+Send> {
-    fn recv_buf_from<B: bytes::buf::BufMut+Send>(&mut self, buf: &mut B) -> impl std::future::Future<Output = std::io::Result<(usize, Endpoint)>> + Send;
-
+pub trait CommunicationReceiveSocket<Endpoint: PartialEq + Debug + Send> {
+    fn recv_buf_from<B: bytes::buf::BufMut + Send>(
+        &mut self,
+        buf: &mut B,
+    ) -> impl std::future::Future<Output = std::io::Result<(usize, Endpoint)>> + Send;
 }
 #[allow(async_fn_in_trait)] //For now
-pub trait CommunicationSendSocket<Endpoint: PartialEq+Debug+Send> {
+pub trait CommunicationSendSocket<Endpoint: PartialEq + Debug + Send> {
     fn local_addr(&self) -> Result<Endpoint>;
-    fn send_to(&mut self, buf: &[u8]) -> impl std::future::Future<Output = io::Result<usize>> + Send ;
+    fn send_to(
+        &mut self,
+        buf: &[u8],
+    ) -> impl std::future::Future<Output = io::Result<usize>> + Send;
 }
 
 #[derive(Debug)]
 enum TransmittedEntity<Endpoint> {
     Sortable(TransmittedEntitySortable),
-    Retransmit(u64, Endpoint)
+    Retransmit(u64, Endpoint),
 }
 
 #[derive(Debug, Clone)]
@@ -170,13 +202,13 @@ impl Introspect for TransmittedEntitySortable {
         )
     }
 
-    fn introspect_child<'a>(&'a self, index: usize) -> Option<Box<dyn IntrospectItem<'a> + 'a>> {
+    fn introspect_child<'a>(&'a self, _index: usize) -> Option<Box<dyn IntrospectItem<'a> + 'a>> {
         None
     }
 }
 
 impl WithSchema for TransmittedEntitySortable {
-    fn schema(version: u32, context: &mut WithSchemaContext) -> Schema {
+    fn schema(_version: u32, _context: &mut WithSchemaContext) -> Schema {
         Schema::Custom("TransmittedEntity".into())
     }
 }
@@ -189,7 +221,7 @@ impl Serialize for TransmittedEntitySortable {
         serializer.write_u16(self.seq)?;
         assert!(self.data.len() <= u16::MAX as usize);
         serializer.write_u16(self.data.len() as u16)?;
-        serializer.write_bytes(&self.data);
+        serializer.write_bytes(&self.data)?;
         serializer.write_u16(self.first_boundary)?;
         Ok(())
     }
@@ -256,12 +288,14 @@ impl ReceiveTrack {
         expected_next + short_delta as u64
     }
 
-    async fn process<Endpoint:Hash+Eq+Debug>(&mut self, packet: TransmittedEntitySortable, packet_source: Endpoint,
-                               tx_finished_received_frame: &mut Sender<Vec<u8>>,
-                               retransmit_requests: &mut IndexMap<Endpoint, RetransmitInfo>,
-                               push: bool,
+    async fn process<Endpoint: Hash + Eq + Debug>(
+        &mut self,
+        packet: TransmittedEntitySortable,
+        packet_source: Endpoint,
+        tx_finished_received_frame: &mut Sender<Vec<u8>>,
+        retransmit_requests: &mut IndexMap<Endpoint, RetransmitInfo>,
+        push: bool,
     ) -> Result<()> {
-
         let reconstructed_seq = self.reconstruct_seq(packet.seq);
         /*if let Some(info) = retransmit_requests.get_mut(&packet_source) {
             info.items.swap_remove(&reconstructed_seq);
@@ -286,10 +320,16 @@ impl ReceiveTrack {
         self.sorted_packets.insert(insert_point, packet);
         while let Some(first) = self.sorted_packets.front() {
             if first.reconstructed_seq != self.expected_next {
-                trace!("Expected next: {}, actual (reconstructed) seq: {}",
-                    self.expected_next, first.reconstructed_seq);
+                trace!(
+                    "Expected next: {}, actual (reconstructed) seq: {}",
+                    self.expected_next,
+                    first.reconstructed_seq
+                );
                 if first.reconstructed_seq < self.expected_next {
-                    info!("duplicate packet ignored (expected {}, got {})", self.expected_next, first.reconstructed_seq);
+                    info!(
+                        "duplicate packet ignored (expected {}, got {})",
+                        self.expected_next, first.reconstructed_seq
+                    );
                     self.sorted_packets.pop_front();
                     continue;
                 }
@@ -297,14 +337,19 @@ impl ReceiveTrack {
                     //Make sure that after a restart, we always pickup wherever the on-wire stream is
                     self.expected_next = first.reconstructed_seq;
                 } else {
-                    trace!("Appending retransmit-request for {:?} {:?}", packet_source, self.expected_next);
-                    let cur_missing = self.expected_next;
+                    trace!(
+                        "Appending retransmit-request for {:?} {:?}",
+                        packet_source,
+                        self.expected_next
+                    );
+                    //let cur_missing = self.expected_next;
                     let accum = retransmit_requests.entry(packet_source).or_default();
-                    for x in self.expected_next..first.reconstructed_seq  {
+                    for x in self.expected_next..first.reconstructed_seq {
                         accum.items.insert(x);
                     }
                     if !push {
-                        accum.wait_until = Instant::now() + Duration::from_secs(1); //TODO: Dynamic? Or configurable?
+                        accum.wait_until = Instant::now() + Duration::from_secs(1);
+                        //TODO: Dynamic? Or configurable?
                     }
                     let mut cur = first.reconstructed_seq;
                     'loop1: for key in &self.sorted_packets {
@@ -328,12 +373,14 @@ impl ReceiveTrack {
                 self.accum
                     .extend(&first.entity.data[0..first.entity.first_boundary as usize]);
                 if !self.accum.is_empty() {
-                    tx_finished_received_frame.try_send(self.accum.iter().copied().collect()).unwrap();
+                    tx_finished_received_frame
+                        .try_send(self.accum.iter().copied().collect())
+                        .unwrap();
                     self.accum.clear();
                 }
                 let mut cur_boundary = first.entity.first_boundary as usize;
                 let mut reader = Cursor::new(&first.entity.data);
-                reader.seek(SeekFrom::Start(cur_boundary as u64));
+                reader.seek(SeekFrom::Start(cur_boundary as u64))?;
 
                 while cur_boundary < first.entity.data.len() {
                     let next_size = reader.read_u16::<LittleEndian>()? as usize;
@@ -360,7 +407,7 @@ impl ReceiveTrack {
 
 struct RetransmitInfo {
     wait_until: Instant,
-    items: IndexSet<u64>
+    items: IndexSet<u64>,
 }
 impl Default for RetransmitInfo {
     fn default() -> Self {
@@ -388,10 +435,47 @@ struct MulticasterSenderLoop<Socket: CommunicationDriver> {
     recvbuf: Vec<u8>,
     max_payload_per_packet: usize,
     next_send_seq: u64,
+    limiter: BwLimiter,
 }
 impl<Socket: CommunicationDriver> Drop for MulticasterSenderLoop<Socket> {
     fn drop(&mut self) {
         info!("Dropping MulticasterSenderLoop loop");
+    }
+}
+
+struct BwLimiter {
+    bytes_per_second: u64,
+    last_update: Instant,
+    debt: u64,
+}
+
+impl BwLimiter {
+    fn new(bytes_per_second: u64) -> Self {
+        Self {
+            bytes_per_second,
+            last_update: tokio::time::Instant::now(),
+            debt: 0,
+        }
+    }
+    async fn wait_debt_free(&self) {
+        let payment = self.last_update.elapsed().as_secs_f32() * self.bytes_per_second as f32;
+        let debt = self.debt as f32 - payment;
+        if debt > 0.0 {
+            let time_to_pay_seconds = debt / (self.bytes_per_second as f32);
+            tokio::time::sleep(tokio::time::Duration::from_secs_f32(time_to_pay_seconds)).await;
+        }
+    }
+    fn is_debt_free(&self) -> bool {
+        let payment =
+            (self.last_update.elapsed().as_secs_f32() * self.bytes_per_second as f32) as u64;
+        payment >= self.debt
+    }
+    fn incur_debt(&mut self, new_debt: u64) {
+        let now = tokio::time::Instant::now();
+        let elapsed = now.duration_since(self.last_update);
+        let payment = (elapsed.as_secs_f32() * self.bytes_per_second as f32) as u64;
+        self.debt = self.debt.saturating_sub(payment) + new_debt;
+        self.last_update = now;
     }
 }
 
@@ -405,11 +489,9 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
         bandwidth_bytes_per_second: u64,
         mtu: usize,
     ) -> Result<MulticasterSenderLoop<Socket>> {
-
-
-        let (send_socket, receive_socket) = driver.initialize(
-            bind_address, multicast_group, mtu
-        ).await?;
+        let (send_socket, receive_socket) = driver
+            .initialize(bind_address, multicast_group, mtu)
+            .await?;
         let max_payload_per_packet = mtu.saturating_sub(APPROX_HEADER_SIZE);
         info!("Send socket bind-address: {:?}", send_socket.local_addr()?);
 
@@ -424,6 +506,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             queue: Default::default(),
             outgoing_retransmit_requests: Default::default(),
             receive_track: Default::default(),
+            limiter: BwLimiter::new(bandwidth_bytes_per_second),
             message_rx,
             message_tx,
             last_send: Instant::now(),
@@ -438,18 +521,18 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
         max_payload_per_packet: usize,
         next_send_seq: &mut u64,
         buffer: Vec<u8>,
-    ) {
+    ) -> Result<()> {
         let mut is_first;
         let buffer: &[u8] = if let Some(last) = queue.back_mut() {
             if last.entity.first_boundary != u16::MAX {
                 if last.entity.free(max_payload_per_packet) >= 2 + buffer.len() {
                     last.entity
                         .data
-                        .write_u16::<LittleEndian>(buffer.len().try_into().unwrap());
+                        .write_u16::<LittleEndian>(buffer.len().try_into().unwrap())?;
                     last.entity.data.extend(buffer);
-                    return;
+                    return Ok(());
                 }
-                last.entity.data.write_u16::<LittleEndian>(u16::MAX);
+                last.entity.data.write_u16::<LittleEndian>(u16::MAX)?;
                 let free_now = last.entity.free(max_payload_per_packet);
                 last.entity.data.extend(&buffer[0..free_now]);
                 is_first = false;
@@ -481,7 +564,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                 })
                 .unwrap();
             }
-            data.write_all(&buffer[reader_pos..reader_pos + chunk]);
+            data.write_all(&buffer[reader_pos..reader_pos + chunk])?;
             reader_pos += chunk;
             queue.push_back(SortableTransmittedEntity {
                 reconstructed_seq: *next_send_seq,
@@ -499,6 +582,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                 last.entity.first_boundary = last.entity.data.len().try_into().unwrap();
             }
         }
+        Ok(())
     }
     pub fn queue_retransmits(&mut self, what: &[u64]) {
         for what in what {
@@ -513,29 +597,31 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                 return;
             };
             info!("enqueued {:?} from history", what);
-            let (Ok(insert_point)|Err(insert_point)) = self.queue.binary_search_by_key(what, |x|x.reconstructed_seq);
+            let (Ok(insert_point) | Err(insert_point)) = self
+                .queue
+                .binary_search_by_key(what, |x| x.reconstructed_seq);
             self.queue.insert(insert_point, history_item);
         }
     }
     #[instrument(skip(self),fields(local=?self.bind_address))]
-    pub async fn run(mut self) {
+    pub async fn run(mut self) -> Result<()> {
         let mut cursend: Option<Vec<u8>> = None;
+        let send_local_addr = self.send_socket.local_addr()?;
         loop {
             self.recvbuf.clear();
             let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
 
             if cursend.is_none() {
-
                 if self.outgoing_retransmit_requests.is_empty() == false {
                     let mut temp = vec![];
-                    if let Some((first_key, first_val)) = self.outgoing_retransmit_requests.iter_mut().next() {
+                    if let Some((first_key, first_val)) =
+                        self.outgoing_retransmit_requests.iter_mut().next()
+                    {
                         let packet = NetworkPacket::<Socket::Endpoint>::RetransmitRequest {
                             who: *first_key,
-                            what: first_val.items.iter().take(20).copied().collect()
-                            //If more than this are missing, we'll request them too in due time
+                            what: first_val.items.iter().take(20).copied().collect(), //If more than this are missing, we'll request them too in due time
                         };
-                        Serializer::bare_serialize(&mut temp, 0, &packet)
-                            .unwrap();
+                        Serializer::bare_serialize(&mut temp, 0, &packet).unwrap();
                         debug!("Sending raw retransmit {:?} ({} bytes)", packet, temp.len());
                         cursend = Some(temp);
                         first_val.items = first_val.items.iter().skip(20).copied().collect();
@@ -551,11 +637,21 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                         // Consider if savefile really is the best here. Some more efficiency
                         // wouldn't hurt!
                         //debug!("Sending raw seq = {:?}", x.entity.seq);
-                        Serializer::bare_serialize(&mut temp, 0, &NetworkPacket::<Socket::Endpoint>::Data(self.queue.is_empty(), x.entity.clone())) //TODO: Optimize away this clone
-                            .unwrap();
-                        let (Ok(insert_point)|Err(insert_point)) = self.history.binary_search_by_key(&x.reconstructed_seq, |x| x.reconstructed_seq);
-                        self.history.insert(insert_point, x); //TODO: Remove from history also?
+                        Serializer::bare_serialize(
+                            &mut temp,
+                            0,
+                            &NetworkPacket::<Socket::Endpoint>::Data(
+                                self.queue.is_empty(),
+                                x.entity.clone(),
+                            ),
+                        ) //TODO: Optimize away this clone
+                        .unwrap();
+                        let (Ok(insert_point) | Err(insert_point)) = self
+                            .history
+                            .binary_search_by_key(&x.reconstructed_seq, |x| x.reconstructed_seq);
+                        self.history.insert(insert_point, x);
                         if self.history.len() > 100 {
+                            //TODO: Is this default always enough?
                             self.history.pop_front();
                         }
                         temp
@@ -567,17 +663,25 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
 
             let send = async {
                 if let Some(tosend) = cursend.as_mut() {
+                    let send_size = tosend.len();
+                    self.limiter.wait_debt_free().await;
 
-                    match self
-                        .send_socket
-                        .send_to(tosend)
-                        .await
-                    {
+                    match self.send_socket.send_to(tosend).await {
                         Ok(sent) => {
+                            if sent != send_size {
+                                error!(
+                                    "Packet send failure. Expected to send {}, sent {}",
+                                    send_size, sent
+                                );
+                            }
+                            self.limiter.incur_debt(send_size as u64);
+
                             //trace!("Actually sent {} raw bytes", sent);
                             cursend.take();
                         }
                         Err(err) => {
+                            // Apply rate limit even on failure
+                            self.limiter.incur_debt(send_size as u64);
                             error!("Send error: {:?}", err);
                         }
                     }
@@ -597,15 +701,15 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                                 self.max_payload_per_packet,
                                 &mut self.next_send_seq,
                                 buf
-                            );
+                            )?;
                         } else {
                             info!("cmd-channel gone, background task shutting down");
-                            return;
+                            return Ok(());
                         }
                     }
                     msg = receive => {
                         let (size, src_addr) = msg.expect("network should not fail");
-                        if src_addr == self.send_socket.local_addr().unwrap() { //TODO: maybe remember local_addr, don't get it each time
+                        if src_addr == send_local_addr { //TODO: maybe remember local_addr, don't get it each time
                             continue;
                         }
 
@@ -639,14 +743,22 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
 }
 
 enum Cmd<APP: Application> {
-    AddMessage(Option<NoatunTime>, APP::Message, oneshot::Sender<Result<()>>),
-    Quit(std::sync::mpsc::Sender<()>),
+    AddMessage(
+        Option<NoatunTime>,
+        APP::Message,
+        oneshot::Sender<Result<()>>,
+    ),
+    Quit(oneshot::Sender<()>),
     GetStatus(oneshot::Sender<Status>),
 }
 
-struct DatabaseCommunicationLoop<APP: Application+Send> where <APP as Application>::Params: Send, Self:Send{
+struct DatabaseCommunicationLoop<APP: Application + Send>
+where
+    <APP as Application>::Params: Send,
+    Self: Send,
+{
     database: Arc<Mutex<Database<APP>>>,
-    jh: tokio::task::JoinHandle<()>,
+    jh: tokio::task::JoinHandle<Result<()>>,
     sender_tx: Sender<Vec<u8>>,
     receiver_rx: Receiver<Vec<u8>>,
     distributor: Distributor,
@@ -662,7 +774,11 @@ struct DatabaseCommunicationLoop<APP: Application+Send> where <APP as Applicatio
     node: String, //Address as string
 }
 
-impl<APP:Application+Send> Drop for DatabaseCommunicationLoop<APP> where <APP as Application>::Params: Send, Self:Send {
+impl<APP: Application + Send> Drop for DatabaseCommunicationLoop<APP>
+where
+    <APP as Application>::Params: Send,
+    Self: Send,
+{
     fn drop(&mut self) {
         info!("Dropping com loop");
     }
@@ -686,11 +802,12 @@ impl Default for DatabaseCommunicationConfig {
     }
 }
 
-
-impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
+impl<APP: Application + 'static + Send> DatabaseCommunicationLoop<APP>
+where
     <APP as Application>::Params: Send,
 
-    <APP as Application>::Message: Send{
+    <APP as Application>::Message: Send,
+{
     const PERIODIC_MSG_INTERVAL: Duration = Duration::from_secs(5);
 
     fn process_packet(&mut self, packet: Vec<u8>) -> Result<()> {
@@ -717,19 +834,14 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                 sender.send(()).unwrap();
                 Ok(())
             }
-            Ok(None) => {
-                Ok(())
-            }
-            Err(err) => {
-                Err(err)
-            }
+            Ok(None) => Ok(()),
+            Err(err) => Err(err),
         }
     }
     #[instrument(skip(self), fields(node=?self.node))]
-    pub async fn run2(mut self) -> Result<Option<std::sync::mpsc::Sender<()>>> {
+    pub async fn run2(mut self) -> Result<Option<tokio::sync::oneshot::Sender<()>>> {
         self.nextsend.clear();
         loop {
-
             // For buffered incoming messages
             let buffer_len = self.buffered_incoming_messages.len();
             let buffer_life_start = self.buffer_life_start;
@@ -737,8 +849,9 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                 if buffer_len > 0 {
                     if buffer_len > 1000 || buffer_life_start.elapsed() > Duration::from_secs(2) {
                     } else {
-                        info!("Sleeping 100ms, waiting for buffer to fill");
-                        tokio::time::sleep(std::time::Duration::from_millis(1)).await; //TODO: Longer sleep, maybe configurable?
+                        info!("Sleeping 10ms, waiting for buffer to fill");
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        //TODO: Longer sleep, maybe configurable?
                     }
                 } else {
                     std::future::pending().await
@@ -753,25 +866,25 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
             }
 
             let sendtask = async {
-
                 if !self.nextsend.is_empty() {
                     let permit = self.sender_tx.reserve().await?;
-                    if let Some(nextsend_id) = self.nextsend_id
-                    {
-                        let mut db = self.database.lock().unwrap();
-                        db.mark_transmitted(nextsend_id);
-                            /*if !? {
-
-                        }*/
+                    if let Some(nextsend_id) = self.nextsend_id {
+                        let mut db = self
+                            .database
+                            .lock()
+                            .map_err(|e| anyhow!("mutex lock failed: {:?}", e))?;
+                        if !db.mark_transmitted(nextsend_id)? {
+                            self.nextsend_id = None;
+                            self.nextsend.clear();
+                            return Ok::<(), anyhow::Error>(());
+                        }
                         self.nextsend_id = None;
                     }
-                    let l = self.nextsend.len();
                     permit.send(std::mem::take(&mut self.nextsend));
-                    //info!("Actual transmit of {} byte message", l);
                 } else {
-                    std::future::pending().await
+                    std::future::pending::<()>().await;
                 }
-                Ok::<(), SendError<()>>(())
+                Ok::<(), anyhow::Error>(())
             };
 
             select!(
@@ -779,10 +892,10 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                 res = sendtask => {
                     res?;
                 }
-                process_incoming = buffering_timer => {
+                _process_incoming = buffering_timer => {
                     self.process_messages()?;
                 }
-                periodic = tokio::time::sleep_until(self.next_periodic) => {
+                _periodic = tokio::time::sleep_until(self.next_periodic) => {
                     let database = self.database.lock().unwrap();
                     let msgs = self.distributor.get_periodic_message(&*database)?;
                     info!("Time for periodic messages: {:?}", msgs);
@@ -791,10 +904,13 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                 }
                 cmd = self.cmd_rx.recv() => {
                     let Some(cmd) = cmd else {
+                        //println!("Cmd rx gone!");
+                        info!("cmd rx, sender is gone");
                         return Ok(None); //Done
                     };
                     match cmd {
                         Cmd::Quit(sender) => {
+                            //println!("Cmd rx received quit");
                             return Ok(Some(sender));
                         }
                         Cmd::GetStatus(sender) => {
@@ -805,7 +921,7 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
                         Cmd::AddMessage(time, msg,result) => {
                             let mut database = self.database.lock().unwrap();
                             let mut temp = vec![];
-                            msg.serialize(&mut temp); //TODO: get rid of this serialization
+                            msg.serialize(&mut temp)?; //TODO: get rid of this serialization
                             let res = database.append_local_opt(time, msg);
 
                             match res {
@@ -841,9 +957,7 @@ impl<APP: Application + 'static+Send> DatabaseCommunicationLoop<APP> where
     }
 }
 
-struct NoatunRuntime {
-
-}
+struct NoatunRuntime {}
 
 pub struct DatabaseCommunication<APP: Application> {
     database: Arc<Mutex<Database<APP>>>,
@@ -851,17 +965,16 @@ pub struct DatabaseCommunication<APP: Application> {
     node: String,
 }
 
-
-impl<APP: Application + 'static+Send> DatabaseCommunication<APP>
-where <APP as Application>::Params: Send,
+impl<APP: Application + 'static + Send> DatabaseCommunication<APP>
+where
+    <APP as Application>::Params: Send,
     <APP as Application>::Message: Send,
-
 {
     pub async fn get_status(&self) -> Result<Status> {
-        let (oneshot_tx,oneshot_rx) = oneshot::channel();
+        let (oneshot_tx, oneshot_rx) = oneshot::channel();
         let status = self.cmd_tx.send(Cmd::GetStatus(oneshot_tx)).await;
         match status {
-            Ok(status) => {
+            Ok(()) => {
                 let result: Status = oneshot_rx.await?;
                 Ok(result)
             }
@@ -871,20 +984,26 @@ where <APP as Application>::Params: Send,
         }
     }
     pub async fn close(self) -> Result<()> {
-        let (oneshot_tx, oneshot_rx) = std::sync::mpsc::channel();
+        let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
+        println!("Sending quit");
         let e = self.cmd_tx.send(Cmd::Quit(oneshot_tx)).await;
+        println!("Quit sent!");
         match e {
             Ok(_) => {}
             Err(_err) => {
                 bail!("Instance already closed");
             }
         }
-        match oneshot_rx.recv_timeout(Duration::from_millis(1000)) {
-            Ok(()) => {
-                Ok(())
+        match tokio::time::timeout(Duration::from_secs(1), oneshot_rx).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => {
+                bail!(
+                    "Couldn't shut down DatabaseCommunication gracefully: {:?}",
+                    err
+                );
             }
-            Err(_err) => {
-                bail!("Couldn't shut down DatabaseCommunication gracefully.");
+            Err(Elapsed { .. }) => {
+                bail!("Timeout - couldn't shut down DatabaseCommunication gracefully.");
             }
         }
     }
@@ -898,10 +1017,17 @@ where <APP as Application>::Params: Send,
     }
     async fn add_message_impl(&self, time: Option<NoatunTime>, msg: APP::Message) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
-        match self.cmd_tx.send(Cmd::AddMessage(time, msg, response_tx)).await {
+        match self
+            .cmd_tx
+            .send(Cmd::AddMessage(time, msg, response_tx))
+            .await
+        {
             Ok(()) => {}
             Err(err) => {
-                bail!("Failed to AddMessage - background thread no longer running");
+                bail!(
+                    "Failed to AddMessage - background thread no longer running: {:?}",
+                    err
+                );
             }
         }
         response_rx.await??;
@@ -913,10 +1039,16 @@ where <APP as Application>::Params: Send,
     /// Must *not* be called from within a tokio runtime.
     pub fn blocking_add_message(&self, time: Option<NoatunTime>, msg: APP::Message) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
-        match self.cmd_tx.blocking_send(Cmd::AddMessage(time, msg, response_tx)) {
+        match self
+            .cmd_tx
+            .blocking_send(Cmd::AddMessage(time, msg, response_tx))
+        {
             Ok(()) => {}
             Err(err) => {
-                bail!("Failed to AddMessage - background thread no longer running");
+                bail!(
+                    "Failed to AddMessage - background thread no longer running: {:?}",
+                    err
+                );
             }
         }
         response_rx.blocking_recv()??;
@@ -929,7 +1061,7 @@ where <APP as Application>::Params: Send,
 
     #[instrument(skip(self),fields(node=?self.node))]
     pub fn set_mock_time(&mut self, time: NoatunTime) {
-        let mut db  = self.database.lock().unwrap();
+        let mut db = self.database.lock().unwrap();
         db.set_mock_time(time);
         db.maybe_advance_cutoff().unwrap();
     }
@@ -940,11 +1072,18 @@ where <APP as Application>::Params: Send,
         self.database.lock().unwrap().get_update_heads().to_vec()
     }
     pub fn get_cutoff_time(&self) -> Result<NoatunTime> {
-        Ok(self.database.lock().unwrap().current_cutoff_state()?.before_time.to_noatun_time())
+        Ok(self
+            .database
+            .lock()
+            .unwrap()
+            .current_cutoff_state()?
+            .before_time
+            .to_noatun_time())
     }
     /// TODO: Probably remove this, it should never be necessary
-    pub fn reproject(&mut self) {
-        self.database.lock().unwrap().reproject();
+    pub fn reproject(&mut self) -> Result<()> {
+        self.database.lock().unwrap().reproject()?;
+        Ok(())
     }
     pub fn with_root_preview<R>(
         &self,
@@ -963,12 +1102,12 @@ where <APP as Application>::Params: Send,
     }
 
     /// Spawns the communication system as a future on the current tokio runtime.
-    pub async fn async_tokio_new<Driver:CommunicationDriver+'static>(
+    pub async fn async_tokio_new<Driver: CommunicationDriver + 'static>(
         driver: &mut Driver,
         database: Database<APP>,
         config: DatabaseCommunicationConfig,
     ) -> Result<DatabaseCommunication<APP>> {
-        let (sender_tx, sender_rx) = tokio::sync::mpsc::channel(1000);
+        let (sender_tx, sender_rx) = tokio::sync::mpsc::channel(1);
         let (receiver_tx, receiver_rx) = tokio::sync::mpsc::channel(1000);
         let sender_loop = MulticasterSenderLoop::new(
             driver,
@@ -989,7 +1128,7 @@ where <APP as Application>::Params: Send,
 
         let main = DatabaseCommunicationLoop {
             distributor: Distributor::new(&node),
-            node:node.clone(),
+            node: node.clone(),
             database: database.clone(),
             jh,
             sender_tx,
@@ -1005,12 +1144,21 @@ where <APP as Application>::Params: Send,
 
         spawn(main.run());
 
-        Ok(DatabaseCommunication { database, cmd_tx, node })
+        Ok(DatabaseCommunication {
+            database,
+            cmd_tx,
+            node,
+        })
     }
 
-    fn start_async_runtime<Driver:CommunicationDriver+Sync+Send+'static>(driver: &mut Driver, database: Database<APP>, config: DatabaseCommunicationConfig) -> Result<(Runtime, DatabaseCommunication<APP>)> {
+    fn start_async_runtime<Driver: CommunicationDriver + Sync + Send + 'static>(
+        driver: &mut Driver,
+        database: Database<APP>,
+        config: DatabaseCommunicationConfig,
+    ) -> Result<(Runtime, DatabaseCommunication<APP>)> {
         let runtime = Runtime::new()?;
-        let com: DatabaseCommunication<APP> = runtime.block_on(Self::async_tokio_new(driver, database, config))?;
+        let com: DatabaseCommunication<APP> =
+            runtime.block_on(Self::async_tokio_new(driver, database, config))?;
         Ok((runtime, com))
     }
 
@@ -1018,16 +1166,20 @@ where <APP as Application>::Params: Send,
         database: Database<APP>,
         config: DatabaseCommunicationConfig,
     ) -> Result<DatabaseCommunication<APP>> {
-        let (res_tx,res_rx) = tokio::sync::oneshot::channel();
-        thread::spawn(move||{
+        let (res_tx, res_rx) = tokio::sync::oneshot::channel();
+        thread::spawn(move || {
             match Self::start_async_runtime(&mut TokioUdpDriver, database, config) {
-                Ok((runtime,app)) => {
-                    res_tx.send(Ok(app));
+                Ok((runtime, app)) => {
+                    if let Err(_err) = res_tx.send(Ok(app)) {
+                        error!("Failed to start communication, client closed result channel.");
+                        return;
+                    }
                     runtime.block_on(std::future::pending::<()>());
                     info!("Dropping runtime");
                 }
                 Err(err) => {
-                    res_tx.send(Err(err));
+                    info!("start runtime failed: {:?}", err);
+                    _ = res_tx.send(Err(err));
                 }
             }
         });
@@ -1035,17 +1187,14 @@ where <APP as Application>::Params: Send,
         let app = res_rx.blocking_recv()??;
         Ok(app)
     }
-
-
-
 }
 
 #[cfg(test)]
 mod tests {
 
+    use crate::communication::udp::TokioUdpDriver;
     use crate::communication::{MulticasterSenderLoop, ReceiveTrack};
     use tokio::spawn;
-    use crate::communication::udp::TokioUdpDriver;
 
     #[test]
     fn reconstruct_seq_logic() {
@@ -1067,7 +1216,7 @@ mod tests {
     #[tokio::test]
     async fn test_sender() {
         let (sender_tx1, sender_rx1) = tokio::sync::mpsc::channel(1000);
-        let (receiver_tx1, receiver_rx1) = tokio::sync::mpsc::channel(1000);
+        let (receiver_tx1, _receiver_rx1) = tokio::sync::mpsc::channel(1000);
 
         let mloop1 = MulticasterSenderLoop::new(
             &mut TokioUdpDriver,
@@ -1075,11 +1224,11 @@ mod tests {
             "230.230.230.230:7777",
             receiver_tx1,
             sender_rx1,
-            1000,
+            10000,
             200,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         let (sender_tx2, sender_rx2) = tokio::sync::mpsc::channel(1000);
         let (receiver_tx2, mut receiver_rx2) = tokio::sync::mpsc::channel(1000);
@@ -1090,11 +1239,11 @@ mod tests {
             "230.230.230.230:7777",
             receiver_tx2,
             sender_rx2,
-            1000,
+            10000,
             200,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         let jh1 = spawn(mloop1.run());
         let jh2 = spawn(mloop2.run());
@@ -1115,7 +1264,7 @@ mod tests {
         println!("quitting");
         drop(sender_tx1);
         drop(sender_tx2);
-        jh1.await.unwrap();
-        jh2.await.unwrap();
+        jh1.await.unwrap().unwrap();
+        jh2.await.unwrap().unwrap();
     }
 }

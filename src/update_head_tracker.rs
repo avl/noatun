@@ -2,7 +2,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::{MessageId, NoatunTime};
 use anyhow::Result;
-use tracing::{info, warn};
+use tracing::{debug, info};
 
 pub(crate) struct UpdateHeadTracker {
     file: FileAccessor,
@@ -14,10 +14,10 @@ impl UpdateHeadTracker {
         let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
         if let Some(index) = id_mapping.iter().position(|id| *id == message_id) {
             if index + 1 < id_mapping.len() {
-                id_mapping.swap(index, id_mapping.len()-1);
+                id_mapping.swap(index, id_mapping.len() - 1);
             }
             let new_len = id_mapping.len() - 1; //len can't be 0, since then we couldn't have found 'message_id' in id_mapping
-            self.file.fast_truncate(new_len*size_of::<MessageId>());
+            self.file.fast_truncate(new_len * size_of::<MessageId>());
         }
         Ok(())
     }
@@ -30,16 +30,16 @@ impl UpdateHeadTracker {
         while index < mapping_len {
             if id_mapping[index].timestamp() < cutoff {
                 info!("Deleting all head: {:?}", id_mapping[index]);
-                id_mapping.swap(index, id_mapping.len()-1);
+                id_mapping.swap(index, id_mapping.len() - 1);
                 mapping_len -= 1;
             } else {
                 index += 1;
             }
         }
-        self.file.fast_truncate(mapping_len*size_of::<MessageId>());
+        self.file
+            .fast_truncate(mapping_len * size_of::<MessageId>());
 
         Ok(())
-
     }
 
     pub(crate) fn add_new_update_head(
@@ -49,10 +49,16 @@ impl UpdateHeadTracker {
         cutoff: NoatunTime,
     ) -> anyhow::Result<()> {
         if new_message_id.timestamp() < cutoff {
-            warn!("Not adding update-head {:?} because cutoff {:?}", new_message_id, cutoff);  //TODO: not warn!
+            debug!(
+                "Not adding update-head {:?} because cutoff {:?}",
+                new_message_id, cutoff
+            );
             return Ok(());
         }
-        info!("Adding update-head {:?} (cutoff {:?})", new_message_id, cutoff);  //TODO: not warn!
+        debug!(
+            "Adding update-head {:?} (cutoff {:?})",
+            new_message_id, cutoff
+        );
         let mapping = self.file.map_mut();
         let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
         let mut i = 0;

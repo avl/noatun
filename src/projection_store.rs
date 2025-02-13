@@ -11,7 +11,6 @@ use std::any::{Any, TypeId};
 use std::fmt::Debug;
 use std::mem::{offset_of, take, transmute_copy};
 use std::ops::Range;
-use std::slice::SliceIndex;
 use std::{iter, slice};
 
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
@@ -20,13 +19,12 @@ use std::pin::Pin;
 use tracing::{error, info};
 
 mod registrar_info {
-    
-    
+
     use bytemuck::{Pod, Zeroable};
-    
+
     use std::fmt::{Debug, Formatter};
     use std::pin::Pin;
-    
+
     use crate::sequence_nr::SequenceNr;
     use crate::DatabaseContextData;
 
@@ -37,9 +35,7 @@ mod registrar_info {
     }
     impl Debug for RegistrarInfo {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}",
-                self.get_use()
-            )
+            write!(f, "{}", self.get_use())
         }
     }
     impl RegistrarInfo {
@@ -51,7 +47,7 @@ mod registrar_info {
                 return;
             }
             //TODO: We could have a special "inc 1" noatun primitive.
-            context.write_pod(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) } );
+            context.write_pod(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
         pub fn decrease_use(&mut self, context: &mut DatabaseContextData) {
             let cur_uses = self.get_use();
@@ -63,7 +59,7 @@ mod registrar_info {
             }
             //TODO: We could have a special "dec 1" noatun primitive.
             //println!("Wite pod {:?}", self.uses - 1);
-            context.write_pod(self.uses - 1, unsafe{Pin::new_unchecked(&mut self.uses)});
+            context.write_pod(self.uses - 1, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
     }
 
@@ -127,14 +123,12 @@ pub struct MainDbAuxHeader {
     unused_messages: RawDatabaseVec<UnusedInfo>,
 }
 
-
 pub(crate) struct DatabaseContextData {
     main_db_mmap: FileAccessor,
     root_index: Option<GenPtr>,
     undo_log: UndoLog,
 
     // The current message being written (or None if not open for writing)
-
     unused_messages: Vec<UnusedInfo>,
     // Set to true when run from within message apply
     pub(crate) is_mutable: bool,
@@ -165,11 +159,10 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
     //
     // (Size 0 Align MAX is already aligned, so stays the same, but things like
     // Size 1 Align MAX or Size isize::MAX Align 2 round up to `isize::MAX + 1`.)
-    unsafe {
-        let align_m1 = align - 1;
-        let size_rounded_up = (curr.checked_add(align_m1)?) & !align_m1;
-        Some(size_rounded_up)
-    }
+
+    let align_m1 = align - 1;
+    let size_rounded_up = (curr.checked_add(align_m1)?) & !align_m1;
+    Some(size_rounded_up)
 }
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -184,13 +177,10 @@ pub(crate) struct DepTrackLinkedListEntry {
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub(crate) struct ReverseDepTrackLinkedListEntry {
-    // TODO: Possibly make this struct 4-byte aligned, and remove the padding
     pub next: ThinPtr,
     pub seq: SequenceNr,
     pub last_overwriter: SequenceNr,
 }
-
-
 
 impl DatabaseContextData {
     fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr) {
@@ -205,18 +195,27 @@ impl DatabaseContextData {
         if observee.index() >= keys.len() {
             keys.grow(self, observee.index() + 1);
         }
-        let key_place = unsafe { keys.get_mut(self, observee.index())
-            .map_unchecked_mut(|x|&mut x.dep) };
+        let key_place = unsafe {
+            keys.get_mut(self, observee.index())
+                .map_unchecked_mut(|x| &mut x.dep)
+        };
 
         let new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod_internal();
 
-        self.write_pod(*key_place, unsafe{Pin::new_unchecked(&mut new_entry.next)});
-        self.write_pod(observer,   unsafe{Pin::new_unchecked(&mut new_entry.seq)});
+        self.write_pod(*key_place, unsafe {
+            Pin::new_unchecked(&mut new_entry.next)
+        });
+        self.write_pod(observer, unsafe { Pin::new_unchecked(&mut new_entry.seq) });
 
         let new_entry_index = self.index_of_sized(new_entry);
         self.write_pod(new_entry_index, key_place);
     }
-    fn record_reverse_dependency(&mut self, observee: SequenceNr, observer: SequenceNr, last_overwriter: SequenceNr) {
+    fn record_reverse_dependency(
+        &mut self,
+        observee: SequenceNr,
+        observer: SequenceNr,
+        last_overwriter: SequenceNr,
+    ) {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
 
@@ -228,14 +227,20 @@ impl DatabaseContextData {
         if observer.index() >= keys.len() {
             keys.grow(self, observer.index() + 1);
         }
-        let key_place = unsafe { keys.get_mut(self, observer.index())
-            .map_unchecked_mut(|x|&mut x.reverse_dep) };
+        let key_place = unsafe {
+            keys.get_mut(self, observer.index())
+                .map_unchecked_mut(|x| &mut x.reverse_dep)
+        };
 
         let new_entry: &mut ReverseDepTrackLinkedListEntry = self.allocate_pod_internal();
 
-        self.write_pod(*key_place, unsafe{Pin::new_unchecked(&mut new_entry.next)});
-        self.write_pod(observee,   unsafe{Pin::new_unchecked(&mut new_entry.seq)});
-        self.write_pod(last_overwriter,   unsafe{Pin::new_unchecked(&mut new_entry.last_overwriter)});
+        self.write_pod(*key_place, unsafe {
+            Pin::new_unchecked(&mut new_entry.next)
+        });
+        self.write_pod(observee, unsafe { Pin::new_unchecked(&mut new_entry.seq) });
+        self.write_pod(last_overwriter, unsafe {
+            Pin::new_unchecked(&mut new_entry.last_overwriter)
+        });
 
         let new_entry_index = self.index_of_sized(new_entry);
         self.write_pod(new_entry_index, key_place);
@@ -261,7 +266,10 @@ impl DatabaseContextData {
     }
 
     //TODO: Maybe elliminate this code duplication
-    fn read_reverse_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = (SequenceNr, SequenceNr /* last overwriter */)> + '_ {
+    fn read_reverse_dependency(
+        &self,
+        observee: SequenceNr,
+    ) -> impl Iterator<Item = (SequenceNr, SequenceNr /* last overwriter */)> + '_ {
         let keys: &RawDatabaseVec<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observee.index() < keys.len() {
@@ -279,7 +287,6 @@ impl DatabaseContextData {
             Some((entry.seq, entry.last_overwriter))
         })
     }
-
 
     /// The next sequence number we expect to be added.
     /// I.e, later rewinding to this sequence number would undo the event that carries
@@ -366,12 +373,12 @@ impl DatabaseContextData {
         header.status.0 != MAIN_DB_STATUS_CLEAN
     }
     pub fn clear(&mut self) -> Result<()> {
-        self.main_db_mmap.truncate(0);
+        self.main_db_mmap.truncate(0)?;
         self.main_db_mmap
             .grow(size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>())?;
         Self::write_initial_header(&mut self.main_db_mmap);
         self.write_initial_aux_header();
-        self.undo_log.clear();
+        self.undo_log.clear()?;
         self.unused_messages.clear();
 
         Ok(())
@@ -628,14 +635,12 @@ impl DatabaseContextData {
         self.copy(FatPtr::from(source.0, size_bytes), dest_index)
     }
     pub fn copy_pod<T: Pod>(&mut self, source: &T, dest: &mut T) {
-        unsafe {
-            let dest_index = self.index_of_sized(dest);
-            self.undo_log.record(UndoLogEntry::Restore {
-                start: dest_index.0,
-                data: bytes_of(dest),
-            });
-            *dest = *source;
-        }
+        let dest_index = self.index_of_sized(dest);
+        self.undo_log.record(UndoLogEntry::Restore {
+            start: dest_index.0,
+            data: bytes_of(dest),
+        });
+        *dest = *source;
     }
     #[allow(clippy::mut_from_ref)]
     pub fn allocate_pod<T: AnyBitPattern>(&mut self) -> Pin<&mut T> {
@@ -660,11 +665,9 @@ impl DatabaseContextData {
         self.main_db_mmap
             .grow(new_pointer)
             .expect("Failed to allocate memory");
-        unsafe {
-            self.main_db_mmap
-                .map_mut_ptr()
-                .wrapping_add(new_pointer - size)
-        }
+        self.main_db_mmap
+            .map_mut_ptr()
+            .wrapping_add(new_pointer - size)
     }
     pub fn allocate_array<const N: usize, const ALIGN: usize>(&mut self) -> &mut [u8; N] {
         self.allocate_slice(N, ALIGN).try_into().unwrap()
@@ -676,7 +679,11 @@ impl DatabaseContextData {
     /// # Safety
     /// The returned range must not overlap any mutable reference.
     /// Alignment must be right.
-    pub unsafe fn access_slice_at<'a, T: AnyBitPattern>(&self, offset: usize, size: usize) -> &'a [T] {
+    pub unsafe fn access_slice_at<'a, T: AnyBitPattern>(
+        &self,
+        offset: usize,
+        size: usize,
+    ) -> &'a [T] {
         assert!(offset + size * size_of::<T>() <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts(
@@ -743,7 +750,10 @@ impl DatabaseContextData {
     /// # Safety
     /// The returned range must not overlap any other reference
     /// Alignment must be right.
-    pub unsafe fn access_object_slice_mut<'a, T: FixedSizeObject>(&self, range: FatPtr) -> &'a mut [T] {
+    pub unsafe fn access_object_slice_mut<'a, T: FixedSizeObject>(
+        &self,
+        range: FatPtr,
+    ) -> &'a mut [T] {
         assert!(range.start + range.len <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts_mut(
@@ -806,7 +816,10 @@ impl DatabaseContextData {
     }
     /// # Safety
     /// Caller must ensure no references exists to the requested object
-    pub unsafe fn access_object_mut<'a, T: FixedSizeObject>(&self, index: ThinPtr) -> Pin<&'a mut T> {
+    pub unsafe fn access_object_mut<'a, T: FixedSizeObject>(
+        &self,
+        index: ThinPtr,
+    ) -> Pin<&'a mut T> {
         if index
             .0
             .checked_add(size_of::<T>())
@@ -896,7 +909,7 @@ impl DatabaseContextData {
     pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr) {
         let current_registrar = self.next_seqnr();
         if registrar_point.is_valid() {
-            self.rt_decrease_use(unsafe { *registrar_point }, current_registrar);
+            self.rt_decrease_use(*registrar_point, current_registrar);
         }
         if current_registrar.is_invalid() {
             // We're in the 'initialize root' method
@@ -938,13 +951,12 @@ impl DatabaseContextData {
 
     pub(crate) fn rt_finalize_message(&mut self, message_id: SequenceNr) {
         debug_assert!(message_id.is_valid());
-        let aux_header = self.get_aux_header();
+        //let aux_header = self.get_aux_header();
 
         // #SAFETY
         // We only hold this for this method, and we call no other code that
         // uses the same memory. So does all other users of 'get_uses'.
         let uses = unsafe { self.get_uses() };
-
 
         if uses.len() <= message_id.index() {
             // This is a bit of a special case. This is a message
@@ -997,9 +1009,8 @@ impl DatabaseContextData {
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
         mut unused_messages: Vec<UnusedInfo>,
-        before_cutoff: bool
+        before_cutoff: bool,
     ) -> anyhow::Result<Vec<SequenceNr>> {
-
         let mut deleted = Vec::new();
         let mut deferred = Vec::new();
         let mut new_unused_list = Vec::new();
@@ -1012,9 +1023,12 @@ impl DatabaseContextData {
                             // 'msg' can't be deleted, because it's observed by
                             // 'observer' - i.e a later message that has not been deleted.
 
-
-                            deferred.push(move|tself: &mut DatabaseContextData|{
-                                tself.record_reverse_dependency(msg.seq, observer, msg.last_overwriter);
+                            deferred.push(move |tself: &mut DatabaseContextData| {
+                                tself.record_reverse_dependency(
+                                    msg.seq,
+                                    observer,
+                                    msg.last_overwriter,
+                                );
                             });
 
                             continue 'outer;
@@ -1031,17 +1045,16 @@ impl DatabaseContextData {
                 continue 'outer;
             }
 
-            info!("Deleting {:?} (before cutoff: {:?}), may have been transmitted: {:?}", msg, before_cutoff, messages.may_have_been_transmitted(msg.seq)?);
-            if msg.seq.index() == 15
-            {
-                println!("Num 15");
-                panic!("Num 15");
-                std::process::abort();
-            }
+            info!(
+                "Deleting {:?} (before cutoff: {:?}), may have been transmitted: {:?}",
+                msg,
+                before_cutoff,
+                messages.may_have_been_transmitted(msg.seq)?
+            );
             for (revdep, last_overwriter) in self.read_reverse_dependency(msg.seq) {
                 unused_messages.push(UnusedInfo {
                     seq: revdep,
-                    last_overwriter
+                    last_overwriter,
                 });
             }
 

@@ -1,8 +1,11 @@
 use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
-use crate::disk_abstraction::{Disk, InMemoryDisk, StandardDisk};
+use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
-use crate::{Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageHeader, MessageId, NoatunTime, Object, Pointer, Target};
+use crate::{
+    Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageHeader,
+    MessageId, NoatunTime, Object, Pointer, Target,
+};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -17,14 +20,9 @@ pub struct Database<Base: Application> {
     time_override: Option<NoatunTime>,
     projection_time_limit: Option<NoatunTime>,
     params: Base::Params,
-
 }
 
-//TODO: Make the modules in this file be distinct files
-
 impl<APP: Application> Database<APP> {
-
-
     /// TODO: Document
     pub fn maybe_advance_cutoff(&mut self) -> Result<()> {
         // TODO: Do we need to check for dirty here? Probably not, but then we should
@@ -40,10 +38,9 @@ impl<APP: Application> Database<APP> {
     }
 
     pub fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
-
-        self.message_store.advance_cutoff(new_cutoff, &mut self.context)
-   }
-
+        self.message_store
+            .advance_cutoff(new_cutoff, &mut self.context)
+    }
 
     pub(crate) fn force_rewind(&mut self, index: SequenceNr) {
         self.context.rewind(index)
@@ -77,7 +74,7 @@ impl<APP: Application> Database<APP> {
     }
 
     pub fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
-        self.message_store.is_acceptable_cutoff_hash(self.noatun_now(), hash)
+        self.message_store.is_acceptable_cutoff_hash(hash)
     }
     pub fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
         self.message_store.current_cutoff_hash()
@@ -85,6 +82,9 @@ impl<APP: Application> Database<APP> {
 
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
         self.message_store.get_all_message_ids()
+    }
+    pub fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
+        self.message_store.get_message_children(msg)
     }
     pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
         self.message_store.get_all_messages()
@@ -119,7 +119,8 @@ impl<APP: Application> Database<APP> {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let mut root = unsafe { <APP as Object>::access_mut(root_ptr) };
-        self.message_store.apply_preview(time, root.as_mut(), preview)?;
+        self.message_store
+            .apply_preview(time, root.as_mut(), preview)?;
         let ret = f(&*root);
         drop(guard);
         self.message_store
@@ -130,11 +131,10 @@ impl<APP: Application> Database<APP> {
 
     pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
-        let guard = ContextGuard::new(&self.context);
+        let _guard = ContextGuard::new(&self.context);
         let root = unsafe { <APP as Object>::access(root_ptr) };
         f(root)
     }
-
 
     pub(crate) fn noatun_now(&self) -> NoatunTime {
         self.time_override.unwrap_or_else(NoatunTime::now)
@@ -191,12 +191,11 @@ impl<APP: Application> Database<APP> {
 
         self.message_store.apply_missing_messages(
             &mut self.context,
-            unsafe{root.get_unchecked_mut()},
-            now,
+            unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
         )?;
 
-        self.context.mark_clean();
+        self.context.mark_clean()?;
         Ok(())
     }
 
@@ -216,7 +215,6 @@ impl<APP: Application> Database<APP> {
 
         self.message_store.rewind(&mut self.context, 0)?;
 
-
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
@@ -224,8 +222,7 @@ impl<APP: Application> Database<APP> {
 
         self.message_store.apply_missing_messages(
             &mut self.context,
-            unsafe{root.get_unchecked_mut()},
-            now,
+            unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
         )?;
 
@@ -242,7 +239,7 @@ impl<APP: Application> Database<APP> {
     ) -> Result<()> {
         context.clear()?;
 
-        message_store.recover(time_now);
+        message_store.recover(time_now)?;
         let mmap_ptr = context.start_ptr();
         let guard = ContextGuardMut::new(context);
         let root_obj_ref = APP::initialize_root(params);
@@ -258,7 +255,11 @@ impl<APP: Application> Database<APP> {
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
         drop(guard);
         //let root = context.access_pod(root_ptr);
-        message_store.apply_missing_messages(context, unsafe{root.get_unchecked_mut()}, time_now, projection_time_limit)?;
+        message_store.apply_missing_messages(
+            context,
+            unsafe { root.get_unchecked_mut() },
+            projection_time_limit,
+        )?;
 
         Ok(())
     }
@@ -300,12 +301,6 @@ impl<APP: Application> Database<APP> {
         )
     }
 
-    // TODO: We should separate the message_id from the Message-type, and let
-    // Noatun provide message_id. It should be provided when adding the message, so that
-    // we can be sure that all local messages are such that they haven't been observed
-    // previously
-    // TODO: Maybe change the signature of this, and some other public methods, to accept
-    // a raw message payload, and hide messageId-generation from user!
     pub fn append_single(&mut self, message: Message<APP::Message>, local: bool) -> Result<()> {
         self.append_many(std::iter::once(message), local, true)
     }
@@ -316,33 +311,39 @@ impl<APP: Application> Database<APP> {
         self.time_override = Some(time);
     }
 
-
     /// Returns true if the message still exists.
     /// If this returns false, the message has been deleted, and *MUST* not *BE* transmitted.
     pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<bool> {
         self.message_store.mark_transmitted(message_id)
     }
 
-
     pub fn append_local(&mut self, message: APP::Message) -> Result<MessageHeader> {
         self.append_local_opt(None, message)
     }
-    pub fn append_local_at(&mut self, time: NoatunTime, message: APP::Message) -> Result<MessageHeader> {
+    pub fn append_local_at(
+        &mut self,
+        time: NoatunTime,
+        message: APP::Message,
+    ) -> Result<MessageHeader> {
         self.append_local_opt(Some(time), message)
     }
-    pub fn append_local_opt(&mut self, time: Option<NoatunTime>, message: APP::Message) -> Result<MessageHeader> {
-        let time = time.unwrap_or_else(||self.noatun_now());
+    pub fn append_local_opt(
+        &mut self,
+        time: Option<NoatunTime>,
+        message: APP::Message,
+    ) -> Result<MessageHeader> {
+        let time = time.unwrap_or_else(|| self.noatun_now());
         let new_id;
 
-
         if let Some(prev_local) = self.prev_local {
-            if time  == prev_local.timestamp() { //TODO: Fix all cases of u64 timestamps. We should probably just use i64 instead
+            if time == prev_local.timestamp() {
+                //TODO: Fix all cases of u64 timestamps. We should probably just use i64 instead
                 new_id = prev_local.successor();
             } else {
-                new_id  = MessageId::generate_for_time(time)?;
+                new_id = MessageId::generate_for_time(time)?;
             }
         } else {
-            new_id  = MessageId::generate_for_time(time)?;
+            new_id = MessageId::generate_for_time(time)?;
         }
         self.prev_local = Some(new_id);
         /*println!(
@@ -372,7 +373,7 @@ impl<APP: Application> Database<APP> {
         &mut self,
         messages: impl Iterator<Item = Message<APP::Message>>,
         local: bool,
-        allow_cutoff_advance: bool
+        allow_cutoff_advance: bool,
     ) -> Result<()> {
         let now = self.noatun_now();
         if !self.context.mark_dirty()? {
@@ -391,7 +392,7 @@ impl<APP: Application> Database<APP> {
         }
 
         self.message_store
-            .push_messages(&mut self.context, messages, local);
+            .push_messages(&mut self.context, messages, local)?;
 
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
@@ -400,11 +401,10 @@ impl<APP: Application> Database<APP> {
 
         self.message_store.apply_missing_messages(
             &mut self.context,
-            unsafe{root.get_unchecked_mut()},
-            now,
+            unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
         )?;
-        self.context.mark_clean();
+        self.context.mark_clean()?;
         Ok(())
     }
 
@@ -418,7 +418,6 @@ impl<APP: Application> Database<APP> {
         projection_time_limit: Option<NoatunTime>,
         params: APP::Params,
     ) -> Result<Database<APP>> {
-
         let mut disk = InMemoryDisk::default();
         let target = Target::CreateNew(PathBuf::default());
         let mut ctx = DatabaseContextData::new(&mut disk, &target, max_size)
@@ -451,7 +450,6 @@ impl<APP: Application> Database<APP> {
         projection_time_limit: Option<NoatunTime>,
         params: APP::Params,
     ) -> Result<Database<APP>> {
-
         let mut disk = StandardDisk;
 
         let mut ctx = DatabaseContextData::new(&mut disk, &target, max_file_size)
@@ -460,7 +458,7 @@ impl<APP: Application> Database<APP> {
         let is_dirty = ctx.is_dirty();
 
         let mut message_store = Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
-        let update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
+        //let update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
         if is_dirty {
             Self::recover(
                 &mut ctx,

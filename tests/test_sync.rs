@@ -1,12 +1,15 @@
+use noatun::communication::udp::TokioUdpDriver;
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::DatabaseCell;
-use noatun::{AnyBitPattern, Application, CutOffDuration, Database, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
+use noatun::{
+    AnyBitPattern, Application, CutOffDuration, Database, MessagePayload, NoatunContext,
+    NoatunTime, Object, ThinPtr,
+};
 use savefile::{Deserializer, Serializer};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::pin::Pin;
 use std::time::Duration;
-use noatun::communication::udp::TokioUdpDriver;
 
 #[derive(Savefile, Debug)]
 struct MazeMessage {
@@ -31,7 +34,7 @@ impl Object for Maze {
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        let tself = unsafe {self.get_unchecked_mut() };
+        let tself = unsafe { self.get_unchecked_mut() };
         unsafe {
             Pin::new_unchecked(&mut tself.player_pos_x).set(detached.0);
             Pin::new_unchecked(&mut tself.player_pos_y).set(detached.1);
@@ -59,12 +62,11 @@ impl MessagePayload for MazeMessage {
     type Root = Maze;
 
     fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
-
-        let root_player_pos_x = unsafe{root.as_mut().map_unchecked_mut(|x|&mut x.player_pos_x)};
+        let root_player_pos_x = unsafe { root.as_mut().map_unchecked_mut(|x| &mut x.player_pos_x) };
         let x = root_player_pos_x.get().saturating_add_signed(self.delta_x);
         root_player_pos_x.set(x);
 
-        let root_player_pos_y = unsafe{root.as_mut().map_unchecked_mut(|x|&mut x.player_pos_y)};
+        let root_player_pos_y = unsafe { root.as_mut().map_unchecked_mut(|x| &mut x.player_pos_y) };
         let y = root_player_pos_y.get().saturating_add_signed(self.delta_y);
         root_player_pos_y.set(y);
     }
@@ -111,8 +113,13 @@ async fn test_sync_app() {
                     (),
                 )
                 .unwrap();
-                let comm =
-                    DatabaseCommunication::async_tokio_new(&mut TokioUdpDriver, db, DatabaseCommunicationConfig::default()).await.unwrap();
+                let comm = DatabaseCommunication::async_tokio_new(
+                    &mut TokioUdpDriver,
+                    db,
+                    DatabaseCommunicationConfig::default(),
+                )
+                .await
+                .unwrap();
                 comms.push(comm);
             }
 

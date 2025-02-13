@@ -1,13 +1,12 @@
+use crate::cutoff::CutOffDuration;
 use crate::distributor::{Distributor, DistributorMessage};
 use crate::tests::{CounterMessage, CounterObject};
 use crate::{Database, MessageId, NoatunTime};
 use datetime_literal::datetime;
 use std::iter::once;
 use std::mem::swap;
-use crate::cutoff::CutOffDuration;
 
 fn create_app<'a>(
-    id: u64,
     msgs: impl IntoIterator<
         Item = (
             impl Into<NoatunTime>,
@@ -27,7 +26,7 @@ fn create_app<'a>(
     )
     .unwrap();
     for (id, parents, inc1, set1, local) in msgs {
-        let id:NoatunTime = id.into();
+        let id: NoatunTime = id.into();
         db.append_single(
             CounterMessage {
                 id: MessageId::from_parts_for_test(id, 0),
@@ -41,7 +40,8 @@ fn create_app<'a>(
             }
             .wrap(),
             local,
-        );
+        )
+        .unwrap();
     }
     //println!("Messages present: {:?}", db.get_all_message_ids());
     db
@@ -54,8 +54,11 @@ struct SyncReport {
 
 fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
     let mut report = SyncReport { num_messages: 0 };
-    let mut dbs: Vec<(Distributor, Database<_>)> =
-        dbs.into_iter().enumerate().map(|(index,x)| (Distributor::new(&index.to_string()), x)).collect();
+    let mut dbs: Vec<(Distributor, Database<_>)> = dbs
+        .into_iter()
+        .enumerate()
+        .map(|(index, x)| (Distributor::new(&index.to_string()), x))
+        .collect();
     let mut ether = vec![];
     for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
         let mut sent = distr.get_periodic_message(db).unwrap();
@@ -74,7 +77,7 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
                     db,
                     ether
                         .iter()
-                        .filter(|(x_src_id, msg)| *x_src_id != db_id)
+                        .filter(|(x_src_id, _msg)| *x_src_id != db_id)
                         .map(|(_src, x)| x.clone()),
                 )
                 .unwrap();
@@ -90,7 +93,7 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
     }
 
     let first_set: Vec<_> = dbs[0].1.get_all_message_ids().unwrap();
-    for (distr, db) in dbs.iter().skip(1) {
+    for (_distr, db) in dbs.iter().skip(1) {
         assert_eq!(first_set, db.get_all_message_ids().unwrap());
     }
     report
@@ -99,12 +102,12 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
 #[rustfmt::skip]
 fn distributor_simple_deleted() {
     let dbs = vec![
-        create_app(1,
+        create_app(
             [
                 (datetime!(2021-01-02 00:00:00 Z),[].as_slice(),1,0,true),
                 (datetime!(2021-01-03 00:00:00 Z),[ NoatunTime::from_datetime(datetime!(2021-01-02 00:00:00 Z))].as_slice(),0,7,true),
             ]),
-        create_app(2,
+        create_app(
                 [
                 (datetime!(2021-01-04 00:00:00 Z),[].as_slice(),3,0,true),
             ]),
@@ -117,12 +120,12 @@ fn distributor_simple_deleted() {
 #[rustfmt::skip]
 fn distributor_simple_unsync() {
     let dbs = vec![
-        create_app(1,
+        create_app(
             [
                 (datetime!(2021-01-01 00:00:00 Z),[].as_slice(),1,0,true),
                 (datetime!(2021-01-02 00:00:00 Z),[datetime!(2021-01-01 00:00:00 Z).into()].as_slice(),2,0,true),
             ]),
-        create_app(2,
+        create_app(
             [
                 (datetime!(2021-01-03 00:00:00 Z),[].as_slice(),3,0,true),
             ]),
@@ -135,11 +138,11 @@ fn distributor_simple_unsync() {
 #[rustfmt::skip]
 fn distributor_simple_in_sync() {
     let dbs = vec![
-        create_app(1,
+        create_app(
             [
                 (datetime!(2021-01-01 00:00:00 Z),[].as_slice(),1,0,true),
             ]),
-        create_app(2,
+        create_app(
             [
                 (datetime!(2021-01-01 00:00:00 Z),[].as_slice(),1,0,true),
             ]),
@@ -152,12 +155,12 @@ fn distributor_simple_in_sync() {
 #[rustfmt::skip]
 fn distributor_simple_almost_sync() {
     let dbs = vec![
-        create_app(1,
+        create_app(
             [
                 (datetime!(2021-01-01 00:00:00 Z),[].as_slice(),1,0,true),
                 (datetime!(2021-01-02 00:00:00 Z),[datetime!(2021-01-01 00:00:00 Z).into()].as_slice(),2,0,true),
             ]),
-        create_app(2,
+        create_app(
             [
                 (datetime!(2021-01-01 00:00:00 Z),[].as_slice(),1,0,true),
             ]),
@@ -166,8 +169,8 @@ fn distributor_simple_almost_sync() {
 }
 #[test]
 fn test_distributor() {
-    let mut app1 = create_app(1, [(datetime!(2021-01-01 Z), [].as_slice(), 1, 0, true)]);
-    let mut app2 = create_app(2, [(datetime!(2021-01-02 Z), [].as_slice(), 1, 0, true)]);
+    let mut app1 = create_app([(datetime!(2021-01-01 Z), [].as_slice(), 1, 0, true)]);
+    let mut app2 = create_app([(datetime!(2021-01-02 Z), [].as_slice(), 1, 0, true)]);
 
     let mut dist1 = crate::distributor::Distributor::new("1");
     let mut dist2 = crate::distributor::Distributor::new("2");
@@ -204,7 +207,7 @@ fn test_distributor() {
     assert!(matches!(&result[0], DistributorMessage::Message(_, false)));
     assert_eq!(result.len(), 1);
 
-    let result = dist2
+    let _result = dist2
         .receive_message(&mut app2, once(result.pop().unwrap()))
         .unwrap();
     println!("App2 all msgs: {:?}", app2.get_all_message_ids().unwrap());

@@ -1,8 +1,11 @@
-use bytemuck::{AnyBitPattern};
+use bytemuck::AnyBitPattern;
 use datetime_literal::datetime;
 use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::Database;
-use noatun::{Application, CutOffDuration, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime, Object, ThinPtr};
+use noatun::{
+    Application, CutOffDuration, Message, MessageHeader, MessageId, MessagePayload, NoatunContext,
+    NoatunTime, Object, ThinPtr,
+};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::pin::Pin;
@@ -55,7 +58,7 @@ impl MessagePayload for CounterMessage {
     fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
         let root_counter;
         unsafe {
-            root_counter = root.as_mut().map_unchecked_mut(|x|&mut x.counter);
+            root_counter = root.as_mut().map_unchecked_mut(|x| &mut x.counter);
         }
 
         /*println!(
@@ -67,7 +70,7 @@ impl MessagePayload for CounterMessage {
         root_counter.set(counter + self.delta);
 
         unsafe {
-            let root_counter2 = root.as_mut().map_unchecked_mut(|x|&mut x.counter2);
+            let root_counter2 = root.as_mut().map_unchecked_mut(|x| &mut x.counter2);
             root_counter2.push([self.delta as u8]);
         }
     }

@@ -29,7 +29,7 @@ pub trait FileBackend {
 }
 
 pub(crate) struct FileAccessor {
-    mapping: Box<dyn FileBackend+Send>,
+    mapping: Box<dyn FileBackend + Send>,
     /// This is the start of the memory-map.
     /// I.e, this points at the header.
     /// The actual contents start after the header.
@@ -39,10 +39,8 @@ pub(crate) struct FileAccessor {
     committed_size: usize,
     seek_pos: usize,
 }
-unsafe impl Send for FileAccessor  {
-}
-unsafe impl Sync for FileAccessor  {
-}
+unsafe impl Send for FileAccessor {}
+unsafe impl Sync for FileAccessor {}
 
 pub(crate) struct ReadonlyFileAccessor<'a> {
     ptr: *mut u8,
@@ -307,7 +305,7 @@ impl FileAccessor {
         unsafe { slice::from_raw_parts_mut(self.ptr.wrapping_add(Self::HEADER_SIZE), used) }
     }
 
-    pub(crate) fn from_mapping(mapping: impl FileBackend + Send+ 'static) -> Self {
+    pub(crate) fn from_mapping(mapping: impl FileBackend + Send + 'static) -> Self {
         Self {
             ptr: mapping.ptr(),
             mapping: Box::new(mapping),
@@ -390,7 +388,7 @@ impl FileAccessor {
     }
     pub fn write_zeroes(&mut self, bytes: usize) -> Result<()> {
         if self.seek_pos + bytes > self.used_space() {
-            self.grow(self.seek_pos + bytes);
+            self.grow(self.seek_pos + bytes)?;
         }
 
         unsafe {
@@ -476,7 +474,7 @@ impl FileAccessor {
                 .next_multiple_of(self.mapping.page_size())
                 .min(max_size);
             self.mapping.grow_committed_mapping(new_file_size)?;
-            self.committed_size=new_file_size;
+            self.committed_size = new_file_size;
         }
         self.set_used_space(new_size);
         Ok(())

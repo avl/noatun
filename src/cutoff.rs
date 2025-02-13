@@ -1,8 +1,8 @@
-use std::fmt::{Debug, Formatter};
 use crate::{MessageId, NoatunTime};
+use anyhow::{anyhow, bail, Result};
 use bytemuck::{Pod, Zeroable};
 use savefile_derive::Savefile;
-use anyhow::{anyhow, bail, Result};
+use std::fmt::{Debug, Formatter};
 
 pub(crate) struct CutOffConfig {
     /// The approximate time in history at which all nodes must have been in sync.
@@ -25,15 +25,12 @@ impl CutOffConfig {
         if age.0 < 4 {
             bail!("CutOffConfig::new called with an invalid value '{:?}'. Minimum cutoff time is 4 minutes.", age);
         }
-        let stride = CutOffDuration((age.0/10).max(1));
+        let stride = CutOffDuration((age.0 / 10).max(1));
         //println!("Stride: {:?}", stride);
-        Ok(Self{
-            age,
-            stride,
-        })
+        Ok(Self { age, stride })
     }
     pub fn nominal_cutoff(&self, time_now: CutOffTime) -> CutOffTime {
-        CutOffHashPos::nominal_cutoff(time_now, self) //TODO: Try_into
+        CutOffHashPos::nominal_cutoff(time_now, self)
     }
 }
 
@@ -45,14 +42,13 @@ pub struct CutoffHash {
 
 impl Debug for CutoffHash {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-
         let data: &[u32] = bytemuck::cast_slice(&self.values);
 
         write!(
             f,
             "{:x}:{:x}-{:x}-{:x}-{:x}",
             data[0],
-            data[0]&0xffff,
+            data[0] & 0xffff,
             (data[1] & 0xffff0000) >> 16,
             data[2],
             data[3]
@@ -61,7 +57,7 @@ impl Debug for CutoffHash {
 }
 
 impl CutoffHash {
-    pub(crate) const ZERO: CutoffHash = CutoffHash{values: [0,0]};
+    pub(crate) const ZERO: CutoffHash = CutoffHash { values: [0, 0] };
     /*pub(crate) fn from_all(msg: &[MessageId]) -> CutoffHash {
         let mut temp = CutoffHash::default();
         for m in msg {
@@ -83,11 +79,9 @@ impl CutoffHash {
 
 pub struct CutOffInterval(u32);
 
-impl CutOffInterval {
+impl CutOffInterval {}
 
-}
-
-#[derive(Clone,Copy,PartialEq,Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CutOffDuration(u32);
 
 impl Debug for CutOffDuration {
@@ -101,17 +95,23 @@ impl CutOffDuration {
         Self(minutes)
     }
     pub fn from_hours(hours: u32) -> Result<Self> {
-        Ok(Self(hours.checked_mul(60).ok_or_else(||anyhow!("hours value out of range"))?))
+        Ok(Self(
+            hours
+                .checked_mul(60)
+                .ok_or_else(|| anyhow!("hours value out of range"))?,
+        ))
     }
     pub fn from_days(days: u32) -> Result<Self> {
-        let minutes = days.checked_mul(24*60).ok_or_else(||anyhow!("days value out of range"))?;
+        let minutes = days
+            .checked_mul(24 * 60)
+            .ok_or_else(|| anyhow!("days value out of range"))?;
         Ok(Self(minutes))
     }
 }
 
-#[derive(Clone, Copy, Pod, Zeroable, Savefile,PartialEq,Eq,PartialOrd,Ord, Default)]
+#[derive(Clone, Copy, Pod, Zeroable, Savefile, PartialEq, Eq, PartialOrd, Ord, Default)]
 #[repr(C)]
-pub struct CutOffTime(u32/*minutes since unix epoch*/);
+pub struct CutOffTime(u32 /*minutes since unix epoch*/);
 
 impl Debug for CutOffTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -121,7 +121,7 @@ impl Debug for CutOffTime {
 
 impl From<CutOffTime> for NoatunTime {
     fn from(value: CutOffTime) -> Self {
-        NoatunTime((value.0 as u64) * (60*1000))
+        NoatunTime((value.0 as u64) * (60 * 1000))
     }
 }
 
@@ -133,18 +133,16 @@ impl CutOffTime {
         // NoatunTime time has a range of millions of years into the future.
         // CutOffTime only has a range of "just" thousands of years.
         // Let's not make from_noatun_time fallible just because of this
-        match (noatun_time.0 / (60*1000)).try_into() {
+        match (noatun_time.0 / (60 * 1000)).try_into() {
             Ok(minutes) => CutOffTime(minutes),
-            Err(_) => {
-                CutOffTime(u32::MAX)
-            }
+            Err(_) => CutOffTime(u32::MAX),
         }
     }
     pub fn to_noatun_time(self) -> NoatunTime {
-        NoatunTime((self.0 as u64) * (60*1000))
+        NoatunTime((self.0 as u64) * (60 * 1000))
     }
     pub fn truncate_from(noatun_time: NoatunTime) -> Result<CutOffTime> {
-        Ok(CutOffTime((noatun_time.0/(1000*60)).try_into()?))
+        Ok(CutOffTime((noatun_time.0 / (1000 * 60)).try_into()?))
     }
 }
 
@@ -157,9 +155,7 @@ pub struct CutOffHashPos {
     padding: u32,
 }
 
-
-
-#[derive(Clone, Copy, Debug, Pod, Zeroable,Savefile)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, Savefile)]
 #[repr(C)]
 pub struct CutOffState {
     /// The prior, the current, and the upcoming,
@@ -179,17 +175,19 @@ pub enum Acceptability {
     UnacceptablePeerClockDrift,
     /// The peer hash is from a later era. We need to advance to that era, to determine
     /// if the hashes are compatible or not.
-    Undecided(CutOffTime/*peer era*/)
+    Undecided(CutOffTime /*peer era*/),
 }
 
 impl CutOffHashPos {
-    pub(crate) fn is_acceptable_cutoff_hash(&self, now: NoatunTime, peer_hash: CutOffHashPos, config: &CutOffConfig) -> Acceptability {
-        //println!("Peer hash: {:?}, self: {:?}", peer_hash, self);
+    pub(crate) fn is_acceptable_cutoff_hash(
+        &self,
+        peer_hash: CutOffHashPos,
+        config: &CutOffConfig,
+    ) -> Acceptability {
         if *self == peer_hash {
             return Acceptability::Nominal;
         }
-        if self.before_time < peer_hash.before_time
-        {
+        if self.before_time < peer_hash.before_time {
             if self.before_time < peer_hash.before_time.saturating_sub(config.stride) {
                 return Acceptability::UnacceptablePeerClockDrift;
             }
@@ -203,24 +201,26 @@ impl CutOffHashPos {
     }
     /// Now rounded to the nearest multiple of stride
     fn nominal_cutoff(now: CutOffTime, config: &CutOffConfig) -> CutOffTime {
-        CutOffTime(now.0.saturating_sub(config.age.0+config.stride.0)
-            .next_multiple_of(config.stride.0))
+        CutOffTime(
+            now.0
+                .saturating_sub(config.age.0 + config.stride.0)
+                .next_multiple_of(config.stride.0),
+        )
     }
-
 
     pub fn report_add(&mut self, message_id: MessageId) {
         self.apply(message_id, "add");
     }
     pub fn report_delete(&mut self, message_id: MessageId) {
-        self.apply(message_id,"delete");
+        self.apply(message_id, "delete");
     }
 
     /// Add and delete are logically identical ops (because xor)
-    pub(crate) fn apply(&mut self, message_id: MessageId, op: &str) {
+    pub(crate) fn apply(&mut self, message_id: MessageId, _op: &str) {
         let t = message_id.timestamp();
 
         if t < self.before_time.to_noatun_time() {
-            let prev = self.hash;
+            //let prev = self.hash;
             self.hash.xor_with_msg(message_id);
             //println!("Xoring out message {:?} ({}), giving hash: {:?} (prev: {:?})", message_id, op, self.hash, prev);
         } else {

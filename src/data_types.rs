@@ -1,14 +1,12 @@
-use std::borrow::Borrow;
 use crate::sequence_nr::SequenceNr;
 use crate::{
-    DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, Object, Pointer,
-    ThinPtr, CONTEXT,
+    DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, Object, Pointer, ThinPtr, CONTEXT,
 };
-use bytemuck::{Pod,AnyBitPattern, Zeroable};
+use bytemuck::{AnyBitPattern, Pod, Zeroable};
+use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::mem::transmute_copy;
-use std::ops::{Deref, Index, Range};
+use std::ops::{Deref, Range};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
@@ -58,7 +56,6 @@ impl Deref for NoatunString {
 
 impl NoatunString {
     pub fn get(&self) -> &str {
-
         if self.length == 0 {
             return "";
         }
@@ -76,8 +73,8 @@ impl NoatunString {
             }
             return;
         }
-        let raw = NoatunContext.allocate_raw(value.len(),1);
-        let target = unsafe{slice::from_raw_parts_mut(raw, value.len())};
+        let raw = NoatunContext.allocate_raw(value.len(), 1);
+        let target = unsafe { slice::from_raw_parts_mut(raw, value.len()) };
         target.copy_from_slice(value.as_bytes());
         let raw_index = NoatunContext.index_of_ptr(raw);
         NoatunContext.write_pod_internal(raw_index, &mut tself.start);
@@ -89,7 +86,6 @@ impl NoatunString {
 #[repr(C)]
 pub struct DatabaseOption<T: Copy> {
     value: T,
-    // TODO: This is needed to have correct alignment
     registrar: SequenceNr,
     present: u8,
 }
@@ -136,7 +132,7 @@ unsafe impl<T: Copy> Zeroable for DatabaseOption<T> where T: Zeroable {}
 // Someone can copy it, then overwrite the copy.
 // This will not affect the db, but may lead to an out-of-bounds write-report.
 // registrar observe should work regardless.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, AnyBitPattern)]
 #[repr(C)]
 pub struct DatabaseCell<T: Copy> {
     value: T,
@@ -150,35 +146,28 @@ impl<T: Copy + Debug> Debug for DatabaseCell<T> {
     }
 }
 
-//TODO: Document. Also rename this or DatabaseCell, the names should harmonize.
-#[derive(Copy, Clone)]
+// TODO: Document. Also rename this or DatabaseCell, the names should harmonize.
+// TODO: Does OpaqueCell even work? Can we delete messages if they only write OpaqueCell?
+#[derive(Copy, Clone, AnyBitPattern)]
 #[repr(C)]
 pub struct OpaqueCell<T: Copy> {
     value: T,
     registrar: SequenceNr,
 }
 
-// TODO: The below (and same for DatabaseCell) are not actually sound. Pod requires
-// that there's no padding, but here, there will be padding for align_of<T> > 4.
-// There could be padding needed. Solution: We must stop using bytemuck for
-// Noatun internals.
-unsafe impl<T: AnyBitPattern> Zeroable for OpaqueCell<T> {}
-unsafe impl<T: AnyBitPattern> AnyBitPattern for OpaqueCell<T> {}
-
 pub trait DatabaseCellArrayExt<T: Pod> {
     fn observe(&self) -> Vec<T>;
 }
 impl<T: Pod> DatabaseCellArrayExt<T> for &[DatabaseCell<T>] {
     fn observe(&self) -> Vec<T> {
-        //TODO: Rename
         self.iter().map(|x| x.get()).collect()
     }
 }
 
-unsafe impl<T> Zeroable for DatabaseCell<T> where T: AnyBitPattern {}
-
-unsafe impl<T> AnyBitPattern for DatabaseCell<T> where T: AnyBitPattern {}
-impl<T> PartialEq<DatabaseCell<T>> for DatabaseCell<T> where T: Copy + PartialEq{
+impl<T> PartialEq<DatabaseCell<T>> for DatabaseCell<T>
+where
+    T: Copy + PartialEq,
+{
     fn eq(&self, other: &DatabaseCell<T>) -> bool {
         let val1 = self.value;
         let val2 = other.value;
@@ -186,8 +175,7 @@ impl<T> PartialEq<DatabaseCell<T>> for DatabaseCell<T> where T: Copy + PartialEq
     }
 }
 
-
-impl<T:Copy> Deref for DatabaseCell<T> {
+impl<T: Copy> Deref for DatabaseCell<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -195,7 +183,6 @@ impl<T:Copy> Deref for DatabaseCell<T> {
         &self.value
     }
 }
-
 
 impl<T: Pod> DatabaseCell<T> {
     pub fn get(&self) -> T {
@@ -216,7 +203,7 @@ impl<T: Pod> DatabaseCell<T> {
         }
         let c = unsafe { &mut *c };
         let tself = unsafe { self.get_unchecked_mut() };
-        let index = c.index_of(tself);
+        //let _index = c.index_of(tself);
         //context.write(index, bytes_of(&new_value));
         c.write_pod_ptr(new_value, addr_of_mut!(tself.value));
         c.update_registrar_ptr(addr_of_mut!(tself.registrar));
@@ -257,9 +244,9 @@ impl<T: Pod> Object for OpaqueCell<T> {
 impl<T: Pod> OpaqueCell<T> {
     pub fn set(self: Pin<&mut Self>, new_value: T) {
         let tself = unsafe { self.get_unchecked_mut() };
-        let index = NoatunContext.index_of(tself);
+        //let index = NoatunContext.index_of(tself);
         //context.write(index, bytes_of(&new_value));
-        NoatunContext.write_pod(new_value, unsafe{Pin::new_unchecked(&mut tself.value)});
+        NoatunContext.write_pod(new_value, unsafe { Pin::new_unchecked(&mut tself.value) });
         NoatunContext.update_registrar(&mut tself.registrar);
     }
 }
@@ -277,7 +264,6 @@ impl<T: Pod> DatabaseCell<T> {
         }
     }
 }
-
 
 impl<T: Pod> Object for DatabaseCell<T> {
     type Ptr = ThinPtr;
@@ -316,9 +302,7 @@ pub(crate) struct RawDatabaseVec<T> {
     data: usize,
     phantom_data: PhantomData<T>,
 }
-unsafe impl<T:'static> Pod for RawDatabaseVec<T> {
-
-}
+unsafe impl<T: 'static> Pod for RawDatabaseVec<T> {}
 
 unsafe impl<T> Zeroable for RawDatabaseVec<T> {}
 
@@ -347,7 +331,7 @@ impl<T> Debug for RawDatabaseVec<T> {
     }
 }
 
-impl<T:Pod+ 'static> RawDatabaseVec<T> {
+impl<T: Pod + 'static> RawDatabaseVec<T> {
     fn realloc_add(&mut self, ctx: &mut DatabaseContextData, new_capacity: usize, new_len: usize) {
         debug_assert!(new_capacity >= new_len);
         debug_assert!(new_capacity >= self.capacity);
@@ -368,7 +352,7 @@ impl<T:Pod+ 'static> RawDatabaseVec<T> {
                 data: dest_index.0,
                 phantom_data: Default::default(),
             },
-            unsafe {Pin::new_unchecked(self)},
+            unsafe { Pin::new_unchecked(self) },
         )
     }
     pub fn len(&self) -> usize {
@@ -384,10 +368,9 @@ impl<T:Pod+ 'static> RawDatabaseVec<T> {
         if self.capacity < new_length {
             self.realloc_add(ctx, 2 * new_length, new_length);
         } else {
-            ctx.write_pod(new_length, unsafe { Pin::new_unchecked(&mut self.length) } );
+            ctx.write_pod(new_length, unsafe { Pin::new_unchecked(&mut self.length) });
         }
     }
-
 }
 impl<T: Pod + 'static> RawDatabaseVec<T> {
     pub fn retain(&mut self, ctx: &mut DatabaseContextData, mut f: impl FnMut(&mut T) -> bool) {
@@ -398,7 +381,7 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
         while read_offset < self.length {
             let read_ptr = ThinPtr(self.data + read_offset * size_of::<T>());
             let val: Pin<&mut T> = unsafe { ctx.access_pod_mut(read_ptr) };
-            let retain = f(unsafe  { val.get_unchecked_mut() });
+            let retain = f(unsafe { val.get_unchecked_mut() });
             if !retain {
                 new_len -= 1;
                 read_offset += 1;
@@ -465,7 +448,7 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
             let src_obj = ThinPtr(src_offset);
 
             let dst_offset = self.data + index * size_of::<T>();
-            let dst_obj = ThinPtr(dst_offset);;
+            let dst_obj = ThinPtr(dst_offset);
 
             ctx.copy_sized(src_obj, dst_obj, size_of::<T>());
         }
@@ -503,10 +486,10 @@ where
         todo!("RawDatabaseVec does not support detach")
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+    fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {
         panic!("init_from_detached is not implemented for RawDatabaseVec");
     }
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         panic!("allocate_from_detached is not implemented for RawDatabaseVec");
     }
 
@@ -519,7 +502,7 @@ where
 }
 
 #[repr(C)]
-pub struct DatabaseVec<T:FixedSizeObject> {
+pub struct DatabaseVec<T: FixedSizeObject> {
     length: usize,
     capacity: usize,
     data: usize,
@@ -527,30 +510,30 @@ pub struct DatabaseVec<T:FixedSizeObject> {
     phantom_data: PhantomData<T>,
 }
 
-impl<T:FixedSizeObject> Debug for DatabaseVec<T> {
+impl<T: FixedSizeObject> Debug for DatabaseVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "DatabaseVec({})", { self.length })
     }
 }
 
-unsafe impl<T:FixedSizeObject> Zeroable for DatabaseVec<T> {}
+unsafe impl<T: FixedSizeObject> Zeroable for DatabaseVec<T> {}
 
-impl<T:FixedSizeObject> Copy for DatabaseVec<T> {}
+impl<T: FixedSizeObject> Copy for DatabaseVec<T> {}
 
-impl<T:FixedSizeObject> Clone for DatabaseVec<T> {
+impl<T: FixedSizeObject> Clone for DatabaseVec<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-unsafe impl<T:FixedSizeObject> Pod for DatabaseVec<T> where T: 'static {}
+unsafe impl<T: FixedSizeObject> Pod for DatabaseVec<T> where T: 'static {}
 
-pub struct DatabaseVecIterator<'a, T:FixedSizeObject> {
+pub struct DatabaseVecIterator<'a, T: FixedSizeObject> {
     vec: &'a DatabaseVec<T>,
     index: usize,
 }
 
-pub struct DatabaseVecIteratorMut<'a, T:FixedSizeObject> {
+pub struct DatabaseVecIteratorMut<'a, T: FixedSizeObject> {
     vec: Pin<&'a mut DatabaseVec<T>>,
     index: usize,
 }
@@ -586,7 +569,7 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIteratorMut<'a, T
     }
 }
 
-impl<T:FixedSizeObject+ 'static> DatabaseVec<T> {
+impl<T: FixedSizeObject + 'static> DatabaseVec<T> {
     pub fn iter(&self) -> DatabaseVecIterator<T> {
         DatabaseVecIterator {
             vec: self,
@@ -619,12 +602,12 @@ impl<T:FixedSizeObject+ 'static> DatabaseVec<T> {
                 length_registrar: SequenceNr::default(),
                 phantom_data: Default::default(),
             },
-            unsafe{Pin::new_unchecked(self)},
+            unsafe { Pin::new_unchecked(self) },
         )
     }
     #[allow(clippy::mut_from_ref)]
     pub fn new<'a>() -> Pin<&'a mut DatabaseVec<T>> {
-        unsafe { NoatunContext.allocate_pod::<DatabaseVec<T>>() }
+        NoatunContext.allocate_pod::<DatabaseVec<T>>()
     }
 }
 
@@ -649,7 +632,7 @@ where
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         let t = unsafe { T::access_mut(ThinPtr(offset)) };
-        unsafe { t }
+        t
     }
     fn get_mut_internal(&mut self, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
@@ -676,8 +659,7 @@ where
         tself.get_mut_internal(tself.length - 1)
     }
 
-    pub fn shift_remove(self:Pin<&mut Self>, index: usize) {
-
+    pub fn shift_remove(self: Pin<&mut Self>, index: usize) {
         if index >= self.length {
             return;
         }
@@ -739,7 +721,7 @@ where
     type DetachedOwnedType = Vec<T::DetachedOwnedType>;
 
     fn detach(&self) -> Self::DetachedOwnedType {
-        self.iter().map(|x|x.detach()).collect()
+        self.iter().map(|x| x.detach()).collect()
     }
 
     fn init_from_detached(mut self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -796,7 +778,10 @@ where
         unsafe {
             let target = T::allocate_from_detached(detached);
             let new_index = NoatunContext.index_of(&*target);
-            NoatunContext.write_pod(new_index, unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().object_index) });
+            NoatunContext.write_pod(
+                new_index,
+                Pin::new_unchecked(&mut self.get_unchecked_mut().object_index),
+            );
         }
     }
 
@@ -851,11 +836,16 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
         T: Object<Ptr = ThinPtr>,
         T: AnyBitPattern,
     {
-        let mut this = unsafe { NoatunContext.allocate_pod::<DatabaseObjectHandle<T>>() };
-        let mut target = unsafe { NoatunContext.allocate_pod::<T>() };
-        //TODO: This is a bug, isn't it? Should use NoatunContext.write!?
-        unsafe { *target.as_mut().get_unchecked_mut() = value; }
-        unsafe { this.as_mut().get_unchecked_mut().object_index = NoatunContext.index_of(&*target); }
+        let mut this = NoatunContext.allocate_pod::<DatabaseObjectHandle<T>>();
+        let mut target = NoatunContext.allocate_pod::<T>();
+        // TODO: This is a bug, isn't it? Should use NoatunContext.write!?
+        // TODO: Maybe not? Maybe overwriting newly allocated info doesn't need tracked writes?
+        unsafe {
+            *target.as_mut().get_unchecked_mut() = value;
+        }
+        unsafe {
+            this.as_mut().get_unchecked_mut().object_index = NoatunContext.index_of(&*target);
+        }
         this
     }
 
@@ -865,18 +855,20 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
         T: Object<Ptr = FatPtr> + 'static,
     {
         let size_bytes = std::mem::size_of_val(value);
-        let mut this = unsafe { NoatunContext.allocate_pod::<DatabaseObjectHandle<T>>() };
-        let target_dst_ptr =
-            unsafe { NoatunContext.allocate_raw(size_bytes, std::mem::align_of_val(value)) };
+        let mut this = NoatunContext.allocate_pod::<DatabaseObjectHandle<T>>();
+        let target_dst_ptr = NoatunContext.allocate_raw(size_bytes, std::mem::align_of_val(value));
 
         let target_src_ptr = value as *const T as *const u8;
 
-        let (src_ptr, src_metadata): (*const u8, usize) = unsafe { transmute_copy(&value) };
+        //let (src_ptr, src_metadata): (*const u8, usize) = unsafe { transmute_copy(&value) };
 
         unsafe { std::ptr::copy(target_src_ptr, target_dst_ptr, size_bytes) };
         let thin_index = NoatunContext.index_of_ptr(target_dst_ptr);
 
-        unsafe { this.as_mut().get_unchecked_mut().object_index = FatPtr::from(thin_index.start(), size_bytes) };
+        unsafe {
+            this.as_mut().get_unchecked_mut().object_index =
+                FatPtr::from(thin_index.start(), size_bytes)
+        };
         this
     }
 }

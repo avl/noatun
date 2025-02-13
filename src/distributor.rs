@@ -1,13 +1,11 @@
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::{Application, Database, Message, MessageHeader, MessageId, MessagePayload, NoatunTime};
 use anyhow::Result;
-use byteorder::{ReadBytesExt, WriteBytesExt};
+use arrayvec::ArrayString;
 use indexmap::{IndexMap, IndexSet};
 use savefile_derive::Savefile;
 use std::collections::{HashMap, HashSet};
-use std::hash::Hasher;
 use std::io::Cursor;
-use arrayvec::ArrayString;
 use tracing::{debug, error, info, warn};
 // Principle
 // The node that is 'most ahead' (highest MessageId) has responsibility.
@@ -89,7 +87,7 @@ impl DistributorMessage {
     pub(crate) fn message_id(&self) -> Option<MessageId> {
         match self {
             DistributorMessage::Message(msg, _) => Some(msg.id),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -108,7 +106,11 @@ enum SyncAllState {
     /// Query messages starting at 'MessageId', inclusive
     BeginQuery(MessageId),
     /// The current query concerns messages a..=b (i.e, note, inclusive of 'b')
-    QueryActive(/*a*/MessageId, /*b*/MessageId, IndexSet<MessageId>),
+    QueryActive(
+        /*a*/ MessageId,
+        /*b*/ MessageId,
+        IndexSet<MessageId>,
+    ),
 }
 
 #[derive(Debug, Default)]
@@ -129,7 +131,7 @@ pub struct Distributor {
     own_name: ArrayString<10>,
 }
 
-#[derive(PartialEq,Eq,Clone,Copy,Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Status {
     Nominal,
     BadClocksDetected,
@@ -137,7 +139,6 @@ pub enum Status {
     NoPeers,
     Synchronizing,
 }
-
 
 pub fn truncate_to_arraystring(name: &str) -> ArrayString<10> {
     if name.len() <= 10 {
@@ -157,20 +158,24 @@ impl Distributor {
         Self {
             sync_all_inprogress: SyncAllState::NotActive,
             distributor_state: DistributorStatus::default(),
-            own_name: truncate_to_arraystring(node_name)
+            own_name: truncate_to_arraystring(node_name),
         }
     }
 
     pub fn get_status(&self, now: NoatunTime) -> Status {
         for drift in self.distributor_state.most_recent_clockdrift.values() {
-            if drift.elapsed_ms_since(now) < 60000 /*TODO: Make configurable?*/{
+            if drift.elapsed_ms_since(now) < 60000
+            /*TODO: Make configurable?*/
+            {
                 return Status::BadClocksDetected;
             }
         }
         for unsync in self.distributor_state.most_recent_unsynced.values() {
             let unsync_t = unsync.elapsed_ms_since(now);
             println!("Unsync time: {} ms", unsync_t);
-            if unsync_t < 60000 /*TODO: Make configurable?*/{
+            if unsync_t < 60000
+            /*TODO: Make configurable?*/
+            {
                 return Status::OutOfSync;
             }
         }
@@ -191,17 +196,20 @@ impl Distributor {
         let mut temp = vec![DistributorMessage::ReportHeads(
             database.current_cutoff_state()?,
             database.get_update_heads().to_vec(),
-            self.own_name
+            self.own_name,
         )];
         let sync_from = match &self.sync_all_inprogress {
             SyncAllState::NotActive => None,
             SyncAllState::Starting => Some(MessageId::ZERO),
             SyncAllState::BeginQuery(start) => Some(*start),
-            SyncAllState::QueryActive(from, to, request_identity) => Some(*from),
+            SyncAllState::QueryActive(from, _to, _request_identity) => Some(*from),
         };
         if let Some(sync_from) = sync_from {
             let cur_batch = database.get_messages_at_or_after(sync_from, Self::BATCH_SIZE)?;
-            info!("All messages after {:?} turned out to be {:?}", sync_from, cur_batch);
+            info!(
+                "All messages after {:?} turned out to be {:?}",
+                sync_from, cur_batch
+            );
             if cur_batch.is_empty() {
                 self.sync_all_inprogress = SyncAllState::NotActive;
             } else {
@@ -240,9 +248,8 @@ impl Distributor {
                 }
 
                 DistributorMessage::ReportHeads(cutoff_hash, heads, src) => {
-
                     accumulated_heads.extend(heads);
-                    match database.is_acceptable_cutoff_hash(cutoff_hash, )? {
+                    match database.is_acceptable_cutoff_hash(cutoff_hash)? {
                         Acceptability::Nominal => {
                             info!("Acceptability: Nominal");
                             self.distributor_state.most_recent_unsynced.remove(&src);
@@ -250,7 +257,9 @@ impl Distributor {
                         }
                         Acceptability::Unacceptable => {
                             info!("Acceptability: Unacceptable");
-                            self.distributor_state.most_recent_unsynced.insert(src, database.noatun_now());
+                            self.distributor_state
+                                .most_recent_unsynced
+                                .insert(src, database.noatun_now());
                             self.sync_all_inprogress = SyncAllState::Starting;
                         }
                         Acceptability::Undecided(advance) => {
@@ -260,7 +269,9 @@ impl Distributor {
                         }
                         Acceptability::UnacceptablePeerClockDrift => {
                             info!("Acceptability: Clockdrift");
-                            self.distributor_state.most_recent_clockdrift.insert(src, database.noatun_now());
+                            self.distributor_state
+                                .most_recent_clockdrift
+                                .insert(src, database.noatun_now());
                         }
                     }
                 }
@@ -287,7 +298,7 @@ impl Distributor {
                 }
                 DistributorMessage::SyncAllAck(acked) => match &mut self.sync_all_inprogress {
                     SyncAllState::QueryActive(from, to, items) => {
-                        debug!("Processing active query: {:?}..{:?}", from,to);
+                        debug!("Processing active query: {:?}..{:?}", from, to);
                         for ack in &acked {
                             items.swap_remove(ack);
                         }
@@ -305,22 +316,22 @@ impl Distributor {
         }
         let mut output = Vec::new();
 
-        self.process_reported_heads(database, accumulated_heads, &mut output);
+        self.process_reported_heads(database, accumulated_heads, &mut output)?;
 
         // TODO: Consider if this is the best solution.
         // process_request_upstream presently requires sorted input. But should it?
         accumulated_upstream_queries.sort_keys();
 
-        self.process_request_upstream(database, accumulated_upstream_queries, &mut output);
-        self.process_upstream_response(database, accumulated_responses, &mut output);
+        self.process_request_upstream(database, accumulated_upstream_queries, &mut output)?;
+        self.process_upstream_response(database, accumulated_responses, &mut output)?;
         self.process_send_message_all_descendants(
             database,
             accumulated_send_msg_and_descendants,
             &mut output,
-        );
-        self.process_received_messages(database, accumulated_serialized, &mut output);
-        self.process_sync_all_queries(database, accumulated_sync_all_queries, &mut output);
-        self.process_sync_all_requests(database, accumulated_sync_all_requests, &mut output);
+        )?;
+        self.process_received_messages(database, accumulated_serialized, &mut output)?;
+        self.process_sync_all_queries(database, accumulated_sync_all_queries, &mut output)?;
+        self.process_sync_all_requests(database, accumulated_sync_all_requests, &mut output)?;
         Ok(output)
     }
 
@@ -355,11 +366,20 @@ impl Distributor {
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
         for request in accumulated_sync_all_requests {
-            let msg = database.load_message(request)?;
-            output.push(DistributorMessage::Message(
-                SerializedMessage::new(msg)?,
-                true,
-            ));
+            match database.load_message(request) {
+                Ok(msg) => {
+                    output.push(DistributorMessage::Message(
+                        SerializedMessage::new(msg)?,
+                        true,
+                    ));
+                }
+                Err(err) => {
+                    warn!(
+                        "Received request for message {:?}, that we couldn't load: {:?}",
+                        request, err
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -393,7 +413,6 @@ impl Distributor {
         accumulated_heads: IndexMap<MessageId, usize>,
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
-        let response: IndexMap<MessageId, APP::Message> = IndexMap::new();
         let messages: Vec<MessageSubGraphNode> = database
             .get_upstream_of(accumulated_heads.into_iter())?
             .map(|(msg, query_count)| MessageSubGraphNode {
@@ -481,11 +500,18 @@ impl Distributor {
                 false,
             ));
 
-            //TODO: Make smarter, this is super-inefficient
-            for child_msg in database.get_all_messages()? {
-                if child_msg.header.parents.iter().any(|x| *x == msg_id) {
-                    message_list.insert(child_msg.id());
+            let children = database.get_message_children(msg_id)?;
+            message_list.extend(children.iter().copied());
+            #[cfg(debug_assertions)]
+            {
+                let mut actual_children = vec![];
+                for child_msg in database.get_all_messages()? {
+                    if child_msg.header.parents.iter().any(|x| *x == msg_id) {
+                        actual_children.push(child_msg.id());
+                    }
                 }
+                println!("Actual: {:?}", actual_children);
+                assert_eq!(actual_children, children);
             }
         }
 
@@ -500,19 +526,20 @@ impl Distributor {
     ) -> Result<()> {
         database.maybe_advance_cutoff()?;
 
-        message_list.sort_by_key(|x|x.0.id);
+        message_list.sort_by_key(|x| x.0.id);
         let mut chosen_messages = IndexMap::new();
-        'msg_iter: for (msg,need_ack) in message_list.into_iter() {
+        'msg_iter: for (msg, need_ack) in message_list.into_iter() {
             for parent in msg.parents.iter() {
-                if database.contains_message(*parent)? == false && !chosen_messages.contains_key(parent) {
-                    //compile_error!("Consider why this happens. Packet loss? What do we do?");
-
-                    //panic!("Should never apply msg with unknown parent")
-                    // TODO: think more about how this check plays with the automatic stripping of parents
-                    // in 'append_many'.
+                if database.contains_message(*parent)? == false
+                    && !chosen_messages.contains_key(parent)
+                {
+                    // TODO: Does this still happen?
                     // There is an edge-case, where a message is removed immediately after having been
                     // received, because it's before cutoff and it has no effect.
-                    warn!("Could not apply message {:?} because parent {:?} is not known", msg.id, parent);
+                    warn!(
+                        "Could not apply message {:?} because parent {:?} is not known",
+                        msg.id, parent
+                    );
                     continue 'msg_iter;
                 }
             }
@@ -536,10 +563,7 @@ impl Distributor {
                 }
             })
             .inspect(|x| {
-                debug!(
-                    "Append received message: {:?}",
-                    x
-                );
+                debug!("Append received message: {:?}", x);
             });
 
         database.append_many(messages, false, false)?;
@@ -560,6 +584,5 @@ mod tests {
         assert_eq!(&truncate_to_arraystring("0123456789A"), "0123456789");
         assert_eq!(&truncate_to_arraystring("012345678﷽"), "012345678");
         assert_eq!(&truncate_to_arraystring("01234567◌"), "01234567");
-
     }
 }

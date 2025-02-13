@@ -1,3 +1,4 @@
+use crate::cutoff::CutOffDuration;
 use crate::data_types::DatabaseVec;
 use crate::{msg_deserialize, msg_serialize};
 use crate::{Application, Database, MessagePayload, NoatunContext, NoatunTime};
@@ -5,7 +6,6 @@ use datetime_literal::datetime;
 use savefile_derive::Savefile;
 use std::io::Write;
 use std::pin::Pin;
-use crate::cutoff::CutOffDuration;
 
 noatun_object!(
     struct Customer {
@@ -29,9 +29,9 @@ pub enum BankMessage {
 impl MessagePayload for BankMessage {
     type Root = Bank;
 
-    fn apply(&self, time: NoatunTime, mut root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
         match self {
-            BankMessage::AddCustomerAndMoney { money, customer } => {
+            BankMessage::AddCustomerAndMoney { money, customer: _ } => {
                 let prev_money = root.total_money();
                 root.as_mut().set_total_money(prev_money + *money);
                 root.customers_mut().push(&CustomerDetached {
@@ -58,7 +58,7 @@ impl Application for Bank {
     type Message = BankMessage;
     type Params = ();
 
-    fn initialize_root<'a>(params: &Self::Params) -> Pin<&'a mut Self> {
+    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
         NoatunContext.allocate_pod()
     }
 }

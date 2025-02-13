@@ -8,9 +8,7 @@ mod unix {
     use crate::disk_access::FileBackend;
     use anyhow::{bail, Context, Result};
     use fs2::FileExt;
-    
-    
-    
+
     use std::fs::File;
     use std::os::fd::AsRawFd;
     use std::process::Command;
@@ -48,12 +46,8 @@ mod unix {
         committed_size: usize,
         total_size: usize,
     }
-    unsafe impl Sync for FileMapping {
-
-    }
-    unsafe impl Send for FileMapping {
-
-    }
+    unsafe impl Sync for FileMapping {}
+    unsafe impl Send for FileMapping {}
 
     impl Drop for FileMapping {
         fn drop(&mut self) {

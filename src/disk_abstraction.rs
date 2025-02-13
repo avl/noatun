@@ -5,8 +5,9 @@ use std::alloc::Layout;
 use std::slice;
 /* TODO
 
-
 4: Add more tests, hammer it with chaos!
+ a) More synch-tests!
+ b) Recovery-test! Panic in middle of access (maybe add support for injecting panics in tests)
 
 5: Add a HashMap-data type (probably be inspired by, or lend code from, HashBrown. Does it support
 custom allocators?)
@@ -66,12 +67,8 @@ struct InMemoryGrowableFileMappingData {
     used_len: usize,
 }
 
-unsafe impl Send for InMemoryGrowableFileMappingData {
-
-}
-unsafe impl Sync for InMemoryGrowableFileMappingData {
-
-}
+unsafe impl Send for InMemoryGrowableFileMappingData {}
+unsafe impl Sync for InMemoryGrowableFileMappingData {}
 struct InMemoryGrowableFileMapping {
     backing: InMemoryGrowableFileMappingData,
 }
@@ -106,7 +103,7 @@ impl InMemoryGrowableFileMapping {
         self.backing.used_len
     }
 
-    fn flush_range(&self, offset: usize, len: usize) -> Result<()> {
+    fn flush_range(&self, _offset: usize, _len: usize) -> Result<()> {
         Ok(())
     }
 
@@ -117,7 +114,7 @@ impl InMemoryGrowableFileMapping {
     fn truncate(&mut self, len: usize) -> Result<()> {
         let backing = &mut self.backing;
         if backing.used_len > len {
-            unsafe { backing.map_mut()[len..].fill(0) };
+            backing.map_mut()[len..].fill(0);
             backing.used_len = len;
         }
         Ok(())
@@ -133,14 +130,12 @@ impl Disk for InMemoryDisk {
     fn open_file(
         &mut self,
         target: &Target,
-        file: &str,
-        min_size: usize,
+        _file: &str,
+        _min_size: usize, //TODO: Remove
         max_size: usize,
     ) -> anyhow::Result<FileAccessor> {
         //std::fs::create_dir_all(&path).context("create database directory")?;
         let create = target.create();
-        let overwrite = target.overwrite();
-        let path = target.path().join(file);
         let data = if !create {
             panic!("Open-use case not supported for in-memory db");
         } else {
@@ -171,7 +166,7 @@ impl FileBackend for InMemoryGrowableFileMapping {
         Ok(())
     }
 
-    fn flush_range(&self, start: usize, len: usize) -> Result<()> {
+    fn flush_range(&self, _start: usize, _len: usize) -> Result<()> {
         Ok(())
     }
 
@@ -218,16 +213,7 @@ impl Disk for StandardDisk {
         min_size: usize,
         max_size: usize,
     ) -> Result<FileAccessor> {
-        let path = target.path().join(format!("{}.bin", file));
-        let mut overwrite = target.overwrite();
-        let create = target.create();
-
-        if std::fs::metadata(&path).is_err() {
-            overwrite = true;
-        }
-
         let mapping = FileAccessor::new(target, file, min_size, max_size)?;
-
         Ok(mapping)
     }
 }
