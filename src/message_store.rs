@@ -1180,10 +1180,11 @@ impl<M> OnDiskMessageStore<M> {
                 .file
                 .access_pod_mut(offset as usize)?;
             file_header.has_been_transmitted = 1;
+            Ok(true)
         } else {
             // Deleted
+            Ok(false)
         }
-        Ok(true)
     }
 
     pub fn get_children_of(&self, msg: MessageId) -> Result<Vec<MessageId>> {

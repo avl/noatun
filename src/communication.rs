@@ -426,6 +426,7 @@ struct MulticasterSenderLoop<Socket: CommunicationDriver> {
     queue: VecDeque<SortableTransmittedEntity>,
     outgoing_retransmit_requests: IndexMap<Socket::Endpoint, RetransmitInfo>,
     receive_track: IndexMap<Socket::Endpoint, ReceiveTrack>,
+    quit_rx: tokio::sync::oneshot::Receiver<()>,
     /// Sent to net
     message_rx: Receiver<Vec<u8>>,
     /// Received from net
@@ -487,6 +488,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
         message_tx: Sender<Vec<u8>>,
         message_rx: Receiver<Vec<u8>>,
         bandwidth_bytes_per_second: u64,
+        quit_rx: tokio::sync::oneshot::Receiver<()>,
         mtu: usize,
     ) -> Result<MulticasterSenderLoop<Socket>> {
         let (send_socket, receive_socket) = driver
@@ -499,6 +501,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             bail!("Unreasonably small MTU specified: {}", mtu);
         }
         Ok(Self {
+            quit_rx,
             bind_address: send_socket.local_addr()?,
             send_socket,
             receive_socket,
@@ -692,6 +695,10 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             let get_cmd = self.message_rx.recv();
             select! {
                     biased;
+                    _ = &mut self.quit_rx => {
+                        info!("quit_rx signalled, background task shutting down");
+                        return Ok(());
+                    }
                     _ = send => {
                     }
                     buf = get_cmd, if send_queue_empty => {
@@ -826,8 +833,9 @@ where
         Ok(())
     }
 
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(self, senderloop_quit_tx: oneshot::Sender<()>) -> Result<()> {
         let result = self.run2().await;
+        _ = senderloop_quit_tx.send(());
         info!("Communication terminated: {:?}", result);
         match result {
             Ok(Some(sender)) => {
@@ -910,7 +918,7 @@ where
                     };
                     match cmd {
                         Cmd::Quit(sender) => {
-                            //println!("Cmd rx received quit");
+                            info!("cmd rx received quit");
                             return Ok(Some(sender));
                         }
                         Cmd::GetStatus(sender) => {
@@ -985,9 +993,9 @@ where
     }
     pub async fn close(self) -> Result<()> {
         let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
-        println!("Sending quit");
+        debug!("Sending quit");
         let e = self.cmd_tx.send(Cmd::Quit(oneshot_tx)).await;
-        println!("Quit sent!");
+        debug!("Quit sent!");
         match e {
             Ok(_) => {}
             Err(_err) => {
@@ -1108,6 +1116,7 @@ where
         config: DatabaseCommunicationConfig,
     ) -> Result<DatabaseCommunication<APP>> {
         let (sender_tx, sender_rx) = tokio::sync::mpsc::channel(1);
+        let (quit_tx, quit_rx) = tokio::sync::oneshot::channel();
         let (receiver_tx, receiver_rx) = tokio::sync::mpsc::channel(1000);
         let sender_loop = MulticasterSenderLoop::new(
             driver,
@@ -1116,7 +1125,8 @@ where
             receiver_tx,
             sender_rx,
             config.bandwidth_limit_bytes_per_second,
-            config.mtu,
+            quit_rx,
+            config.mtu
         )
         .await?;
         let node = sender_loop.bind_address.to_string();
@@ -1142,7 +1152,7 @@ where
             nextsend_id: None,
         };
 
-        spawn(main.run());
+        spawn(main.run(quit_tx));
 
         Ok(DatabaseCommunication {
             database,
@@ -1216,6 +1226,7 @@ mod tests {
     #[tokio::test]
     async fn test_sender() {
         let (sender_tx1, sender_rx1) = tokio::sync::mpsc::channel(1000);
+        let (_quit_tx1, quit_rx1) = tokio::sync::oneshot::channel();
         let (receiver_tx1, _receiver_rx1) = tokio::sync::mpsc::channel(1000);
 
         let mloop1 = MulticasterSenderLoop::new(
@@ -1225,12 +1236,14 @@ mod tests {
             receiver_tx1,
             sender_rx1,
             10000,
+            quit_rx1,
             200,
         )
         .await
         .unwrap();
 
         let (sender_tx2, sender_rx2) = tokio::sync::mpsc::channel(1000);
+        let (_quit_tx2, quit_rx2) = tokio::sync::oneshot::channel();
         let (receiver_tx2, mut receiver_rx2) = tokio::sync::mpsc::channel(1000);
 
         let mloop2 = MulticasterSenderLoop::new(
@@ -1240,6 +1253,7 @@ mod tests {
             receiver_tx2,
             sender_rx2,
             10000,
+            quit_rx2,
             200,
         )
         .await

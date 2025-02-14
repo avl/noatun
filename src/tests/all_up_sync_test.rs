@@ -25,6 +25,7 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing_subscriber::Layer;
+use tracing::info;
 
 thread_local! {
     pub static MY_THREAD_RNG: RefCell<Option<SmallRng>> = const { RefCell::new(None) };
@@ -125,7 +126,7 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
         let driver_inner = self.1.get();
         let data = buf.to_vec();
         for item in driver_inner.senders.iter() {
-            if driver_inner.loss < random(0.0..1.0) {
+            if driver_inner.loss <= random(0.0..1.0) {
                 item.send((self.0 /*src*/, data.clone()))
                     .await
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -480,22 +481,41 @@ fn setup_tracing() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test() {
+async fn all_up_general_update_sync_test_old_messages() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed).await;
+        all_up_general_update_sync_test_impl(seed,7200).await;
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn all_up_general_update_sync_test_newer_messages() {
+    //setup_tracing();
+    for seed in 0..100 {
+        println!("Seed = {}", seed);
+        all_up_general_update_sync_test_impl(seed,10).await;
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn all_up_special_seed() {
     setup_tracing();
     //for seed in 0..100 {
-    all_up_general_update_sync_test_impl(37).await;
+        println!("Seed = {}", 0);
+        all_up_general_update_sync_test_impl(5, 7200).await;
     //}
 }
 
-async fn all_up_general_update_sync_test_impl(seed: u64) {
+/* TODO:
+More all-up synch tests:\
+1: With most action _after_ cutoff
+2: With no reset, so we can easily know expected value
+3: With _recovery_!
+
+*/
+
+async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds: u64) {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(seed)));
 
     let mut driver = TestDriver::default();
@@ -524,7 +544,7 @@ async fn all_up_general_update_sync_test_impl(seed: u64) {
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
 
         app1.add_message_at(
-            time_now - (Duration::from_secs(random(0..7200))),
+            time_now - (Duration::from_secs(random(0..max_message_age_seconds))),
             SyncMessage {
                 value: 0,
                 reset: true,
@@ -534,7 +554,7 @@ async fn all_up_general_update_sync_test_impl(seed: u64) {
         .unwrap();
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
         app2.add_message_at(
-            time_now - (Duration::from_secs(random(0..7200))),
+            time_now - (Duration::from_secs(random(0..max_message_age_seconds))),
             SyncMessage {
                 value: 2,
                 reset: false,
@@ -583,6 +603,7 @@ async fn all_up_general_update_sync_test_impl(seed: u64) {
     .await
     .unwrap();
 
+    info!("Test case done");
     app1.close().await.unwrap();
     app2.close().await.unwrap();
 }

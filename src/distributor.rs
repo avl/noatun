@@ -510,7 +510,7 @@ impl Distributor {
                         actual_children.push(child_msg.id());
                     }
                 }
-                println!("Actual: {:?}", actual_children);
+                //println!("Actual: {:?}", actual_children);
                 assert_eq!(actual_children, children);
             }
         }
