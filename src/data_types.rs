@@ -676,7 +676,8 @@ where
         NoatunContext.write_pod_ptr(tself.length - 1, addr_of_mut!(tself.length));
     }
 
-    pub fn retain(&mut self, mut f: impl FnMut(Pin<&mut T>) -> bool) {
+    pub fn retain(self: Pin<&mut Self>, mut f: impl FnMut(Pin<&mut T>) -> bool) {
+
         let mut read_offset = 0;
         let mut write_offset = 0;
         let mut new_len = self.length;
@@ -697,7 +698,8 @@ where
                 write_offset += 1;
             }
         }
-        NoatunContext.write_pod_ptr(new_len, addr_of_mut!(self.length));
+        let self_mut = unsafe {self.get_unchecked_mut()};
+        NoatunContext.write_pod_ptr(new_len, addr_of_mut!(self_mut.length));
     }
 
     pub fn push(mut self: Pin<&mut Self>, t: impl Borrow<<T as Object>::DetachedType>) {

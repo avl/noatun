@@ -177,6 +177,9 @@ impl<APP: Application> Projector<APP> {
         })
     }
 
+    pub fn loaded_existing_db(&self) -> bool {
+        self.messages.loaded_existing_db()
+    }
     pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<bool> {
         self.messages.mark_transmitted(message_id)
     }

@@ -234,6 +234,11 @@ impl FileAccessor {
     /// aligned at even larger values, and this is supported, byt will waste some space.
     const HEADER_SIZE: usize = 16;
 
+    pub fn seek_to(&mut self, offset: usize) -> std::io::Result<()> {
+        self.seek(SeekFrom::Start(offset as u64))?;
+        Ok(())
+    }
+
     pub(crate) fn readonly(&self) -> ReadonlyFileAccessor {
         ReadonlyFileAccessor {
             ptr: self.ptr,
@@ -256,7 +261,7 @@ impl FileAccessor {
         };
         Ok(bytemuck::from_bytes(raw))
     }
-    /// Does _not_ use or update seek position
+    /// Does _not_ use or update seek position TODO: This is unsafe as h***! Mark as unsafe!
     pub fn access_pod_mut<R: Pod>(&self, offset: usize) -> Result<&mut R> {
         if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");
@@ -278,10 +283,14 @@ impl FileAccessor {
     /// Update the used size. Note: This must not exceed
     /// committed_len
     pub(crate) fn set_used_space(&self, new_value: usize) {
-        assert!(new_value <= self.committed_size);
+        assert!(new_value.checked_add(Self::HEADER_SIZE).expect("arithmetic overflow") <= self.committed_size);
         unsafe {
             *(self.mapping.ptr() as *mut usize) = new_value;
         }
+    }
+
+    pub(crate) fn set_used_space_to_full_file(&mut self) {
+        self.set_used_space(self.committed_size.saturating_sub(Self::HEADER_SIZE));
     }
 
     #[inline(always)]
@@ -289,11 +298,19 @@ impl FileAccessor {
         self.committed_size - Self::HEADER_SIZE - self.used_space()
     }
 
+    pub(crate) fn on_disk_size(&self) -> usize {
+        self.committed_size
+    }
+
     pub(crate) fn map_const_ptr(&self) -> *const u8 {
         self.ptr.wrapping_add(Self::HEADER_SIZE)
     }
     pub(crate) fn map_mut_ptr(&self) -> *mut u8 {
         self.ptr.wrapping_add(Self::HEADER_SIZE)
+    }
+
+    pub(crate) fn map_all_raw(&self) -> &[u8] {
+        unsafe { slice::from_raw_parts(self.ptr.wrapping_add(Self::HEADER_SIZE), self.committed_size.saturating_sub(Self::HEADER_SIZE)) }
     }
 
     pub(crate) fn map(&self) -> &[u8] {
@@ -352,7 +369,7 @@ impl FileAccessor {
         let page_size = FileMapping::page_size();
 
         let mut len = File::metadata(&file)?.len() as usize;
-        let new_used_size = len.saturating_sub(Self::HEADER_SIZE).max(initial_size);
+        //let new_used_size = len.saturating_sub(Self::HEADER_SIZE).max(initial_size);
         if len < initial_size + Self::HEADER_SIZE || len % page_size != 0 {
             len = len
                 .max(initial_size + Self::HEADER_SIZE)
@@ -377,6 +394,8 @@ impl FileAccessor {
             mapping: Box::new(mapping),
             seek_pos: 0,
         };
+        let claimed_used_size = temp.used_space();
+        let new_used_size = claimed_used_size.min(len.saturating_sub(Self::HEADER_SIZE));
         temp.set_used_space(new_used_size);
         Ok(temp)
     }
@@ -422,6 +441,17 @@ impl FileAccessor {
         target.seek_pos += bytes;
 
         Ok(())
+    }
+
+    /// Give the closure _all_ bytes in the file, without taking into account, or affecting,
+    /// the seek position. This includes all bytes in the physical file, except the header.
+    /// Specifically, it includes *unused* parts of the file (as if the HEADER was claiming
+    /// the entire physical file was used)
+    pub fn with_all_bytes<R>(&mut self, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
+        //TODO: This can't fail, doesn't need to return result!
+        let data = &self.map_all_raw();
+        let ret = f(data);
+        Ok(ret)
     }
 
     /// Read the given number of bytes, and make them available to the closure.

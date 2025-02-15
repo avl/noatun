@@ -1,0 +1,210 @@
+use std::fmt::{Debug, Formatter};
+use std::io::Write;
+use std::pin::Pin;
+use savefile_derive::Savefile;
+use crate::data_types::NoatunString;
+use crate::{Application, CutOffDuration, Database, DatabaseVec, MessagePayload, NoatunContext, NoatunTime, Object};
+use datetime_literal::datetime;
+use chrono::{DateTime, Utc};
+use crate::tests::all_up_sync_test::SyncApp;
+use crate::database::LoadingStatus;
+
+noatun_object!(
+    #[derive(PartialEq)]
+    struct KeyValItem {
+        object key: NoatunString,
+        object value: NoatunString,
+    }
+);
+
+noatun_object!(
+    #[derive(PartialEq)]
+    struct KeyValStore {
+        object keyval: DatabaseVec<KeyValItem>,
+        pod edit_count: u32,
+    }
+);
+
+#[derive(Debug, Savefile)]
+pub struct KeyValMessage {
+    key: String,
+    val: String,
+}
+
+impl Application for KeyValStore {
+    type Message = KeyValMessage;
+    type Params = ();
+
+    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
+        NoatunContext.allocate_pod()
+    }
+}
+
+impl MessagePayload for KeyValMessage {
+    type Root = KeyValStore;
+
+    fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
+        let mut projected = root.pin_project();
+        projected.keyval.as_mut().retain(|item|&**item.key() != self.key);
+        projected.keyval.push(KeyValItemDetached {
+            key: self.key.clone(),
+            value: self.val.clone()
+        });
+        let new_count = projected.edit_count.get()+1;
+        projected.edit_count.set(new_count);
+    }
+
+    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
+    where
+        Self: Sized
+    {
+        crate::msg_deserialize(buf)
+    }
+
+    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
+        crate::msg_serialize(self, writer)
+    }
+}
+
+const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
+
+
+
+#[test]
+fn test_nominal_load_without_recovery() {
+    let mut db: Database<KeyValStore> = Database::create_new(
+        "test/test_recover1",
+        true,
+        100000,
+        CutOffDuration::from_minutes(15),
+        None,
+        (),
+    )
+        .unwrap();
+
+    db.append_local(KeyValMessage {
+        key: "Fruit1".to_string(),
+        val: "Banana".to_string(),
+    }).unwrap();
+    db.append_local(KeyValMessage {
+        key: "Fruit2".to_string(),
+        val: "Orange".to_string(),
+    }).unwrap();
+    db.append_local(KeyValMessage {
+        key: "Fruit1".to_string(),
+        val: "Apple".to_string(),
+    }).unwrap();
+
+    db.with_root(|root|{
+        assert_eq!(
+            root.keyval.detach(),
+            vec![
+                KeyValItemDetached {
+                    key: "Fruit2".to_string(),
+                    value: "Orange".to_string(),
+                },
+                KeyValItemDetached {
+                    key: "Fruit1".to_string(),
+                    value: "Apple".to_string(),
+                }
+            ]);
+    });
+    drop(db);
+
+    let mut db: Database<KeyValStore> = Database::create_new(
+        "test/test_recover1",
+        false,
+        100000,
+        CutOffDuration::from_minutes(15),
+        None,
+        (),
+    )
+        .unwrap();
+    assert_eq!(db.load_status(), LoadingStatus::CleanLoad);
+    db.with_root(|root|{
+        assert_eq!(
+            root.keyval.detach(),
+            vec![
+                KeyValItemDetached {
+                    key: "Fruit2".to_string(),
+                    value: "Orange".to_string(),
+                },
+                KeyValItemDetached {
+                    key: "Fruit1".to_string(),
+                    value: "Apple".to_string(),
+                }
+            ]);
+    });
+
+}
+
+#[test]
+fn test_recovery() {
+    let mut db: Database<KeyValStore> = Database::create_new(
+        "test/test_recover1",
+        true,
+        100000,
+        CutOffDuration::from_minutes(15),
+        None,
+        (),
+    )
+        .unwrap();
+
+    db.append_local(KeyValMessage {
+        key: "Fruit1".to_string(),
+        val: "Banana".to_string(),
+    }).unwrap();
+    db.append_local(KeyValMessage {
+        key: "Fruit2".to_string(),
+        val: "Orange".to_string(),
+    }).unwrap();
+    db.append_local(KeyValMessage {
+        key: "Fruit1".to_string(),
+        val: "Apple".to_string(),
+    }).unwrap();
+
+    db.with_root(|root|{
+        assert_eq!(
+            root.keyval.detach(),
+            vec![
+                KeyValItemDetached {
+                    key: "Fruit2".to_string(),
+                    value: "Orange".to_string(),
+                },
+                KeyValItemDetached {
+                    key: "Fruit1".to_string(),
+                    value: "Apple".to_string(),
+                }
+            ]);
+    });
+    drop(db);
+
+    Database::<KeyValStore>::remove_caches("test/test_recover1").unwrap();
+
+    let mut db: Database<KeyValStore> = Database::create_new(
+        "test/test_recover1",
+        false,
+        100000,
+        CutOffDuration::from_minutes(15),
+        None,
+        (),
+    )
+        .unwrap();
+    assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
+
+    db.with_root(|root|{
+        assert_eq!(
+            root.keyval.detach(),
+            vec![
+                KeyValItemDetached {
+                    key: "Fruit2".to_string(),
+                    value: "Orange".to_string(),
+                },
+                KeyValItemDetached {
+                    key: "Fruit1".to_string(),
+                    value: "Apple".to_string(),
+                }
+            ]);
+    });
+
+}

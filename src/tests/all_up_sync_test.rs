@@ -499,6 +499,15 @@ async fn all_up_general_update_sync_test_newer_messages() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn all_up_general_update_sync_test_mid_age_messages() {
+    //setup_tracing();
+    for seed in 0..100 {
+        println!("Seed = {}", seed);
+        all_up_general_update_sync_test_impl(seed,900).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn all_up_special_seed() {
     setup_tracing();
     //for seed in 0..100 {
@@ -526,7 +535,7 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
     let start_instant = tokio::time::Instant::now();
 
     driver.set_loss(0.15);
-    for _i in 0..10 {
+    for _i in 0..MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_range(1..20)) {
         let time_now = noatun_start_time + start_instant.elapsed();
         app1.set_mock_time(time_now);
         app2.set_mock_time(time_now);
@@ -547,7 +556,7 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
             time_now - (Duration::from_secs(random(0..max_message_age_seconds))),
             SyncMessage {
                 value: 0,
-                reset: true,
+                reset: MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
             },
         )
         .await
@@ -557,7 +566,7 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
             time_now - (Duration::from_secs(random(0..max_message_age_seconds))),
             SyncMessage {
                 value: 2,
-                reset: false,
+                reset: MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
             },
         )
         .await
@@ -586,7 +595,7 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
     println!("Only in 1: {:?}", smsgs1.sub(&smsgs2));
     println!("Only in 2: {:?}", smsgs2.sub(&smsgs1));
     assert_eq!(msgs1.len(), msgs2.len());
-    //compile_error!("Consider if maybe we should remove *all* parents from messags < cutoff?")
+
     assert_eq!(msgs1, msgs2, "Failed for seed {}", seed);
     assert!(root1.sum >= 1);
     assert!(root2.sum >= 1);
@@ -594,7 +603,6 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
     assert!(root2.counter >= 1);
     assert_eq!(root1, root2);
 
-    //    compile_error!("Figure out why cutoff hash differs, even though actual messages are the same, for seed 4!")
     assert_eq!(app1.get_status().await.unwrap(), Status::Nominal);
     app1.add_message(SyncMessage {
         value: 1,

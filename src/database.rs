@@ -11,6 +11,13 @@ use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
+#[derive(Debug,Clone,Copy,PartialEq,Eq,Hash)]
+pub enum LoadingStatus {
+    NewDatabase,
+    CleanLoad,
+    RecoveryPerformed
+}
+
 pub struct Database<Base: Application> {
     context: DatabaseContextData,
     message_store: Projector<Base>,
@@ -20,6 +27,7 @@ pub struct Database<Base: Application> {
     time_override: Option<NoatunTime>,
     projection_time_limit: Option<NoatunTime>,
     params: Base::Params,
+    load_status: LoadingStatus
 }
 
 impl<APP: Application> Database<APP> {
@@ -264,6 +272,24 @@ impl<APP: Application> Database<APP> {
         Ok(())
     }
 
+    pub fn remove_caches(path: impl AsRef<Path>) -> Result<()> {
+
+        let mut path : PathBuf = path.as_ref().to_path_buf();
+        fn remove_if_exists(path: impl AsRef<Path>) -> Result<()> {
+            if std::fs::metadata(path.as_ref()).is_ok() {
+                std::fs::remove_file(path)?;
+            }
+            Ok(())
+        }
+
+        remove_if_exists(path.join("index.bin"))?;
+        remove_if_exists(path.join("maindb.bin"))?;
+        remove_if_exists(path.join("undo.bin"))?;
+        remove_if_exists(path.join("update_head.bin"))?;
+
+        Ok(())
+    }
+
     /// Note: You can set max_file_size to something very large, like 100_000_000_000
     pub fn create_new(
         path: impl AsRef<Path>,
@@ -440,6 +466,7 @@ impl<APP: Application> Database<APP> {
             time_override: mock_time,
             projection_time_limit,
             params,
+            load_status: LoadingStatus::NewDatabase,
         })
     }
 
@@ -458,7 +485,9 @@ impl<APP: Application> Database<APP> {
         let is_dirty = ctx.is_dirty();
 
         let mut message_store = Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
+        let load_status;
         //let update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
+        println!("Load, is dirty: {:?}", is_dirty);
         if is_dirty {
             Self::recover(
                 &mut ctx,
@@ -468,7 +497,20 @@ impl<APP: Application> Database<APP> {
                 &params,
             )?;
             ctx.mark_clean()?;
+            if !message_store.loaded_existing_db() {
+                load_status = LoadingStatus::NewDatabase;
+            } else {
+                load_status = LoadingStatus::RecoveryPerformed;
+                println!("Load status: {:?}", load_status);
+            }
+        } else {
+            if !message_store.loaded_existing_db() {
+                load_status = LoadingStatus::NewDatabase;
+            } else {
+                load_status = LoadingStatus::CleanLoad;
+            }
         }
+        println!("Load status: {:?}", load_status);
         Ok(Database {
             params,
             prev_local: None,
@@ -476,6 +518,10 @@ impl<APP: Application> Database<APP> {
             message_store,
             time_override: None,
             projection_time_limit,
+            load_status,
         })
+    }
+    pub fn load_status(&self) -> LoadingStatus {
+        self.load_status
     }
 }

@@ -576,6 +576,44 @@ pub enum GenPtr {
     Fat(FatPtr),
 }
 
+#[derive(Clone, Copy, Zeroable, Pod, Debug)]
+#[repr(C)]
+struct SerializableGenPtr {
+    ptr: usize,
+    len: usize, //usize::MAX for thin
+}
+impl From<SerializableGenPtr> for GenPtr {
+    fn from(value: SerializableGenPtr) -> Self {
+        if value.len == usize::MAX {
+            GenPtr::Thin(ThinPtr(value.ptr))
+        } else {
+            GenPtr::Fat(FatPtr{
+                start: value.ptr,
+                len: value.len,
+            })
+        }
+    }
+}
+impl From<GenPtr> for SerializableGenPtr {
+    fn from(ptr: GenPtr) -> Self {
+        match ptr {
+            GenPtr::Thin(t) => {
+                Self {
+                    ptr: t.0,
+                    len: usize::MAX,
+                }
+            }
+            GenPtr::Fat(f) => {
+                Self {
+                    ptr: f.start,
+                    len: f.len,
+                }
+            }
+        }
+    }
+}
+
+
 pub trait Pointer: Copy + Debug + 'static {
     fn start(self) -> usize;
     fn create<T: ?Sized>(addr: &T, buffer_start: *const u8) -> Self;
@@ -1089,14 +1127,14 @@ noatun_object!(
         struct Kalle {
             pod hej:u32,
             pod tva:u32,
-            object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>>
+            object da: DatabaseCell<u32>
         }
 );
 noatun_object!(
     struct Nalle {
         pod hej:u32,
         pod tva:u32,
-        object da: crate::data_types::DatabaseVec<crate::data_types::DatabaseCell<u32>>
+        object da: DatabaseCell<u32>
     }
 );
 
@@ -1142,6 +1180,7 @@ mod tests {
     mod distributor_tests;
     mod fuzz_test_insert;
     mod tests_using_noatun_object_macro;
+    mod recovery_tests;
 
     #[test]
     fn test_mmap_big() {

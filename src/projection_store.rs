@@ -4,7 +4,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{FatPtr, FixedSizeObject, GenPtr, MessagePayload, Object, Pointer, Target, ThinPtr};
+use crate::{FatPtr, FixedSizeObject, GenPtr, MessagePayload, Object, Pointer, SerializableGenPtr, Target, ThinPtr};
 use anyhow::{bail, Context, Result};
 use bytemuck::{bytes_of, from_bytes, from_bytes_mut, AnyBitPattern, Pod, Zeroable};
 use std::any::{Any, TypeId};
@@ -106,6 +106,7 @@ pub struct MainDbHeader {
     /// since the last access. This only affects recovery after the db has been left in a
     /// dirty state.
     last_boot: [u8; 16],
+    root_ptr: SerializableGenPtr
 }
 
 #[derive(Debug, Clone, Copy, Zeroable, Pod)]
@@ -125,7 +126,7 @@ pub struct MainDbAuxHeader {
 
 pub(crate) struct DatabaseContextData {
     main_db_mmap: FileAccessor,
-    root_index: Option<GenPtr>,
+    //root_index: Option<GenPtr>,
     undo_log: UndoLog,
 
     // The current message being written (or None if not open for writing)
@@ -411,6 +412,7 @@ impl DatabaseContextData {
             ) as *mut RawDatabaseVec<UnusedInfo>)
         }
     }
+
     unsafe fn get_uses<'a>(&self) -> &'a mut RawDatabaseVec<RegistrarInfo> {
         unsafe {
             &mut *(self
@@ -477,12 +479,11 @@ impl DatabaseContextData {
 
         let mut t = Self {
             main_db_mmap: main_db_file,
-            root_index: None,
             undo_log: UndoLog::new(s, name, max_size)?,
             unused_messages: Vec::default(),
             is_mutable: false,
         };
-        // TODO: It's a bit of a code smell that at this precise point in th execution,
+        // TODO: It's a bit of a code smell that at this precise point in the execution,
         // a DatabaseContext exists, but it's not actually fully initialized until we write the
         // aux header. This is functionally correct, no-one can observe this half-initialized
         // DatabaseContext at this point in the code. But ideally we'd find a way to not have a
@@ -585,12 +586,25 @@ impl DatabaseContextData {
     }
 
     pub fn set_root_ptr(&mut self, genptr: GenPtr) {
-        self.root_index = Some(genptr);
+        let header: &mut MainDbHeader =
+            bytemuck::from_bytes_mut(&mut self.main_db_mmap.map_mut()[0..size_of::<MainDbHeader>()]);
+
+        header.root_ptr = genptr.into();
     }
 
     pub fn get_root_ptr<Ptr: Pointer + Any + 'static>(&self) -> Ptr {
-        match self.root_index {
-            Some(GenPtr::Thin(ptr)) => {
+        let root_ptr = unsafe {
+            *(self.main_db_mmap.map_mut_ptr().wrapping_add(
+                offset_of!(MainDbHeader, root_ptr),
+            ) as *mut SerializableGenPtr)
+        };
+        if root_ptr.ptr == 0 {
+            panic!("Invalid root pointer!");
+        }
+        let root_ptr: GenPtr = root_ptr.into();
+
+        match root_ptr {
+            GenPtr::Thin(ptr) => {
                 if TypeId::of::<Ptr>() == TypeId::of::<ThinPtr>() {
                     return unsafe { transmute_copy(&ptr) };
                 }
@@ -598,16 +612,13 @@ impl DatabaseContextData {
                     "Wrong type of root pointer in database. Has schema changed significantly since last access?"
                 );
             }
-            Some(GenPtr::Fat(ptr)) => {
+            GenPtr::Fat(ptr) => {
                 if TypeId::of::<Ptr>() == TypeId::of::<FatPtr>() {
                     return unsafe { transmute_copy(&ptr) };
                 }
                 panic!(
                     "Wrong type of root pointer in database. Has schema changed significantly since last access?"
                 );
-            }
-            None => {
-                panic!("Unknown root pointer");
             }
         }
     }

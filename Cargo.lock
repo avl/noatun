@@ -460,6 +460,7 @@ dependencies = [
  "indexmap",
  "insta",
  "libc",
+ "memchr",
  "memmap2",
  "noatun",
  "paste",
