@@ -14,7 +14,6 @@ use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::offset_of;
-use memchr::arch::all::twoway::Finder;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
@@ -641,7 +640,6 @@ impl<M> OnDiskMessageStore<M> {
 
 
         assert_eq!(pending_index_header.entries, 0);
-        let mut index_ptr = 0usize;
 
         for (file_info, file_entry) in self
             .data_files
@@ -653,7 +651,7 @@ impl<M> OnDiskMessageStore<M> {
             file_entry.nominal_size = file_length;
             file_entry.compaction_pointer = 0;
             file_info.file.seek(SeekFrom::Start(0))?;
-
+            let mut largest_used_offset = 0;
             loop {
                 let file_offset = file_info.file.stream_position()?;
                 //println!("In main loop {}", file_offset);
@@ -661,8 +659,9 @@ impl<M> OnDiskMessageStore<M> {
                     break;
                 }
 
-                fn read_header_and_parents<M:MessagePayload>(file_info: &mut FileAccessor) -> Result<(MessageHeader, Vec<MessageId>, usize)> {
+                fn read_header_and_parents<M:MessagePayload>(file_info: &mut FileAccessor) -> Result<(FileHeaderEntry, Vec<MessageId>, usize)> {
                     let file_offset = file_info.stream_position()?;
+                    println!("Reading message at {} / {}", file_offset, file_info.used_space());
                     let header = file_info.read_pod::<FileHeaderEntry>()?;
                     if header.magic != MAGIC {
                         bail!("Bad magic");
@@ -678,51 +677,47 @@ impl<M> OnDiskMessageStore<M> {
                         bail!("Header is deleted");
                     }
 
-                    let mut parvec = EmbVecAccessor::new_parents(&mut file_info.file, file_offset);
+                    let mut parvec = EmbVecAccessor::new_parents(&mut *file_info, file_offset);
                     let parents = parvec.all()?;
 
                     file_info.seek(SeekFrom::Start(
                         file_offset + header.size_before_payload() as u64,
                     ))?;
 
-                    let msg: Result<M> =
-                        file_info
-                            .with_bytes(header.payload_size as usize, |payload_bytes| {
-                                if sha2(payload_bytes) != header.sha2 {
-                                    return Err(anyhow!("data corrupted on disk - checksum mismatch"));
-                                }
-
-                                M::deserialize(payload_bytes)
-                            })?;
-                    let msg = match msg {
-                        //TODO: Fix non-idiomatic, use ?
-                        Ok(msg) => msg,
-                        Err(err) => {
-                            return Err(err);
-                        }
-                    };
+                    file_info
+                        .with_bytes(header.payload_size as usize, |payload_bytes| {
+                            if sha2(payload_bytes) != header.sha2 {
+                                return Err(anyhow!("data corrupted on disk - checksum mismatch"));
+                            }
+                            Ok(())
+                        })??;
 
                     file_info
                         .seek(SeekFrom::Start(file_offset + tot_size as u64))?;
-                    Ok((msg, parents, tot_size))
+                    Ok((header, parents, tot_size))
                 }
 
 
                 let (header, parents, msg_size_bytes) = match read_header_and_parents::<M>(&mut file_info.file) {
                     Ok((header, parents, msg_size_bytes)) => {
+                        debug_assert!(file_info.file.stream_position()? >= largest_used_offset);
+                        largest_used_offset = file_info.file.stream_position()?;
                         (header, parents, msg_size_bytes)
                     },
                     Err(err) => {
-                        let file_offset = file_info.file.stream_position()?.max(file_offset + size_of::<FileHeaderEntry>() as u64);
+                        warn!("Error reading message: {} @ offset {}", err, file_offset);;
+                        println!("Error reading message: {:?} @ offset {}, seek pos: {}", err, file_offset,file_info.file.stream_position()?);;
                         let magic_search_start = file_offset as usize + offset_of!(FileHeaderEntry, magic) + size_of_val(&MAGIC);
-                        file_info.file.seek_to(file_info.file.with_all_bytes(|bytes|{
-                            finder.find(&bytes[magic_search_start..]).unwrap_or(file_length as usize)
-                        })?)?;
+                        let new_offset = file_info.file.with_all_bytes(|bytes|{
+                            println!("Starting search at {}", magic_search_start);
+                            finder.find(&bytes[magic_search_start..]).map(|x| x + magic_search_start - offset_of!(FileHeaderEntry, magic)).unwrap_or(file_length as usize)
+                        })?;
+                        println!("Next offsed to try: {} of {}", new_offset, file_length);
+                        file_info.file.seek_to(new_offset)?;
                         continue;
                     }
                 };
 
-compile_error!("Continue recover!")
                 report_inserted(header.message_id, &parents)?;
                 file_entry.bytes_used += msg_size_bytes as u64;
                 self.index_mmap.write_pod(&IndexEntry {
@@ -730,9 +725,10 @@ compile_error!("Continue recover!")
                     file_offset: FileOffset::new(file_offset, file_info.file_number),
                     file_total_size: msg_size_bytes as u64,
                 })?;
-                index_ptr += 1;
                 pending_index_header.entries += 1;
             }
+            file_info.file.set_used_space(largest_used_offset as usize);
+            file_info.file.seek_to(largest_used_offset as usize)?;
         }
 
 
@@ -1428,7 +1424,7 @@ compile_error!("Continue recover!")
         let file = &mut files[file_index.index()].file;
         file.seek(SeekFrom::Start(end_pos))?;
 
-        println!("Finished writing message, used space = {}", file.used_space());
+        println!("Finished writing message @ {}, used space = {}", start_pos, file.used_space());
         Ok(MessageWriteReport {
             start_pos,
             total_size: msg_total_size as u64,
@@ -2005,8 +2001,9 @@ compile_error!("Continue recover!")
         let mut db_existed = false;
 
         let data_files: [Result<DataFileInfo>; 2] = [0, 1].map(|file_number| {
+            let file_name = format!("data{}", file_number);
             let data_file = d
-                .open_file(target, &format!("data{}", file_number), 0, max_file_size)
+                .open_file(target, &file_name, 0, max_file_size)
                 .context("Opening data-file")?;
 
             if data_file.on_disk_size() > 0 {
@@ -2016,7 +2013,7 @@ compile_error!("Continue recover!")
 
             data_file
                 .try_lock_exclusive()
-                .context("While obtaining file lock on data file")?;
+                .with_context(||format!("While obtaining file lock on data file: {:?}", target.path().join(&file_name)))?;
 
             Ok(DataFileInfo {
                 file: data_file,

@@ -274,7 +274,7 @@ impl<APP: Application> Database<APP> {
 
     pub fn remove_caches(path: impl AsRef<Path>) -> Result<()> {
 
-        let mut path : PathBuf = path.as_ref().to_path_buf();
+        let path : PathBuf = path.as_ref().to_path_buf();
         fn remove_if_exists(path: impl AsRef<Path>) -> Result<()> {
             if std::fs::metadata(path.as_ref()).is_ok() {
                 std::fs::remove_file(path)?;

@@ -283,6 +283,9 @@ impl FileAccessor {
     /// Update the used size. Note: This must not exceed
     /// committed_len
     pub(crate) fn set_used_space(&self, new_value: usize) {
+        if self.committed_size == 0 {
+            dbg!(new_value,Self::HEADER_SIZE, self.committed_size);
+        }
         assert!(new_value.checked_add(Self::HEADER_SIZE).expect("arithmetic overflow") <= self.committed_size);
         unsafe {
             *(self.mapping.ptr() as *mut usize) = new_value;
@@ -322,11 +325,13 @@ impl FileAccessor {
         unsafe { slice::from_raw_parts_mut(self.ptr.wrapping_add(Self::HEADER_SIZE), used) }
     }
 
-    pub(crate) fn from_mapping(mapping: impl FileBackend + Send + 'static) -> Self {
+    pub(crate) fn from_mapping(mut mapping: impl FileBackend + Send + 'static) -> Self {
+        let initial_len = Self::HEADER_SIZE;
+        mapping.grow_committed_mapping(initial_len).unwrap();
         Self {
             ptr: mapping.ptr(),
+            committed_size: mapping.len(),
             mapping: Box::new(mapping),
-            committed_size: 0,
             seek_pos: 0,
         }
     }
@@ -508,12 +513,6 @@ impl FileAccessor {
         }
         self.set_used_space(new_size);
         Ok(())
-    }
-
-    /// This is the actual size of the file on disk. This is not the 'logical' size
-    /// Should probably not be exposed, since that would mean we had a leaky abstraction
-    fn committed_len(&self) -> usize {
-        self.committed_size.saturating_sub(Self::HEADER_SIZE)
     }
 
     pub(crate) fn flush_range(&self, offset: usize, len: usize) -> Result<()> {

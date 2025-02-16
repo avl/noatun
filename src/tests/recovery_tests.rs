@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug};
 use std::io::Write;
 use std::pin::Pin;
 use savefile_derive::Savefile;
@@ -6,7 +6,6 @@ use crate::data_types::NoatunString;
 use crate::{Application, CutOffDuration, Database, DatabaseVec, MessagePayload, NoatunContext, NoatunTime, Object};
 use datetime_literal::datetime;
 use chrono::{DateTime, Utc};
-use crate::tests::all_up_sync_test::SyncApp;
 use crate::database::LoadingStatus;
 
 noatun_object!(
@@ -43,7 +42,7 @@ impl Application for KeyValStore {
 impl MessagePayload for KeyValMessage {
     type Root = KeyValStore;
 
-    fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let mut projected = root.pin_project();
         projected.keyval.as_mut().retain(|item|&**item.key() != self.key);
         projected.keyval.push(KeyValItemDetached {
@@ -111,7 +110,7 @@ fn test_nominal_load_without_recovery() {
     });
     drop(db);
 
-    let mut db: Database<KeyValStore> = Database::create_new(
+    let db: Database<KeyValStore> = Database::create_new(
         "test/test_recover1",
         false,
         100000,
@@ -141,7 +140,7 @@ fn test_nominal_load_without_recovery() {
 #[test]
 fn test_recovery() {
     let mut db: Database<KeyValStore> = Database::create_new(
-        "test/test_recover1",
+        "test/test_recover2",
         true,
         100000,
         CutOffDuration::from_minutes(15),
@@ -163,6 +162,7 @@ fn test_recovery() {
         val: "Apple".to_string(),
     }).unwrap();
 
+    assert_eq!(db.get_all_message_ids().unwrap().len(), 3);
     db.with_root(|root|{
         assert_eq!(
             root.keyval.detach(),
@@ -179,10 +179,10 @@ fn test_recovery() {
     });
     drop(db);
 
-    Database::<KeyValStore>::remove_caches("test/test_recover1").unwrap();
+    Database::<KeyValStore>::remove_caches("test/test_recover2").unwrap();
 
-    let mut db: Database<KeyValStore> = Database::create_new(
-        "test/test_recover1",
+    let db: Database<KeyValStore> = Database::create_new(
+        "test/test_recover2",
         false,
         100000,
         CutOffDuration::from_minutes(15),
@@ -206,5 +206,84 @@ fn test_recovery() {
                 }
             ]);
     });
+
+    assert_eq!(db.get_all_message_ids().unwrap().len(), 3);
+
+}
+
+
+#[test]
+fn test_recovery_corrupted_file() {
+    let mut db: Database<KeyValStore> = Database::create_new(
+        "test/test_recover3",
+        true,
+        100000,
+        CutOffDuration::from_minutes(15),
+        None,
+        (),
+    )
+        .unwrap();
+
+    db.append_local(KeyValMessage {
+        key: "Fruit1".to_string(),
+        val: "Banana".to_string(),
+    }).unwrap();
+    db.append_local(KeyValMessage {
+        key: "Fruit2".to_string(),
+        val: "Orange".to_string(),
+    }).unwrap();
+    db.append_local(KeyValMessage {
+        key: "Fruit1".to_string(),
+        val: "Apple".to_string(),
+    }).unwrap();
+
+    assert_eq!(db.get_all_message_ids().unwrap().len(), 3);
+    db.with_root(|root|{
+        assert_eq!(
+            root.keyval.detach(),
+            vec![
+                KeyValItemDetached {
+                    key: "Fruit2".to_string(),
+                    value: "Orange".to_string(),
+                },
+                KeyValItemDetached {
+                    key: "Fruit1".to_string(),
+                    value: "Apple".to_string(),
+                }
+            ]);
+    });
+    drop(db);
+
+    Database::<KeyValStore>::remove_caches("test/test_recover3").unwrap();
+
+    let mut contents = std::fs::read("test/test_recover3/data0.bin").unwrap();
+    // Corrupt the file, replace Orange with Banana
+    let orange_index = memchr::memmem::find(&contents, b"Orange").unwrap();
+    contents[orange_index..orange_index+6].copy_from_slice(b"Borang");
+    std::fs::write("test/test_recover3/data0.bin", contents).unwrap();
+
+    let db: Database<KeyValStore> = Database::create_new(
+        "test/test_recover3",
+        false,
+        100000,
+        CutOffDuration::from_minutes(15),
+        None,
+        (),
+    )
+        .unwrap();
+    assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
+
+    db.with_root(|root|{
+        assert_eq!(
+            root.keyval.detach(),
+            vec![
+                KeyValItemDetached {
+                    key: "Fruit1".to_string(),
+                    value: "Apple".to_string(),
+                }
+            ]);
+    });
+
+    assert_eq!(db.get_all_message_ids().unwrap().len(), 2);
 
 }
