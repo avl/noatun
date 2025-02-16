@@ -349,7 +349,6 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     //println!("\n ========= Corrupted {} file at {}\n", contents.len(), corrupt_at_index);
 
     std::fs::write("test/test_recover4/data0.bin", &contents).unwrap();
-    std::fs::write("data0_tell.bin", contents).unwrap();
 
     let db: Database<KeyValStore> = Database::create_new(
         "test/test_recover4",
