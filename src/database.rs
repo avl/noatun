@@ -487,7 +487,7 @@ impl<APP: Application> Database<APP> {
         let mut message_store = Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
         let load_status;
         //let update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
-        println!("Load, is dirty: {:?}", is_dirty);
+        //println!("Load, is dirty: {:?}", is_dirty);
         if is_dirty {
             Self::recover(
                 &mut ctx,
@@ -501,7 +501,7 @@ impl<APP: Application> Database<APP> {
                 load_status = LoadingStatus::NewDatabase;
             } else {
                 load_status = LoadingStatus::RecoveryPerformed;
-                println!("Load status: {:?}", load_status);
+                //println!("Load status: {:?}", load_status);
             }
         } else {
             if !message_store.loaded_existing_db() {
@@ -510,7 +510,7 @@ impl<APP: Application> Database<APP> {
                 load_status = LoadingStatus::CleanLoad;
             }
         }
-        println!("Load status: {:?}", load_status);
+        //println!("Load status: {:?}", load_status);
         Ok(Database {
             params,
             prev_local: None,

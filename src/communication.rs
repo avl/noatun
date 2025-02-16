@@ -1262,7 +1262,6 @@ mod tests {
         let jh1 = spawn(mloop1.run());
         let jh2 = spawn(mloop2.run());
 
-        println!("About to send");
         for packet in [
             vec![1u8; 1],
             vec![2u8; 10],
@@ -1271,11 +1270,10 @@ mod tests {
             vec![5u8; 10000],
         ] {
             sender_tx1.send(packet.clone()).await.unwrap();
-            println!("About to recv");
+
             let got = receiver_rx2.recv().await.unwrap();
             assert_eq!(got, packet);
         }
-        println!("quitting");
         drop(sender_tx1);
         drop(sender_tx2);
         jh1.await.unwrap().unwrap();

@@ -288,6 +288,9 @@ impl MessageId {
             other
         }
     }
+    pub fn as_bytes(&self) -> &[u8] {
+        bytemuck::cast_slice(&self.data)
+    }
     pub fn is_zero(&self) -> bool {
         self.data[0] == 0 && self.data[1] == 0
     }
@@ -1703,7 +1706,7 @@ mod tests {
 
         let mut d = distributor::Distributor::new("1");
 
-        println!("Heads: {:?}", d.get_periodic_message(&db));
+        //println!("Heads: {:?}", d.get_periodic_message(&db));
 
         let r = d
             .receive_message(
@@ -1713,7 +1716,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        println!("Clarify: {:?}", r);
+        //println!("Clarify: {:?}", r);
 
         // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
 

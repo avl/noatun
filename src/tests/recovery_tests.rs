@@ -284,6 +284,104 @@ fn test_recovery_corrupted_file() {
             ]);
     });
 
+    let all_ids = db.get_all_message_ids().unwrap();
+    assert_eq!(all_ids.len(), 2);
+    for (msg, children) in db.get_all_messages_with_children().unwrap() {
+        assert!(msg.header.parents.iter().all(|x|all_ids.contains(x)));
+        assert!(children.iter().all(|x|all_ids.contains(x)));
+    }
+
     assert_eq!(db.get_all_message_ids().unwrap().len(), 2);
+
+}
+
+
+fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
+    let mut db: Database<KeyValStore> = Database::create_new(
+        "test/test_recover4",
+        true,
+        100000,
+        CutOffDuration::from_minutes(15),
+        None,
+        (),
+    )
+        .unwrap();
+
+    db.append_local(KeyValMessage {
+        key: "Fruit1".to_string(),
+        val: "Banana".to_string(),
+    }).unwrap();
+    db.append_local(KeyValMessage {
+        key: "Fruit2".to_string(),
+        val: "Orange".to_string(),
+    }).unwrap();
+    db.append_local(KeyValMessage {
+        key: "Fruit1".to_string(),
+        val: "Apple".to_string(),
+    }).unwrap();
+
+    assert_eq!(db.get_all_message_ids().unwrap().len(), 3);
+    db.with_root(|root|{
+        assert_eq!(
+            root.keyval.detach(),
+            vec![
+                KeyValItemDetached {
+                    key: "Fruit2".to_string(),
+                    value: "Orange".to_string(),
+                },
+                KeyValItemDetached {
+                    key: "Fruit1".to_string(),
+                    value: "Apple".to_string(),
+                }
+            ]);
+    });
+    drop(db);
+
+    Database::<KeyValStore>::remove_caches("test/test_recover4").unwrap();
+
+    let mut contents = std::fs::read("test/test_recover4/data0.bin").unwrap();
+    // Corrupt the file, replace Orange with Banana
+    /*for i in 0..20 {
+        contents[i] = 0x43;
+    }*/
+    contents[corrupt_at_index] = contents[corrupt_at_index].wrapping_add(1);
+
+    //println!("\n ========= Corrupted {} file at {}\n", contents.len(), corrupt_at_index);
+
+    std::fs::write("test/test_recover4/data0.bin", &contents).unwrap();
+    std::fs::write("data0_tell.bin", contents).unwrap();
+
+    let db: Database<KeyValStore> = Database::create_new(
+        "test/test_recover4",
+        false,
+        100000,
+        CutOffDuration::from_minutes(15),
+        None,
+        (),
+    )
+        .unwrap();
+    assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
+
+
+    let all_ids = db.get_all_message_ids().unwrap();
+    if corrupt_at_index >= 16 {
+        assert_eq!(all_ids.len(), 2);
+        assert_eq!(db.get_all_message_ids().unwrap().len(), 2);
+    }
+    for (msg, children) in db.get_all_messages_with_children().unwrap() {
+        assert!(msg.header.parents.iter().all(|x|all_ids.contains(x)));
+        assert!(children.iter().all(|x|all_ids.contains(x)));
+    }
+
+
+}
+
+#[test]
+fn test_recovery_arbitrary_corruption() {
+    for i in 400..450 {
+        compile_error!("There's some padding at the end of each message that isn't protected by checksums. Consider what to do about this for this test!")
+        println!("Corrupting by writing at index {}", i);
+        test_recovery_arbitrary_corruption_impl(i);
+    }
 
 }

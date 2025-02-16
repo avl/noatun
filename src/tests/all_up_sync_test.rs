@@ -587,13 +587,13 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
     let msgs2 = app2.get_all_messages().unwrap();
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
-    println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
+    //println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
     let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
     let smsgs2: IndexSet<_> = msgs2.iter().map(|x| x.header.id).collect();
-    println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
+    /*println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
     println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
     println!("Only in 1: {:?}", smsgs1.sub(&smsgs2));
-    println!("Only in 2: {:?}", smsgs2.sub(&smsgs1));
+    println!("Only in 2: {:?}", smsgs2.sub(&smsgs1));*/
     assert_eq!(msgs1.len(), msgs2.len());
 
     assert_eq!(msgs1, msgs2, "Failed for seed {}", seed);
