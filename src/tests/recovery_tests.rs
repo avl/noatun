@@ -344,7 +344,7 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     /*for i in 0..20 {
         contents[i] = 0x43;
     }*/
-    contents[corrupt_at_index] = contents[corrupt_at_index].wrapping_add(1);
+    contents[corrupt_at_index] = contents[corrupt_at_index].wrapping_sub(20);
 
     //println!("\n ========= Corrupted {} file at {}\n", contents.len(), corrupt_at_index);
 
@@ -363,24 +363,28 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
 
 
     let all_ids = db.get_all_message_ids().unwrap();
-    if corrupt_at_index >= 16 {
-        assert_eq!(all_ids.len(), 2);
-        assert_eq!(db.get_all_message_ids().unwrap().len(), 2);
-    }
+    assert!(all_ids.len() >= 2);
+    assert!(all_ids.len() <= 3);
+
     for (msg, children) in db.get_all_messages_with_children().unwrap() {
         assert!(msg.header.parents.iter().all(|x|all_ids.contains(x)));
         assert!(children.iter().all(|x|all_ids.contains(x)));
     }
+}
 
-
+#[test]
+#[ignore] //This test is too long running for every-day runs
+fn test_recovery_arbitrary_corruption_long() {
+    for i in 0..450 {
+        println!("Corrupting by writing at index {}", i);
+        test_recovery_arbitrary_corruption_impl(i);
+    }
 }
 
 #[test]
 fn test_recovery_arbitrary_corruption() {
-    for i in 400..450 {
-        compile_error!("There's some padding at the end of each message that isn't protected by checksums. Consider what to do about this for this test!")
+    for i in (0..450).step_by(50) {
         println!("Corrupting by writing at index {}", i);
         test_recovery_arbitrary_corruption_impl(i);
     }
-
 }

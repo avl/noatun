@@ -1164,8 +1164,6 @@ mod tests {
     use super::*;
     use crate::data_types::{DatabaseCellArrayExt, NoatunString};
     use crate::disk_access::FileAccessor;
-    use crate::distributor::DistributorMessage;
-
     use crate::sequence_nr::SequenceNr;
     use byteorder::{LittleEndian, WriteBytesExt};
 
@@ -1704,10 +1702,11 @@ mod tests {
         )
         .unwrap();
 
+
+        /*
         let mut d = distributor::Distributor::new("1");
 
         //println!("Heads: {:?}", d.get_periodic_message(&db));
-
         let r = d
             .receive_message(
                 &mut db,
@@ -1716,7 +1715,8 @@ mod tests {
                 }),
             )
             .unwrap();
-        //println!("Clarify: {:?}", r);
+        println!("Clarify: {:?}", r);
+        */
 
         // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
 

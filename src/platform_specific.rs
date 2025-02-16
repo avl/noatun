@@ -11,6 +11,7 @@ mod unix {
 
     use std::fs::File;
     use std::os::fd::AsRawFd;
+    #[cfg(not(miri))]
     use std::process::Command;
     use std::ptr::null_mut;
     use std::sync::OnceLock;

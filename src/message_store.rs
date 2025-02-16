@@ -707,7 +707,7 @@ impl<M> OnDiskMessageStore<M> {
                         (header, parents, msg_size_bytes)
                     },
                     Err(err) => {
-                        warn!("Error reading message: {} @ offset {}", err, file_offset);;
+                        warn!("Error reading message: {} @ offset {}", err, file_offset);
                         //println!("Error reading message: {:?} @ offset {}, seek pos: {}", err, file_offset,file_info.file.stream_position()?);;
                         let magic_search_start = file_offset as usize + offset_of!(FileHeaderEntry, magic) + size_of_val(&MAGIC);
                         let new_offset = file_info.file.with_all_bytes(|bytes|{
@@ -740,7 +740,7 @@ impl<M> OnDiskMessageStore<M> {
 
         for item in index.iter() {
             debug_assert_eq!(item.file_offset.is_deleted(), false);
-            if let Some((mut file, offset)) = item.file_offset.file_and_offset() {
+            if let Some((file, offset)) = item.file_offset.file_and_offset() {
                 let mut file = &mut self.data_files[file.index()].file;
                 let mut parent_accessor = EmbVecAccessor::new_parents(&mut file, offset);
 

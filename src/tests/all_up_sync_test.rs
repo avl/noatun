@@ -12,7 +12,6 @@ use chrono::DateTime;
 use chrono::TimeDelta;
 use chrono::Utc;
 use datetime_literal::datetime;
-use indexmap::IndexSet;
 use rand::distributions::uniform::SampleUniform;
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -20,7 +19,7 @@ use rand::SeedableRng;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::io::Write;
-use std::ops::{Add, Sub};
+use std::ops::{Add};
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -588,9 +587,9 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
     //println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
-    let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
+    /*let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
     let smsgs2: IndexSet<_> = msgs2.iter().map(|x| x.header.id).collect();
-    /*println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
+    println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
     println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
     println!("Only in 1: {:?}", smsgs1.sub(&smsgs2));
     println!("Only in 2: {:?}", smsgs2.sub(&smsgs1));*/
