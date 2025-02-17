@@ -182,7 +182,7 @@ const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
 
 async fn create_app(driver: &mut TestDriver) -> DatabaseCommunication<SyncApp> {
     let db: Database<SyncApp> = Database::create_in_memory(
-        100000,
+        500000,
         CutOffDuration::from_minutes(15),
         Some(START_TIME.into()),
         None,

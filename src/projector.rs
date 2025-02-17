@@ -184,6 +184,11 @@ impl<APP: Application> Projector<APP> {
         self.messages.mark_transmitted(message_id)
     }
 
+    // TODO: Remove this once we've made it automatic
+    pub fn compact(&mut self) -> Result<()> {
+        self.messages.compact()
+    }
+
     /// Returns true if the message did not exist and was inserted
     fn push_message(
         &mut self,

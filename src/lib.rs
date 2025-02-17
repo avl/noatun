@@ -119,6 +119,10 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy(src, dest_index) }
     }
+    pub fn zero(&self, dst: FatPtr) {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).zero(dst) }
+    }
     pub fn copy_sized(&self, src: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy_sized(src, dest_index, size_bytes) }
@@ -1182,6 +1186,7 @@ mod tests {
     mod fuzz_test_insert;
     mod tests_using_noatun_object_macro;
     mod recovery_tests;
+    mod test_rotation;
 
     #[test]
     fn test_mmap_big() {

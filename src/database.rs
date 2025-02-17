@@ -346,6 +346,9 @@ impl<APP: Application> Database<APP> {
     pub fn append_local(&mut self, message: APP::Message) -> Result<MessageHeader> {
         self.append_local_opt(None, message)
     }
+    pub fn compact(&mut self) -> Result<()> {
+        self.message_store.compact()
+    }
     pub fn append_local_at(
         &mut self,
         time: NoatunTime,
@@ -419,6 +422,8 @@ impl<APP: Application> Database<APP> {
 
         self.message_store
             .push_messages(&mut self.context, messages, local)?;
+
+
 
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);

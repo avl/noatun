@@ -675,7 +675,20 @@ where
 
         NoatunContext.write_pod_ptr(tself.length - 1, addr_of_mut!(tself.length));
     }
+    /*
+    TODO: Figure out how to do deletes. Just clearing the values will just overwrite
+    the observe-registers, meaning upstream messages still appear used.
 
+    pub fn clear(self: Pin<&mut Self>) {
+        if self.length == 0 {
+            return;
+        }
+        let tself = unsafe { self.get_unchecked_mut() };
+
+        .. How clear contents so that tracking doesn't see it still used?
+
+        NoatunContext.write_pod_ptr(0, addr_of_mut!(tself.length));
+    }*/
     pub fn retain(self: Pin<&mut Self>, mut f: impl FnMut(Pin<&mut T>) -> bool) {
 
         let mut read_offset = 0;

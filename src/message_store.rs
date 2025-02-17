@@ -429,6 +429,25 @@ struct RemainingChildAssignments {
     parent2child: HashMap<MessageId, Vec<MessageId>>,
 }
 
+/// Returns the new last element
+fn dedup_slice<T:PartialEq+Copy>(slice: &mut [T]) -> usize {
+    if slice.len() <= 1 {
+        return slice.len();
+    }
+    let mut src_index = 1;
+    let mut dst_index = 1;
+    while src_index < slice.len() {
+        if slice[src_index] == slice[src_index - 1] {
+            src_index += 1;
+            continue;
+        }
+        slice[dst_index] = slice[src_index];
+        dst_index += 1;
+        src_index += 1;
+    }
+    dst_index
+}
+
 //compile_error!("When a message is deleted, make sure to delete it from the parent-list of all its children!")
 impl<M> OnDiskMessageStore<M> {
     pub fn get_upstream_of(
@@ -639,7 +658,6 @@ impl<M> OnDiskMessageStore<M> {
         {
             file_info.file.set_used_space_to_full_file();
             let file_length = file_info.file.used_space() as u64;
-            file_entry.nominal_size = file_length;
             file_entry.compaction_pointer = 0;
             file_info.file.seek(SeekFrom::Start(0))?;
             let mut largest_used_offset = 0;
@@ -731,12 +749,15 @@ impl<M> OnDiskMessageStore<M> {
             }
             file_info.file.set_used_space(largest_used_offset as usize);
             file_info.file.seek_to(largest_used_offset as usize)?;
+            file_entry.nominal_size = largest_used_offset;
         }
 
 
-        let (index_header, index) =
+        let (index_header, mut index) =
             Self::header_and_index_mut(&mut self.index_mmap)?;
         index.sort();
+        index_header.entries = dedup_slice(index) as u32;
+        index = &mut index[0..index_header.entries as usize];
 
         for item in index.iter() {
             debug_assert_eq!(item.file_offset.is_deleted(), false);
@@ -1229,7 +1250,6 @@ impl<M> OnDiskMessageStore<M> {
     pub fn loaded_existing_db(&self) -> bool {
         self.loaded_existing
     }
-
 
     /// Returns true if the message existed and was marked as transmitted.
     /// If this returns false, the message didn't (any longer) exist, and must NOT be transmitted
@@ -1880,6 +1900,8 @@ impl<M> OnDiskMessageStore<M> {
 
         self.handle_remaining_child_assignments(remaining_child_assignments)?;
 
+        //self.compact()?;
+
         info!(
             "Finished do_append_many_sorted, now with {} elements",
             cur_index
@@ -1907,12 +1929,14 @@ impl<M> OnDiskMessageStore<M> {
         M: MessagePayload,
     {
         self.do_compact(|wasted_space, total_space| {
-            (100 * wasted_space) / total_space > tolerated_fragmentation_percent as u64
+            let frag_perc = (100 * wasted_space) / total_space;
+            println!("Frag perc: {}", frag_perc);
+            frag_perc > tolerated_fragmentation_percent as u64
         })
     }
 
     /// Compact all files
-    fn compact(&mut self) -> Result<()>
+    pub(crate) fn compact(&mut self) -> Result<()>
     where
         M: MessagePayload,
     {
@@ -1936,11 +1960,11 @@ impl<M> OnDiskMessageStore<M> {
 
     fn do_compact(
         &mut self,
-        mut done: impl FnMut(/*wasted bytes:*/ u64, /*total bytes: */ u64) -> bool,
+        mut need_compact: impl FnMut(/*wasted bytes:*/ u64, /*total bytes: */ u64) -> bool,
     ) -> Result<()> {
-        let completed_one_compaction = self.do_compact_impl(&mut done)?;
+        let completed_one_compaction = self.do_compact_impl(&mut need_compact)?;
         if completed_one_compaction {
-            self.do_compact_impl(done)?;
+            self.do_compact_impl(need_compact)?;
         }
 
         Ok(())
@@ -1948,7 +1972,7 @@ impl<M> OnDiskMessageStore<M> {
     /// Returns true if 'active' has been swapped
     fn do_compact_impl(
         &mut self,
-        mut done: impl FnMut(/*wasted bytes:*/ u64, /*total bytes:*/ u64) -> bool,
+        mut need_compact: impl FnMut(/*wasted bytes:*/ u64, /*total bytes:*/ u64) -> bool,
     ) -> Result<bool> {
         let (header, index) = Self::header_and_index_mut(&mut self.index_mmap)?;
 
@@ -1957,6 +1981,8 @@ impl<M> OnDiskMessageStore<M> {
         let (src_file_entry, dst_file_entry) =
             Self::get_src_dst(&mut header.data_files, active_file);
 
+        println!("________________ do_compact_impl _______________");
+        compile_error!("Determine why compaction doesn't actually work!");
         //let initial_compacted_bytes = src_file_entry.compaction_pointer;
         loop {
             let src_wasted = src_file_entry.nominal_size - src_file_entry.bytes_used;
@@ -1964,7 +1990,10 @@ impl<M> OnDiskMessageStore<M> {
             let src_tot = src_file_entry.nominal_size;
             let dst_tot = dst_file_entry.nominal_size;
 
+            println!("active/src = {} src (wasted: {}, tot: {}), dst: ({}, {}) ", active_file, src_wasted, src_tot, dst_wasted, dst_tot);
+
             let src_position = src_file_entry.compaction_pointer;
+            println!("Compaction ptr: {}, nom size: {}",src_file_entry.compaction_pointer, src_file_entry.nominal_size);
             if src_file_entry.compaction_pointer >= src_file_entry.nominal_size {
                 dst_file_info.file.flush_all()?;
 
@@ -1972,19 +2001,22 @@ impl<M> OnDiskMessageStore<M> {
                 src_file_entry.bytes_used = 0;
                 src_file_entry.compaction_pointer = 0;
                 src_file_info.file.flush_all()?;
+                src_file_info.file.seek_to(0)?;
+                src_file_info.file.set_used_space(0);
 
                 // Don't actually swap if current active isn't even fragmented at all,
                 // or if target is reached
                 if dst_file_entry.bytes_used != dst_file_entry.nominal_size
-                    && !done(src_wasted + dst_wasted, src_tot + dst_tot)
+                    && need_compact(src_wasted + dst_wasted, src_tot + dst_tot)
                 {
+                    println!("Swapping!");
                     self.active_file.swap();
                     return Ok(true);
                 }
                 return Ok(false);
             }
 
-            if done(src_wasted + dst_wasted, src_tot + dst_tot) {
+            if !need_compact(src_wasted + dst_wasted, src_tot + dst_tot) {
                 return Ok(false);
             }
 
@@ -2526,5 +2558,28 @@ mod tests {
         roundtrip(FileOffset::deleted());
         roundtrip(FileOffset::new(u64::MAX / 2 - 1, U1::ONE));
         roundtrip(FileOffset::new(u64::MAX / 2 - 1, U1::ZERO));
+    }
+    #[test]
+    fn test_dedup_slice() {
+        use super::dedup_slice;
+        fn dedup(input: &[u32]) -> Vec<u32> {
+            let mut temp = input.to_vec();
+            let new_len = dedup_slice(&mut temp);
+            temp.truncate(new_len);
+            return temp;
+        }
+
+        assert_eq!(dedup(&[]), &[]);
+        assert_eq!(dedup(&[1]), &[1]);
+        assert_eq!(dedup(&[1,2]), &[1,2]);
+        assert_eq!(dedup(&[1,1]), &[1]);
+        assert_eq!(dedup(&[1,1,1]), &[1]);
+        assert_eq!(dedup(&[1,2,2]), &[1,2]);
+        assert_eq!(dedup(&[1,2,2,3]), &[1,2,3]);
+        assert_eq!(dedup(&[1,2,2,3,3,3]), &[1,2,3]);
+
+        assert_eq!(dedup(&[1,2,2,3,3,3,5]), &[1,2,3,5]);
+        assert_eq!(dedup(&[1,1,1,2,2,3,3,3,5]), &[1,2,3,5]);
+
     }
 }

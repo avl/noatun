@@ -10,7 +10,7 @@ use std::io::{Seek, SeekFrom, Write};
 pub enum UndoLogEntry<'a> {
     /// Set the database pointer to the given value (and clear all bytes after)
     SetPointer(usize),
-    /// Zero out the values in start..end
+    /// Zero out the values in start..end. I.e, this is the undo action of overwriting zeroes.
     ZeroOut { start: usize, len: usize },
     /// Restore memory at start, with the contents of the slice
     Restore { start: usize, data: &'a [u8] },

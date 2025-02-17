@@ -622,7 +622,23 @@ impl DatabaseContextData {
             }
         }
     }
+    pub fn zero(&mut self, dst: FatPtr) {
+        unsafe {
+            //dbg!(&source, &dest_index);
 
+            self.undo_log.record(UndoLogEntry::Restore {
+                start: dst.start,
+                data: self.access_slice(dst),
+            });
+
+            let dest = self.access_slice_mut::<u8>(FatPtr {
+                start: dst.start,
+                len: dst.len,
+            });
+
+            dest.fill(0);
+        }
+    }
     pub fn copy(&mut self, source: FatPtr, dest_index: ThinPtr) {
         unsafe {
             //dbg!(&source, &dest_index);
