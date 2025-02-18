@@ -33,6 +33,10 @@ impl Object for Maze {
         todo!()
     }
 
+    fn clear(self: Pin<&mut Self>) {
+        todo!()
+    }
+
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         let tself = unsafe { self.get_unchecked_mut() };
         unsafe {

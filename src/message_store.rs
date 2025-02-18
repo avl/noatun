@@ -1252,6 +1252,7 @@ impl<M> OnDiskMessageStore<M> {
         self.loaded_existing
     }
 
+
     /// Returns true if the message existed and was marked as transmitted.
     /// If this returns false, the message didn't (any longer) exist, and must NOT be transmitted
     pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<bool> {
@@ -2135,6 +2136,14 @@ impl<M> OnDiskMessageStore<M> {
 
     pub(crate) fn disable_filesystem_sync(&mut self) {
         self.filesystem_sync_disabled = true;
+    }
+
+    pub fn count_messages(&self) -> usize {
+        let Ok((_header, index)) = self.header_and_index() else {
+            return 0;
+        };
+
+        index.iter().filter(|x|!x.file_offset.is_deleted()).count()
     }
 
     pub fn current_cutoff_hash(&self) -> Result<CutOffHashPos> {

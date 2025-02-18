@@ -16,6 +16,8 @@ use std::slice;
 pub struct NoatunString {
     start: ThinPtr,
     length: usize,
+    registrar: SequenceNr,
+    padding: u32
 }
 
 impl Object for NoatunString {
@@ -25,6 +27,10 @@ impl Object for NoatunString {
 
     fn detach(&self) -> Self::DetachedOwnedType {
         self.get().to_string()
+    }
+
+    fn clear(self: Pin<&mut Self>) {
+        NoatunContext.observe_registrar(SequenceNr::INVALID);
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -56,10 +62,12 @@ impl Deref for NoatunString {
 
 impl NoatunString {
     pub fn get(&self) -> &str {
+        NoatunContext.observe_registrar(self.registrar);
+
         if self.length == 0 {
             return "";
         }
-        let start_ptr = NoatunContext.start_ptr_mut().wrapping_add(self.start.0);
+        let start_ptr = NoatunContext.start_ptr().wrapping_add(self.start.0);
         unsafe {
             let bytes = slice::from_raw_parts(start_ptr, self.length);
             std::str::from_utf8_unchecked(bytes)
@@ -79,6 +87,7 @@ impl NoatunString {
         let raw_index = NoatunContext.index_of_ptr(raw);
         NoatunContext.write_pod_internal(raw_index, &mut tself.start);
         NoatunContext.write_pod_internal(value.len(), &mut tself.length);
+        NoatunContext.update_registrar_ptr(addr_of_mut!(tself.registrar));
     }
 }
 
@@ -195,21 +204,25 @@ impl<T: Pod> DatabaseCell<T> {
     }*/
     pub fn set(self: Pin<&mut Self>, new_value: T) {
         let c = CONTEXT.get();
-        if c.is_null() {
+        /*if c.is_null() {
             let tself = unsafe { self.get_unchecked_mut() };
             tself.value = new_value;
             return;
-            //unreachable!("Attempt to modify DatabaseCell without a mutable context.");
-        }
+        }*/
         let c = unsafe { &mut *c };
         let tself = unsafe { self.get_unchecked_mut() };
+        c.assert_mutable();
         //let _index = c.index_of(tself);
         //context.write(index, bytes_of(&new_value));
         c.write_pod_ptr(new_value, addr_of_mut!(tself.value));
         c.update_registrar_ptr(addr_of_mut!(tself.registrar));
     }
+    pub fn clear(self: Pin<&mut Self>) {
+        let tself =  unsafe { self.get_unchecked_mut() };
+        NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.registrar));
+    }
 }
-
+/*
 impl<T: Pod> Object for OpaqueCell<T> {
     type Ptr = ThinPtr;
     type DetachedType = T;
@@ -220,6 +233,10 @@ impl<T: Pod> Object for OpaqueCell<T> {
         // We need to make it so their value can be inspected in 'with_root', but
         // not otherwise.
         panic!("OpaqueCell cannot be detached")
+    }
+
+    fn clear(self: Pin<&mut Self>) {
+
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -250,6 +267,7 @@ impl<T: Pod> OpaqueCell<T> {
         NoatunContext.update_registrar(&mut tself.registrar);
     }
 }
+*/
 
 impl<T: Pod> DatabaseCell<T> {
     /*#[allow(clippy::mut_from_ref)]
@@ -265,6 +283,7 @@ impl<T: Pod> DatabaseCell<T> {
     }
 }
 
+
 impl<T: Pod> Object for DatabaseCell<T> {
     type Ptr = ThinPtr;
     type DetachedType = T;
@@ -272,6 +291,11 @@ impl<T: Pod> Object for DatabaseCell<T> {
 
     fn detach(&self) -> Self::DetachedOwnedType {
         self.value
+    }
+
+    fn clear(self: Pin<&mut Self>) {
+        let tself =  unsafe { self.get_unchecked_mut() };
+        NoatunContext.update_registrar_ptr(&mut tself.registrar);
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -486,6 +510,10 @@ where
         todo!("RawDatabaseVec does not support detach")
     }
 
+    fn clear(self: Pin<&mut Self>) {
+        // The Raw type is special, is isn't tracked
+    }
+
     fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {
         panic!("init_from_detached is not implemented for RawDatabaseVec");
     }
@@ -648,6 +676,26 @@ where
         };
     }
 
+    pub fn set_item(self: Pin<&mut Self>, index: usize, val: impl Borrow<<T as Object>::DetachedType>) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        if index >= tself.length {
+            panic!("Index out of bounds");
+        }
+        let offset = ThinPtr(tself.data + index * size_of::<T>());
+        unsafe {
+            let item_data = <T as Object>::access_mut(offset);
+            item_data.init_from_detached(val.borrow());
+        }
+    }
+
+    pub fn clear(mut self: Pin<&mut Self>) {
+        for i in 0..self.as_mut().len() {
+            self.as_mut().getmut(i).clear();
+        }
+        let tself =  unsafe { self.get_unchecked_mut() };
+        NoatunContext.write_pod_ptr(0, addr_of_mut!(tself.length));
+    }
+
     pub fn push_zeroed(self: Pin<&mut Self>) -> Pin<&mut T> {
         let tself = unsafe { self.get_unchecked_mut() };
         if tself.length >= tself.capacity {
@@ -739,6 +787,10 @@ where
         self.iter().map(|x| x.detach()).collect()
     }
 
+    fn clear(self: Pin<&mut Self>) {
+        self.clear()
+    }
+
     fn init_from_detached(mut self: Pin<&mut Self>, detached: &Self::DetachedType) {
         use std::borrow::Borrow;
         for item in detached {
@@ -789,6 +841,10 @@ where
         self.get().detach()
     }
 
+    fn clear(self: Pin<&mut Self>) {
+        Self::getmut(self).clear()
+    }
+
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         unsafe {
             let target = T::allocate_from_detached(detached);
@@ -832,11 +888,12 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
         }
         unsafe { T::access(self.object_index) }
     }
-    pub fn get_mut(&mut self) -> Pin<&mut T> {
-        if self.object_index.is_null() {
+    pub fn getmut(self: Pin<&mut Self>) -> Pin<&mut T> {
+        let tself = unsafe { self.get_unchecked_mut() };
+        if tself.object_index.is_null() {
             panic!("get_mut() called on an uninitialized (null) DatabaseObjectHandle.");
         }
-        unsafe { T::access_mut(self.object_index) }
+        unsafe { T::access_mut(tself.object_index) }
     }
 
     pub fn new(value: T::Ptr) -> Self {

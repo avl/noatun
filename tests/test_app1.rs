@@ -26,6 +26,10 @@ impl Object for CounterObject {
         todo!()
     }
 
+    fn clear(self: Pin<&mut Self>) {
+        todo!()
+    }
+
     fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {
         todo!()
     }

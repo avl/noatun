@@ -355,6 +355,10 @@ impl<APP: Application> Database<APP> {
     pub fn append_local(&mut self, message: APP::Message) -> Result<MessageHeader> {
         self.append_local_opt(None, message)
     }
+
+    pub fn count_messages(&self) -> usize {
+        self.message_store.count_messages()
+    }
     pub fn compact(&mut self) -> Result<()> {
         self.message_store.compact()
     }

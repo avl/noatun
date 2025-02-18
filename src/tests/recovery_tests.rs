@@ -308,7 +308,7 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     )
         .unwrap();
     db.disable_filesystem_sync();
-    
+
     db.append_local(KeyValMessage {
         key: "Fruit1".to_string(),
         val: "Banana".to_string(),

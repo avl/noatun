@@ -185,6 +185,13 @@ pub(crate) struct ReverseDepTrackLinkedListEntry {
 }
 
 impl DatabaseContextData {
+    pub fn assert_mutable(&self) {
+        if !self.is_mutable {
+            panic!("Attempt to modify DatabaseCell from outside of Message apply! \
+                It is not permissible to modify data in any other case except from \
+                the apply method in a Message.");
+        }
+    }
     fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr) {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
@@ -953,9 +960,10 @@ impl DatabaseContextData {
 
         self.write_pod(current_registrar, Pin::new(registrar_point))
     }
-    pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr) {
+
+    pub fn update_registrar_ptr_impl(&mut self, registrar_point: *mut SequenceNr, actor: SequenceNr) {
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
-        let current_registrar = self.next_seqnr();
+        let current_registrar = actor;
         if registrar_point_value.is_valid() {
             self.rt_decrease_use(registrar_point_value, current_registrar);
         }
@@ -966,6 +974,12 @@ impl DatabaseContextData {
         self.rt_increase_use(current_registrar);
 
         self.write_pod_ptr(current_registrar, registrar_point)
+    }
+    pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr) {
+        self.update_registrar_ptr_impl(registrar_point, self.next_seqnr());
+    }
+    pub fn clear_registrar_ptr(&mut self, registrar_point: *mut SequenceNr) {
+        self.update_registrar_ptr_impl(registrar_point, SequenceNr::INVALID);
     }
 
     // Signify that the current message has observed data previously written

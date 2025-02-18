@@ -78,6 +78,19 @@ fn test_rotation1() {
         db.compact().unwrap();
     }
 }
+/*
+compile_error!("
+Next step - see if we can reawaken the 'opaque' functionality?
+
+Also:
+ * Fix delete from vec (it should probably call a method on Object, that deletes while updating observers
+ * Hashmaps!
+Hashmaps!
+
+
+
+")
+*/
 
 #[test]
 fn test_rotation_big1() {

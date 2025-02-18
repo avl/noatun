@@ -72,7 +72,11 @@ pub struct NoatunContext;
 fn get_context_mut_ptr() -> *mut DatabaseContextData {
     let context_ptr = CONTEXT.get();
     if context_ptr.is_null() {
+        //TODO: Unify this error message with 'ensure_mutable'
         panic!("No mutable NoatunContext is presently available on this thread");
+    }
+    unsafe {
+        (*context_ptr).assert_mutable()
     }
     context_ptr
 }
@@ -89,9 +93,21 @@ fn get_context_ptr() -> *const DatabaseContextData {
 pub enum Undetachable {}
 
 impl NoatunContext {
+    pub fn update_registrar_ptr(self, seq: *mut SequenceNr) {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).update_registrar_ptr(seq) }
+    }
+    pub fn clear_registrar_ptr(self, seq: *mut SequenceNr) {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).clear_registrar_ptr(seq) }
+    }
     pub fn start_ptr_mut(self) -> *mut u8 {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).start_ptr_mut() }
+    }
+    pub fn start_ptr(self) -> *const u8 {
+        let context_ptr = get_context_ptr();
+        unsafe { (*context_ptr).start_ptr() }
     }
     pub(crate) fn clear_unused_tracking(self) {
         let context_ptr = get_context_mut_ptr();
@@ -561,6 +577,10 @@ impl Object for DummyUnitObject {
 
     fn detach(&self) -> Self::DetachedType {}
 
+    fn clear(self: Pin<&mut Self>) {
+
+    }
+
     fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {}
 
     unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
@@ -685,6 +705,8 @@ pub trait Object {
 
     fn detach(&self) -> Self::DetachedOwnedType;
 
+    fn clear(self: Pin<&mut Self>);
+
     /// Initialize all the fields in 'self' from the given 'detached' type.
     /// The detached type is a regular rust pod struct, with no requirements
     /// on alignment, pinning or similar. It can therefore be passed around freely,
@@ -693,6 +715,11 @@ pub trait Object {
     /// Note that you don't _have_ to use this method, it's perfectly fine
     /// to initialize all Object's "in place", after constructing/allocating default
     /// versions of them.
+    ///
+    /// All noatun objects are valid when initialized with zero bits.
+    /// This means that the value is always valid before init runs.
+    /// Init is thus technically an overwrite of an existing value. If that
+    /// value had a registrar, it is overwritten.
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType);
 
     /// This can in most cases be:
@@ -879,6 +906,11 @@ macro_rules! noatun_object {
                 type DetachedOwnedType = $crate::paste!(noatun_object!(detached_type [<$n Detached>]));
 
 
+                fn clear(self: ::std::pin::Pin<&mut Self>) {
+                    let mut tself = unsafe { self.get_unchecked_mut() };
+                    $( unsafe { ::std::pin::Pin::new_unchecked(&mut tself.$name).clear(); } )*
+                }
+
                 fn detach(&self) -> Self::DetachedOwnedType {
                     Self::DetachedOwnedType {
                         $(
@@ -1011,6 +1043,13 @@ where
 
     fn detach(&self) -> Self::DetachedOwnedType {
         self.iter().map(|x| x.detach()).collect()
+    }
+
+    fn clear(self: Pin<&mut Self>) {
+        let tself = unsafe {self.get_unchecked_mut()};
+        for item in tself {
+            unsafe { Pin::new_unchecked(item).clear() };
+        }
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -1187,6 +1226,7 @@ mod tests {
     mod tests_using_noatun_object_macro;
     mod recovery_tests;
     mod test_rotation;
+    mod test_subsumption;
 
     #[test]
     fn test_mmap_big() {
@@ -1281,6 +1321,10 @@ mod tests {
         type DetachedOwnedType = ();
 
         fn detach(&self) -> Self::DetachedOwnedType {
+            todo!()
+        }
+
+        fn clear(self: Pin<&mut Self>) {
             todo!()
         }
 
@@ -1801,8 +1845,8 @@ mod tests {
         });
 
         db.with_root_mut(|root| {
-            let a1 = root.get_mut();
-            assert_eq!(a1.get().get(), 43);
+            let a1 = root.getmut();
+            assert_eq!(a1.get(), 43);
         })
         .unwrap();
     }
