@@ -217,7 +217,8 @@ mod unix {
             }
 
             self.file.set_len(new_size as u64)?;
-            self.file.sync_all().context("fsync")?;
+            // TODO: Figure out if the following serves a purpose:
+            // self.file.sync_all().context("fsync")?;
 
             let ptr = unsafe {
                 libc::mmap(

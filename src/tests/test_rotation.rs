@@ -78,3 +78,31 @@ fn test_rotation1() {
         db.compact().unwrap();
     }
 }
+
+#[test]
+fn test_rotation_big1() {
+    let mut db: Database<RotationDoc> = Database::create_new(
+        "test/test_rotation2",
+        true,
+        10_000_000,
+        CutOffDuration::from_minutes(15),
+        None,
+        (),
+    )
+        .unwrap();
+    db.disable_filesystem_sync();
+    for _ in 0..200 {
+        for _ in 0..50 {
+            db.append_local(RotMessage {
+                increment: 1,
+                reset: 0,
+            }).unwrap();
+            db.compact().unwrap();
+        }
+        db.append_local(RotMessage {
+            increment: 0,
+            reset: 1,
+        }).unwrap();
+        db.compact().unwrap();
+    }
+}

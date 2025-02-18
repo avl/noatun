@@ -1223,7 +1223,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused=true)]
     async fn test_sender() {
         let (sender_tx1, sender_rx1) = tokio::sync::mpsc::channel(1000);
         let (_quit_tx1, quit_rx1) = tokio::sync::oneshot::channel();

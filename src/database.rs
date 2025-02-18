@@ -27,10 +27,12 @@ pub struct Database<Base: Application> {
     time_override: Option<NoatunTime>,
     projection_time_limit: Option<NoatunTime>,
     params: Base::Params,
-    load_status: LoadingStatus
+    load_status: LoadingStatus,
 }
 
 impl<APP: Application> Database<APP> {
+
+
     /// TODO: Document
     pub fn maybe_advance_cutoff(&mut self) -> Result<()> {
         // TODO: Do we need to check for dirty here? Probably not, but then we should
@@ -43,6 +45,13 @@ impl<APP: Application> Database<APP> {
             self.advance_cutoff(nominal_cutoff_time)?;
         }
         Ok(())
+    }
+
+    /// This disables filesystem write back. Write-back will still occur, but a power-cut
+    /// or unclean operating system shut down can cause newly written messages to be lost.
+    pub fn disable_filesystem_sync(&mut self)  {
+        self.message_store.disable_filesystem_sync();
+        self.context.disable_filesystem_sync();
     }
 
     pub fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {

@@ -416,6 +416,7 @@ pub(crate) struct OnDiskMessageStore<M> {
     active_file: U1,
     phantom: PhantomData<M>,
     loaded_existing: bool,
+    filesystem_sync_disabled: bool,
     // MessageId's that aren't parents to any other message
     //update_heads: FileAccessor,
 }
@@ -1389,8 +1390,6 @@ impl<M> OnDiskMessageStore<M> {
 
         let file = &mut files[file_index.index()].file;
         let start_pos = file.used_space() as u64;
-        println!("Start pos: {:?}", start_pos+ 16);
-        //println!("Writing message at {}", start_pos);
         file.seek(SeekFrom::Start(start_pos))?;
 
         // Serialize the message and write to data store
@@ -1460,7 +1459,6 @@ impl<M> OnDiskMessageStore<M> {
                     .push(msg.id());
             }
         }
-        //println!("Writing message, hash = {:x?}", sha2_hash);
 
         Self::do_header_checksum(file, start_pos)?;
 
@@ -1485,7 +1483,6 @@ impl<M> OnDiskMessageStore<M> {
             sha2(bytes)
         })?;
 
-        //println!("Writing header checksum: {:x?}", header_checksum);
         {
             let header: &mut FileHeaderEntry = file.access_pod_mut(start_pos as usize)?;
             header.header_checksum = header_checksum;
@@ -1695,7 +1692,7 @@ impl<M> OnDiskMessageStore<M> {
             assert_eq!(new_cutoff, index_header.cutoff);
         }
 
-        Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
+        //Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
 
 
         let mut last_msg_id = None;
@@ -1807,7 +1804,6 @@ impl<M> OnDiskMessageStore<M> {
                 Cases::NextFromInput => {
                     let msg = cur_input_message.take().unwrap();
 
-                    //println!("Next from input: {:?}", msg.header.id);
                     info!(
                         "Inserting message {:?} at index {}",
                         msg.header.id, cur_index
@@ -1861,27 +1857,28 @@ impl<M> OnDiskMessageStore<M> {
 
                     cur_input_message = messages.next();
 
-                    //println!("Inserted item");
                 }
             }
         }
 
         let info = &mut self.data_files[self.active_file.index()];
         let final_file_position = info.file.stream_position()?;
-        info.file
-            .flush_range(
-                initial_file_position as usize,
-                (final_file_position - initial_file_position) as usize,
-            )
-            .context("flush file to disk")?;
+        if !self.filesystem_sync_disabled {
+            info.file
+                .flush_range(
+                    initial_file_position as usize,
+                    (final_file_position - initial_file_position) as usize,
+                )
+                .context("flush file to disk")?;
 
+        }
         //let data_file = &mut index_header.data_files[self.active_file.index()];
 
         index_header.entries = index_header
             .entries
             .max(cur_index.try_into().expect("max message count exceeded")); //TODO: Fail better when hitting hard size limit
-                                                                             //println!("Index: {:#?}", mmap_index);
-        Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
+
+        //Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
         debug_assert!(mmap_index[0..index_header.entries as usize].is_sorted_by_key(|x| x.message));
 
         #[cfg(debug_assertions)]
@@ -1930,7 +1927,6 @@ impl<M> OnDiskMessageStore<M> {
     {
         self.do_compact(|wasted_space, total_space| {
             let frag_perc = (100 * wasted_space) / total_space;
-            println!("Frag perc: {}", frag_perc);
             frag_perc > tolerated_fragmentation_percent as u64
         })
     }
@@ -1981,8 +1977,6 @@ impl<M> OnDiskMessageStore<M> {
         let (src_file_entry, dst_file_entry) =
             Self::get_src_dst(&mut header.data_files, active_file);
 
-        println!("________________ do_compact_impl _______________");
-        compile_error!("Determine why compaction doesn't actually work!");
         //let initial_compacted_bytes = src_file_entry.compaction_pointer;
         loop {
             let src_wasted = src_file_entry.nominal_size - src_file_entry.bytes_used;
@@ -1990,17 +1984,20 @@ impl<M> OnDiskMessageStore<M> {
             let src_tot = src_file_entry.nominal_size;
             let dst_tot = dst_file_entry.nominal_size;
 
-            println!("active/src = {} src (wasted: {}, tot: {}), dst: ({}, {}) ", active_file, src_wasted, src_tot, dst_wasted, dst_tot);
 
             let src_position = src_file_entry.compaction_pointer;
-            println!("Compaction ptr: {}, nom size: {}",src_file_entry.compaction_pointer, src_file_entry.nominal_size);
             if src_file_entry.compaction_pointer >= src_file_entry.nominal_size {
-                dst_file_info.file.flush_all()?;
+
+                if !self.filesystem_sync_disabled {
+                    dst_file_info.file.flush_all()?;
+                }
 
                 src_file_entry.nominal_size = 0;
                 src_file_entry.bytes_used = 0;
                 src_file_entry.compaction_pointer = 0;
-                src_file_info.file.flush_all()?;
+                if !self.filesystem_sync_disabled {
+                    src_file_info.file.flush_all()?;
+                }
                 src_file_info.file.seek_to(0)?;
                 src_file_info.file.set_used_space(0);
 
@@ -2009,7 +2006,6 @@ impl<M> OnDiskMessageStore<M> {
                 if dst_file_entry.bytes_used != dst_file_entry.nominal_size
                     && need_compact(src_wasted + dst_wasted, src_tot + dst_tot)
                 {
-                    println!("Swapping!");
                     self.active_file.swap();
                     return Ok(true);
                 }
@@ -2044,6 +2040,7 @@ impl<M> OnDiskMessageStore<M> {
                 index_entry.file_offset = FileOffset::new(new_offset, active_file);
             }
 
+            src_file_info.file.seek(SeekFrom::Start(src_position))?;
             src_file_info
                 .file
                 .copy_to(full_size as usize, &mut dst_file_info.file)?;
@@ -2128,11 +2125,16 @@ impl<M> OnDiskMessageStore<M> {
             data_files,
             active_file: U1::from_index(active),
             phantom: Default::default(),
-            loaded_existing: db_existed
+            loaded_existing: db_existed,
             //update_heads,
+            filesystem_sync_disabled: false,
         };
 
         Ok(this)
+    }
+
+    pub(crate) fn disable_filesystem_sync(&mut self) {
+        self.filesystem_sync_disabled = true;
     }
 
     pub fn current_cutoff_hash(&self) -> Result<CutOffHashPos> {

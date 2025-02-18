@@ -137,6 +137,7 @@ pub(crate) struct DatabaseContextData {
     // Starts at 0. When a message is being applied, this field
     // will have the seqnr of the message being applied, not the next one.
     //next_seqnr: SequenceNr,
+    filesystem_sync_disabled: bool,
 }
 
 // This has been shamelessly lifted from the rust std
@@ -353,8 +354,10 @@ impl DatabaseContextData {
         let was_clean = header.status.0 == MAIN_DB_STATUS_CLEAN;
         header.status = MainDbStatus(MAIN_DB_STATUS_DIRTY);
 
-        self.main_db_mmap
-            .flush_range(0, std::mem::size_of::<MainDbHeader>())?;
+        if !self.filesystem_sync_disabled {
+            self.main_db_mmap
+                .flush_range(0, std::mem::size_of::<MainDbHeader>())?;
+        }
 
         Ok(was_clean)
     }
@@ -365,6 +368,9 @@ impl DatabaseContextData {
         header.status = MainDbStatus(MAIN_DB_STATUS_CLEAN);
 
         Ok(())
+    }
+    pub(crate) fn disable_filesystem_sync(&mut self) {
+        self.filesystem_sync_disabled = true;
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -482,6 +488,7 @@ impl DatabaseContextData {
             undo_log: UndoLog::new(s, name, max_size)?,
             unused_messages: Vec::default(),
             is_mutable: false,
+            filesystem_sync_disabled: false,
         };
         // TODO: It's a bit of a code smell that at this precise point in the execution,
         // a DatabaseContext exists, but it's not actually fully initialized until we write the

@@ -21,6 +21,10 @@ pub(crate) struct Projector<APP: Application> {
 }
 
 impl<APP: Application> Projector<APP> {
+
+    pub(crate) fn disable_filesystem_sync(&mut self) {
+        self.messages.disable_filesystem_sync()
+    }
     pub(crate) fn advance_cutoff(
         &mut self,
         new_cutoff_at: CutOffTime,
