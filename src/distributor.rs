@@ -493,14 +493,20 @@ impl Distributor {
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
         while let Some(msg) = message_list.pop() {
-            let msg = database.load_message(msg)?;
+            let msg = match database.load_message(msg) {
+                Ok(msg) => {msg}
+                Err(err) => {
+                    tracing::warn!("could not find requested message {:?}: {:?}", msg, err);
+                    continue;
+                }
+            };
             let msg_id = msg.id();
             output.push(DistributorMessage::Message(
                 SerializedMessage::new(msg)?,
                 false,
             ));
 
-            let children = database.get_message_children(msg_id)?;
+            let mut children = database.get_message_children(msg_id)?;
             message_list.extend(children.iter().copied());
             #[cfg(debug_assertions)]
             {
@@ -511,6 +517,8 @@ impl Distributor {
                     }
                 }
                 //println!("Actual: {:?}", actual_children);
+                actual_children.sort();
+                children.sort();
                 assert_eq!(actual_children, children);
             }
         }

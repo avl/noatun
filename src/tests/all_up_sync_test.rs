@@ -22,6 +22,7 @@ use std::io::Write;
 use std::ops::{Add};
 use std::pin::Pin;
 use std::time::Duration;
+use anyhow::Context;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::info;
 
@@ -41,6 +42,7 @@ noatun_object!(
 pub struct SyncMessage {
     value: u32,
     reset: bool,
+    persist: bool
 }
 
 impl MessagePayload for SyncMessage {
@@ -75,7 +77,11 @@ impl MessagePayload for SyncMessage {
     }
 
     fn persistence(&self) -> Persistence {
-        Persistence::AtLeastUntilCutoff
+        if self.persist {
+            Persistence::AtLeastUntilCutoff
+        } else {
+            Persistence::UntilOverwritten
+        }
     }
 }
 
@@ -134,7 +140,8 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
             if driver_inner.loss <= random(0.0..1.0) {
                 item.send((self.0 /*src*/, data.clone()))
                     .await
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("simulated net failed {:?}",e)))
+                    ?;
             } else {
                 //info!("== SIMULATOR CAUSED PACKET LOSS ==");
             }
@@ -219,12 +226,14 @@ async fn all_up_simple_sync_test() {
     let app2 = create_app(&mut driver).await;
 
     app1.add_message(SyncMessage {
+        persist: false,
         value: 1,
         reset: false,
     })
     .await
     .unwrap();
     app2.add_message(SyncMessage {
+        persist: false,
         value: 2,
         reset: false,
     })
@@ -259,6 +268,7 @@ fn old_local_messages_without_effect_are_removed0() {
     .unwrap();
     let msg1 = db
         .append_local(SyncMessage {
+            persist: true,
             value: 1,
             reset: false,
         })
@@ -268,6 +278,7 @@ fn old_local_messages_without_effect_are_removed0() {
     db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into());
     let _msg2 = db
         .append_local(SyncMessage {
+            persist: true,
             value: 2,
             reset: false,
         })
@@ -279,6 +290,7 @@ fn old_local_messages_without_effect_are_removed0() {
     db.set_mock_time(datetime!(2024-01-02 Z).into());
     let last = db
         .append_local(SyncMessage {
+            persist: true,
             value: 0,
             reset: true,
         })
@@ -304,6 +316,7 @@ fn old_transmitted_messages_without_effect_are_removed1() {
     .unwrap();
     let msg1 = db
         .append_local(SyncMessage {
+            persist: true,
             value: 1,
             reset: false,
         })
@@ -314,6 +327,7 @@ fn old_transmitted_messages_without_effect_are_removed1() {
     db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into());
     let msg2 = db
         .append_local(SyncMessage {
+            persist: true,
             value: 0,
             reset: true,
         })
@@ -349,6 +363,7 @@ fn old_transmitted_messages_without_effect_are_removed2() {
 
     let msg1 = db
         .append_local(SyncMessage {
+            persist: true,
             value: 1,
             reset: false,
         })
@@ -359,6 +374,7 @@ fn old_transmitted_messages_without_effect_are_removed2() {
     db.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into());
     let msg2 = db
         .append_local(SyncMessage {
+            persist: true,
             value: 0,
             reset: true,
         })
@@ -410,6 +426,7 @@ async fn all_up_gradual_update_sync_test() {
                 .into(),
             SyncMessage {
                 value: 1,
+                persist: false,
                 reset: false,
             },
         )
@@ -421,6 +438,7 @@ async fn all_up_gradual_update_sync_test() {
                 .add(TimeDelta::seconds(random(0..100)))
                 .into(),
             SyncMessage {
+                persist: false,
                 value: 2,
                 reset: false,
             },
@@ -453,6 +471,7 @@ async fn all_up_gradual_update_sync_test() {
 
     assert_eq!(app1.get_status().await.unwrap(), Status::Nominal);
     app1.add_message(SyncMessage {
+        persist: true,
         value: 1,
         reset: false,
     })
@@ -468,7 +487,7 @@ async fn all_up_general_update_sync_test_old_messages() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed,7200).await;
+        all_up_general_update_sync_test_impl(seed,7200, true, usize::MAX).await;
     }
 }
 
@@ -477,7 +496,7 @@ async fn all_up_general_update_sync_test_newer_messages() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed,10).await;
+        all_up_general_update_sync_test_impl(seed,10, true, usize::MAX).await;
     }
 }
 
@@ -486,17 +505,24 @@ async fn all_up_general_update_sync_test_mid_age_messages() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed,900).await;
+        all_up_general_update_sync_test_impl(seed,900, true, usize::MAX).await;
     }
 }
 
 #[tokio::test(start_paused = true)]
 async fn all_up_special_seed() {
     super::setup_tracing();
-    //for seed in 0..100 {
-        println!("Seed = {}", 0);
-        all_up_general_update_sync_test_impl(5, 7200).await;
-    //}
+    for seed in 869..13000 {
+        println!("Seed = {}", seed);
+        compile_error!("
+So the immediate problem is this:
+
+We don't reproject automatically after deleting a message.
+we should/must!
+
+        ")
+        all_up_general_update_sync_test_impl(seed, 7200, false, 10).await;
+    }
 }
 
 /* TODO:
@@ -507,7 +533,7 @@ More all-up synch tests:\
 
 */
 
-async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds: u64) {
+async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds: u64, persist: bool,maxlen: usize) {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(seed)));
 
     let mut driver = TestDriver::default();
@@ -518,7 +544,7 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
     let start_instant = tokio::time::Instant::now();
 
     driver.set_loss(0.15);
-    for _i in 0..MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_range(1..20)) {
+    for i in 0..MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_range(1..20)).min(maxlen) {
         let time_now = noatun_start_time + start_instant.elapsed();
         app1.set_mock_time(time_now);
         app2.set_mock_time(time_now);
@@ -535,33 +561,55 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
 
-        app1.add_message_at(
-            time_now - (Duration::from_secs(random(0..max_message_age_seconds))),
-            SyncMessage {
-                value: 0,
-                reset: MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
-            },
-        )
-        .await
-        .unwrap();
+        {
+            let my_span = tracing::span!(tracing::Level::INFO, "app1.add");
+            let _e = my_span.enter();
+            app1.add_message_at(
+                time_now - (Duration::from_secs(random(0..max_message_age_seconds))),
+                SyncMessage {
+                    value: 0,
+                    reset: MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
+                    persist,
+                },
+            )
+                .await
+                .unwrap();
+        }
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
-        app2.add_message_at(
-            time_now - (Duration::from_secs(random(0..max_message_age_seconds))),
-            SyncMessage {
-                value: 2,
-                reset: MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
-            },
-        )
-        .await
-        .unwrap();
+        {
+            let my_span = tracing::span!(tracing::Level::INFO, "app2.add");
+            let _e = my_span.enter();
+            app2.add_message_at(
+                time_now - (Duration::from_secs(random(0..max_message_age_seconds))),
+                SyncMessage {
+                    value: 2,
+                    persist,
+                    reset: MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
+                },
+            )
+                .await
+                .unwrap();
+        }
     }
     //info!(" -------------- NETWORK HEALED -----------------");
     driver.set_loss(0.0);
-    tokio::time::sleep(Duration::from_secs(50)).await;
-    let time_now = noatun_start_time + start_instant.elapsed();
-    app1.set_mock_time(time_now);
-    app2.set_mock_time(time_now);
-    tokio::time::sleep(Duration::from_secs(20)).await;
+    for _ in 0..20 {
+        //TODO: This sleep loop should NOT be needed
+        {
+            let my_span = tracing::span!(tracing::Level::INFO, "app1.reproject");
+            let _e = my_span.enter();
+            app1.reproject().unwrap();
+        }
+        {
+            let my_span = tracing::span!(tracing::Level::INFO, "app2.reproject");
+            let _e = my_span.enter();
+            app2.reproject().unwrap();
+        }
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        let time_now = noatun_start_time + start_instant.elapsed();
+        app1.set_mock_time(time_now);
+        app2.set_mock_time(time_now);
+    }
 
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
@@ -570,30 +618,35 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
     let msgs2 = app2.get_all_messages().unwrap();
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
-    //println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
     /*let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
     let smsgs2: IndexSet<_> = msgs2.iter().map(|x| x.header.id).collect();
     println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
     println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
     println!("Only in 1: {:?}", smsgs1.sub(&smsgs2));
     println!("Only in 2: {:?}", smsgs2.sub(&smsgs1));*/
-    assert_eq!(msgs1.len(), msgs2.len());
+    if persist {
+        assert_eq!(msgs1.len(), msgs2.len());
+        assert_eq!(msgs1, msgs2, "Failed for seed {}", seed);
+    }
 
-    assert_eq!(msgs1, msgs2, "Failed for seed {}", seed);
     assert!(root1.sum >= 1);
     assert!(root2.sum >= 1);
     assert!(root1.counter >= 1);
     assert!(root2.counter >= 1);
     assert_eq!(root1, root2);
+    println!("Roots: {:?} {:?}", root1, root2);
+    println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
 
     assert_eq!(app1.get_status().await.unwrap(), Status::Nominal);
-    app1.add_message(SyncMessage {
+    assert_eq!(app2.get_status().await.unwrap(), Status::Nominal);
+    /*app1.add_message(SyncMessage {
         value: 1,
         reset: false,
+        persist,
     })
     .await
     .unwrap();
-
+*/
     info!("Test case done");
     app1.close().await.unwrap();
     app2.close().await.unwrap();

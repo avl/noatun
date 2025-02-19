@@ -1116,8 +1116,11 @@ impl DatabaseContextData {
         let mut new_unused_list = Vec::new();
         trace!("Calculating staleness, cutoff: {:?}", before_cutoff);
         trace!("Unused batch: {:?}", unused_messages);
+        trace!("Total message-list: {:#?}", messages.get_all_messages().unwrap());
         'outer: while let Some(msg) = unused_messages.pop() {
-            trace!("considering {:?} for deletion", msg);
+            trace!("considering {:?} = {:?} for deletion",
+                messages.read_message_header_and_children_by_index(msg.seq),
+                msg);
             if !messages.may_have_been_transmitted(msg.seq)? || before_cutoff || msg.unconditionally_overwritten != 0 {
 
                 for observer in self.read_dependency(msg.seq) {

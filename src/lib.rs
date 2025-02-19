@@ -294,7 +294,7 @@ impl Debug for MessageId {
     }
 }
 
-const FOR_TEST_NON_RANDOM_ID: bool = false;
+const FOR_TEST_NON_RANDOM_ID: bool = true;
 #[cfg(test)]
 static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);

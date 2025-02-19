@@ -212,6 +212,7 @@ impl<T: Pod> DatabaseCell<T> {
         }*/
         let c = unsafe { &mut *c };
         let tself = unsafe { self.get_unchecked_mut() };
+        //TODO: Use this consistently for all mutable access!
         c.assert_mutable();
         //let _index = c.index_of(tself);
         //context.write(index, bytes_of(&new_value));
