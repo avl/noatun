@@ -71,8 +71,15 @@ mod registrar_info {
         /// it no longer affects the state. Note that other messages may
         /// in turn depend on this 'last_overwriter', so it's not 100% sure
         /// that 'seq' can be removed.
+        ///
+        /// Since we know the order in which events occurred, we *know* that
+        /// last_overwriter here must be the highest numbered sequence number that wrote
+        /// overwrote this registrar.
+        ///
         pub last_overwriter: SequenceNr,
         /// The message that is no longer used (to be deleted, possibly)
+        /// This is sometimes known as a 'registrar' (TODO: Better naming? The word 'registrar'
+        /// is strange here).
         pub seq: SequenceNr,
     }
 }
@@ -244,6 +251,8 @@ impl DatabaseContextData {
 
         let new_entry: &mut ReverseDepTrackLinkedListEntry = self.allocate_pod_internal();
 
+        // TODO: Create more efficient undo-construct for adjacent fields. Can be used
+        // here and in other places.
         self.write_pod(*key_place, unsafe {
             Pin::new_unchecked(&mut new_entry.next)
         });
@@ -1084,7 +1093,9 @@ impl DatabaseContextData {
                             // 'observer' - i.e a later message that has not been deleted.
                             trace!("can't delete {:?} because of observer {:?}", msg, observer);
 
+                            // The things 'deferred' are carried out at the end of this function (i.e, quickly)
                             deferred.push(move |tself: &mut DatabaseContextData| {
+                                // Remember
                                 tself.record_reverse_dependency(
                                     msg.seq,
                                     observer,
@@ -1115,6 +1126,7 @@ impl DatabaseContextData {
                 messages.may_have_been_transmitted(msg.seq)?
             );
             for (revdep, last_overwriter) in self.read_reverse_dependency(msg.seq) {
+                // Get messages
                 unused_messages.push(UnusedInfo {
                     seq: revdep,
                     last_overwriter,
@@ -1158,13 +1170,7 @@ impl DatabaseContextData {
         trace!("increased use of {:?} to {}", registrar, info.get_use());
 
     }
-    /*pub(crate) fn rt_set_non_opaque(&mut self, registrar: SequenceNr) {
-        let uses = unsafe { self.get_uses() };
-        if uses.len() <= registrar.index() {
-            uses.grow(self, registrar.index() + 1);
-        }
-        uses.get_mut(self, registrar.index()).set_non_opaque();
-    }*/
+
     pub(crate) fn rt_decrease_use(&mut self, registrar: SequenceNr, overwriter: SequenceNr) {
         let uses = unsafe { self.get_uses() };
         let mut cur = uses.get_mut(self, registrar.index());

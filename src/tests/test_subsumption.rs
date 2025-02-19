@@ -38,7 +38,7 @@ impl MessagePayload for VecMessage {
             if self.index >= root.items.len() {
                 root.items.push(self.val);
             } else {
-                root.items.set_item(self.index, self.val);
+                root.items.set_item_infallible(self.index, self.val);
             }
         }
     }
@@ -86,3 +86,29 @@ fn test_vec1() {
 
     assert_eq!(db.count_messages(), 1);
 }
+#[test]
+#[ignore]
+fn test_vec2() {
+    super::setup_tracing();
+    let mut db: Database<VecDoc> = Database::create_new(
+        "test/test_subsumption1",
+        true,
+        100000,
+        CutOffDuration::from_minutes(15),
+        None,
+        (),
+    )
+        .unwrap();
+    db.disable_filesystem_sync();
+
+    for i in 0..2 {
+        let msg = db.append_local(VecMessage {
+            index: 0,
+            val: 0,
+            reset: true,
+        }).unwrap();
+        db.mark_transmitted(msg.id).unwrap();
+    }
+    assert_eq!(db.count_messages(), 1);
+}
+

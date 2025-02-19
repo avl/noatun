@@ -599,7 +599,7 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIteratorMut<'a, T
         }
         let index = self.index;
         self.index += 1;
-        //TODO: Get rid of this transmute. Why is it even neded?
+        //TODO: Get rid of this transmute. Why is it even needed?
         let vec = unsafe { Pin::new_unchecked(self.vec.as_mut().get_unchecked_mut()) };
         Some(unsafe {
             Pin::new_unchecked(std::mem::transmute::<&mut T, &mut T>(
@@ -667,6 +667,8 @@ where
         let offset = self.data + index * size_of::<T>();
         unsafe { T::access(ThinPtr(offset)) }
     }
+
+    // TODO: Find a better name for this!
     pub fn getmut(self: Pin<&mut Self>, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
@@ -687,11 +689,12 @@ where
         };
     }
 
-    pub fn set_item(self: Pin<&mut Self>, index: usize, val: impl Borrow<<T as Object>::DetachedType>) {
-        let tself = unsafe { self.get_unchecked_mut() };
-        if index >= tself.length {
-            panic!("Index out of bounds");
+    pub fn set_item_infallible(mut self: Pin<&mut Self>, index: usize, val: impl Borrow<<T as Object>::DetachedType>) {
+        while index <= self.length {
+            //TODO: We could optimize this, when growing by a lot, we should set capacity first
+            self.as_mut().push_zeroed();
         }
+        let tself = unsafe { self.get_unchecked_mut() };
         let offset = ThinPtr(tself.data + index * size_of::<T>());
         unsafe {
             let item_data = <T as Object>::access_mut(offset);
@@ -725,6 +728,7 @@ where
         }
         let tself = unsafe { self.get_unchecked_mut() };
 
+
         if index == tself.length - 1 {
             NoatunContext.update_registrar(&mut tself.length_registrar);
             NoatunContext.write_pod_ptr(tself.length - 1, addr_of_mut!(tself.length));
@@ -738,20 +742,7 @@ where
         NoatunContext.update_registrar(&mut tself.length_registrar);
         NoatunContext.write_pod_ptr(tself.length - 1, addr_of_mut!(tself.length));
     }
-    /*
-    TODO: Figure out how to do deletes. Just clearing the values will just overwrite
-    the observe-registers, meaning upstream messages still appear used.
 
-    pub fn clear(self: Pin<&mut Self>) {
-        if self.length == 0 {
-            return;
-        }
-        let tself = unsafe { self.get_unchecked_mut() };
-
-        .. How clear contents so that tracking doesn't see it still used?
-
-        NoatunContext.write_pod_ptr(0, addr_of_mut!(tself.length));
-    }*/
     pub fn retain(self: Pin<&mut Self>, mut f: impl FnMut(Pin<&mut T>) -> bool) {
 
         let mut read_offset = 0;
