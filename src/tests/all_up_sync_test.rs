@@ -23,7 +23,6 @@ use std::ops::{Add};
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tracing_subscriber::Layer;
 use tracing::info;
 
 thread_local! {
@@ -455,29 +454,6 @@ async fn all_up_gradual_update_sync_test() {
     app2.close().await.unwrap();
 }
 
-fn setup_tracing() {
-    pub struct TracingTimer(tokio::time::Instant);
-
-    impl tracing_subscriber::fmt::time::FormatTime for TracingTimer {
-        fn format_time(
-            &self,
-            w: &mut tracing_subscriber::fmt::format::Writer<'_>,
-        ) -> core::fmt::Result {
-            let t = tokio::time::Instant::now();
-            write!(w, "{:>10?}", (t - self.0))
-        }
-    }
-
-    let stdout_log = tracing_subscriber::fmt::layer()
-        .with_timer(TracingTimer(tokio::time::Instant::now()))
-        .with_ansi(false)
-        .pretty()
-        .with_filter(tracing_subscriber::EnvFilter::from_default_env());
-
-    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-    let subscriber = tracing_subscriber::registry().with(stdout_log);
-    _ = tracing::subscriber::set_global_default(subscriber);
-}
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_old_messages() {
@@ -508,7 +484,7 @@ async fn all_up_general_update_sync_test_mid_age_messages() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_special_seed() {
-    setup_tracing();
+    super::setup_tracing();
     //for seed in 0..100 {
         println!("Seed = {}", 0);
         all_up_general_update_sync_test_impl(5, 7200).await;

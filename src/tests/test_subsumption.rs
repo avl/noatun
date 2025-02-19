@@ -2,7 +2,6 @@ use std::io::Write;
 use std::pin::Pin;
 use savefile_derive::Savefile;
 use crate::{msg_deserialize, msg_serialize, Application, CutOffDuration, Database, DatabaseCell, MessagePayload, NoatunContext, NoatunTime};
-use crate::tests::test_rotation::{RotMessage, RotationDoc};
 use crate::DatabaseVec;
 
 noatun_object!(
@@ -23,7 +22,7 @@ impl Application for VecDoc {
     type Message = VecMessage;
     type Params = ();
 
-    fn initialize_root<'a>(params: &Self::Params) -> Pin<&'a mut Self> {
+    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
         NoatunContext.allocate_pod()
     }
 }
@@ -31,7 +30,7 @@ impl Application for VecDoc {
 impl MessagePayload for VecMessage {
     type Root = VecDoc;
 
-    fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
         if self.reset {
             root.items.clear();
@@ -58,6 +57,7 @@ impl MessagePayload for VecMessage {
 
 #[test]
 fn test_vec1() {
+    super::setup_tracing();
     let mut db: Database<VecDoc> = Database::create_new(
         "test/test_subsumption1",
         true,
@@ -67,23 +67,22 @@ fn test_vec1() {
         (),
     )
         .unwrap();
+    db.disable_filesystem_sync();
 
-    for i in 0..1 {
+    for i in 0..3 {
         db.append_local(VecMessage {
             index: i,
-            val: i as u32,
+            val: (i+10) as u32,
             reset: false,
         }).unwrap();
         db.compact().unwrap();
     }
+    assert_eq!(db.count_messages(), 3);
     db.append_local(VecMessage {
         index: 0,
         val: 0,
         reset: true,
     }).unwrap();
 
-    db.reproject().unwrap();
-
-    compile_error!("Check why the original message isn't deleted!")
     assert_eq!(db.count_messages(), 1);
 }

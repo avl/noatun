@@ -83,6 +83,7 @@ impl<APP: Application> Projector<APP> {
         }
         self.messages.set_cutoff_hash(cutoff_state)?;
 
+        println!("Advance cutoff batch: {:?}", process_now);
         let must_remove =
             context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?; //TODO: Rename
         for index in must_remove {

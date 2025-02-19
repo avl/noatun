@@ -138,7 +138,8 @@ fn test_nominal_load_without_recovery() {
 }
 
 #[test]
-fn test_recovery() {
+fn test_recovery_simple() {
+    super::setup_tracing();
     let mut db: Database<KeyValStore> = Database::create_new(
         "test/test_recover2",
         true,
@@ -178,6 +179,7 @@ fn test_recovery() {
                 }
             ]);
     });
+    assert_eq!(db.get_all_message_ids().unwrap().len(), 3);
     drop(db);
 
     Database::<KeyValStore>::remove_caches("test/test_recover2").unwrap();

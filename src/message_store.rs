@@ -14,7 +14,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::offset_of;
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 #[repr(transparent)]
@@ -640,6 +640,7 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: MessagePayload,
     {
+        info!("Start recovery procedure");
         self.index_mmap.truncate(0)?;
 
         let magic_finder = memchr::memmem::Finder::new(&MAGIC);
@@ -657,6 +658,8 @@ impl<M> OnDiskMessageStore<M> {
             .iter_mut()
             .zip(pending_index_header.data_files.iter_mut())
         {
+            info!("Reading main data file {:?}", file_info.file_number);
+            let prev_used_space = file_info.file.used_space();
             file_info.file.set_used_space_to_full_file();
             let file_length = file_info.file.used_space() as u64;
             file_entry.compaction_pointer = 0;
@@ -726,7 +729,11 @@ impl<M> OnDiskMessageStore<M> {
                         (header, parents, msg_size_bytes)
                     },
                     Err(err) => {
-                        warn!("Error reading message: {} @ offset {}", err, file_offset);
+                        if file_offset < prev_used_space  as u64 {
+                            warn!("Error reading message: {} @ offset {}", err, file_offset);
+                        } else {
+                            trace!("Message not recovered: {} @ offset {}", err, file_offset);
+                        }
                         //println!("Error reading message: {:?} @ offset {}, seek pos: {}", err, file_offset,file_info.file.stream_position()?);;
                         let magic_search_start = file_offset as usize + offset_of!(FileHeaderEntry, magic) + size_of_val(&MAGIC);
                         let new_offset = file_info.file.with_all_bytes(|bytes|{

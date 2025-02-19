@@ -16,7 +16,7 @@ use std::{iter, slice};
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
 use crate::sequence_nr::SequenceNr;
 use std::pin::Pin;
-use tracing::{error, info};
+use tracing::{error, info, trace};
 
 mod registrar_info {
 
@@ -196,6 +196,7 @@ impl DatabaseContextData {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
 
+        trace!("Recording dependency observer: {:?} observing {:?}", observer,observee);
         // #Safety:
         // No code holds this reference while calling other code that does.
         // Generally, it is not long held. DatabaseContext is neither Sync nor Send.
@@ -949,6 +950,9 @@ impl DatabaseContextData {
 
     pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr) {
         let current_registrar = self.next_seqnr();
+        if current_registrar == *registrar_point {
+            return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
+        }
         if registrar_point.is_valid() {
             self.rt_decrease_use(*registrar_point, current_registrar);
         }
@@ -964,6 +968,9 @@ impl DatabaseContextData {
     pub fn update_registrar_ptr_impl(&mut self, registrar_point: *mut SequenceNr, actor: SequenceNr) {
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
         let current_registrar = actor;
+        if current_registrar == registrar_point_value {
+            return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
+        }
         if registrar_point_value.is_valid() {
             self.rt_decrease_use(registrar_point_value, current_registrar);
         }
@@ -1009,6 +1016,7 @@ impl DatabaseContextData {
         if uses.len() <= message_id.index() {
             // This is a bit of a special case. This is a message
             // that did not actually modify any state at all during its projection.
+            trace!("Message modified nothing: {:?}", message_id);
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
@@ -1020,6 +1028,7 @@ impl DatabaseContextData {
         if track.get_use() == 0 {
             // Same special case as above - message is not in use, even immediately
             // after having been projected.
+            trace!("Message modified nothing2: {:?}", message_id);
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
@@ -1062,14 +1071,18 @@ impl DatabaseContextData {
         let mut deleted = Vec::new();
         let mut deferred = Vec::new();
         let mut new_unused_list = Vec::new();
-        //println!("Calculating staleness, cutoff: {:?}", is_before_cutoff);
+        trace!("Calculating staleness, cutoff: {:?}", before_cutoff);
+        trace!("Unused batch: {:?}", unused_messages);
         'outer: while let Some(msg) = unused_messages.pop() {
+            trace!("considering {:?} for deletion", msg);
             if !messages.may_have_been_transmitted(msg.seq)? || before_cutoff {
                 {
                     for observer in self.read_dependency(msg.seq) {
+                        trace!("considered its observer {:?}", observer);
                         if !deleted.contains(&observer) {
                             // 'msg' can't be deleted, because it's observed by
                             // 'observer' - i.e a later message that has not been deleted.
+                            trace!("can't delete {:?} because of observer {:?}", msg, observer);
 
                             deferred.push(move |tself: &mut DatabaseContextData| {
                                 tself.record_reverse_dependency(
@@ -1084,6 +1097,8 @@ impl DatabaseContextData {
                     }
                 }
             } else {
+
+                trace!("can't delete {:?} yet because it's been transmitted and is after cutoff: {:?}", msg, before_cutoff);
                 //unused_list.push_untracked(self, msg);
                 new_unused_list.push(msg);
                 // TODO:  We could remember that we have an unused item that
@@ -1138,7 +1153,10 @@ impl DatabaseContextData {
         if uses.len() <= registrar.index() {
             uses.grow(self, registrar.index() + 1);
         }
-        uses.get_mut(self, registrar.index()).increase_use(self);
+        let mut info = uses.get_mut(self, registrar.index());
+        info.increase_use(self);
+        trace!("increased use of {:?} to {}", registrar, info.get_use());
+
     }
     /*pub(crate) fn rt_set_non_opaque(&mut self, registrar: SequenceNr) {
         let uses = unsafe { self.get_uses() };
@@ -1150,12 +1168,15 @@ impl DatabaseContextData {
     pub(crate) fn rt_decrease_use(&mut self, registrar: SequenceNr, overwriter: SequenceNr) {
         let uses = unsafe { self.get_uses() };
         let mut cur = uses.get_mut(self, registrar.index());
-        if cur.get_use() == 0 {
+        let cur_use = cur.get_use();
+        if cur_use == 0 {
             panic!("Corrupt use count for sequence nr {:?}", registrar);
         }
         unsafe { cur.as_mut().get_unchecked_mut().decrease_use(self) };
+        trace!("decreased use of {:?} is {} (because overwriter: {:?})", registrar, cur.get_use(), overwriter);
         if cur.get_use() == 0 {
             // This is the normal way messages end up in 'unused_messags'
+            trace!("Adding {:?} as unused", registrar);
             self.unused_messages.push(UnusedInfo {
                 seq: registrar,
                 //opaque: cur.get_opaque() as u32,

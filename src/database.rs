@@ -505,7 +505,7 @@ impl<APP: Application> Database<APP> {
         let mut message_store = Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
         let load_status;
         //let update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
-        //println!("Load, is dirty: {:?}", is_dirty);
+        println!("Load, is dirty: {:?}", is_dirty);
         if is_dirty {
             Self::recover(
                 &mut ctx,

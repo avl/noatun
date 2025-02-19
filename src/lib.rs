@@ -907,7 +907,7 @@ macro_rules! noatun_object {
 
 
                 fn clear(self: ::std::pin::Pin<&mut Self>) {
-                    let mut tself = unsafe { self.get_unchecked_mut() };
+                    let tself = unsafe { self.get_unchecked_mut() };
                     $( unsafe { ::std::pin::Pin::new_unchecked(&mut tself.$name).clear(); } )*
                 }
 
@@ -1219,6 +1219,7 @@ mod tests {
     use savefile::{load_noschema, save_noschema};
     use savefile_derive::Savefile;
     use std::io::{Cursor, SeekFrom};
+    use tracing_subscriber::Layer;
 
     mod all_up_sync_test;
     mod distributor_tests;
@@ -1227,6 +1228,30 @@ mod tests {
     mod recovery_tests;
     mod test_rotation;
     mod test_subsumption;
+
+    pub fn setup_tracing() {
+        pub struct TracingTimer(tokio::time::Instant);
+
+        impl tracing_subscriber::fmt::time::FormatTime for TracingTimer {
+            fn format_time(
+                &self,
+                w: &mut tracing_subscriber::fmt::format::Writer<'_>,
+            ) -> core::fmt::Result {
+                let t = tokio::time::Instant::now();
+                write!(w, "{:>10?}", (t - self.0))
+            }
+        }
+
+        let stdout_log = tracing_subscriber::fmt::layer()
+            .with_timer(TracingTimer(tokio::time::Instant::now()))
+            .with_ansi(false)
+            .pretty()
+            .with_filter(tracing_subscriber::EnvFilter::from_default_env());
+
+        use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+        let subscriber = tracing_subscriber::registry().with(stdout_log);
+        _ = tracing::subscriber::set_global_default(subscriber);
+    }
 
     #[test]
     fn test_mmap_big() {
@@ -1325,7 +1350,11 @@ mod tests {
         }
 
         fn clear(self: Pin<&mut Self>) {
-            todo!()
+            unsafe {
+                let tself = self.get_unchecked_mut();
+                Pin::new_unchecked(&mut tself.counter).clear();
+                Pin::new_unchecked(&mut tself.counter2).clear();
+            }
         }
 
         fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {

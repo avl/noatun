@@ -23,15 +23,15 @@ impl Application for RotationDoc {
     type Message = RotMessage;
     type Params = ();
 
-    fn initialize_root<'a>(params: &Self::Params) -> Pin<&'a mut Self> {
+    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
         NoatunContext.allocate_pod()
     }
 }
 impl MessagePayload for RotMessage {
     type Root = RotationDoc;
 
-    fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
-        let mut root = root.pin_project();
+    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
+        let root = root.pin_project();
         if self.reset!=0 {
             root.counter.set(0);
         }else {

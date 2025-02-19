@@ -10,6 +10,7 @@ use std::ops::{Deref, Range};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
+use tracing::trace;
 
 #[derive(Copy, Clone, Debug, AnyBitPattern)]
 #[repr(C)]
@@ -284,7 +285,7 @@ impl<T: Pod> DatabaseCell<T> {
 }
 
 
-impl<T: Pod> Object for DatabaseCell<T> {
+impl<T: Pod+Debug> Object for DatabaseCell<T> {
     type Ptr = ThinPtr;
     type DetachedType = T;
     type DetachedOwnedType = T;
@@ -295,7 +296,8 @@ impl<T: Pod> Object for DatabaseCell<T> {
 
     fn clear(self: Pin<&mut Self>) {
         let tself =  unsafe { self.get_unchecked_mut() };
-        NoatunContext.update_registrar_ptr(&mut tself.registrar);
+        trace!("DatabaseCell::clear: {:?}", tself.value);
+        NoatunContext.clear_registrar_ptr(&mut tself.registrar);
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -530,7 +532,17 @@ where
 }
 
 #[repr(C)]
+#[derive(Clone,Copy,Zeroable,Pod)]
+//WARNING! this must be identical to first 3 fields of DatabaseVec
+struct DatabaseVecLengthCapData {
+    length: usize,
+    capacity: usize,
+    data: usize,
+}
+
+#[repr(C)]
 pub struct DatabaseVec<T: FixedSizeObject> {
+    //WARNING! These first 3 fields must be identical to DatabaseVecLengthCapData
     length: usize,
     capacity: usize,
     data: usize,
@@ -623,14 +635,13 @@ impl<T: FixedSizeObject + 'static> DatabaseVec<T> {
         }
 
         NoatunContext.write_pod(
-            DatabaseVec {
+            DatabaseVecLengthCapData {
                 length: new_len,
                 capacity: new_capacity,
                 data: dest_index.0,
-                length_registrar: SequenceNr::default(),
-                phantom_data: Default::default(),
             },
-            unsafe { Pin::new_unchecked(self) },
+            //TODO: Add a "write-many-consecutive-fields" macro, with offset+size validation, rather than the following abomination
+            unsafe { Pin::new_unchecked(std::mem::transmute::<&mut Self, &mut DatabaseVecLengthCapData>(self)) },
         )
     }
     #[allow(clippy::mut_from_ref)]
@@ -689,10 +700,11 @@ where
     }
 
     pub fn clear(mut self: Pin<&mut Self>) {
-        for i in 0..self.as_mut().len() {
+        for i in 0..self.length {
             self.as_mut().getmut(i).clear();
         }
         let tself =  unsafe { self.get_unchecked_mut() };
+        NoatunContext.update_registrar(&mut tself.length_registrar);
         NoatunContext.write_pod_ptr(0, addr_of_mut!(tself.length));
     }
 
@@ -714,13 +726,16 @@ where
         let tself = unsafe { self.get_unchecked_mut() };
 
         if index == tself.length - 1 {
+            NoatunContext.update_registrar(&mut tself.length_registrar);
             NoatunContext.write_pod_ptr(tself.length - 1, addr_of_mut!(tself.length));
             return;
         }
         let src_ptr = ThinPtr(tself.data + (tself.length - 1) * size_of::<T>());
         let dst_ptr = ThinPtr(tself.data + index * size_of::<T>());
+        unsafe { T::access_mut(dst_ptr).clear(); }
         NoatunContext.copy(FatPtr::from(src_ptr.0, size_of::<T>()), dst_ptr);
 
+        NoatunContext.update_registrar(&mut tself.length_registrar);
         NoatunContext.write_pod_ptr(tself.length - 1, addr_of_mut!(tself.length));
     }
     /*
@@ -745,9 +760,10 @@ where
 
         while read_offset < self.length {
             let read_ptr = ThinPtr(self.data + read_offset * size_of::<T>());
-            let val = unsafe { T::access_mut(read_ptr) };
-            let retain = f(val);
+            let mut val = unsafe { T::access_mut(read_ptr) };
+            let retain = f(val.as_mut());
             if !retain {
+                val.clear();
                 new_len -= 1;
                 read_offset += 1;
             } else {
@@ -760,6 +776,7 @@ where
             }
         }
         let self_mut = unsafe {self.get_unchecked_mut()};
+        NoatunContext.update_registrar(&mut self_mut.length_registrar);
         NoatunContext.write_pod_ptr(new_len, addr_of_mut!(self_mut.length));
     }
 
