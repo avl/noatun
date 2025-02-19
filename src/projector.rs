@@ -3,10 +3,7 @@ use crate::disk_abstraction::Disk;
 use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{
-    Application, ContextGuardMut, DatabaseContextData, Message, MessageHeader, MessageId,
-    MessagePayload, NoatunContext, NoatunTime, Target,
-};
+use crate::{Application, ContextGuardMut, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime, Persistence, Target};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::marker::PhantomData;
@@ -278,7 +275,14 @@ impl<APP: Application> Projector<APP> {
         if context.next_seqnr() != seqnr {
             context.set_next_seqnr(seqnr); //TODO: Maybe we can optimize this somehow?
         }
-
+        match msg.payload.persistence(){
+            Persistence::UntilOverwritten => {
+                context.clear_tainted();
+            }
+            Persistence::AtLeastUntilCutoff => {
+                context.set_tainted();
+            }
+        }
         //println!("Applying message #{}", context.next_seqnr());
         msg.payload.apply(msg.header.id.timestamp(), unsafe {
             Pin::new_unchecked(root)

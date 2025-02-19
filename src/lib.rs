@@ -522,6 +522,27 @@ impl NoatunTime {
     }
 }
 
+/// Controls how long this message will persist
+pub enum Persistence {
+    /// The message will be automatically removed once:
+    /// 1) All data it has written has been overwritten by later messages
+    /// 2) No later, existing, message depends on information written by this message
+    ///
+    /// This is the default.
+    ///
+    /// This default is useful for messages that don't need to be kept for records-keeping,
+    /// like updates of sensor values, or other periodic updates.
+    UntilOverwritten,
+    /// Like UntilOverwritten, except the message will unconditionally be kept around until
+    /// the cutoff-period has elapsed. This can be useful to make sure that a complete log of 'recent'
+    /// messages exists at all times, to ease troubleshooting or building functionality to show
+    /// 'recent events' to users.
+    AtLeastUntilCutoff,
+    // This message will not be deleted.
+    // TODO: Implement?
+    //Forever
+}
+
 pub trait MessagePayload: Debug {
     type Root: Object;
     fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>);
@@ -530,6 +551,10 @@ pub trait MessagePayload: Debug {
     where
         Self: Sized;
     fn serialize<W: Write>(&self, writer: W) -> Result<()>;
+
+    fn persistence(&self) -> Persistence {
+        Persistence::UntilOverwritten
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

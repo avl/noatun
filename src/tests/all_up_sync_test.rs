@@ -4,7 +4,7 @@ use crate::communication::{
 };
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::distributor::Status;
-use crate::Savefile;
+use crate::{Persistence, Savefile};
 use crate::{Application, Database, MessagePayload, NoatunContext, NoatunTime, Object};
 use arcshift::ArcShift;
 use bytes::BufMut;
@@ -50,6 +50,9 @@ impl MessagePayload for SyncMessage {
         let project = root.pin_project();
 
         if self.reset {
+            // Make sure we observe the db state, so that the non-tainted message
+            // removal optimization doesn't kick in for this test
+
             project.counter.set(1);
             project.sum.set(1);
         } else {
@@ -69,6 +72,10 @@ impl MessagePayload for SyncMessage {
 
     fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
         crate::msg_serialize(self, writer)
+    }
+
+    fn persistence(&self) -> Persistence {
+        Persistence::AtLeastUntilCutoff
     }
 }
 
@@ -241,7 +248,7 @@ fn random<T: SampleUniform + PartialOrd>(range: std::ops::Range<T>) -> T {
 }
 
 #[test]
-fn old_local_messages_without_effect_are_removed() {
+fn old_local_messages_without_effect_are_removed0() {
     let mut db: Database<SyncApp> = Database::create_in_memory(
         10000,
         CutOffDuration::from_days(2).unwrap(), // 2 days
@@ -286,6 +293,7 @@ fn old_local_messages_without_effect_are_removed() {
 
 #[test]
 fn old_transmitted_messages_without_effect_are_removed1() {
+    super::setup_tracing();
     let mut db: Database<SyncApp> = Database::create_in_memory(
         10000,
         CutOffDuration::from_days(2).unwrap(), // 2 days

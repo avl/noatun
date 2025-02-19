@@ -39,6 +39,9 @@ mod registrar_info {
         }
     }
     impl RegistrarInfo {
+        pub fn tainted(&self) -> bool {
+            self.uses >= 0x8000_0000
+        }
         pub fn get_use(&self) -> u32 {
             self.uses & 0x7FFF_FFFF
         }
@@ -49,16 +52,22 @@ mod registrar_info {
             //TODO: We could have a special "inc 1" noatun primitive.
             context.write_pod(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
-        pub fn decrease_use(&mut self, context: &mut DatabaseContextData) {
+        pub fn decrease_use(&mut self, context: &mut DatabaseContextData, tainted: bool) {
             let cur_uses = self.get_use();
             if cur_uses == 0 {
                 panic!("Internal error, use count wrong");
             }
             if cur_uses >= 0x7FFF_FFFF {
+                // Since we saturate at 0x7FFF_FFFF when adding, we cannot safely decrement.
+                // The effect is that a message that touched equal or more than 0x7FFF_FFFF places
+                // in memory will never be deleted.
                 return;
             }
-            //TODO: We could have a special "dec 1" noatun primitive.
-            //println!("Wite pod {:?}", self.uses - 1);
+            if tainted {
+                self.uses|=0x8000_0000;
+            }
+            // TODO: We could have a special "dec 1" noatun primitive.
+            // println!("Write pod {:?}", self.uses - 1);
             context.write_pod(self.uses - 1, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
     }
@@ -73,14 +82,21 @@ mod registrar_info {
         /// that 'seq' can be removed.
         ///
         /// Since we know the order in which events occurred, we *know* that
-        /// last_overwriter here must be the highest numbered sequence number that wrote
+        /// last_overwriter here must be the highest numbered sequence number that
         /// overwrote this registrar.
         ///
+        /// This is used in the advance_cutoff function, to know which not-yet-deleted
+        /// messages that now have their last-overwriter overtaken by the cutoff-frontier,
+        /// so that we can prune messages for the long-term pre-cutoff-life.
         pub last_overwriter: SequenceNr,
         /// The message that is no longer used (to be deleted, possibly)
         /// This is sometimes known as a 'registrar' (TODO: Better naming? The word 'registrar'
         /// is strange here).
         pub seq: SequenceNr,
+        /// Non of the overwriters were tainted (i.e, all of them did the overwrite without
+        /// having read any of the current state of the db, makign them immune to changes
+        /// caused by earlier (by time) messages not yet present at the current node.
+        pub unconditionally_overwritten: u32,
     }
 }
 
@@ -145,6 +161,12 @@ pub(crate) struct DatabaseContextData {
     // will have the seqnr of the message being applied, not the next one.
     //next_seqnr: SequenceNr,
     filesystem_sync_disabled: bool,
+    /// Flag that keeps track of whether the current message has observed
+    /// any part of the database. If it has, it's considered tainted, which means
+    /// any data it overwrites cannot be considered definitely overwritten until after
+    /// the cutoff frontier passes, because some other node _could_ insert data that causes
+    /// the tainted message to not overwrite the data in question.
+    tainted: bool,
 }
 
 // This has been shamelessly lifted from the rust std
@@ -192,6 +214,15 @@ pub(crate) struct ReverseDepTrackLinkedListEntry {
 }
 
 impl DatabaseContextData {
+    pub fn clear_tainted(&mut self) {
+        self.tainted = false;
+    }
+    pub fn set_tainted(&mut self) {
+        self.tainted = true;
+    }
+    fn tainted(&self) -> bool {
+        self.tainted
+    }
     pub fn assert_mutable(&self) {
         if !self.is_mutable {
             panic!("Attempt to modify DatabaseCell from outside of Message apply! \
@@ -202,7 +233,7 @@ impl DatabaseContextData {
     fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr) {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
-
+        self.tainted = true;
         trace!("Recording dependency observer: {:?} observing {:?}", observer,observee);
         // #Safety:
         // No code holds this reference while calling other code that does.
@@ -506,6 +537,7 @@ impl DatabaseContextData {
             unused_messages: Vec::default(),
             is_mutable: false,
             filesystem_sync_disabled: false,
+            tainted: false,
         };
         // TODO: It's a bit of a code smell that at this precise point in the execution,
         // a DatabaseContext exists, but it's not actually fully initialized until we write the
@@ -1029,6 +1061,7 @@ impl DatabaseContextData {
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
+                unconditionally_overwritten: (!self.tainted) as u32,
             });
             return;
         }
@@ -1041,6 +1074,7 @@ impl DatabaseContextData {
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
+                unconditionally_overwritten: (!self.tainted) as u32,
             });
         }
     }
@@ -1084,29 +1118,29 @@ impl DatabaseContextData {
         trace!("Unused batch: {:?}", unused_messages);
         'outer: while let Some(msg) = unused_messages.pop() {
             trace!("considering {:?} for deletion", msg);
-            if !messages.may_have_been_transmitted(msg.seq)? || before_cutoff {
-                {
-                    for observer in self.read_dependency(msg.seq) {
-                        trace!("considered its observer {:?}", observer);
-                        if !deleted.contains(&observer) {
-                            // 'msg' can't be deleted, because it's observed by
-                            // 'observer' - i.e a later message that has not been deleted.
-                            trace!("can't delete {:?} because of observer {:?}", msg, observer);
+            if !messages.may_have_been_transmitted(msg.seq)? || before_cutoff || msg.unconditionally_overwritten != 0 {
 
-                            // The things 'deferred' are carried out at the end of this function (i.e, quickly)
-                            deferred.push(move |tself: &mut DatabaseContextData| {
-                                // Remember
-                                tself.record_reverse_dependency(
-                                    msg.seq,
-                                    observer,
-                                    msg.last_overwriter,
-                                );
-                            });
+                for observer in self.read_dependency(msg.seq) {
+                    trace!("considered its observer {:?}", observer);
+                    if !deleted.contains(&observer) {
+                        // 'msg' can't be deleted, because it's observed by
+                        // 'observer' - i.e a later message that has not been deleted.
+                        trace!("can't delete {:?} because of observer {:?}", msg, observer);
 
-                            continue 'outer;
-                        }
+                        // The things 'deferred' are carried out at the end of this function (i.e, quickly)
+                        deferred.push(move |tself: &mut DatabaseContextData| {
+                            // Remember
+                            tself.record_reverse_dependency(
+                                msg.seq,
+                                observer,
+                                msg.last_overwriter,
+                            );
+                        });
+
+                        continue 'outer;
                     }
                 }
+
             } else {
 
                 trace!("can't delete {:?} yet because it's been transmitted and is after cutoff: {:?}", msg, before_cutoff);
@@ -1130,6 +1164,7 @@ impl DatabaseContextData {
                 unused_messages.push(UnusedInfo {
                     seq: revdep,
                     last_overwriter,
+                    unconditionally_overwritten: 0, //Unconditional overwrite doesn't matter at this stage
                 });
             }
 
@@ -1178,15 +1213,17 @@ impl DatabaseContextData {
         if cur_use == 0 {
             panic!("Corrupt use count for sequence nr {:?}", registrar);
         }
-        unsafe { cur.as_mut().get_unchecked_mut().decrease_use(self) };
+
+        unsafe { cur.as_mut().get_unchecked_mut().decrease_use(self, self.tainted) };
         trace!("decreased use of {:?} is {} (because overwriter: {:?})", registrar, cur.get_use(), overwriter);
         if cur.get_use() == 0 {
-            // This is the normal way messages end up in 'unused_messags'
+            // This is the normal way messages end up in 'unused_messages'
             trace!("Adding {:?} as unused", registrar);
             self.unused_messages.push(UnusedInfo {
                 seq: registrar,
                 //opaque: cur.get_opaque() as u32,
                 last_overwriter: overwriter,
+                unconditionally_overwritten: !cur.tainted() as u32,
             });
         }
     }

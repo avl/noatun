@@ -87,11 +87,10 @@ fn test_vec1() {
     assert_eq!(db.count_messages(), 1);
 }
 #[test]
-#[ignore]
 fn test_vec2() {
     super::setup_tracing();
     let mut db: Database<VecDoc> = Database::create_new(
-        "test/test_subsumption1",
+        "test/test_subsumption2",
         true,
         100000,
         CutOffDuration::from_minutes(15),
@@ -101,7 +100,7 @@ fn test_vec2() {
         .unwrap();
     db.disable_filesystem_sync();
 
-    for i in 0..2 {
+    for _i in 0..2 {
         let msg = db.append_local(VecMessage {
             index: 0,
             val: 0,
