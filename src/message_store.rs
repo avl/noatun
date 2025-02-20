@@ -1167,6 +1167,7 @@ impl<M> OnDiskMessageStore<M> {
     /// Delete any message with the given index. Idempotent, does nothing if index is already
     /// deleted or does not exist.
     /// If the call itself fails, returns Err.
+    /// Returns true if deleted.
     // TODO: Consider if there's a risk of inefficiency when two severely desynced instances meet.
     // They might have completely different messages, even before the cutoff time.
     // When they start bringing each other up-to-date, their before-cutoff timestamp will change.
@@ -1175,14 +1176,14 @@ impl<M> OnDiskMessageStore<M> {
         &mut self,
         delete_index: SequenceNr,
         head_tracker: &mut UpdateHeadTracker,
-    ) -> Result<()>
+    ) -> Result<bool>
     where
         M: MessagePayload,
     {
         let Some((msg, children)) = self.read_message_header_and_children_by_index(delete_index)?
         else {
             warn!("Message {} was already deleted", delete_index);
-            return Ok(());
+            return Ok(false);
         };
         info!(
             "Actually mark index {} deleted: {:?} (children: {:?})",
@@ -1192,12 +1193,13 @@ impl<M> OnDiskMessageStore<M> {
         let (header, message_index) =
             Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
 
+
         let Some(entry) = message_index.get_mut(delete_index.index()) else {
             //TODO: Trace log
-            return Ok(());
+            return Ok(false);
         };
         if entry.file_offset.is_deleted() {
-            return Ok(());
+            return Ok(false);
         }
 
         if let Some((file, _offset)) = entry.file_offset.file_and_offset() {
@@ -1219,11 +1221,12 @@ impl<M> OnDiskMessageStore<M> {
             for child in &children {
                 self.add_remove_parents_and_children(*child, &parents, Some(id), &[], None)?;
             }
+            Ok(true)
         } else {
             warn!("Message was already deleted");
+            Ok(false)
         }
 
-        Ok(())
     }
 
     pub fn set_cutoff_hash(&mut self, cutoff: CutOffHashPos) -> Result<()> {

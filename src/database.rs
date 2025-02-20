@@ -217,7 +217,8 @@ impl<APP: Application> Database<APP> {
         Ok(())
     }
 
-    pub fn reproject(&mut self) -> Result<()> {
+    /// Returns true if the reprojection allowed unused messages to be detected and deleted
+    pub fn reproject(&mut self) -> Result<bool> {
         let now = self.noatun_now();
         // TODO: Reduce code duplication - mark_dirty etc exists in many methods
         if !self.context.mark_dirty()? {
@@ -238,14 +239,14 @@ impl<APP: Application> Database<APP> {
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
         drop(guard);
 
-        self.message_store.apply_missing_messages(
+        let any_deletes = self.message_store.apply_missing_messages(
             &mut self.context,
             unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
         )?;
 
         self.context.mark_clean()?;
-        Ok(())
+        Ok(any_deletes)
     }
 
     fn recover(
@@ -444,12 +445,22 @@ impl<APP: Application> Database<APP> {
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
         drop(guard);
         tracing::info!("apply_missing_messages");
-        self.message_store.apply_missing_messages(
+        let mut was_deleted = self.message_store.apply_missing_messages(
             &mut self.context,
             unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
         )?;
+
         self.context.mark_clean()?;
+        loop {
+            // TODO: If this loop works, see where else it's needed
+            if !was_deleted {
+                break;
+            }
+            compile_error!("This reprojection hack seems to work. But it's expensive. SEe if we can do better?")
+            // TODO: The below marks dirty, and flushes! Fix this, use some other mechanism
+            was_deleted = self.reproject()?;
+        }
         Ok(())
     }
 

@@ -81,8 +81,7 @@ impl<APP: Application> Projector<APP> {
         self.messages.set_cutoff_hash(cutoff_state)?;
 
         println!("Advance cutoff batch: {:?}", process_now);
-        let must_remove =
-            context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?; //TODO: Rename
+        let must_remove = context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?; //TODO: Rename
         for index in must_remove {
             self.messages
                 .mark_deleted_by_index(index, &mut self.head_tracker)?;
@@ -323,7 +322,7 @@ impl<APP: Application> Projector<APP> {
         context: &mut DatabaseContextData,
         root: &mut APP,
         max_project_to: Option<NoatunTime>,
-    ) -> Result<()> {
+    ) -> Result<bool /*any stale deleted*/> {
         //println!("Max project to : {:?}", max_project_to);
         //let cutoff = self.cut_off_config.nominal_cutoff(real_time_now);
 
@@ -341,7 +340,7 @@ impl<APP: Application> Projector<APP> {
         };
 
         do_run::<APP>(context, root, first_run, max_project_to)?;
-        remove_stale_messages(self, context)?;
+        return remove_stale_messages(self, context);
 
         /// If returns true, need to finalize before-cutoff-part, then continue at given index
         fn do_run<APP: Application>(
@@ -364,18 +363,21 @@ impl<APP: Application> Projector<APP> {
         fn remove_stale_messages<APP: Application>(
             tself: &mut Projector<APP>,
             context: &mut DatabaseContextData,
-        ) -> Result<()> {
+        ) -> Result<bool> {
             let must_remove = context.calculate_stale_messages(&mut tself.messages)?;
+            let mut any_deletions = false;
             for index in must_remove {
-                tself
+                let rev: Vec<_> = context.read_reverse_dependency(index).collect();
+                info!("Deleting stale msg {:?}, its reverse dep: {:?}",index, rev);
+                let dep: Vec<_> = context.read_dependency(index).collect();
+                info!("Deleting stale msg {:?}, its dep: {:?}",index, dep);
+                let was_deleted = tself
                     .messages
                     .mark_deleted_by_index(index, &mut tself.head_tracker)?;
+                any_deletions = any_deletions || was_deleted;
                 //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
             }
-            Ok(())
+            Ok(any_deletions)
         }
-        //let next_index = self.messages.next_index()?;
-        //context.set_next_seqnr(SequenceNr::from_index(next_index));
-        Ok(())
     }
 }

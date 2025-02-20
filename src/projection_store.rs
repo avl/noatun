@@ -40,7 +40,6 @@ mod registrar_info {
     }
     impl RegistrarInfo {
         pub fn tainted(&self) -> bool {
-            println!("is_tainted ptr = {:x?}", (&self.uses as *const u32) );
             self.uses >= 0x8000_0000
         }
         pub fn get_use(&self) -> u32 {
@@ -301,7 +300,7 @@ impl DatabaseContextData {
         self.write_pod(new_entry_index, key_place);
     }
 
-    fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> + '_ {
+    pub(crate) fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> + '_ {
         let keys: &RawDatabaseVec<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observee.index() < keys.len() {
@@ -321,14 +320,14 @@ impl DatabaseContextData {
     }
 
     //TODO: Maybe elliminate this code duplication
-    fn read_reverse_dependency(
+    pub(crate) fn read_reverse_dependency(
         &self,
-        observee: SequenceNr,
+        observer: SequenceNr,
     ) -> impl Iterator<Item = (SequenceNr, SequenceNr /* last overwriter */)> + '_ {
         let keys: &RawDatabaseVec<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
 
-        let mut cur: ThinPtr = if observee.index() < keys.len() {
-            keys.get_mut(self, observee.index()).reverse_dep
+        let mut cur: ThinPtr = if observer.index() < keys.len() {
+            keys.get_mut(self, observer.index()).reverse_dep
         } else {
             ThinPtr(0)
         };
