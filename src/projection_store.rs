@@ -16,7 +16,7 @@ use std::{iter, slice};
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
 use crate::sequence_nr::SequenceNr;
 use std::pin::Pin;
-use tracing::{error, info, trace};
+use tracing::{debug, error, info, trace};
 
 mod registrar_info {
 
@@ -24,7 +24,7 @@ mod registrar_info {
 
     use std::fmt::{Debug, Formatter};
     use std::pin::Pin;
-
+    use tracing::debug;
     use crate::sequence_nr::SequenceNr;
     use crate::DatabaseContextData;
 
@@ -40,6 +40,7 @@ mod registrar_info {
     }
     impl RegistrarInfo {
         pub fn tainted(&self) -> bool {
+            println!("is_tainted ptr = {:x?}", (&self.uses as *const u32) );
             self.uses >= 0x8000_0000
         }
         pub fn get_use(&self) -> u32 {
@@ -53,6 +54,7 @@ mod registrar_info {
             context.write_pod(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
         pub fn decrease_use(&mut self, context: &mut DatabaseContextData, tainted: bool) {
+            let mut raw_uses = self.uses;
             let cur_uses = self.get_use();
             if cur_uses == 0 {
                 panic!("Internal error, use count wrong");
@@ -63,12 +65,14 @@ mod registrar_info {
                 // in memory will never be deleted.
                 return;
             }
+            raw_uses -= 1;
             if tainted {
-                self.uses|=0x8000_0000;
+                debug!("mark tainted (raw use={}, ptr = {:x?})", self.uses, &self.uses as *const u32);
+                raw_uses|=0x8000_0000;
             }
             // TODO: We could have a special "dec 1" noatun primitive.
             // println!("Write pod {:?}", self.uses - 1);
-            context.write_pod(self.uses - 1, unsafe { Pin::new_unchecked(&mut self.uses) });
+            context.write_pod(raw_uses, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
     }
 
@@ -218,6 +222,7 @@ impl DatabaseContextData {
         self.tainted = false;
     }
     pub fn set_tainted(&mut self) {
+        info!("mark self tainted2");
         self.tainted = true;
     }
     fn tainted(&self) -> bool {
@@ -995,7 +1000,7 @@ impl DatabaseContextData {
             return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
         }
         if registrar_point.is_valid() {
-            self.rt_decrease_use(*registrar_point, current_registrar);
+            self.rt_decrease_use(*registrar_point, current_registrar, self.tainted);
         }
         if current_registrar.is_invalid() {
             // We're in the 'initialize root' method
@@ -1006,14 +1011,14 @@ impl DatabaseContextData {
         self.write_pod(current_registrar, Pin::new(registrar_point))
     }
 
-    pub fn update_registrar_ptr_impl(&mut self, registrar_point: *mut SequenceNr, actor: SequenceNr) {
+    pub fn update_registrar_ptr_impl(&mut self, registrar_point: *mut SequenceNr, actor: SequenceNr, actor_tainted: bool) {
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
         let current_registrar = actor;
         if current_registrar == registrar_point_value {
             return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
         }
         if registrar_point_value.is_valid() {
-            self.rt_decrease_use(registrar_point_value, current_registrar);
+            self.rt_decrease_use(registrar_point_value, current_registrar, actor_tainted);
         }
         if current_registrar.is_invalid() {
             // We're in the 'initialize root' method
@@ -1024,10 +1029,10 @@ impl DatabaseContextData {
         self.write_pod_ptr(current_registrar, registrar_point)
     }
     pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr) {
-        self.update_registrar_ptr_impl(registrar_point, self.next_seqnr());
+        self.update_registrar_ptr_impl(registrar_point, self.next_seqnr(), self.tainted);
     }
     pub fn clear_registrar_ptr(&mut self, registrar_point: *mut SequenceNr) {
-        self.update_registrar_ptr_impl(registrar_point, SequenceNr::INVALID);
+        self.update_registrar_ptr_impl(registrar_point, SequenceNr::INVALID, self.tainted);
     }
 
     // Signify that the current message has observed data previously written
@@ -1057,7 +1062,7 @@ impl DatabaseContextData {
         if uses.len() <= message_id.index() {
             // This is a bit of a special case. This is a message
             // that did not actually modify any state at all during its projection.
-            trace!("Message modified nothing: {:?}", message_id);
+            trace!("Message modified nothing: {:?} (tainted: {})", message_id, self.tainted);
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
@@ -1070,7 +1075,7 @@ impl DatabaseContextData {
         if track.get_use() == 0 {
             // Same special case as above - message is not in use, even immediately
             // after having been projected.
-            trace!("Message modified nothing2: {:?}", message_id);
+            trace!("Message modified nothing2: {:?} (tainted: {})", message_id, self.tainted);
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
@@ -1114,21 +1119,25 @@ impl DatabaseContextData {
         let mut deleted = Vec::new();
         let mut deferred = Vec::new();
         let mut new_unused_list = Vec::new();
-        trace!("Calculating staleness, cutoff: {:?}", before_cutoff);
-        trace!("Unused batch: {:?}", unused_messages);
-        trace!("Total message-list: {:#?}", messages.get_all_messages().unwrap());
+        debug!("Unused batch: {:?}", unused_messages);
+        if unused_messages.is_empty() {
+            return Ok(vec![]);
+        }
+        debug!("Calculating staleness, cutoff: {:?}", before_cutoff);
+        debug!("Total message-list: {:#?}", messages.get_all_messages().unwrap());
         'outer: while let Some(msg) = unused_messages.pop() {
-            trace!("considering {:?} = {:?} for deletion",
-                messages.read_message_header_and_children_by_index(msg.seq),
+            let msgobj = messages.read_message_header_and_children_by_index(msg.seq);
+            debug!("considering {:?} = {:?} for deletion",
+                msgobj,
                 msg);
             if !messages.may_have_been_transmitted(msg.seq)? || before_cutoff || msg.unconditionally_overwritten != 0 {
 
                 for observer in self.read_dependency(msg.seq) {
-                    trace!("considered its observer {:?}", observer);
+                    debug!("considered its observer {:?}", observer);
                     if !deleted.contains(&observer) {
                         // 'msg' can't be deleted, because it's observed by
                         // 'observer' - i.e a later message that has not been deleted.
-                        trace!("can't delete {:?} because of observer {:?}", msg, observer);
+                        debug!("can't delete {:?}/{:?} because of observer {:?}", msgobj.map(|x2|x2.map(|x|x.0.id)), msg, observer);
 
                         // The things 'deferred' are carried out at the end of this function (i.e, quickly)
                         deferred.push(move |tself: &mut DatabaseContextData| {
@@ -1146,7 +1155,7 @@ impl DatabaseContextData {
 
             } else {
 
-                trace!("can't delete {:?} yet because it's been transmitted and is after cutoff: {:?}", msg, before_cutoff);
+                debug!("can't delete {:?}{:?} yet because it's been transmitted and is after cutoff: {:?} and not unconditionally overwritten", msgobj.map(|x2|x2.map(|x|x.0.id)), msg, before_cutoff);
                 //unused_list.push_untracked(self, msg);
                 new_unused_list.push(msg);
                 // TODO:  We could remember that we have an unused item that
@@ -1205,11 +1214,11 @@ impl DatabaseContextData {
         }
         let mut info = uses.get_mut(self, registrar.index());
         info.increase_use(self);
-        trace!("increased use of {:?} to {}", registrar, info.get_use());
+        trace!("increased use of {:?} to {} (tainted:{})", registrar, info.get_use(), info.tainted());
 
     }
 
-    pub(crate) fn rt_decrease_use(&mut self, registrar: SequenceNr, overwriter: SequenceNr) {
+    pub(crate) fn rt_decrease_use(&mut self, registrar: SequenceNr, overwriter: SequenceNr, overwriter_tainted: bool) {
         let uses = unsafe { self.get_uses() };
         let mut cur = uses.get_mut(self, registrar.index());
         let cur_use = cur.get_use();
@@ -1217,11 +1226,11 @@ impl DatabaseContextData {
             panic!("Corrupt use count for sequence nr {:?}", registrar);
         }
 
-        unsafe { cur.as_mut().get_unchecked_mut().decrease_use(self, self.tainted) };
-        trace!("decreased use of {:?} is {} (because overwriter: {:?})", registrar, cur.get_use(), overwriter);
+        unsafe { cur.as_mut().get_unchecked_mut().decrease_use(self, overwriter_tainted) };
+        trace!("decreased use of {:?} is {} (taint:{}) (because overwriter: {:?}(tainted:{}))", registrar, cur.get_use(), cur.tainted(), overwriter, overwriter_tainted);
         if cur.get_use() == 0 {
             // This is the normal way messages end up in 'unused_messages'
-            trace!("Adding {:?} as unused", registrar);
+            trace!("Adding {:?} as unused (overwriter.tainted: {}, registrar tainted: {})", registrar, overwriter_tainted, cur.tainted());
             self.unused_messages.push(UnusedInfo {
                 seq: registrar,
                 //opaque: cur.get_opaque() as u32,

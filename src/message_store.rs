@@ -1663,7 +1663,7 @@ impl<M> OnDiskMessageStore<M> {
         let mut prev = None;
         // TODO: Remove this perhaps, below?
         let mut messages = messages.inspect(|test| {
-            info!("Inspecting for insert: {:?}", test);
+            trace!("Inspecting for insert: {:?}", test);
             if prev.is_none() {
                 prev = Some(test.header.id);
             } else {
@@ -1726,9 +1726,9 @@ impl<M> OnDiskMessageStore<M> {
             /*if let Some(cur_input_message) = &cur_input_message {
                 println!("Start of loop, cur input msg: {:?}", cur_input_message.header.id);
             }*/
-            info!("Loop start: cur_input_message: {:?}", cur_input_message);
+            //info!("Loop start: cur_input_message: {:?}", cur_input_message);
             if carry_buffer.is_empty() && cur_input_message.is_none() {
-                info!("Insert loop done");
+                //info!("Insert loop done");
                 break;
             }
 
@@ -1775,7 +1775,7 @@ impl<M> OnDiskMessageStore<M> {
                 Cases::NextFromPresent => {
                     let input_message_id = cur_input_message.as_ref().map(|x| x.id());
                     if present_id == input_message_id {
-                        info!("Duplicate detected");
+                        //info!("Duplicate detected");
                         cur_input_message = messages.next();
                         cur_index += 1;
                         //eprintln!("Duplicate id detected");
@@ -1907,7 +1907,7 @@ impl<M> OnDiskMessageStore<M> {
 
         //self.compact()?;
 
-        info!(
+        trace!(
             "Finished do_append_many_sorted, now with {} elements",
             cur_index
         );

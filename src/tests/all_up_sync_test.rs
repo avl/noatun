@@ -512,16 +512,21 @@ async fn all_up_general_update_sync_test_mid_age_messages() {
 #[tokio::test(start_paused = true)]
 async fn all_up_special_seed() {
     super::setup_tracing();
-    for seed in 869..13000 {
+    for seed in 12..13 {
+        /* Notes:
+        on 1:
+The problem now seems to be:
+
+0-0-0 is written, and is followed by 3-0-0 which depends on 0-0-0
+0-0-0 is thus not deleted
+2-0-0 then comes in, deleting 3-0-0.
+At this point, since 3-0-0 no longer exists, we should reproject 0-0-0, and could then delete it.
+
+How would we know to travel to 0-0-0 to delete it?
+
+         */
         println!("Seed = {}", seed);
-        compile_error!("
-So the immediate problem is this:
-
-We don't reproject automatically after deleting a message.
-we should/must!
-
-        ")
-        all_up_general_update_sync_test_impl(seed, 7200, false, 10).await;
+        all_up_general_update_sync_test_impl(seed, 7200, false, 2).await;
     }
 }
 
@@ -545,6 +550,7 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
 
     driver.set_loss(0.15);
     for i in 0..MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_range(1..20)).min(maxlen) {
+        info!("==== write {} =====", i);
         let time_now = noatun_start_time + start_instant.elapsed();
         app1.set_mock_time(time_now);
         app2.set_mock_time(time_now);
@@ -591,9 +597,10 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
                 .unwrap();
         }
     }
-    //info!(" -------------- NETWORK HEALED -----------------");
+    info!(" -------------- NETWORK HEALED -----------------");
     driver.set_loss(0.0);
-    for _ in 0..20 {
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    /*for _ in 0..20 {
         //TODO: This sleep loop should NOT be needed
         {
             let my_span = tracing::span!(tracing::Level::INFO, "app1.reproject");
@@ -609,7 +616,7 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
         let time_now = noatun_start_time + start_instant.elapsed();
         app1.set_mock_time(time_now);
         app2.set_mock_time(time_now);
-    }
+    }*/
 
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());

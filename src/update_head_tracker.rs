@@ -2,7 +2,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::{MessageId, NoatunTime};
 use anyhow::Result;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 pub(crate) struct UpdateHeadTracker {
     file: FileAccessor,
@@ -49,13 +49,13 @@ impl UpdateHeadTracker {
         cutoff: NoatunTime,
     ) -> anyhow::Result<()> {
         if new_message_id.timestamp() < cutoff {
-            debug!(
+            trace!(
                 "Not adding update-head {:?} because cutoff {:?}",
                 new_message_id, cutoff
             );
             return Ok(());
         }
-        debug!(
+        trace!(
             "Adding update-head {:?} (cutoff {:?})",
             new_message_id, cutoff
         );

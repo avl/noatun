@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use tracing::info;
 
 #[derive(Debug,Clone,Copy,PartialEq,Eq,Hash)]
 pub enum LoadingStatus {
@@ -442,7 +443,7 @@ impl<APP: Application> Database<APP> {
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
         drop(guard);
-
+        tracing::info!("apply_missing_messages");
         self.message_store.apply_missing_messages(
             &mut self.context,
             unsafe { root.get_unchecked_mut() },

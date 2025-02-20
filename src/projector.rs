@@ -8,7 +8,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::marker::PhantomData;
 use std::pin::Pin;
-use tracing::{error, info};
+use tracing::{error, info, trace};
 
 pub(crate) struct Projector<APP: Application> {
     messages: OnDiskMessageStore<APP::Message>,
@@ -215,7 +215,7 @@ impl<APP: Application> Projector<APP> {
         let mut messages: Vec<Message<APP::Message>> = message.collect();
         messages.sort_unstable_by_key(|x| x.id());
         messages.dedup_by_key(|x| x.id());
-        info!("Deduped list to insert: {:?}", messages);
+        trace!("Deduped list to insert: {:?}", messages);
 
         let cutoff_time = self.messages.current_cutoff_time()?;
         for message in messages.iter_mut() {
@@ -243,13 +243,14 @@ impl<APP: Application> Projector<APP> {
                 if insert_point < cur_main_db_next_index {
                     #[cfg(debug_assertions)]
                     if insert_point > 0 {
-                        info!(
+                        trace!(
                             "checking if insertion point {} exists: {}",
                             insert_point,
                             self.messages.contains_index(insert_point)?
                         );
                         debug_assert!(self.messages.contains_index(insert_point)?);
                     }
+                    info!("Rewinding to {} after insertion", insert_point);
                     self.rewind(context, insert_point)?;
                 }
             }
