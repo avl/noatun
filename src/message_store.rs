@@ -27,8 +27,11 @@ const HASH_SIZE: usize = 16;
 
 struct EmbVecAccessor<T> {
     handle: T,
+    /// Location of u16-length value
     len_offset: usize,
+    /// Location of u16-capacity value
     capacity_offset: usize,
+    /// Start of actual payload data
     start_offset: usize,
 }
 
@@ -90,6 +93,17 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
 
         Ok(result)
     }
+    pub fn contains(&mut self, id: MessageId) -> Result<bool> {
+        // TODO: Verify correctness, and Optimize this? Or remove it?
+        let l = self.len()?;
+        for i in 0..l {
+            if self.get(i)? == id {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
     pub fn capacity(&mut self) -> Result<usize> {
         self.handle
             .seek(SeekFrom::Start((self.capacity_offset) as u64))?;
@@ -105,7 +119,7 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
         T: Write,
     {
         self.handle
-            .seek(SeekFrom::Start((self.len_offset) as u64))?;
+            .seek(SeekFrom::Start(self.len_offset as u64))?;
         Ok(self
             .handle
             .write_u16::<LittleEndian>(val.try_into().unwrap())?)
@@ -152,6 +166,19 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
         let target = self.start_offset + size_of::<MessageId>() * index;
         self.handle.seek(SeekFrom::Start(target as u64))?;
         Ok(self.handle.write_pod(&val)?)
+    }
+
+    // Unify with all(), remove one of them? Probably the other, I think this is better?
+    pub fn to_vec(&mut self) -> Result<Vec<MessageId>> {
+        let mut temp = Vec::new();
+        let count = self.len()?;
+        self.handle
+            .seek(SeekFrom::Start(self.start_offset as u64))?;
+        for _i in 0..count {
+            let msg: MessageId = self.handle.read_pod()?;
+            temp.push(msg);
+        }
+        Ok(temp)
     }
 
     pub fn remove(&mut self, id: MessageId) -> Result<()>
@@ -1218,7 +1245,7 @@ impl<M> OnDiskMessageStore<M> {
             }
 
             for child in &children {
-                self.add_remove_parents_and_children(*child, &parents, Some(id), &[], None)?;
+                self.add_remove_parents_and_children(*child, &[], Some(id), &[], None)?;
             }
             Ok(true)
         } else {
@@ -1544,6 +1571,7 @@ impl<M> OnDiskMessageStore<M> {
         //dbg!(id,new_parents,new_children, removed_parent, removed_child);
         let (_header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
         let Ok(index) = search_index.binary_search_by_key(&id, |x| x.message) else {
+            info!("message not found, can't addremove parents/children {:?}", id);
             return Ok(());
         };
         if let Some((file, offset)) = search_index[index].file_offset.file_and_offset() {

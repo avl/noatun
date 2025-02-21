@@ -22,7 +22,6 @@ use std::io::Write;
 use std::ops::{Add};
 use std::pin::Pin;
 use std::time::Duration;
-use anyhow::Context;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::info;
 
@@ -492,7 +491,7 @@ async fn all_up_general_update_sync_test_old_messages() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_newer_messages() {
+async fn all_up_general_update_sync_test_newer_messages_persist() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
@@ -501,7 +500,7 @@ async fn all_up_general_update_sync_test_newer_messages() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_mid_age_messages() {
+async fn all_up_general_update_sync_test_mid_age_messages_persist() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
@@ -510,9 +509,27 @@ async fn all_up_general_update_sync_test_mid_age_messages() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn all_up_general_update_sync_test_newer_messages_no_persist() {
+    //setup_tracing();
+    for seed in 0..100 {
+        println!("Seed = {}", seed);
+        all_up_general_update_sync_test_impl(seed,10, false, usize::MAX).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn all_up_general_update_sync_test_mid_age_messages_no_persist() {
+    //setup_tracing();
+    for seed in 0..100 {
+        println!("Seed = {}", seed);
+        all_up_general_update_sync_test_impl(seed,900, false, usize::MAX).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn all_up_special_seed() {
     super::setup_tracing();
-    for seed in 12..13 {
+    for seed in 0..50 {
         /* Notes:
         on 1:
 The problem now seems to be:
@@ -526,7 +543,7 @@ How would we know to travel to 0-0-0 to delete it?
 
          */
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed, 7200, false, 2).await;
+        all_up_general_update_sync_test_impl(seed, 15, false, 10).await;
     }
 }
 

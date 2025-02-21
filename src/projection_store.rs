@@ -1125,7 +1125,10 @@ impl DatabaseContextData {
             return Ok(vec![]);
         }
         debug!("Calculating staleness, cutoff: {:?}", before_cutoff);
-        debug!("Total message-list: {:#?}", messages.get_all_messages().unwrap());
+        #[cfg(debug_assertions)]
+        {
+            debug!("Total message-list: {:#?}", messages.get_all_messages_with_children().unwrap());
+        }
         'outer: while let Some(msg) = unused_messages.pop() {
             let msgobj = messages.read_message_header_and_children_by_index(msg.seq);
             debug!("considering {:?} = {:?} for deletion",

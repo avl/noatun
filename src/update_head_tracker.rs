@@ -2,7 +2,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::{MessageId, NoatunTime};
 use anyhow::Result;
-use tracing::{debug, info, trace};
+use tracing::{ info, trace};
 
 pub(crate) struct UpdateHeadTracker {
     file: FileAccessor,
