@@ -449,7 +449,6 @@ fn dedup_slice<T:PartialEq+Copy>(slice: &mut [T]) -> usize {
     dst_index
 }
 
-//compile_error!("When a message is deleted, make sure to delete it from the parent-list of all its children!")
 impl<M> OnDiskMessageStore<M> {
     pub fn get_upstream_of(
         &self,

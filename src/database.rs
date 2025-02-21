@@ -6,7 +6,7 @@ use crate::{
     Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageHeader,
     MessageId, NoatunTime, Object, Pointer, Target,
 };
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -19,6 +19,12 @@ pub enum LoadingStatus {
     RecoveryPerformed
 }
 
+/// If thread execution is halted while a mutable Database-operation is running,
+/// the Database will enter a "corrupted" state. Clearing this state requires mutable access,
+/// and this state can thus not be recovered from within any of the methods accepting `&self`.
+///
+/// Any access to a method using `&mut self` (and [`Self::recover`] in particular), will
+/// execute the recovery procedure and restore the database to working order.
 pub struct Database<Base: Application> {
     context: DatabaseContextData,
     message_store: Projector<Base>,
@@ -33,9 +39,48 @@ pub struct Database<Base: Application> {
 
 impl<APP: Application> Database<APP> {
 
+    fn assert_not_dirty(&self) -> Result<()> {
+        if self.context.is_dirty() {
+            bail!("Database is in a corrupted state. Call Self::recovery, or restart the application, to recover");
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn mark_clean(&mut self) -> Result<()> {
+        self.context.mark_clean()
+    }
+    fn mark_dirty(&mut self) -> Result<()> {
+        if !self.context.mark_dirty()? {
+            // Recovery needed
+            self.do_recovery()?;
+        }
+        Ok(())
+    }
+    #[inline(never)]
+    fn do_recovery(&mut self) -> Result<()> {
+        let now = self.noatun_now();
+        Self::recover_impl(
+            &mut self.context,
+            &mut self.message_store,
+            now,
+            self.projection_time_limit,
+            &self.params,
+        )
+    }
+
+    /// Recover database if in corrupted state.
+    /// This method is very fast in the case where the database is not corrupted.
+    pub fn recover(&mut self) -> Result<()> {
+        if self.context.is_dirty() {
+            self.do_recovery()?;
+            self.mark_clean()?;
+        }
+        Ok(())
+    }
 
     /// TODO: Document
-    pub fn maybe_advance_cutoff(&mut self) -> Result<()> {
+    pub(crate) fn maybe_advance_cutoff(&mut self) -> Result<()> {
         // TODO: Do we need to check for dirty here? Probably not, but then we should
         // stop checking for dirty in things like append_many. It should be enough to
         // check on construction, right?
@@ -50,12 +95,14 @@ impl<APP: Application> Database<APP> {
 
     /// This disables filesystem write back. Write-back will still occur, but a power-cut
     /// or unclean operating system shut down can cause newly written messages to be lost.
-    pub fn disable_filesystem_sync(&mut self)  {
+    pub fn disable_filesystem_sync(&mut self) -> Result<()> {
+        self.recover()?;
         self.message_store.disable_filesystem_sync();
         self.context.disable_filesystem_sync();
+        Ok(())
     }
 
-    pub fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
+    pub(crate) fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
         self.message_store
             .advance_cutoff(new_cutoff, &mut self.context)
     }
@@ -65,10 +112,11 @@ impl<APP: Application> Database<APP> {
     }
 
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
+        self.assert_not_dirty()?;
         self.message_store.contains_message(message_id)
     }
 
-    pub fn get_upstream_of(
+    pub(crate) fn get_upstream_of(
         &self,
         message_id: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
     ) -> Result<impl Iterator<Item = (MessageHeader, /*query count*/ usize)> + '_> {
@@ -76,6 +124,7 @@ impl<APP: Application> Database<APP> {
     }
 
     pub fn load_message(&self, message_id: MessageId) -> Result<Message<APP::Message>> {
+        self.assert_not_dirty()?;
         self.message_store.load_message(message_id)
     }
 
@@ -91,23 +140,25 @@ impl<APP: Application> Database<APP> {
         self.message_store.get_messages_after(message, count)
     }
 
-    pub fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
+    pub(crate) fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
         self.message_store.is_acceptable_cutoff_hash(hash)
     }
-    pub fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
+    pub(crate) fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
         self.message_store.current_cutoff_hash()
     }
 
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
+        self.assert_not_dirty()?;
         self.message_store.get_all_message_ids()
     }
-    pub fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
+    pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.message_store.get_message_children(msg)
     }
     pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
+        self.assert_not_dirty()?;
         self.message_store.get_all_messages()
     }
-    pub fn get_all_messages_with_children(
+    pub(crate) fn get_all_messages_with_children(
         &self,
     ) -> Result<Vec<(Message<APP::Message>, Vec<MessageId>)>> {
         self.message_store.get_all_messages_with_children()
@@ -119,17 +170,7 @@ impl<APP: Application> Database<APP> {
         preview: impl Iterator<Item = APP::Message>,
         f: impl FnOnce(&APP) -> R,
     ) -> Result<R> {
-        let now = self.noatun_now();
-        if !self.context.mark_dirty()? {
-            // Recovery needed
-            Self::recover(
-                &mut self.context,
-                &mut self.message_store,
-                now,
-                self.projection_time_limit,
-                &self.params,
-            )?;
-        }
+        self.mark_dirty()?;
 
         let current = self.context.next_seqnr();
 
@@ -142,11 +183,19 @@ impl<APP: Application> Database<APP> {
         let ret = f(&*root);
         drop(guard);
         self.message_store
-            .rewind(&mut self.context, current.index())?;
-        self.context.mark_clean()?;
+            .rewind(&mut self.context, current)?;
+
+        self.mark_clean()?;
         Ok(ret)
     }
 
+    /// Note, this method offer very little overhead, but this means it also does not validate
+    /// the database before executing. This should always be safe, but it means that recovery
+    /// will not occur if the database has been corrupted by a previous operation.
+    ///
+    /// In normal operation, the database is never corrupted. However, if it somehow is
+    /// (by a thread being killed, for example), this method could produce a root object that
+    /// is in a state of a message being half-applied, for example.
     pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let _guard = ContextGuard::new(&self.context);
@@ -162,7 +211,7 @@ impl<APP: Application> Database<APP> {
         let now = self.noatun_now();
         if !self.context.mark_dirty()? {
             // Recovery needed
-            Self::recover(
+            Self::recover_impl(
                 &mut self.context,
                 &mut self.message_store,
                 now,
@@ -182,22 +231,10 @@ impl<APP: Application> Database<APP> {
     }
 
     pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
-        let now = self.noatun_now();
-        // TODO: Remove duplication. There are many methods that have exact this
-        // code
-        if !self.context.mark_dirty()? {
-            // Recovery needed
-            Self::recover(
-                &mut self.context,
-                &mut self.message_store,
-                now,
-                self.projection_time_limit,
-                &self.params,
-            )?;
-        }
+        self.mark_dirty()?;
 
         let index = self.message_store.get_index_of_time(limit)?;
-        self.message_store.rewind(&mut self.context, index)?;
+        self.message_store.rewind(&mut self.context, SequenceNr::from_index(index))?;
 
         self.projection_time_limit = Some(limit);
 
@@ -213,26 +250,25 @@ impl<APP: Application> Database<APP> {
             self.projection_time_limit,
         )?;
 
-        self.context.mark_clean()?;
+        self.mark_clean()?;
         Ok(())
     }
 
-    /// Returns true if the reprojection allowed unused messages to be detected and deleted
-    pub fn reproject(&mut self) -> Result<bool> {
-        let now = self.noatun_now();
-        // TODO: Reduce code duplication - mark_dirty etc exists in many methods
-        if !self.context.mark_dirty()? {
-            // Recovery needed
-            Self::recover(
-                &mut self.context,
-                &mut self.message_store,
-                now,
-                self.projection_time_limit,
-                &self.params,
-            )?;
-        }
+    /// Force a complete rewind and re-application of all messages.
+    ///
+    /// You should never need this, but it remains publicly visible to ease in
+    /// debugging. Since this re-runs all message-applies, it can be used during debugging
+    /// of [`crate::MessagePayload::apply`].
+    pub fn reproject(&mut self) -> Result<()> {
+        self.mark_dirty()?;
+        self.reproject_from(SequenceNr::from_index(0))?;
+        self.mark_clean()?;
+        Ok(())
+    }
+    /// Returns earliest seq deleted (if any)
+    fn reproject_from(&mut self, index: SequenceNr) -> Result<Option<SequenceNr>> {
 
-        self.message_store.rewind(&mut self.context, 0)?;
+        self.message_store.rewind(&mut self.context, index)?;
 
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
@@ -245,11 +281,11 @@ impl<APP: Application> Database<APP> {
             self.projection_time_limit,
         )?;
 
-        self.context.mark_clean()?;
         Ok(any_deletes)
     }
 
-    fn recover(
+    #[inline(never)]
+    fn recover_impl(
         context: &mut DatabaseContextData,
         message_store: &mut Projector<APP>,
         time_now: NoatunTime,
@@ -283,6 +319,10 @@ impl<APP: Application> Database<APP> {
         Ok(())
     }
 
+    /// Remove all cache files, retaining only the actual data files.
+    /// This should never be needed, but can possibly serve a purpose if
+    /// archiving noatun files, since the cache files can always be recreated from the
+    /// data files.
     pub fn remove_caches(path: impl AsRef<Path>) -> Result<()> {
 
         let path : PathBuf = path.as_ref().to_path_buf();
@@ -301,7 +341,9 @@ impl<APP: Application> Database<APP> {
         Ok(())
     }
 
-    /// Note: You can set max_file_size to something very large, like 100_000_000_000
+    /// Note: You can set max_file_size to something very large, like 100_000_000_000.
+    /// The max-size is reserved in the process' address space, but not actually allocated
+    /// until needed.
     pub fn create_new(
         path: impl AsRef<Path>,
         overwrite_existing: bool,
@@ -344,13 +386,20 @@ impl<APP: Application> Database<APP> {
 
     /// Set the current time to the given value.
     /// This does not update the system time, it only affects the time for Noatun.
-    pub fn set_mock_time(&mut self, time: NoatunTime) {
+    ///
+    /// This does not trigger any rewinding of the database, current time is only used
+    /// when automatically advancing the cutoff frontier. This only happens during recovery
+    /// (initialization) and when adding more messages.
+    pub fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
+        self.recover()?;
         self.time_override = Some(time);
+        Ok(())
     }
 
     /// Returns true if the message still exists.
     /// If this returns false, the message has been deleted, and *MUST* not *BE* transmitted.
     pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<bool> {
+        self.recover()?;
         self.message_store.mark_transmitted(message_id)
     }
 
@@ -361,7 +410,9 @@ impl<APP: Application> Database<APP> {
     pub fn count_messages(&self) -> usize {
         self.message_store.count_messages()
     }
-    pub fn compact(&mut self) -> Result<()> {
+
+    pub(crate) fn compact(&mut self) -> Result<()> {
+        self.recover()?;
         self.message_store.compact()
     }
     pub fn append_local_at(
@@ -419,17 +470,7 @@ impl<APP: Application> Database<APP> {
         local: bool,
         allow_cutoff_advance: bool,
     ) -> Result<()> {
-        let now = self.noatun_now();
-        if !self.context.mark_dirty()? {
-            // Recovery needed
-            Self::recover(
-                &mut self.context,
-                &mut self.message_store,
-                now,
-                self.projection_time_limit,
-                &self.params,
-            )?;
-        }
+        self.mark_dirty()?;
 
         if allow_cutoff_advance {
             self.maybe_advance_cutoff()?;
@@ -444,23 +485,20 @@ impl<APP: Application> Database<APP> {
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { <APP as Object>::access_mut(root_ptr) };
         drop(guard);
-        tracing::info!("apply_missing_messages");
-        let mut was_deleted = self.message_store.apply_missing_messages(
+        info!("apply_missing_messages");
+        let mut earliest_deleted = self.message_store.apply_missing_messages(
             &mut self.context,
             unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
         )?;
 
-        self.context.mark_clean()?;
-        loop {
+        while let Some(cur_earliest_deleted) = earliest_deleted {
+            info!("Post-apply deletion carried out");
             // TODO: If this loop works, see where else it's needed
-            if !was_deleted {
-                break;
-            }
-            compile_error!("This reprojection hack seems to work. But it's expensive. SEe if we can do better?")
-            // TODO: The below marks dirty, and flushes! Fix this, use some other mechanism
-            was_deleted = self.reproject()?;
+            earliest_deleted = self.reproject_from(cur_earliest_deleted)?;
         }
+
+        self.mark_clean()?;
         Ok(())
     }
 
@@ -480,7 +518,7 @@ impl<APP: Application> Database<APP> {
             .context("creating database in memory")?;
         let mut message_store = Projector::new(&mut disk, &target, max_size, cutoff_interval)?;
 
-        Self::recover(
+        Self::recover_impl(
             &mut ctx,
             &mut message_store,
             mock_time.unwrap_or_else(NoatunTime::now),
@@ -519,7 +557,7 @@ impl<APP: Application> Database<APP> {
         //let update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
         println!("Load, is dirty: {:?}", is_dirty);
         if is_dirty {
-            Self::recover(
+            Self::recover_impl(
                 &mut ctx,
                 &mut message_store,
                 NoatunTime::now(),

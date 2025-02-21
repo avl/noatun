@@ -60,7 +60,6 @@ impl Object for Maze {
     }
 }
 
-//compile_error!("COnsider introducing a thread local DatabaseContext!")
 
 impl MessagePayload for MazeMessage {
     type Root = Maze;

@@ -413,6 +413,7 @@ impl DatabaseContextData {
 
         Ok(was_clean)
     }
+    #[inline]
     pub fn mark_clean(&mut self) -> Result<()> {
         let header: &mut MainDbHeader =
             unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
@@ -425,6 +426,7 @@ impl DatabaseContextData {
         self.filesystem_sync_disabled = true;
     }
 
+    #[inline]
     pub fn is_dirty(&self) -> bool {
         let header: &MainDbHeader =
             unsafe { &*(self.main_db_mmap.map_mut_ptr() as *const MainDbHeader) };

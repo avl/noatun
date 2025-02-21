@@ -308,6 +308,7 @@ impl FileAccessor {
     pub(crate) fn map_const_ptr(&self) -> *const u8 {
         self.ptr.wrapping_add(Self::HEADER_SIZE)
     }
+    #[inline]
     pub(crate) fn map_mut_ptr(&self) -> *mut u8 {
         self.ptr.wrapping_add(Self::HEADER_SIZE)
     }

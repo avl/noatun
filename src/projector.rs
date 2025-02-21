@@ -17,6 +17,7 @@ pub(crate) struct Projector<APP: Application> {
     cut_off_config: CutOffConfig,
 }
 
+
 impl<APP: Application> Projector<APP> {
 
     pub(crate) fn disable_filesystem_sync(&mut self) {
@@ -250,7 +251,7 @@ impl<APP: Application> Projector<APP> {
                         debug_assert!(self.messages.contains_index(insert_point)?);
                     }
                     info!("Rewinding to {} after insertion", insert_point);
-                    self.rewind(context, insert_point)?;
+                    self.rewind(context, SequenceNr::from_index(insert_point))?;
                 }
             }
 
@@ -259,8 +260,8 @@ impl<APP: Application> Projector<APP> {
             Ok(false)
         }
     }
-    pub(crate) fn rewind(&mut self, context: &mut DatabaseContextData, point: usize) -> Result<()> {
-        context.rewind(SequenceNr::from_index(point));
+    pub(crate) fn rewind(&mut self, context: &mut DatabaseContextData, point: SequenceNr) -> Result<()> {
+        context.rewind(point);
         Ok(())
     }
 
@@ -322,7 +323,7 @@ impl<APP: Application> Projector<APP> {
         context: &mut DatabaseContextData,
         root: &mut APP,
         max_project_to: Option<NoatunTime>,
-    ) -> Result<bool /*any stale deleted*/> {
+    ) -> Result<Option<SequenceNr> /*earliest deleted index*/> {
         //println!("Max project to : {:?}", max_project_to);
         //let cutoff = self.cut_off_config.nominal_cutoff(real_time_now);
 
@@ -363,9 +364,9 @@ impl<APP: Application> Projector<APP> {
         fn remove_stale_messages<APP: Application>(
             tself: &mut Projector<APP>,
             context: &mut DatabaseContextData,
-        ) -> Result<bool> {
+        ) -> Result<Option<SequenceNr/*minimum deleted*/>> {
             let must_remove = context.calculate_stale_messages(&mut tself.messages)?;
-            let mut any_deletions = false;
+            let mut earliest_deleted = None;
             for index in must_remove {
                 let rev: Vec<_> = context.read_reverse_dependency(index).collect();
                 info!("Deleting stale msg {:?}, its reverse dep: {:?}",index, rev);
@@ -374,10 +375,12 @@ impl<APP: Application> Projector<APP> {
                 let was_deleted = tself
                     .messages
                     .mark_deleted_by_index(index, &mut tself.head_tracker)?;
-                any_deletions = any_deletions || was_deleted;
+                if was_deleted {
+                    earliest_deleted = Some(earliest_deleted.map(|x:SequenceNr|x.min(index)).unwrap_or(index));
+                }
                 //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
             }
-            Ok(any_deletions)
+            Ok(earliest_deleted)
         }
     }
 }

@@ -78,18 +78,14 @@ fn test_rotation1() {
         db.compact().unwrap();
     }
 }
-/*
+
 compile_error!("
-Next step - see if we can reawaken the 'opaque' functionality?
-
-Also:
+ * Dare to test the taint-system more - reenable persistence = off for all-up-tests!
  * Hashmaps!
-Hashmaps!
-
-
-
+ * More chaos testing!
+ * More testing of noatun-objects. Do observe etc actually work for all types?
 ")
-*/
+
 
 #[test]
 fn test_rotation_big1() {
@@ -102,7 +98,7 @@ fn test_rotation_big1() {
         (),
     )
         .unwrap();
-    db.disable_filesystem_sync();
+    db.disable_filesystem_sync().unwrap();
     for _ in 0..200 {
         for _ in 0..50 {
             db.append_local(RotMessage {

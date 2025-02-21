@@ -67,7 +67,7 @@ fn test_vec1() {
         (),
     )
         .unwrap();
-    db.disable_filesystem_sync();
+    db.disable_filesystem_sync().unwrap();
 
     for i in 0..3 {
         db.append_local(VecMessage {
@@ -98,7 +98,7 @@ fn test_vec2() {
         (),
     )
         .unwrap();
-    db.disable_filesystem_sync();
+    db.disable_filesystem_sync().unwrap();
 
     for _i in 0..2 {
         let msg = db.append_local(VecMessage {

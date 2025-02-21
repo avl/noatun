@@ -1070,7 +1070,7 @@ where
     #[instrument(skip(self),fields(node=?self.node))]
     pub fn set_mock_time(&mut self, time: NoatunTime) {
         let mut db = self.database.lock().unwrap();
-        db.set_mock_time(time);
+        db.set_mock_time(time).unwrap();
         db.maybe_advance_cutoff().unwrap();
     }
     pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {

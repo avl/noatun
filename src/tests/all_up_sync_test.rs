@@ -275,7 +275,7 @@ fn old_local_messages_without_effect_are_removed0() {
         .unwrap();
     println!("Add msg1 {:?}", msg1.id);
     println!("Cutoff-hash: {:?}", db.current_cutoff_state().unwrap());
-    db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into());
+    db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into()).unwrap();
     let _msg2 = db
         .append_local(SyncMessage {
             persist: true,
@@ -284,10 +284,10 @@ fn old_local_messages_without_effect_are_removed0() {
         })
         .unwrap();
     println!("Add msg2 {:?}", msg1.id);
-    db.set_mock_time(datetime!(2020-01-02 00:00:00 Z).into());
+    db.set_mock_time(datetime!(2020-01-02 00:00:00 Z).into()).unwrap();
     assert_eq!(db.get_all_messages().unwrap().len(), 2);
 
-    db.set_mock_time(datetime!(2024-01-02 Z).into());
+    db.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
     let last = db
         .append_local(SyncMessage {
             persist: true,
@@ -324,7 +324,7 @@ fn old_transmitted_messages_without_effect_are_removed1() {
     db.mark_transmitted(msg1.id).unwrap();
     println!("Add msg1 {:?}", msg1.id);
     //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
-    db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into());
+    db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into()).unwrap();
     let msg2 = db
         .append_local(SyncMessage {
             persist: true,
@@ -337,7 +337,7 @@ fn old_transmitted_messages_without_effect_are_removed1() {
     assert_eq!(db.get_all_messages().unwrap().len(), 2);
 
     //println!("Advancing time to 2024");
-    db.set_mock_time(datetime!(2024-01-02 Z).into());
+    db.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
     db.maybe_advance_cutoff().unwrap();
 
     let all_msgs = db.get_all_messages().unwrap();
@@ -371,7 +371,7 @@ fn old_transmitted_messages_without_effect_are_removed2() {
     db.mark_transmitted(msg1.id).unwrap();
     println!("Add msg1 {:?}", msg1.id);
     //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
-    db.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into());
+    db.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into()).unwrap();
     let msg2 = db
         .append_local(SyncMessage {
             persist: true,
@@ -384,7 +384,7 @@ fn old_transmitted_messages_without_effect_are_removed2() {
     assert_eq!(db.get_all_messages().unwrap().len(), 2);
 
     //println!("Advancing time to 2024");
-    db.set_mock_time(datetime!(2024-01-02 Z).into());
+    db.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
     db.maybe_advance_cutoff().unwrap();
 
     let all_msgs = db.get_all_messages().unwrap();

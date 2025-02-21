@@ -1739,7 +1739,7 @@ mod tests {
             true,
         )
         .unwrap();
-        db.set_mock_time(datetime!(2024-01-10 Z).into());
+        db.set_mock_time(datetime!(2024-01-10 Z).into()).unwrap();
         db.reproject().unwrap();
         println!("Appending 2nd");
         let m3 = MessageId::from_parts(datetime!(2024-01-10 Z).into(), [2u8; 10]).unwrap();
