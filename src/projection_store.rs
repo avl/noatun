@@ -945,6 +945,17 @@ impl DatabaseContextData {
         });
         *dest = src;
     }
+    pub fn write_any<T: AnyBitPattern>(&mut self, src: T, dest: Pin<&mut T>) {
+        let dest = unsafe { dest.get_unchecked_mut() };
+        let dest_index = self.index_of_sized(dest);
+
+        self.undo_log.record(UndoLogEntry::Restore {
+            start: dest_index.0,
+            compile_error!("How do we write the undo-record for this, when it can contain uninitialized bytes?")
+            data: bytes_of(dest),
+        });
+        *dest = src;
+    }
     pub fn write_object<T: FixedSizeObject>(&mut self, src: T, dest: Pin<&mut T>) {
         let dest = unsafe { dest.get_unchecked_mut() };
         let dest_index = self.index_of_sized(dest);

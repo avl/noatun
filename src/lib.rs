@@ -61,6 +61,8 @@ pub(crate) mod platform_specific;
 mod boot_checksum;
 pub(crate) mod disk_access;
 mod sha2_helper;
+mod xxh3_vendored;
+
 
 thread_local! {
     pub static CONTEXT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
@@ -168,6 +170,10 @@ impl NoatunContext {
     pub fn write_pod<T: Pod>(&self, value: T, dest: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_pod(value, dest) }
+    }
+    pub fn write_any<T: AnyBitPattern>(&self, value: T, dest: Pin<&mut T>) {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).write_any(value, dest) }
     }
     pub(crate) fn write_pod_internal<T: Pod>(&self, value: T, dest: &mut T) {
         let context_ptr = get_context_mut_ptr();

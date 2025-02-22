@@ -79,14 +79,13 @@ fn test_rotation1() {
     }
 }
 
-/*
-compile_error!("
- * Dare to test the taint-system more - reenable persistence = off for all-up-tests!
+
+/*compile_error!("
  * Hashmaps!
  * More chaos testing!
  * More testing of noatun-objects. Do observe etc actually work for all types?
-")
-*/
+")*/
+
 
 #[test]
 fn test_rotation_big1() {
