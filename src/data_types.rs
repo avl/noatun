@@ -997,7 +997,8 @@ impl BucketNr {
     }
 }
 
-#[derive(Clone,Copy,Debug, PartialEq)]
+#[derive(Clone,Copy,Debug, PartialEq, Zeroable, Pod)]
+#[repr(transparent)]
 struct Meta(u8);
 impl Meta {
     fn deleted(&self) -> bool {
@@ -1048,9 +1049,9 @@ impl<I:Iterator> ExactSizeIterator for WithConcat<I,I::Item> {
 enum ProbeRunResult {
     HashFull,
     /// Found a bucket with the given key, with a value present
-    FoundPopulated(BucketNr),
+    FoundPopulated(BucketNr, Meta),
     /// Found either an empty, or deleted
-    FoundUnoccupied(BucketNr),
+    FoundUnoccupied(BucketNr, Meta),
 }
 
 struct DatabaseHashIterator<'a, K:AnyBitPattern+Hash+PartialEq,V:FixedSizeObject> {
@@ -1121,11 +1122,16 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
         }
     }
 
-    // Returns a pointer to the hashmaps heap-block. This, in turn, contains
-    // both the meta-data segment, and the actual individual buckets
     fn get_meta(&self, data_and_meta_ptr: *const u8, bucket: BucketNr) -> Meta {
         unsafe {
             Meta(data_and_meta_ptr.wrapping_add(bucket.0).read())
+        }
+    }
+    // Returns a pointer to the hashmaps heap-block. This, in turn, contains
+    // both the meta-data segment, and the actual individual buckets.
+    fn get_mut_meta(&mut self, data_and_meta_ptr: *const u8, bucket: BucketNr) -> Pin<&mut Meta> {
+        unsafe {
+            Pin::new_unchecked(&mut *(data_and_meta_ptr.wrapping_add(bucket.0) as *mut Meta))
         }
     }
     fn all_buckets(&self) -> &[DatabaseHashBucket<K,V>] {
@@ -1134,7 +1140,7 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
             self.capacity
         ) }
     }
-    fn all_buckets_mut(&self) -> &mut [DatabaseHashBucket<K,V>] {
+    fn all_buckets_mut(&mut self) -> &mut [DatabaseHashBucket<K,V>] {
         unsafe { slice::from_raw_parts_mut(
             self.data_and_meta_ptr().wrapping_add(self.capacity) as *mut DatabaseHashBucket<K,V>,
             self.capacity
@@ -1166,10 +1172,10 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
             } else if cur_bucket_meta == key_meta {
                 let bucket = self.get_bucket(data_and_meta_ptr, bucket_nr);
                 if bucket.key == *key {
-                    return ProbeRunResult::FoundPopulated(bucket_nr);
+                    return ProbeRunResult::FoundPopulated(bucket_nr, key_meta);
                 }
             } else if cur_bucket_meta.empty() {
-                return ProbeRunResult::FoundUnoccupied(first_deleted.unwrap_or(bucket_nr));
+                return ProbeRunResult::FoundUnoccupied(first_deleted.unwrap_or(bucket_nr), key_meta);
             }
             visited_buckets += 1;
             if visited_buckets >= max_visited_buckets {
@@ -1247,14 +1253,15 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
     }
     pub fn get(&self, key: &K) -> Option<&V> {
         match self.probe(&key) {
-            ProbeRunResult::FoundPopulated(bucket) => {
+            ProbeRunResult::FoundPopulated(bucket, _) => {
                 Some(&self.get_bucket(self.data_and_meta_ptr(), bucket).v)
             },
             _ => None
         }
     }
     pub fn insert(&mut self, key: K, val: &V::DetachedType) {
-        match self.probe(&key) {
+        let probe_result = self.probe(&key);
+        match probe_result {
             ProbeRunResult::HashFull => {
                 let mut new = Self::from_iter_internal(
                     self.into_iter(),
@@ -1264,18 +1271,24 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
                 new.insert(key, val);
                 self.replace_internal(new);
             }
-            ProbeRunResult::FoundUnoccupied(bucket)| //TODO: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
-            ProbeRunResult::FoundPopulated(bucket) => {
+            ProbeRunResult::FoundUnoccupied(bucket, meta)| //TODO: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
+            ProbeRunResult::FoundPopulated(bucket, meta) => {
                 let data_and_meta_ptr = self.data_and_meta_ptr() as *mut u8;
-                let old_v = unsafe { Pin::new_unchecked(&mut self.get_bucket(data_and_meta_ptr, bucket).v) };
-                compile_error!("Must also write meta!")
+                let bucket_obj = self.get_bucket(data_and_meta_ptr, bucket);
+                let old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
                 V::init_from_detached(old_v, val);
-                //NoatunContext.write_any(val, unsafe { Pin::new_unchecked(old_v) } )
+                let bucket_meta = self.get_mut_meta(data_and_meta_ptr, bucket);
+                NoatunContext.write_pod(meta, bucket_meta);
+                if matches!(probe_result, ProbeRunResult::FoundUnoccupied(_, _)) {
+                    let old_k= unsafe { Pin::new_unchecked(&mut bucket_obj.key) };
+                    NoatunContext.write_any(key, old_k);
+                }
             }
         }
     }
     fn insert_impl(&mut self, key: K, val: V) {
-        match self.probe(&key) {
+        let probe_result = self.probe(&key);
+        match probe_result {
             ProbeRunResult::HashFull => {
                 let mut new = Self::from_iter_internal(
                     self.into_iter(),
@@ -1285,11 +1298,18 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
                 new.insert_impl(key, val);
                 self.replace_internal(new);
             }
-            ProbeRunResult::FoundUnoccupied(bucket)| //TODO: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
-            ProbeRunResult::FoundPopulated(bucket) => {
+            ProbeRunResult::FoundUnoccupied(bucket, meta)| //TODO: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
+            ProbeRunResult::FoundPopulated(bucket, meta) => {
                 let data_and_meta_ptr = self.data_and_meta_ptr();
-                let old_v = unsafe { Pin::new_unchecked(&mut self.get_bucket(data_and_meta_ptr, bucket).v) };
-                NoatunContext.write_any(val, old_v)
+                let bucket_obj = self.get_bucket(data_and_meta_ptr, bucket);
+                let old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
+                NoatunContext.write_any(val, old_v);
+                let bucket_meta = self.get_mut_meta(data_and_meta_ptr, bucket);
+                NoatunContext.write_pod(meta, bucket_meta);
+                if matches!(probe_result, ProbeRunResult::FoundUnoccupied(_, _)) {
+                    let old_k= unsafe { Pin::new_unchecked(&mut bucket_obj.key) };
+                    NoatunContext.write_any(key, old_k);
+                }
             }
         }
     }
