@@ -4,12 +4,12 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{FatPtr, FixedSizeObject, GenPtr, MessagePayload, Object, Pointer, SerializableGenPtr, Target, ThinPtr};
+use crate::{bytes_of_uninit, FatPtr, FixedSizeObject, GenPtr, MessagePayload, Object, Pointer, SerializableGenPtr, Target, ThinPtr};
 use anyhow::{bail, Context, Result};
 use bytemuck::{bytes_of, from_bytes, from_bytes_mut, AnyBitPattern, Pod, Zeroable};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
-use std::mem::{offset_of, take, transmute_copy};
+use std::mem::{offset_of, take, transmute_copy, MaybeUninit};
 use std::ops::Range;
 use std::{iter, slice};
 
@@ -592,7 +592,14 @@ impl DatabaseContextData {
                 };
                 HowToProceed::PopAndContinue
             }
-            UndoLogEntry::Restore { start, data } => {
+            UndoLogEntry::RestoreUninit { start, data } => {
+                unsafe {
+                    Self::mut_slice_uninit(self.main_db_mmap.map_mut_ptr_uninit(), start..start + data.len())
+                        .copy_from_slice(data)
+                };
+                HowToProceed::PopAndContinue
+            }
+            UndoLogEntry::RestorePod { start, data } => {
                 unsafe {
                     Self::mut_slice(self.main_db_mmap.map_mut_ptr(), start..start + data.len())
                         .copy_from_slice(data)
@@ -688,7 +695,7 @@ impl DatabaseContextData {
         unsafe {
             //dbg!(&source, &dest_index);
 
-            self.undo_log.record(UndoLogEntry::Restore {
+            self.undo_log.record(UndoLogEntry::RestorePod {
                 start: dst.start,
                 data: self.access_slice(dst),
             });
@@ -705,17 +712,17 @@ impl DatabaseContextData {
         unsafe {
             //dbg!(&source, &dest_index);
 
-            self.undo_log.record(UndoLogEntry::Restore {
+            self.undo_log.record(UndoLogEntry::RestoreUninit {
                 start: dest_index.0,
-                data: self.access_slice(FatPtr::from(dest_index.0, source.len)),
+                data: self.access_slice_uninit(FatPtr::from(dest_index.0, source.len)),
             });
 
-            let dest = self.access_slice_mut::<u8>(FatPtr {
+            let dest = self.access_slice_mut_uninit(FatPtr {
                 start: dest_index.0,
                 len: source.len,
             });
 
-            let src = self.access_slice(source);
+            let src = self.access_slice_uninit(source);
 
             dest.copy_from_slice(src);
         }
@@ -725,7 +732,7 @@ impl DatabaseContextData {
     }
     pub fn copy_pod<T: Pod>(&mut self, source: &T, dest: &mut T) {
         let dest_index = self.index_of_sized(dest);
-        self.undo_log.record(UndoLogEntry::Restore {
+        self.undo_log.record(UndoLogEntry::RestorePod {
             start: dest_index.0,
             data: bytes_of(dest),
         });
@@ -811,6 +818,20 @@ impl DatabaseContextData {
             )
         }
     }
+
+    /// # Safety
+    /// The returned range must not overlap any mutable reference
+    /// Alignment must be right.
+    pub unsafe fn access_slice_uninit<'a, T: Pod>(&self, range: FatPtr) -> &'a [MaybeUninit<T>] {
+        assert!(range.start + range.len <= self.main_db_mmap.used_space());
+        unsafe {
+            std::slice::from_raw_parts(
+                self.main_db_mmap.map_const_ptr().wrapping_add(range.start) as *const MaybeUninit<T>,
+                range.len / size_of::<MaybeUninit<T>>(),
+            )
+        }
+    }
+
     /// # Safety
     /// The returned range must not overlap any other reference
     /// Alignment must be right.
@@ -820,6 +841,19 @@ impl DatabaseContextData {
             std::slice::from_raw_parts_mut(
                 self.main_db_mmap.map_mut_ptr().wrapping_add(range.start) as *mut T,
                 range.len / size_of::<T>(),
+            )
+        }
+    }
+
+    /// # Safety
+    /// The returned range must not overlap any other reference
+    /// Alignment must be right.
+    pub unsafe fn access_slice_mut_uninit<'a>(&self, range: FatPtr) -> &'a mut [MaybeUninit<u8>] {
+        assert!(range.start + range.len <= self.main_db_mmap.used_space());
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.main_db_mmap.map_mut_ptr().wrapping_add(range.start) as *mut MaybeUninit<u8>,
+                range.len,
             )
         }
     }
@@ -858,7 +892,13 @@ impl DatabaseContextData {
             std::slice::from_raw_parts_mut(data.wrapping_add(range.start), range.end - range.start)
         }
     }
-
+    /// # Safety
+    /// The given range must point to valid memory, and must not overlap any other reference
+    pub unsafe fn mut_slice_uninit<'a>(data: *mut MaybeUninit<u8>, range: Range<usize>) -> &'a mut [MaybeUninit<u8>] {
+        unsafe {
+            std::slice::from_raw_parts_mut(data.wrapping_add(range.start), range.end - range.start)
+        }
+    }
     /// # Safety
     /// Caller must ensure no mutable reference exists to the requested object
     pub unsafe fn access_pod<'a, T: AnyBitPattern>(&self, index: ThinPtr) -> &'a T {
@@ -939,20 +979,20 @@ impl DatabaseContextData {
         let dest = unsafe { dest.get_unchecked_mut() };
         let dest_index = self.index_of_sized(dest);
 
-        self.undo_log.record(UndoLogEntry::Restore {
+        self.undo_log.record(UndoLogEntry::RestorePod {
             start: dest_index.0,
             data: bytes_of(dest),
         });
         *dest = src;
     }
+
     pub fn write_any<T: AnyBitPattern>(&mut self, src: T, dest: Pin<&mut T>) {
         let dest = unsafe { dest.get_unchecked_mut() };
         let dest_index = self.index_of_sized(dest);
 
-        self.undo_log.record(UndoLogEntry::Restore {
+        self.undo_log.record(UndoLogEntry::RestoreUninit {
             start: dest_index.0,
-            compile_error!("How do we write the undo-record for this, when it can contain uninitialized bytes?")
-            data: bytes_of(dest),
+            data: bytes_of_uninit(dest),
         });
         *dest = src;
     }
@@ -960,9 +1000,9 @@ impl DatabaseContextData {
         let dest = unsafe { dest.get_unchecked_mut() };
         let dest_index = self.index_of_sized(dest);
 
-        self.undo_log.record(UndoLogEntry::Restore {
+        self.undo_log.record(UndoLogEntry::RestoreUninit {
             start: dest_index.0,
-            data: crate::bytes_of(dest),
+            data: bytes_of_uninit(dest),
         });
         *dest = src;
     }
@@ -971,7 +1011,7 @@ impl DatabaseContextData {
         let dest_index = self.index_of_ptr(dest);
         assert!(dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space());
 
-        self.undo_log.record(UndoLogEntry::Restore {
+        self.undo_log.record(UndoLogEntry::RestorePod {
             start: dest_index.0,
             data: unsafe { slice::from_raw_parts(dest as *const u8, size_of::<T>()) },
         });
@@ -987,7 +1027,7 @@ impl DatabaseContextData {
         T::Ptr::create(t, mmap_ptr)
     }
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {
-        ThinPtr((t as *const u8 as usize) - (self.main_db_mmap.map_const_ptr() as usize))
+        ThinPtr((t as *const u8 as usize).wrapping_sub(self.main_db_mmap.map_const_ptr() as usize))
     }
 
     /// Call after writing a message.

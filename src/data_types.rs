@@ -4,6 +4,7 @@ use crate::{
 };
 use bytemuck::{AnyBitPattern, Pod, Zeroable};
 use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
@@ -569,6 +570,7 @@ impl<T: FixedSizeObject> Clone for DatabaseVec<T> {
     }
 }
 
+// TODO: This is currently unsound. DatabaseVec has padding.
 unsafe impl<T: FixedSizeObject> Pod for DatabaseVec<T> where T: 'static {}
 
 pub struct DatabaseVecIterator<'a, T: FixedSizeObject> {
@@ -1064,7 +1066,7 @@ impl<'a,K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> Iterator for Databa
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let mut pos = self.next_position;
+            let pos = self.next_position;
             if pos >= self.hash_buckets.len() {
                 return None;
             }
@@ -1084,7 +1086,7 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> Iterator for DatabaseH
     fn next(&mut self) -> Option<Self::Item> {
         let all_buckets = self.hash_buckets.all_buckets_mut();
         loop {
-            let mut pos = self.next_position;
+            let pos = self.next_position;
             if pos >= all_buckets.len() {
                 return None;
             }
@@ -1103,18 +1105,24 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> Iterator for DatabaseH
 }
 impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
 
-    fn iter(&self) -> DatabaseHashIterator<K,V> {
+    pub fn len(&self) -> usize {
+        self.length
+    }
+    pub fn iter(&self) -> DatabaseHashIterator<K,V> {
         DatabaseHashIterator {
             hash_buckets: self.all_buckets(),
             next_position: 0,
         }
     }
-    fn into_iter(self) -> DatabaseHashOwningIterator<K,V> {
+    pub fn into_iter(self) -> DatabaseHashOwningIterator<K,V> {
         DatabaseHashOwningIterator {
             hash_buckets: self,
             next_position: 0,
         }
     }
+
+    // Returns a pointer to the hashmaps heap-block. This, in turn, contains
+    // both the meta-data segment, and the actual individual buckets
     fn get_meta(&self, data_and_meta_ptr: *const u8, bucket: BucketNr) -> Meta {
         unsafe {
             Meta(data_and_meta_ptr.wrapping_add(bucket.0).read())
@@ -1133,12 +1141,15 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
         ) }
     }
     fn get_bucket<'a>(&self, data_and_meta_ptr: *mut u8, bucket: BucketNr) -> &'a mut DatabaseHashBucket<K,V> {
-        unsafe { &mut *(data_and_meta_ptr.wrapping_add(self.data+self.capacity).wrapping_add(size_of::<DatabaseHashBucket<K,V>>()*bucket.0) as *mut DatabaseHashBucket<K,V> ) }
+        unsafe { &mut *(data_and_meta_ptr.wrapping_add(self.capacity).wrapping_add(size_of::<DatabaseHashBucket<K,V>>()*bucket.0) as *mut DatabaseHashBucket<K,V> ) }
     }
-    fn data_and_meta_ptr(&self) -> *const u8 {
-        NoatunContext.start_ptr().wrapping_add(self.data)
+    fn data_and_meta_ptr(&self) -> *mut u8 {
+        NoatunContext.start_ptr_mut().wrapping_add(self.data)
     }
-    fn probe(&mut self, key: &K) -> ProbeRunResult {
+    fn probe(&self, key: &K) -> ProbeRunResult {
+        if self.capacity ==  0 {
+            return ProbeRunResult::HashFull;
+        }
         let data_and_meta_ptr = self.data_and_meta_ptr() as *mut u8;
         let mut h = NoatunHasher::new();
         key.hash(&mut h);
@@ -1168,7 +1179,7 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
         }
     }
     fn next_prime(capacity: usize) -> usize {
-        static primes:&[usize] =&[
+        static PRIMES:&[usize] =&[
             7,
             17,
             37,
@@ -1231,34 +1242,73 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
             (1usize<<62) - 	57,
             (1usize<<63) - 	25,
         ];
-        let (Ok(x)|Err(x)) = primes.binary_search(&capacity);
-        primes[x.min(primes.len()-1)]
+        let (Ok(x)|Err(x)) = PRIMES.binary_search(&capacity);
+        PRIMES[x.min(PRIMES.len()-1)]
     }
-    fn insert(&mut self, key: K, val: V) {
+    pub fn get(&self, key: &K) -> Option<&V> {
+        match self.probe(&key) {
+            ProbeRunResult::FoundPopulated(bucket) => {
+                Some(&self.get_bucket(self.data_and_meta_ptr(), bucket).v)
+            },
+            _ => None
+        }
+    }
+    pub fn insert(&mut self, key: K, val: &V::DetachedType) {
         match self.probe(&key) {
             ProbeRunResult::HashFull => {
                 let mut new = Self::from_iter_internal(
-                    WithConcat::new(self.into_iter(),(key,val)),
+                    self.into_iter(),
                     Self::next_prime(self.capacity+1)
                 );
+                // Will not give infinite recursion, since 'new' has a capacity of at least 1 more
+                new.insert(key, val);
                 self.replace_internal(new);
             }
             ProbeRunResult::FoundUnoccupied(bucket)| //TODO: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
             ProbeRunResult::FoundPopulated(bucket) => {
                 let data_and_meta_ptr = self.data_and_meta_ptr() as *mut u8;
-                let mut old_v = &mut self.get_bucket(data_and_meta_ptr, bucket).v;
-                NoatunContext.write_pod(val, unsafe { Pin::new_unchecked(old_v) } )
+                let old_v = unsafe { Pin::new_unchecked(&mut self.get_bucket(data_and_meta_ptr, bucket).v) };
+                compile_error!("Must also write meta!")
+                V::init_from_detached(old_v, val);
+                //NoatunContext.write_any(val, unsafe { Pin::new_unchecked(old_v) } )
             }
         }
     }
-    fn new_empty(capacity: usize) -> Self {
-        let data = NoatunContext.allocate_raw(capacity * (1 + size_of::<DatabaseHashBucket<K,V>>()), align_of::<DatabaseHashBucket<K,V>>());
+    fn insert_impl(&mut self, key: K, val: V) {
+        match self.probe(&key) {
+            ProbeRunResult::HashFull => {
+                let mut new = Self::from_iter_internal(
+                    self.into_iter(),
+                    Self::next_prime(self.capacity+1)
+                );
+                // Will not give infinite recursion, since 'new' has a capacity of at least 1 more
+                new.insert_impl(key, val);
+                self.replace_internal(new);
+            }
+            ProbeRunResult::FoundUnoccupied(bucket)| //TODO: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
+            ProbeRunResult::FoundPopulated(bucket) => {
+                let data_and_meta_ptr = self.data_and_meta_ptr();
+                let old_v = unsafe { Pin::new_unchecked(&mut self.get_bucket(data_and_meta_ptr, bucket).v) };
+                NoatunContext.write_any(val, old_v)
+            }
+        }
+    }
+    fn with_capacity(capacity: usize) -> Self {
 
+        let meta_size = capacity;
+
+        let aligned_meta_size = meta_size.next_multiple_of(align_of::<DatabaseHashBucket<K,V>>());
+        let meta_padding = aligned_meta_size - meta_size;
+        let bucket_data_size = capacity * size_of::<DatabaseHashBucket<K,V>>();
+
+        let data = NoatunContext.allocate_raw(aligned_meta_size + bucket_data_size, align_of::<DatabaseHashBucket<K,V>>());
+
+        let aligned_data = data.wrapping_add(meta_padding);
 
         Self {
             length: 0,
             capacity,
-            data: NoatunContext.index_of_ptr(data).0,
+            data: NoatunContext.index_of_ptr(aligned_data).0,
             phantom_data: PhantomData,
         }
     }
@@ -1268,12 +1318,78 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
     }
 
     // This does not write the handle itself into the noatun database!!
-    fn from_iter_internal(i: impl ExactSizeIterator<Item=(K, V)>, min_capacity: usize) -> Self {
-        let capacity = i.len().max(min_capacity);
-        let mut temp = Self::new_empty(capacity);
+    fn from_iter_internal(i: impl Iterator<Item=(K, V)>, min_capacity: usize) -> Self {
+        let capacity = i.size_hint().0;
+        let mut temp = Self::with_capacity(capacity.max(min_capacity));
         for (item_key, item_val) in i {
-            temp.insert(item_key, item_val);
+            temp.insert_impl(item_key, item_val);
         }
         temp
+    }
+}
+
+impl<K:AnyBitPattern+Hash+Eq,V:FixedSizeObject> Object for DatabaseHash<K,V> {
+    type Ptr = ThinPtr;
+    type DetachedType = HashMap<K,V::DetachedOwnedType>;
+    type DetachedOwnedType = HashMap<K,V::DetachedOwnedType>;
+
+    fn detach(&self) -> Self::DetachedOwnedType {
+        self.iter().map(|(k,v)| (*k,v.detach())).collect()
+    }
+
+    fn clear(self: Pin<&mut Self>) {
+        let length = unsafe  { self.map_unchecked_mut(|x|&mut x.length) };
+        NoatunContext.write_pod(0, length);
+    }
+
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        let tself = unsafe  { self.get_unchecked_mut() };
+        for (k,v) in detached {
+            tself.insert(*k, v.borrow());
+        }
+        todo!()
+    }
+
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+        todo!()
+    }
+
+    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
+        todo!()
+    }
+
+    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
+        todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use datetime_literal::datetime;
+    use super::DatabaseHash;
+    use crate::{CutOffDuration, Database, DatabaseCell, Object};
+    use crate::tests::DummyTestApp;
+
+    #[test]
+    fn test_hashmap_miri0() {
+        let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
+            10000,
+            CutOffDuration::from_minutes(15),
+            Some(datetime!(2021-01-01 Z).into()),
+            None,
+            (),
+        )
+            .unwrap();
+        db.with_root_mut(|mut map| {
+            let mut map = unsafe { map.get_unchecked_mut() };
+            assert_eq!(map.0.len(), 0);
+
+            map.0.insert(42, &42);
+
+            let val = map.0.get(&42).unwrap();
+            assert_eq!(val.get(), 42);
+
+        })
+            .unwrap();
     }
 }

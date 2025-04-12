@@ -6,6 +6,7 @@ use std::fmt::{Debug, Formatter};
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::slice;
 
 pub trait FileBackend {
@@ -202,6 +203,28 @@ impl Read for FileAccessor {
         Ok(getnow)
     }
 }
+
+impl FileAccessor {
+    pub fn write_uninit(&mut self, buf: &[MaybeUninit<u8>]) -> Result<()> {
+        if self.seek_pos + buf.len() > self.used_space() {
+            self.grow(self.seek_pos + buf.len())
+                .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
+        }
+
+        let dest = unsafe {
+            slice::from_raw_parts_mut(
+                self.ptr
+                    .wrapping_add(Self::HEADER_SIZE)
+                    .wrapping_add(self.seek_pos)
+                    as *mut MaybeUninit<u8>,
+                buf.len(),
+            )
+        };
+        dest.copy_from_slice(buf);
+        self.seek_pos += buf.len();
+        Ok(())
+    }
+}
 impl Write for FileAccessor {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if self.seek_pos + buf.len() > self.used_space() {
@@ -308,9 +331,16 @@ impl FileAccessor {
     pub(crate) fn map_const_ptr(&self) -> *const u8 {
         self.ptr.wrapping_add(Self::HEADER_SIZE)
     }
+    pub(crate) fn map_const_ptr_uninit(&self) -> *const MaybeUninit<u8> {
+        (self.ptr as *const MaybeUninit<u8>).wrapping_add(Self::HEADER_SIZE)
+    }
     #[inline]
     pub(crate) fn map_mut_ptr(&self) -> *mut u8 {
         self.ptr.wrapping_add(Self::HEADER_SIZE)
+    }
+    #[inline]
+    pub(crate) fn map_mut_ptr_uninit(&self) -> *mut MaybeUninit<u8> {
+        (self.ptr as *mut MaybeUninit<u8>).wrapping_add(Self::HEADER_SIZE)
     }
 
     pub(crate) fn map_all_raw(&self) -> &[u8] {

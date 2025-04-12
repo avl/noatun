@@ -1,10 +1,11 @@
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
-use crate::Target;
+use crate::{uninit_slice, Target};
 use anyhow::Result;
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use std::io::{Seek, SeekFrom, Write};
+use std::mem::MaybeUninit;
 
 #[derive(Debug)]
 pub enum UndoLogEntry<'a> {
@@ -13,7 +14,11 @@ pub enum UndoLogEntry<'a> {
     /// Zero out the values in start..end. I.e, this is the undo action of overwriting zeroes.
     ZeroOut { start: usize, len: usize },
     /// Restore memory at start, with the contents of the slice
-    Restore { start: usize, data: &'a [u8] },
+    /// It is okay for the slice to contain uninitialized values
+    RestoreUninit { start: usize, data: &'a [MaybeUninit<u8>] },
+    /// Restore memory at start, with the contents of the slice.
+    /// The slice cannot contain uninitialized values.
+    RestorePod { start: usize, data: &'a [u8] },
     /// This entry is emitted in the undo-log _prior_ to SequenceNr.
     /// I.e, if you rewind to this, the event that happened at SequenceNr will not
     /// be present in the database. I.e, this should be considered the 'next' SequenceNr
@@ -112,9 +117,20 @@ impl UndoLog {
                 assert!(offset >= len);
                 offset -= len;
                 let buf = &data[offset..offset + len];
-                Some((offset, UndoLogEntry::Restore { start, data: buf }))
+                Some((offset, UndoLogEntry::RestoreUninit { start, data: uninit_slice(buf) }))
             }
             4 => {
+                assert!(offset >= 16);
+                offset -= 8;
+                let len = LittleEndian::read_u64(&data[offset..offset + 8]) as usize;
+                offset -= 8;
+                let start = LittleEndian::read_u64(&data[offset..offset + 8]) as usize;
+                assert!(offset >= len);
+                offset -= len;
+                let buf = &data[offset..offset + len];
+                Some((offset, UndoLogEntry::RestorePod { start, data: buf }))
+            }
+            5 => {
                 assert!(offset >= 4);
                 offset -= 4;
                 let time: SequenceNr = bytemuck::pod_read_unaligned(&data[offset..offset + 4]);
@@ -143,7 +159,26 @@ impl UndoLog {
                     .expect("Failed to write to undo store");
                 store.write_u8(2).expect("Failed to write to undo store");
             }
-            UndoLogEntry::Restore { start, data } => {
+            UndoLogEntry::RestoreUninit { start, data } => {
+                // SAFETY:
+                // This is safe, since no other references to these 'u8' exist.
+                // Everyone else has only at most a &Cell<..>.
+                // This whole data structure is !Sync, so no other threads exist.
+                let data: &[MaybeUninit<u8>] = unsafe { std::mem::transmute(data) };
+                store
+                    .write_uninit(data)
+                    .expect("Failed to write to undo store");
+                store
+                    .write_u64::<LittleEndian>(start as u64)
+                    .expect("Failed to write to undo store");
+                store
+                    .write_u64::<LittleEndian>(data.len() as u64)
+                    .expect("Failed to write to undo store");
+                store
+                    .write_u8(3)
+                    .expect("Failed to write to undo store");
+            }
+            UndoLogEntry::RestorePod { start, data } => {
                 let all_zero = data.iter().copied().all(|x| x == 0);
                 if !all_zero {
                     // SAFETY:
@@ -162,14 +197,14 @@ impl UndoLog {
                     .write_u64::<LittleEndian>(data.len() as u64)
                     .expect("Failed to write to undo store");
                 store
-                    .write_u8(if all_zero { 2 } else { 3 })
+                    .write_u8(if all_zero { 2 } else { 4 })
                     .expect("Failed to write to undo store");
             }
             UndoLogEntry::Rewind(time) => {
                 store
                     .write_all(bytemuck::bytes_of(&time))
                     .expect("Failed to write to undo store");
-                store.write_u8(4).expect("Failed to write to undo store");
+                store.write_u8(5).expect("Failed to write to undo store");
             }
         }
     }

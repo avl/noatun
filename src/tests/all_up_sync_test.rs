@@ -95,11 +95,11 @@ struct TestDriver {
 }
 impl TestDriver {
     pub fn set_loss(&mut self, loss: f32) {
-        self.senders.rcu_safe(|item| {
+        self.senders.rcu(|item| {
             let mut cloned = item.clone();
             cloned.loss = loss;
             cloned
-        })
+        });
     }
 }
 impl Default for TestDriver {
@@ -163,7 +163,7 @@ impl CommunicationDriver for TestDriver {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
 
         let mut index = None;
-        self.senders.rcu_safe(|prev| {
+        self.senders.rcu(|prev| {
             let mut senders = prev.clone();
             index = Some(senders.senders.len());
             senders.senders.push(tx.clone());
