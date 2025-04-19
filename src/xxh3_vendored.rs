@@ -24,7 +24,10 @@ SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
 FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
 ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
- */
+*/
+// The reason for vendoring is that this makes it possible for us to
+// guarantee that its behavior will never change.
+
 use std::hash::Hasher;
 
 pub(crate) mod xxh32_common {
@@ -1372,7 +1375,7 @@ pub mod xxh3 {
             Ok(())
         }
     }
-
+/*
     #[derive(Clone, Copy)]
     ///Hash builder for `Xxh3`
     pub struct Xxh3Builder {
@@ -1460,7 +1463,7 @@ pub mod xxh3 {
             Self::new()
         }
     }
-
+*/
     //
     //128bit
     //

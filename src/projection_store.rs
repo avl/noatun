@@ -1016,7 +1016,6 @@ impl DatabaseContextData {
     #[allow(clippy::not_unsafe_ptr_arg_deref)] //False positive, we check the bounds
     pub fn write_pod_ptr<T: Pod>(&mut self, src: T, dest: *mut T) {
         let dest_index = self.index_of_ptr(dest);
-        dbg!(dest_index.0, size_of::<T>(), self.main_db_mmap.used_space());
         assert!(dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space());
 
         self.undo_log.record(UndoLogEntry::RestorePod {

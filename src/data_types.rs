@@ -8,11 +8,13 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::ops::{Add, Deref, Range};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
 use tracing::trace;
+use crate::data_types::meta_finder::get_any_empty;
 use crate::xxh3_vendored::NoatunHasher;
 
 #[derive(Copy, Clone, Debug, AnyBitPattern)]
@@ -148,7 +150,7 @@ unsafe impl<T: Copy> Zeroable for DatabaseOption<T> where T: Zeroable {}
 // registrar observe should work regardless.
 #[derive(Copy, Clone, AnyBitPattern)]
 #[repr(C)]
-pub struct DatabaseCell<T: Copy> {
+pub struct DatabaseCell<T> {
     value: T,
     registrar: SequenceNr,
 }
@@ -164,7 +166,7 @@ impl<T: Copy + Debug> Debug for DatabaseCell<T> {
 // TODO: Does OpaqueCell even work? Can we delete messages if they only write OpaqueCell?
 #[derive(Copy, Clone, AnyBitPattern)]
 #[repr(C)]
-pub struct OpaqueCell<T: Copy> {
+pub struct OpaqueCell<T> {
     value: T,
     registrar: SequenceNr,
 }
@@ -964,7 +966,6 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
 
 #[repr(C)]
 #[derive(Clone,Copy,AnyBitPattern)]
-//WARNING! this must be identical to first 3 fields of DatabaseVec
 struct DatabaseHashBucket<K,V> {
     hash: u32,
     key: K,
@@ -991,6 +992,24 @@ pub struct BucketNr(pub usize);
 #[doc(hidden)]
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub struct MetaGroupNr(pub usize);
+
+impl MetaGroup {
+    #[inline]
+    fn validate(&self) {
+        #[cfg(debug_assertions)]
+        {
+            let first_empty = self.0.iter().position(|x|x.empty());
+            if let Some(first_empty) = first_empty {
+                for i in 0..32 {
+                    assert!(!self.0[i].deleted());
+                }
+                for i in first_empty .. 32 {
+                    assert!(self.0[i].empty());
+                }
+            }
+        }
+    }
+}
 
 impl MetaGroupNr {
     fn from_u64(x: u64, cap: usize) -> (MetaGroupNr,Meta) {
@@ -1141,6 +1160,19 @@ pub mod meta_finder {
     pub(super) const META_ALIGNMENT:usize = 32;
     use crate::data_types::{MetaGroup, ProbeRunResult, BucketNr, Meta};
 
+    #[inline]
+    pub fn get_any_empty(group: &MetaGroup) -> Option<usize> {
+        unsafe {
+            let group_reg = _mm256_load_si256(group.0.as_ptr() as *const __m256i);
+            let zero_reg = _mm256_set1_epi8(0);
+            let res = _mm256_cmpeq_epi8(group_reg, zero_reg);
+            let mut bit_res: u32 = _mm256_movemask_epi8(res) as u32;
+            if bit_res == 0 {
+                return None;
+            }
+            Some(bit_res.trailing_zeros() as usize)
+        }
+    }
 
     // Returns true if empty was encountered
     #[doc(hidden)]
@@ -1242,6 +1274,10 @@ pub mod meta_finder {
 pub mod meta_finder {
     use crate::data_types::{BucketNr, Meta, MetaGroup, ProbeRunResult};
 
+    #[inline]
+    pub fn get_any_empty(group: &MetaGroup) -> Option<usize> {
+        group.0.iter().enumerate().find(|x|x.1.empty()).map(|x|x.0)
+    }
 
 
     /// Returns true and stops iteration if empty node found
@@ -1297,7 +1333,19 @@ pub mod meta_finder {
 #[cfg(test)]
 mod meta_tests {
     use crate::data_types::{meta_finder, Meta, MetaGroup, BucketNr, ProbeRunResult};
+    use crate::data_types::meta_finder::get_any_empty;
 
+    #[test]
+    fn meta_check_empty() {
+        let haystack = MetaGroup([Meta(129u8);32]);
+        assert!(get_any_empty(&haystack).is_none());
+    }
+    #[test]
+    fn meta_check_empty2() {
+        let mut haystack = MetaGroup([Meta(129u8);32]);
+        haystack.0[13] = Meta::EMPTY;
+        assert_eq!(get_any_empty(&haystack), Some(13));
+    }
     #[test]
     fn meta_get_finds_medium() {
         let mut haystack = MetaGroup([Meta(129u8);32]);
@@ -1438,16 +1486,16 @@ impl<I:Iterator> ExactSizeIterator for WithConcat<I,I::Item> {
 }
 
 
-pub struct DatabaseHashIterator<'a, K:AnyBitPattern+Hash+PartialEq,V:FixedSizeObject> {
-    hash_buckets: &'a [DatabaseHashBucket<K,V>],
+pub struct DatabaseHashIterator<'a, K:AnyBitPattern+NoatunHash+PartialEq,V:FixedSizeObject> {
+    hash_buckets: &'a [MaybeUninit<DatabaseHashBucket<K,V>>],
     metas: &'a [MetaGroup],
     next_position: usize,
 }
-struct DatabaseHashOwningIterator<'a, K:AnyBitPattern+Hash+PartialEq,V:FixedSizeObject> {
+struct DatabaseHashOwningIterator<'a, K:AnyBitPattern+NoatunHash+PartialEq,V:FixedSizeObject> {
     hash_buckets: HashAccessContextMut<'a, K, V>,
     next_position: usize,
 }
-impl<'a,K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> Iterator for DatabaseHashIterator<'a,K,V> {
+impl<'a,K: AnyBitPattern+NoatunHash+PartialEq, V: FixedSizeObject> Iterator for DatabaseHashIterator<'a,K,V> {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1458,7 +1506,7 @@ impl<'a,K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> Iterator for Databa
             }
             self.next_position += 1;
             if get_meta(self.metas, BucketNr(pos)).populated() {
-                let bucket = &self.hash_buckets[pos];
+                let bucket = unsafe { self.hash_buckets[pos].assume_init_ref() };
                 return Some((&bucket.key, &bucket.v));
             }
         }
@@ -1466,7 +1514,7 @@ impl<'a,K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> Iterator for Databa
     }
 }
 
-impl<'a, K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> Iterator for DatabaseHashOwningIterator<'a, K,V> {
+impl<'a, K: AnyBitPattern+NoatunHash+PartialEq, V: FixedSizeObject> Iterator for DatabaseHashOwningIterator<'a, K,V> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1479,7 +1527,7 @@ impl<'a, K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> Iterator for Datab
             self.next_position += 1;
             let meta =  get_meta(self.hash_buckets.metas, BucketNr(pos));
             if meta.populated() {
-                let bucket = &mut self.hash_buckets.buckets[pos];
+                let bucket = unsafe { self.hash_buckets.buckets[pos].assume_init_mut() };
                 let key_p = &mut bucket.key as *mut K;
                 let v_p = &mut bucket.v as *mut V;
                 return unsafe { Some((
@@ -1493,13 +1541,13 @@ impl<'a, K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> Iterator for Datab
 }
 
 #[derive(Clone,Copy)]
-struct HashAccessContext<'a,K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> {
+struct HashAccessContext<'a,K: AnyBitPattern+NoatunHash+PartialEq, V: FixedSizeObject> {
     metas: &'a [MetaGroup],
-    buckets: &'a [DatabaseHashBucket<K,V>],
+    buckets: &'a [MaybeUninit<DatabaseHashBucket<K,V>>],
 }
-struct HashAccessContextMut<'a,K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> {
+struct HashAccessContextMut<'a,K: AnyBitPattern+NoatunHash+PartialEq, V: FixedSizeObject> {
     metas: &'a mut [MetaGroup],
-    buckets: &'a mut [DatabaseHashBucket<K,V>],
+    buckets: &'a mut [MaybeUninit<DatabaseHashBucket<K,V>>],
 }
 
 
@@ -1515,7 +1563,54 @@ fn get_meta(metas: &[MetaGroup], bucket: BucketNr) -> &Meta {
 }
 
 
-impl<'a,K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> HashAccessContextMut<'a,K,V> {
+enum MetaMutAndEmpty<'a> {
+    /// The meta group has all slots occupied
+    NoEmpty(&'a mut Meta),
+    /// There is an empty slot, and it is precisely after '&Meta'.
+    HasEmptyAfterMeta(&'a mut Meta),
+    /// There is an empty slot. The slot before the empty slot is `before_empty`
+    HasEmpty {
+        meta: &'a mut Meta,
+        before_empty : &'a mut Meta
+    }
+
+}
+
+/// Some(x) if the given bucket is part of a group with at least one empty slot.
+/// x will be the first such empty slot.
+fn get_meta_mut_and_emptyable(metas: &mut [MetaGroup], bucket: BucketNr) -> MetaMutAndEmpty {
+    let group = bucket.0/32;
+    let subindex = bucket.0%32;
+    let group_obj = &mut metas[group];
+    group_obj.validate();
+    let any_empty = get_any_empty(group_obj);
+    match any_empty {
+        Some(empty) => {
+            if empty == subindex + 1 {
+                MetaMutAndEmpty::HasEmptyAfterMeta(&mut group_obj.0[subindex])
+            } else {
+                debug_assert_ne!(empty, 0);
+                debug_assert_ne!(empty, 1);
+                debug_assert_ne!(subindex, empty);
+                debug_assert_ne!(subindex , empty - 1);
+                debug_assert!(subindex < empty-1);
+                println!("Group {}, subindex: {}, empty: {}", group, subindex, empty);
+                group_obj.validate();
+                let [meta, before_empty] = group_obj.0.get_disjoint_mut([subindex, empty-1]).unwrap();
+                MetaMutAndEmpty::HasEmpty {
+                    meta,
+                    before_empty
+                }
+            }
+        }
+        None => {
+            MetaMutAndEmpty::NoEmpty(&mut group_obj.0[subindex])
+        }
+    }
+}
+
+
+impl<'a,K: AnyBitPattern+NoatunHash+PartialEq, V: FixedSizeObject> HashAccessContextMut<'a,K,V> {
     fn readonly(&'a self) -> HashAccessContext<'a,K,V> {
         HashAccessContext {
             metas: self.metas,
@@ -1524,7 +1619,7 @@ impl<'a,K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> HashAccessContextMu
     }
 }
 
-impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
+impl<K: AnyBitPattern+NoatunHash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
 
     pub fn len(&self) -> usize {
         self.length
@@ -1564,7 +1659,7 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
 
         unsafe {
             let meta_groups = slice::from_raw_parts_mut(dptr as *mut MetaGroup, meta_group_count);
-            let buckets = slice::from_raw_parts_mut(dptr.wrapping_add(aligned_meta_size) as *mut DatabaseHashBucket<K,V>, cap);
+            let buckets = slice::from_raw_parts_mut(dptr.wrapping_add(aligned_meta_size) as *mut MaybeUninit<DatabaseHashBucket<K,V>>, cap);
             HashAccessContextMut {
                 metas: meta_groups,
                 buckets,
@@ -1586,7 +1681,7 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
 
         unsafe {
             let meta_groups = slice::from_raw_parts(dptr as *const MetaGroup, meta_group_count);
-            let buckets = slice::from_raw_parts(dptr.wrapping_add(aligned_meta_size) as *const DatabaseHashBucket<K,V>, cap);
+            let buckets = slice::from_raw_parts(dptr.wrapping_add(aligned_meta_size) as *const MaybeUninit<DatabaseHashBucket<K,V>>, cap);
             HashAccessContext {
                 metas: meta_groups,
                 buckets,
@@ -1595,21 +1690,23 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
     }
 
     /// Probe only useful for reading/updating existing bucket
-    fn probe_read(&self, database_context_data: HashAccessContext<K,V>, key: &K) -> Option<BucketNr> {
-        if self.capacity ==  0 {
+    fn probe_read(database_context_data: HashAccessContext<K,V>, key: &K) -> Option<BucketNr> {
+        if database_context_data.buckets.len() ==  0 {
             return None;
         }
         let HashAccessContext { metas, buckets } = database_context_data;
         let mut h = NoatunHasher::new();
         key.hash(&mut h);
         let cap = buckets.len();
-        let (bucket_nr, key_meta) = MetaGroupNr::from_u64(h.finish(), cap);
+        let (group_nr, key_meta) = MetaGroupNr::from_u64(h.finish(), cap);
 
         let mut result = None;
-        let probe = BucketProbeSequence::new(bucket_nr, (cap+31)/32);
+        //println!("Group-nr: {:?}, key_meta: {:?}", group_nr, key_meta);
+        let probe = BucketProbeSequence::new(group_nr, (cap+31)/32);
 
         run_get_probe_sequence(metas, cap, key_meta, |bucket_nr|{
-            if &buckets[bucket_nr.0].key == key {
+            //println!("Checking key for bucket {:?}", bucket_nr);
+            if unsafe { &buckets[bucket_nr.0].assume_init_ref().key } == key {
                 result = Some(bucket_nr);
                 true
             } else {
@@ -1665,7 +1762,7 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
         let probe = BucketProbeSequence::new(bucket_nr, (cap+31)/32);
 
         run_insert_probe_sequence(metas, cap, key_meta, |bucket_nr|{
-            &buckets[bucket_nr.0].key == key
+            unsafe{&buckets[bucket_nr.0].assume_init_ref().key == key}
         }, probe)
 
         /*
@@ -1772,9 +1869,53 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
     }
     pub fn get(&self, key: &K) -> Option<&V> {
         let context = self.data_meta_len();
-        let bucket = self.probe_read(context, &key)?;
-        Some(&context.buckets[bucket.0].v)
+        let bucket = Self::probe_read(context, &key)?;
+        unsafe {
+            Some(&context.buckets[bucket.0].assume_init_ref().v)
+        }
     }
+
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let mut context = self.data_meta_len_mut();
+        let bucket = Self::probe_read(context.readonly(), &key)?;
+
+        let bucket_obj = unsafe {
+            context.buckets[bucket.0].assume_init_read()
+        };
+
+        match get_meta_mut_and_emptyable(&mut context.metas, bucket) {
+            MetaMutAndEmpty::NoEmpty(meta) => {
+                NoatunContext.write_pod_internal(Meta::DELETED, meta);
+            }
+            MetaMutAndEmpty::HasEmptyAfterMeta(meta) => {
+                NoatunContext.write_pod_internal(Meta::EMPTY, meta);
+            }
+            MetaMutAndEmpty::HasEmpty { meta, before_empty } => {
+                compile_error!("This does not work
+Thing is this:
+ - If we move the meta, we must also move the actual bucket.
+
+ Possible ways forward:
+  - Move bucket
+  - Change rules for empty. don't require them to be last. (is there really any reason why they must be?)
+
+                ")
+                NoatunContext.copy_pod(before_empty, meta);
+                NoatunContext.write_pod_internal(Meta::EMPTY, before_empty);
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            for group in context.metas {
+                group.validate();
+            }
+        }
+
+        Some(bucket_obj.v)
+    }
+
     pub fn insert(&mut self, key: K, val: &V::DetachedType) {
         let context = self.data_meta_len_mut();
         let probe_result = Self::probe(context.readonly(), &key);
@@ -1788,7 +1929,7 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
             }
             ProbeRunResult::FoundUnoccupied(bucket, meta)| //TODO: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
             ProbeRunResult::FoundPopulated(bucket, meta) => {
-                let bucket_obj = &mut context.buckets[bucket.0];
+                let bucket_obj = unsafe { context.buckets[bucket.0].assume_init_mut() };
                 let old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
                 V::init_from_detached(old_v, val);
                 if matches!(probe_result, ProbeRunResult::FoundUnoccupied(_, _)) {
@@ -1813,7 +1954,7 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
             }
             ProbeRunResult::FoundUnoccupied(bucket, meta)| //TODO: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
             ProbeRunResult::FoundPopulated(bucket, meta) => {
-                let bucket_obj = &mut context.buckets[bucket.0];
+                let bucket_obj = unsafe { context.buckets[bucket.0].assume_init_mut()};
                 let old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
                 NoatunContext.write_any(val, old_v);
                 let bucket_meta = get_meta_mut(context.metas, bucket);
@@ -1855,7 +1996,6 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
         let i = unsafe { self.unsafe_into_iter() };
         let capacity = i.size_hint().0;
         let new_capacity = Self::next_suitable_capacity(capacity.max(new_min_capacity));
-        println!("Change capacity to {}", new_capacity);
         debug_assert!(new_capacity >= new_min_capacity);
         debug_assert!(new_capacity >= capacity);
 
@@ -1867,7 +2007,61 @@ impl<K: AnyBitPattern+Hash+PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
     }
 }
 
-impl<K:AnyBitPattern+Hash+Eq,V:FixedSizeObject> Object for DatabaseHash<K,V> {
+/// This types seves the same purpose as [`std::hash::Hash`]. However,
+/// offers guarantees not offered by the standard trait.
+///
+/// Specifically, implementations of `NoatunHash` for a specific type T must
+/// always yield the same values. This guarantee must hold across program invocations,
+/// across different machines and architectures.
+///
+/// The regular rust ecosystem generally does not offer this guarantee, even when using
+/// something like `rustc-hash` `FxHash` or other stable hash implementation, for two reasons
+///
+/// 1) `rustc-hash` never explicitly guarantees that new versions will yield exactly the same values.
+/// 2) Types which implement `Hash` may not always guarantee that future implementations return
+///    the same values
+///
+/// For these reasons, noatun requires users to implement `NoatunHash` for all hash keys.
+/// If you know that the underlying `Hash` implementation is actually stable, you can of course
+/// just forward to such an impl.
+pub trait NoatunHash {
+    fn hash<H>(&self, state: &mut H)
+        where H: Hasher;
+}
+
+mod noatun_hash_impls {
+    use std::hash::Hasher;
+    use crate::data_types::NoatunHash;
+
+    macro_rules! noatun_hash_primitive{
+        ($t: ident, $tm: ident) => {
+            impl NoatunHash for $t {
+                fn hash<H>(&self, state: &mut H)
+                where
+                    H: Hasher
+                {
+                    state.$tm(*self);
+                }
+            }
+        }
+    }
+
+    noatun_hash_primitive!(usize, write_usize);
+    noatun_hash_primitive!(isize, write_isize);
+    noatun_hash_primitive!(u8, write_u8);
+    noatun_hash_primitive!(u16, write_u16);
+    noatun_hash_primitive!(u32, write_u32);
+    noatun_hash_primitive!(u64, write_u64);
+    noatun_hash_primitive!(u128, write_u128);
+    noatun_hash_primitive!(i8, write_i8);
+    noatun_hash_primitive!(i16, write_i16);
+    noatun_hash_primitive!(i32, write_i32);
+    noatun_hash_primitive!(i64, write_i64);
+    noatun_hash_primitive!(i128, write_i128);
+}
+
+
+impl<K:AnyBitPattern+NoatunHash+Hash+Eq,V:FixedSizeObject> Object for DatabaseHash<K,V> {
     type Ptr = ThinPtr;
     type DetachedType = HashMap<K,V::DetachedOwnedType>;
     type DetachedOwnedType = HashMap<K,V::DetachedOwnedType>;
@@ -1908,6 +2102,8 @@ mod tests {
     use super::DatabaseHash;
     use crate::{CutOffDuration, Database, DatabaseCell};
     use crate::tests::DummyTestApp;
+    use std::time::Instant;
+    use std::hint::black_box;
 
     #[test]
     fn test_hashmap_miri0() {
@@ -1935,6 +2131,73 @@ mod tests {
             .unwrap();
     }
     #[test]
+    fn test_hashmap_delete_miri0() {
+        let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
+            10000,
+            CutOffDuration::from_minutes(15),
+            Some(datetime!(2021-01-01 Z).into()),
+            None,
+            (),
+        )
+            .unwrap();
+        db.with_root_mut(|map| {
+            let map = unsafe { map.get_unchecked_mut() };
+            assert_eq!(map.0.len(), 0);
+
+            map.0.insert(42, &42);
+
+            let val = map.0.get(&42).unwrap();
+            assert_eq!(val.get(), 42);
+
+            let vals : Vec<u32> = map.0.iter().map(|(k,_)| *k).collect();
+            assert_eq!(vals, [42]);
+
+            assert!(map.0.remove(&41).is_none(), "remove nonexisting key");
+
+            let val = map.0.remove(&42).expect("key exists");
+            assert_eq!(val.value, 42);
+
+            assert_eq!(map.0.iter().count(), 0);
+
+
+        })
+            .unwrap();
+
+    }
+    #[test]
+    fn test_hashmap_delete_many_miri0() {
+        let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
+            100000,
+            CutOffDuration::from_minutes(15),
+            Some(datetime!(2021-01-01 Z).into()),
+            None,
+            (),
+        )
+            .unwrap();
+        db.with_root_mut(|map| {
+            let map = unsafe { map.get_unchecked_mut() };
+            assert_eq!(map.0.len(), 0);
+
+            for i in 0..200 {
+                map.0.insert(i, &i);
+            }
+
+            for i in 0..200 {
+                map.0.get(&i).expect("key exists before starting deletes");
+            }
+
+            for i in 0..200 {
+                println!("Removing {}", i);
+                assert!(map.0.remove(&i).is_some(), "remove nonexisting key");
+                for j in i+1 .. 200 {
+                    map.0.get(&j).expect(&format!("key {} exists after delete of {}", j, i));
+                }
+            }
+        })
+            .unwrap();
+
+    }
+    #[test]
     fn test_hashmap_miri_insert_many() {
         let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
             200000,
@@ -1947,11 +2210,10 @@ mod tests {
         db.with_root_mut(|map| {
             let map = unsafe { map.get_unchecked_mut() };
             assert_eq!(map.0.len(), 0);
-            for i in 0..100 {
+            for i in 0..300 {
                 map.0.insert(i,  &i);
             }
-            for i in 0..100 {
-                println!("i:{}", i);
+            for i in 0..300 {
                 let val = map.0.get(&i).unwrap();
                 assert_eq!(val.get(), i);
             }
@@ -1959,5 +2221,46 @@ mod tests {
         })
             .unwrap();
     }
+
+    #[test]
+    fn test_hashmap_lookup_speed() {
+        let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
+            2000000,
+            CutOffDuration::from_minutes(15),
+            Some(datetime!(2021-01-01 Z).into()),
+            None,
+            (),
+        )
+            .unwrap();
+        db.with_root_mut(|map| {
+            let map = unsafe { map.get_unchecked_mut() };
+            assert_eq!(map.0.len(), 0);
+            for i in 0..10000 {
+                map.0.insert(i,  &i);
+            }
+            let bef = Instant::now();
+            for i in 0..10000 {
+                let val = map.0.get(black_box(&i)).unwrap();
+                black_box(val);
+            }
+            println!("noatun hashmap: 10000 lookups in {:?}", bef.elapsed());
+
+        })
+            .unwrap();
+    }
+    #[test]
+    fn test_hashmap_lookup_std_for_ref() {
+        let mut map = std::collections::HashMap::new();
+        for i in 0..10000 {
+            map.insert(i,  i);
+        }
+        let bef = Instant::now();
+        for i in 0..10000 {
+            let val = map.get(black_box(&i)).unwrap();
+            black_box(val);
+        }
+        println!("std hashmap: 10000 lookups in {:?}", bef.elapsed());
+    }
+
 
 }
