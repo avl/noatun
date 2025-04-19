@@ -2607,6 +2607,7 @@ mod tests {
         roundtrip(FileOffset::new(u64::MAX / 2 - 1, U1::ONE));
         roundtrip(FileOffset::new(u64::MAX / 2 - 1, U1::ZERO));
     }
+
     #[test]
     fn test_dedup_slice() {
         use super::dedup_slice;

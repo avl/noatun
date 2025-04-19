@@ -271,7 +271,6 @@ impl<APP: Application> Projector<APP> {
         msg: &Message<APP::Message>,
         seqnr: SequenceNr,
     ) {
-        let guard = ContextGuardMut::new(context);
 
         if context.next_seqnr() != seqnr {
             context.set_next_seqnr(seqnr); //TODO: Maybe we can optimize this somehow?
@@ -284,7 +283,9 @@ impl<APP: Application> Projector<APP> {
                 context.set_tainted();
             }
         }
-        //println!("Applying message #{}", context.next_seqnr());
+        let guard = ContextGuardMut::new(context);
+
+        println!("Calling message apply");
         msg.payload.apply(msg.header.id.timestamp(), unsafe {
             Pin::new_unchecked(root)
         }); //TODO: Handle panics in apply gracefully
@@ -355,7 +356,6 @@ impl<APP: Application> Projector<APP> {
                     return Ok(());
                 }
                 let seqnr = SequenceNr::from_index(seq);
-                //println!("Projecting {}, time: {:?}, cutoff: {:?}", seq, DateTime::from_timestamp_millis(msg.id().timestamp() as i64), DateTime::from_timestamp_millis(cutoff as i64));
                 Projector::<APP>::apply_single_message(context, root, &msg, seqnr);
             }
             Ok(())
