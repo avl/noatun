@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 resolver = "2"
 
+[[bench]]
+name = "meta"
+harness = false
+
+
 # The `foo` package will use the -Copt-level=3 flag.
 [profile.dev.package.sha2]
 opt-level = 3
@@ -38,6 +43,7 @@ arrayvec = "0.7.6"
 memchr = "2.7.4"
 
 [dev-dependencies]
+divan  = "0.1"
 savefile = {  version = "0.18", path ="../savefile/savefile"}
 savefile-derive = "0.18"
 noatun = { path = ".", features = ["tokio"] }

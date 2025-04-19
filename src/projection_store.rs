@@ -752,18 +752,25 @@ impl DatabaseContextData {
         if align > 256 {
             panic!("Noatun arbitrarily does not support types with alignment > 256");
         }
+        let main_db_ptr = self.main_db_mmap.map_mut_ptr();
+        // Ensure that main_db_ptr is always 16 bytes offset from a 256-byte alignment boundary.
+        // This is so that we're sure that process restarts won't destroy alignment
+        debug_assert_eq!((main_db_ptr as usize-16)%256, 0);
 
-        let alignment_adjustment = index_rounded_up_to_custom_align(self.pointer(), align).unwrap();
+        // Calculate real address in memory. This is the address that must respect
+        // the alignment request.
+        let raw_ptr_usize = main_db_ptr as usize + self.pointer();
+        let alignment_adjusted_usize = index_rounded_up_to_custom_align(raw_ptr_usize, align).unwrap();
+        let alignment_adjusted = alignment_adjusted_usize - (main_db_ptr as usize);
         self.undo_log
             .record(UndoLogEntry::SetPointer(self.pointer()));
 
-        let new_pointer = alignment_adjustment.checked_add(size).unwrap();
+        let new_pointer = alignment_adjusted.checked_add(size).unwrap();
         self.main_db_mmap
             .grow(new_pointer)
             .expect("Failed to allocate memory");
-        self.main_db_mmap
-            .map_mut_ptr()
-            .wrapping_add(new_pointer - size)
+        main_db_ptr
+            .wrapping_add(alignment_adjusted)
     }
     pub fn allocate_array<const N: usize, const ALIGN: usize>(&mut self) -> &mut [u8; N] {
         self.allocate_slice(N, ALIGN).try_into().unwrap()
@@ -1009,6 +1016,7 @@ impl DatabaseContextData {
     #[allow(clippy::not_unsafe_ptr_arg_deref)] //False positive, we check the bounds
     pub fn write_pod_ptr<T: Pod>(&mut self, src: T, dest: *mut T) {
         let dest_index = self.index_of_ptr(dest);
+        dbg!(dest_index.0, size_of::<T>(), self.main_db_mmap.used_space());
         assert!(dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space());
 
         self.undo_log.record(UndoLogEntry::RestorePod {

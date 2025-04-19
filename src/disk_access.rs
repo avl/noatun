@@ -252,8 +252,8 @@ impl Write for FileAccessor {
 }
 
 impl FileAccessor {
-    /// Use a header size that ensures start of payload is at least 16 byte aligned
-    /// 16 bytes is enough for any type used by noatun itself. Client data can be
+    /// Use a header size that ensures start of payload is at least 256 byte aligned
+    /// 256 bytes is enough for any type used by noatun itself. Client data can be
     /// aligned at even larger values, and this is supported, byt will waste some space.
     const HEADER_SIZE: usize = 16;
 
