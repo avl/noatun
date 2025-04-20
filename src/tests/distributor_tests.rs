@@ -5,6 +5,7 @@ use crate::{Database, MessageId, NoatunTime};
 use datetime_literal::datetime;
 use std::iter::once;
 use std::mem::swap;
+use crate::database::DatabaseSettings;
 
 fn create_app<'a>(
     msgs: impl IntoIterator<
@@ -20,8 +21,10 @@ fn create_app<'a>(
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10000,
         CutOffDuration::from_minutes(15),
-        Some(datetime!(2021-01-01 Z).into()),
-        None,
+        DatabaseSettings {
+            mock_time: Some(datetime!(2021-01-01 Z).into()),
+            ..Default::default()
+        },
         (),
     )
     .unwrap();

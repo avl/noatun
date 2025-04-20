@@ -19,13 +19,19 @@ use crate::xxh3_vendored::NoatunHasher;
 
 mod noatun_hash_impls;
 
-#[derive(Copy, Clone, Debug, AnyBitPattern)]
+#[derive(Copy, Clone, AnyBitPattern)]
 #[repr(C)]
 pub struct NoatunString {
     start: ThinPtr,
     length: usize,
     registrar: SequenceNr,
     padding: u32
+}
+
+impl Debug for NoatunString {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get())
+    }
 }
 
 impl Hash for NoatunString {
@@ -591,9 +597,9 @@ pub struct DatabaseVec<T: FixedSizeObject> {
     phantom_data: PhantomData<T>,
 }
 
-impl<T: FixedSizeObject> Debug for DatabaseVec<T> {
+impl<T: FixedSizeObject+Debug> Debug for DatabaseVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DatabaseVec({})", { self.length })
+        f.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -1006,6 +1012,8 @@ struct DatabaseHashBucket<K,V> {
     v: V,
 }
 
+
+//TODO: Rename to NoatunHash?
 #[repr(C)]
 #[derive(Clone,Copy)]
 pub struct DatabaseHash<K: AnyBitPattern, V: FixedSizeObject> {
@@ -1013,6 +1021,12 @@ pub struct DatabaseHash<K: AnyBitPattern, V: FixedSizeObject> {
     capacity: usize,
     data: usize,
     phantom_data: PhantomData<(K,V)>,
+}
+
+impl<K:AnyBitPattern+NoatunKey+PartialEq+Debug,V:FixedSizeObject+Debug> Debug for DatabaseHash<K, V> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
 }
 
 unsafe impl<K:AnyBitPattern,V:FixedSizeObject> Pod for DatabaseHash<K,V> {}
@@ -1144,10 +1158,10 @@ pub fn run_get_probe_sequence(metas: &[MetaGroup], max_buckets: usize, needle: M
         };
         let group = &metas[group_index.0];
 
-        let start_bucket = BucketNr(group_index.0 * 32);
+        let bucket_offset = BucketNr(group_index.0 * 32);
         if meta_finder::meta_get_group_find(group,
                                             if group_index.0 + 1 ==metas.len() {max_buckets-32*group_index.0} else {32},
-                                            needle, |index|f(start_bucket + index)) {
+                                            needle, |index|f(bucket_offset + index)) {
             return;
         }
     }
@@ -1539,7 +1553,9 @@ impl<'a,K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> Iterator for
                 return None;
             }
             self.next_position += 1;
-            if get_meta(self.metas, BucketNr(pos)).populated() {
+            let meta = get_meta(self.metas, BucketNr(pos));
+            if meta.populated() {
+                println!("Bucket {} had populated meta: {:?}", pos, meta);
                 let bucket = unsafe { self.hash_buckets[pos].assume_init_ref() };
                 return Some((&bucket.key, &bucket.v));
             }
@@ -1708,7 +1724,7 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
         }
     }
     fn data_meta_len(&self) -> HashAccessContext<K,V> {
-        let dptr = NoatunContext.start_ptr_mut().wrapping_add(self.data);
+        let dptr = NoatunContext.start_ptr().wrapping_add(self.data);
         let align = align_of::<DatabaseHashBucket<K,V>>().max(align_of::<MetaGroup>());
         let cap = self.capacity;
         if cap == 0 {
@@ -1798,11 +1814,11 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
         let key = key.borrow();
         K::hash(key, &mut h);
 
-        let (bucket_nr, key_meta) = MetaGroupNr::from_u64(h.finish(), cap);
+        let (meta_group_nr, key_meta) = MetaGroupNr::from_u64(h.finish(), cap);
         //let mut visited_buckets = 0;
         //let max_visited_buckets = self.capacity/2;
         //let mut first_deleted = None;
-        let probe = BucketProbeSequence::new(bucket_nr, cap.div_ceil(32));
+        let probe = BucketProbeSequence::new(meta_group_nr, cap.div_ceil(32));
 
         run_insert_probe_sequence(metas, cap, key_meta, |bucket_nr|{
             unsafe{<K as NoatunKey>::eq(buckets[bucket_nr.0].assume_init_ref().key.detach_key_ref(), key)}
@@ -1919,22 +1935,30 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
     }
 
 
-    pub fn remove(&mut self, key: impl Borrow<K::DetachedType>) -> Option<V> {
+    /// Return true if a value was removed
+    pub fn remove(&mut self, key: impl Borrow<K::DetachedType>) -> bool {
         let context = self.data_meta_len_mut();
-        let bucket = Self::probe_read(context.readonly(), key)?;
+        let Some(bucket) = Self::probe_read(context.readonly(), key) else {
+            return false;
+        };
 
-        let bucket_obj = unsafe {
-            context.buckets[bucket.0].assume_init_read()
+
+        unsafe {
+            let val = Pin::new_unchecked(&mut context.buckets[bucket.0].assume_init_mut().v);
+            val.clear();
         };
 
         match get_meta_mut_and_emptyable(context.metas, bucket) {
             MetaMutAndEmpty::NoEmpty(meta) => {
+                println!("No empty found");
                 NoatunContext.write_pod_internal(Meta::DELETED, meta);
             }
             MetaMutAndEmpty::HasEmptyAfterMeta(meta) => {
+                println!("empty just after meta");
                 NoatunContext.write_pod_internal(Meta::EMPTY, meta);
             }
             MetaMutAndEmpty::HasEmpty { meta_bucket, meta, before_empty_bucket, before_empty } => {
+                println!("has empty");
 
                 NoatunContext.copy_pod(before_empty, meta);
                 NoatunContext.write_pod_internal(Meta::EMPTY, before_empty);
@@ -1947,6 +1971,8 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
             }
         }
 
+        println!("Metas now: {:?}", context.metas);
+
         #[cfg(debug_assertions)]
         {
             for group in context.metas {
@@ -1954,7 +1980,11 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
             }
         }
 
-        Some(bucket_obj.v)
+        let new_length = self.length - 1;
+        NoatunContext.write_pod_internal(new_length, &mut self.length);
+
+
+        true
     }
 
     pub fn insert(&mut self, key: impl Borrow<K::DetachedType>, val: &V::DetachedType) {
@@ -1979,6 +2009,8 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
                     NoatunContext.write_pod_internal(meta, bucket_meta);
                     let old_k= unsafe { Pin::new_unchecked(&mut bucket_obj.key) };
                     old_k.init_from_detached(key);
+                    let new_length = self.length + 1;
+                    NoatunContext.write_pod_internal(new_length, &mut self.length);
                 }
             }
         }
@@ -2004,6 +2036,9 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
                 if matches!(probe_result, ProbeRunResult::FoundUnoccupied(_, _)) {
                     let old_k= unsafe { Pin::new_unchecked(&mut bucket_obj.key) };
                     NoatunContext.write_any(key, old_k);
+
+                    let new_length = self.length + 1;
+                    NoatunContext.write_pod_internal(new_length, &mut self.length);
                 }
             }
         }
@@ -2137,18 +2172,43 @@ impl<K:AnyBitPattern+ NoatunKey +Hash+Eq,V:FixedSizeObject> Object for DatabaseH
 mod tests {
     use datetime_literal::datetime;
     use super::{DatabaseHash, NoatunString};
-    use crate::{CutOffDuration, Database, DatabaseCell, Object};
-    use crate::tests::DummyTestApp;
+    use crate::{CutOffDuration, Database, DatabaseCell, NoatunTime, Object};
+    use crate::tests::{DummyTestApp};
     use std::time::Instant;
     use std::hint::black_box;
+    use std::pin::Pin;
+    use crate::database::DatabaseSettings;
+    use crate::tests::DummyTestMessageApply;
+
+    impl DummyTestMessageApply for DatabaseHash<u32, DatabaseCell<u32>> {
+        fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
+            let x = (time.0 % (1u64<<32)) as u32;
+            root.insert(x, &x);
+        }
+    }
+    impl DummyTestMessageApply for DatabaseHash<NoatunString, DatabaseCell<u32>> {
+        fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
+            let x = (time.0 % (1u64<<32)) as u32;
+            root.insert(x.to_string(), &x);
+        }
+    }
+    impl DummyTestMessageApply for DatabaseHash<NoatunString, NoatunString> {
+        fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
+            let x = (time.0 % (1u64<<32)) as u32;
+            root.insert(x.to_string(), &x.to_string());
+        }
+    }
 
     #[test]
     fn test_hashmap_miri0() {
         let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
             10000,
             CutOffDuration::from_minutes(15),
-            Some(datetime!(2021-01-01 Z).into()),
-            None,
+            DatabaseSettings {
+                mock_time: Some(datetime!(2021-01-01 Z).into()),
+                projection_time_limit: None,
+                ..DatabaseSettings::default()
+            },
             (),
         )
             .unwrap();
@@ -2172,15 +2232,17 @@ mod tests {
         let mut db: Database<DummyTestApp<DatabaseHash<NoatunString, DatabaseCell<u32>>>> = Database::create_in_memory(
             10000,
             CutOffDuration::from_minutes(15),
-            Some(datetime!(2021-01-01 Z).into()),
-            None,
+           DatabaseSettings {
+               mock_time: Some(datetime!(2021-01-01 Z).into()),
+               ..Default::default()
+            },
             (),
         )
             .unwrap();
         db.with_root_mut(|mut map| {
             map.0.insert("hello", &42);
             assert_eq!(map.0.get("hello").unwrap().value, 42);
-            assert_eq!(map.0.remove("hello").unwrap().value, 42);
+            assert!(map.0.remove("hello"));
             assert!(map.0.get("hello").is_none());
         }).unwrap();
     }
@@ -2189,8 +2251,10 @@ mod tests {
         let mut db: Database<DummyTestApp<DatabaseHash<NoatunString, DatabaseCell<u32>>>> = Database::create_in_memory(
             10000,
             CutOffDuration::from_minutes(15),
-            Some(datetime!(2021-01-01 Z).into()),
-            None,
+            DatabaseSettings {
+                mock_time: Some(datetime!(2021-01-01 Z).into()),
+                ..Default::default()
+            },
             (),
         )
             .unwrap();
@@ -2206,19 +2270,20 @@ mod tests {
         let mut db: Database<DummyTestApp<DatabaseHash<NoatunString, NoatunString>>> = Database::create_in_memory(
             10000,
             CutOffDuration::from_minutes(15),
-            Some(datetime!(2021-01-01 Z).into()),
-            None,
-            (),
+            DatabaseSettings {
+                mock_time: Some(datetime!(2021-01-01 Z).into()),
+                ..Default::default()
+            },
+            ()
         )
             .unwrap();
         db.with_root_mut(|mut map| {
             map.0.insert("hello", "world");
 
-            let mut reg_map:Vec<_> = map.0.detach().into_iter().collect();
+            let reg_map:Vec<_> = map.0.detach().into_iter().collect();
             assert_eq!(&[("hello".to_string(), "world".to_string())], &*reg_map);
-            compile_error!("Make sure observation story of hashmap makes sense. Go through todos. Ship!")
             map.0.remove("hello");
-            let mut reg_map:Vec<_> = map.0.detach().into_iter().collect();
+            let reg_map:Vec<_> = map.0.detach().into_iter().collect();
             assert!(reg_map.is_empty());
 
 
@@ -2229,8 +2294,10 @@ mod tests {
         let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
             10000,
             CutOffDuration::from_minutes(15),
-            Some(datetime!(2021-01-01 Z).into()),
-            None,
+            DatabaseSettings {
+                mock_time: Some(datetime!(2021-01-01 Z).into()),
+                ..Default::default()
+            },
             (),
         )
             .unwrap();
@@ -2246,14 +2313,11 @@ mod tests {
             let vals : Vec<u32> = map.0.iter().map(|(k,_)| *k).collect();
             assert_eq!(vals, [42]);
 
-            assert!(map.0.remove(41).is_none(), "remove nonexisting key");
+            assert!(!map.0.remove(41), "remove nonexisting key");
 
-            let val = map.0.remove(42).expect("key exists");
-            assert_eq!(val.value, 42);
+            assert!(map.0.remove(42));
 
             assert_eq!(map.0.iter().count(), 0);
-
-
         })
             .unwrap();
 
@@ -2263,8 +2327,10 @@ mod tests {
         let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
             100000,
             CutOffDuration::from_minutes(15),
-            Some(datetime!(2021-01-01 Z).into()),
-            None,
+            DatabaseSettings {
+                mock_time: Some(datetime!(2021-01-01 Z).into()),
+                ..Default::default()
+            },
             (),
         )
             .unwrap();
@@ -2281,7 +2347,7 @@ mod tests {
             }
 
             for i in 0..200 {
-                assert_eq!(map.0.remove(i).unwrap().value, i);
+                assert!(map.0.remove(i));
                 for j in i+1 .. 200 {
                     map.0.get(j).expect(&format!("key {} exists after delete of {}", j, i));
                 }
@@ -2294,8 +2360,10 @@ mod tests {
         let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
             200000,
             CutOffDuration::from_minutes(15),
-            Some(datetime!(2021-01-01 Z).into()),
-            None,
+            DatabaseSettings {
+                mock_time: Some(datetime!(2021-01-01 Z).into()),
+                ..Default::default()
+            },
             (),
         )
             .unwrap();
@@ -2317,10 +2385,12 @@ mod tests {
     #[test]
     fn test_hashmap_lookup_speed_noatun() {
         let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
-            2000000,
+            5000000,
             CutOffDuration::from_minutes(15),
-            Some(datetime!(2021-01-01 Z).into()),
-            None,
+            DatabaseSettings {
+                mock_time: Some(datetime!(2021-01-01 Z).into()),
+                ..Default::default()
+            },
             (),
         )
             .unwrap();

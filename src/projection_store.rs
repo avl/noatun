@@ -96,8 +96,8 @@ mod registrar_info {
         /// This is sometimes known as a 'registrar' (TODO: Better naming? The word 'registrar'
         /// is strange here).
         pub seq: SequenceNr,
-        /// Non of the overwriters were tainted (i.e, all of them did the overwrite without
-        /// having read any of the current state of the db, makign them immune to changes
+        /// None of the overwriters were tainted (i.e, all of them did the overwrite without
+        /// having read any of the current state of the db, making them immune to changes
         /// caused by earlier (by time) messages not yet present at the current node.
         pub unconditionally_overwritten: u32,
     }
@@ -1200,6 +1200,7 @@ impl DatabaseContextData {
             debug!("considering {:?} = {:?} for deletion",
                 msgobj,
                 msg);
+            info!("unconditionally overwritten: {:?}", msg.unconditionally_overwritten);
             if !messages.may_have_been_transmitted(msg.seq)? || before_cutoff || msg.unconditionally_overwritten != 0 {
 
                 for observer in self.read_dependency(msg.seq) {

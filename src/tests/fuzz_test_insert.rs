@@ -13,6 +13,7 @@ use serde_derive::{Deserialize, Serialize};
 use std::io::Write;
 use std::pin::Pin;
 use std::time::Duration;
+use crate::database::DatabaseSettings;
 
 #[derive(Copy, Clone, Debug, Zeroable, Pod, Serialize, Deserialize, Savefile)]
 #[repr(C)]
@@ -102,8 +103,11 @@ fn test() {
         let mut db = Database::create_in_memory(
             1_000_000,
             CutOffDuration::from_hours(1).unwrap(),
-            Some(fake_time),
-            Some(limit_time),
+            DatabaseSettings {
+                mock_time: Some(fake_time),
+                projection_time_limit: Some(limit_time),
+                ..Default::default()
+            },
             (),
         )
         .unwrap();

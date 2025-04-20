@@ -24,6 +24,7 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::info;
+use crate::database::DatabaseSettings;
 
 thread_local! {
     pub static MY_THREAD_RNG: RefCell<Option<SmallRng>> = const { RefCell::new(None) };
@@ -196,9 +197,12 @@ async fn create_app(driver: &mut TestDriver) -> DatabaseCommunication<SyncApp> {
     let db: Database<SyncApp> = Database::create_in_memory(
         500000,
         CutOffDuration::from_minutes(15),
-        Some(START_TIME.into()),
-        None,
-        (),
+        DatabaseSettings {
+            mock_time: Some(START_TIME.into()),
+            projection_time_limit: None,
+            ..DatabaseSettings::default()
+        },
+        ()
     )
     .unwrap();
 
@@ -260,8 +264,10 @@ fn old_local_messages_without_effect_are_removed0() {
     let mut db: Database<SyncApp> = Database::create_in_memory(
         10000,
         CutOffDuration::from_days(2).unwrap(), // 2 days
-        Some(datetime!(2020-01-01 00:01:00 Z).into()),
-        None,
+        DatabaseSettings {
+            mock_time: Some(datetime!(2020-01-01 00:01:00 Z).into()),
+            ..Default::default()
+        },
         (),
     )
     .unwrap();
@@ -308,8 +314,10 @@ fn old_transmitted_messages_without_effect_are_removed1() {
     let mut db: Database<SyncApp> = Database::create_in_memory(
         10000,
         CutOffDuration::from_days(2).unwrap(), // 2 days
-        Some(datetime!(2020-01-01 00:01:00 Z).into()),
-        None,
+        DatabaseSettings {
+            mock_time: Some(datetime!(2020-01-01 00:01:00 Z).into()),
+            ..Default::default()
+        },
         (),
     )
     .unwrap();
@@ -354,8 +362,10 @@ fn old_transmitted_messages_without_effect_are_removed2() {
     let mut db: Database<SyncApp> = Database::create_in_memory(
         100000,
         CutOffDuration::from_minutes(15),
-        Some(START_TIME.into()),
-        None,
+        DatabaseSettings {
+            mock_time: Some(START_TIME.into()),
+            ..Default::default()
+        },
         (),
     )
     .unwrap();

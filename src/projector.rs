@@ -324,6 +324,7 @@ impl<APP: Application> Projector<APP> {
         context: &mut DatabaseContextData,
         root: &mut APP,
         max_project_to: Option<NoatunTime>,
+        auto_delete: bool,
     ) -> Result<Option<SequenceNr> /*earliest deleted index*/> {
         //println!("Max project to : {:?}", max_project_to);
         //let cutoff = self.cut_off_config.nominal_cutoff(real_time_now);
@@ -342,6 +343,9 @@ impl<APP: Application> Projector<APP> {
         };
 
         do_run::<APP>(context, root, first_run, max_project_to)?;
+        if !auto_delete {
+            return Ok(None);
+        }
         return remove_stale_messages(self, context);
 
         /// If returns true, need to finalize before-cutoff-part, then continue at given index

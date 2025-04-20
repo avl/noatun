@@ -112,7 +112,7 @@ async fn test_sync_app() {
                     true,
                     1_000_000,
                     CutOffDuration::from_days(1).unwrap(),
-                    None,
+                    Default::default(),
                     (),
                 )
                 .unwrap();

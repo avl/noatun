@@ -6,7 +6,7 @@ use crate::data_types::NoatunString;
 use crate::{Application, CutOffDuration, Database, DatabaseVec, MessagePayload, NoatunContext, NoatunTime, Object};
 use datetime_literal::datetime;
 use chrono::{DateTime, Utc};
-use crate::database::LoadingStatus;
+use crate::database::{DatabaseSettings, LoadingStatus};
 
 noatun_object!(
     #[derive(PartialEq)]
@@ -76,7 +76,7 @@ fn test_nominal_load_without_recovery() {
         true,
         100000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();
@@ -115,7 +115,7 @@ fn test_nominal_load_without_recovery() {
         false,
         100000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();
@@ -145,7 +145,7 @@ fn test_recovery_simple() {
         true,
         100000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();
@@ -189,7 +189,7 @@ fn test_recovery_simple() {
         false,
         100000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();
@@ -222,7 +222,7 @@ fn test_recovery_corrupted_file() {
         true,
         100000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();
@@ -270,7 +270,7 @@ fn test_recovery_corrupted_file() {
         false,
         100000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();
@@ -305,7 +305,7 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
         true,
         100000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();
@@ -359,7 +359,7 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
         false,
         100000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();

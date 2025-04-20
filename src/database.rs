@@ -35,7 +35,36 @@ pub struct Database<Base: Application> {
     projection_time_limit: Option<NoatunTime>,
     params: Base::Params,
     load_status: LoadingStatus,
+    auto_delete: bool,
 }
+
+/// Setting that control a database instance
+pub struct DatabaseSettings {
+    /// If Some, use the provided time instead of system time.
+    /// Default None.
+    pub mock_time: Option<NoatunTime>,
+    /// If Some, do not project any messages timestamped after the given time
+    /// Default None.
+    pub projection_time_limit: Option<NoatunTime>,
+    /// Use false to disable automatic deletion of subsumed messages.
+    ///
+    /// Normally, Noatun will detect when all effects of a message have been overwritten
+    /// by later messages, and automatically delete the former.
+    ///
+    /// Default value is true - automatically delete messages that no longer affect the
+    /// state.
+    pub auto_delete: bool,
+}
+impl Default for DatabaseSettings {
+    fn default() -> Self {
+        DatabaseSettings {
+            mock_time: None,
+            projection_time_limit: None,
+            auto_delete: true,
+        }
+    }
+}
+
 
 impl<APP: Application> Database<APP> {
 
@@ -63,8 +92,11 @@ impl<APP: Application> Database<APP> {
         Self::recover_impl(
             &mut self.context,
             &mut self.message_store,
-            now,
-            self.projection_time_limit,
+            &DatabaseSettings {
+                mock_time: Some(now),
+                projection_time_limit: self.projection_time_limit,
+                auto_delete: self.auto_delete,
+            },
             &self.params,
         )
     }
@@ -81,6 +113,9 @@ impl<APP: Application> Database<APP> {
 
     /// TODO: Document
     pub(crate) fn maybe_advance_cutoff(&mut self) -> Result<()> {
+        if !self.auto_delete {
+            return Ok(());
+        }
         // TODO: Do we need to check for dirty here? Probably not, but then we should
         // stop checking for dirty in things like append_many. It should be enough to
         // check on construction, right?
@@ -103,6 +138,9 @@ impl<APP: Application> Database<APP> {
     }
 
     pub(crate) fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
+        if !self.auto_delete {
+            return Ok(());
+        }
         self.message_store
             .advance_cutoff(new_cutoff, &mut self.context)
     }
@@ -214,8 +252,11 @@ impl<APP: Application> Database<APP> {
             Self::recover_impl(
                 &mut self.context,
                 &mut self.message_store,
-                now,
-                self.projection_time_limit,
+                &DatabaseSettings {
+                    mock_time: Some(now),
+                    projection_time_limit: self.projection_time_limit,
+                    auto_delete: self.auto_delete,
+                },
                 &self.params,
             )?;
         }
@@ -248,6 +289,7 @@ impl<APP: Application> Database<APP> {
             &mut self.context,
             unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
+            self.auto_delete
         )?;
 
         self.mark_clean()?;
@@ -279,6 +321,7 @@ impl<APP: Application> Database<APP> {
             &mut self.context,
             unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
+            self.auto_delete
         )?;
 
         Ok(any_deletes)
@@ -288,13 +331,12 @@ impl<APP: Application> Database<APP> {
     fn recover_impl(
         context: &mut DatabaseContextData,
         message_store: &mut Projector<APP>,
-        time_now: NoatunTime,
-        projection_time_limit: Option<NoatunTime>,
+        settings: &DatabaseSettings,
         params: &APP::Params,
     ) -> Result<()> {
         context.clear()?;
 
-        message_store.recover(time_now)?;
+        message_store.recover(settings.mock_time.unwrap_or_else(NoatunTime::now))?;
         let mmap_ptr = context.start_ptr();
         let guard = ContextGuardMut::new(context);
         let root_obj_ref = APP::initialize_root(params);
@@ -313,7 +355,8 @@ impl<APP: Application> Database<APP> {
         message_store.apply_missing_messages(
             context,
             unsafe { root.get_unchecked_mut() },
-            projection_time_limit,
+            settings.projection_time_limit,
+            settings.auto_delete
         )?;
 
         Ok(())
@@ -349,7 +392,7 @@ impl<APP: Application> Database<APP> {
         overwrite_existing: bool,
         max_file_size: usize,
         cutoff_interval: CutOffDuration,
-        projection_time_limit: Option<NoatunTime>,
+        settings: DatabaseSettings,
         params: APP::Params,
     ) -> Result<Database<APP>> {
         Self::create(
@@ -360,7 +403,7 @@ impl<APP: Application> Database<APP> {
             },
             max_file_size,
             cutoff_interval,
-            projection_time_limit,
+            settings,
             params,
         )
     }
@@ -368,18 +411,20 @@ impl<APP: Application> Database<APP> {
         path: impl AsRef<Path>,
         max_file_size: usize,
         cutoff_interval: CutOffDuration,
-        projection_time_limit: Option<NoatunTime>,
+        settings: DatabaseSettings,
         params: APP::Params,
     ) -> Result<Database<APP>> {
         Self::create(
             Target::OpenExisting(path.as_ref().to_path_buf()),
             max_file_size,
             cutoff_interval,
-            projection_time_limit,
+            settings,
             params,
         )
     }
 
+    /// Local is true if this message has been locally created. I.e, it isn't a message that
+    /// has been received from some other node.
     pub fn append_single(&mut self, message: Message<APP::Message>, local: bool) -> Result<()> {
         self.append_many(std::iter::once(message), local, true)
     }
@@ -490,11 +535,13 @@ impl<APP: Application> Database<APP> {
             &mut self.context,
             unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
+            self.auto_delete
         )?;
 
         while let Some(cur_earliest_deleted) = earliest_deleted {
             info!("Post-apply deletion carried out");
             // TODO: If this loop works, see where else it's needed
+            println!("Post add reproject bc delete: {:?}", cur_earliest_deleted);
             earliest_deleted = self.reproject_from(cur_earliest_deleted)?;
         }
 
@@ -508,8 +555,7 @@ impl<APP: Application> Database<APP> {
     pub fn create_in_memory(
         max_size: usize,
         cutoff_interval: CutOffDuration,
-        mock_time: Option<NoatunTime>,
-        projection_time_limit: Option<NoatunTime>,
+        settings: DatabaseSettings,
         params: APP::Params,
     ) -> Result<Database<APP>> {
         let mut disk = InMemoryDisk::default();
@@ -521,8 +567,7 @@ impl<APP: Application> Database<APP> {
         Self::recover_impl(
             &mut ctx,
             &mut message_store,
-            mock_time.unwrap_or_else(NoatunTime::now),
-            projection_time_limit,
+            &settings,
             &params,
         )?;
         ctx.mark_clean()?;
@@ -531,10 +576,11 @@ impl<APP: Application> Database<APP> {
             prev_local: None,
             context: ctx,
             message_store,
-            time_override: mock_time,
-            projection_time_limit,
+            time_override: settings.mock_time,
+            projection_time_limit: settings.projection_time_limit,
             params,
             load_status: LoadingStatus::NewDatabase,
+            auto_delete: settings.auto_delete
         })
     }
 
@@ -542,7 +588,7 @@ impl<APP: Application> Database<APP> {
         target: Target,
         max_file_size: usize,
         cutoff_interval: CutOffDuration,
-        projection_time_limit: Option<NoatunTime>,
+        settings: DatabaseSettings,
         params: APP::Params,
     ) -> Result<Database<APP>> {
         let mut disk = StandardDisk;
@@ -560,8 +606,11 @@ impl<APP: Application> Database<APP> {
             Self::recover_impl(
                 &mut ctx,
                 &mut message_store,
-                NoatunTime::now(),
-                projection_time_limit,
+                &DatabaseSettings {
+                    mock_time: settings.mock_time,
+                    projection_time_limit: settings.projection_time_limit,
+                    auto_delete: settings.auto_delete,
+                },
                 &params,
             )?;
             ctx.mark_clean()?;
@@ -585,8 +634,9 @@ impl<APP: Application> Database<APP> {
             context: ctx,
             message_store,
             time_override: None,
-            projection_time_limit,
+            projection_time_limit: settings.projection_time_limit,
             load_status,
+            auto_delete: settings.auto_delete,
         })
     }
     pub fn load_status(&self) -> LoadingStatus {

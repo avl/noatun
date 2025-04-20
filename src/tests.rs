@@ -1,3 +1,4 @@
+#![allow(non_local_definitions)]
 use super::*;
 use crate::data_types::{DatabaseCellArrayExt, NoatunString};
 use crate::disk_access::FileAccessor;
@@ -10,10 +11,11 @@ use data_types::DatabaseObjectHandle;
 use data_types::DatabaseVec;
 use database::Database;
 use datetime_literal::datetime;
-use savefile::{load_noschema, save_noschema};
+use savefile::{load_noschema, save_noschema, Deserialize, Packed, SavefileError, Schema, Serialize, Serializer, WithSchema, WithSchemaContext};
 use savefile_derive::Savefile;
-use std::io::{Cursor, SeekFrom};
+use std::io::{Cursor, Read, SeekFrom};
 use tracing_subscriber::Layer;
+use crate::database::DatabaseSettings;
 
 mod all_up_sync_test;
 mod distributor_tests;
@@ -23,11 +25,166 @@ mod recovery_tests;
 mod test_rotation;
 mod test_subsumption;
 
+mod test_types_rewind {
+    use std::marker::PhantomData;
+    use datetime_literal::datetime;
+    use crate::{CutOffDuration, Database, DatabaseCell, FixedSizeObject, Message, MessageId, NoatunTime};
+    use crate::tests::{DummyTestApp, DummyTestMessage, DummyTestMessageApply};
+    use std::pin::Pin;
+    //TODO: Move DatabaseVec to data_types, like the rest of the noatun types
+    use crate::DatabaseVec;
+    use crate::data_types::{DatabaseHash, NoatunString};
+    use crate::database::DatabaseSettings;
+
+    fn rewind_tester<T>() where
+        T: FixedSizeObject + DummyTestMessageApply + std::fmt::Debug {
+        let mut db: Database<DummyTestApp<T>> = Database::create_in_memory(
+            10000,
+            CutOffDuration::from_days(365).unwrap(),
+            DatabaseSettings {
+                mock_time: Some(datetime!(2020-01-01 Z).into()),
+                auto_delete: false,
+                ..Default::default()
+            },
+            (),
+        )
+            .unwrap();
+        fn snapshotter<T:std::fmt::Debug>(t: &T) -> String {
+            format!("{:#?}", t)
+        }
+
+        let clean_snapshot = db.with_root(snapshotter);
+
+        db.append_single(
+            Message::new(MessageId::from_parts_for_test(datetime!(2020-01-02 Z).into(), 0), vec![], DummyTestMessage(PhantomData))
+            , false).unwrap();
+
+        let snapshot1 = db.with_root(snapshotter);
+
+        db.append_single(
+            Message::new(MessageId::from_parts_for_test(datetime!(2020-01-04 Z).into(), 0), vec![], DummyTestMessage(PhantomData))
+            , false).unwrap();
+
+        let snapshot2 = db.with_root(snapshotter);
+
+        db.set_projection_time_limit(datetime!(2020-01-03 Z).into()).unwrap();
+        println!("Have rewound to 01-03");
+
+        let rewound_snapshot1 = db.with_root(snapshotter);
+        db.set_projection_time_limit(datetime!(2020-01-01 Z).into()).unwrap();
+        let rewound_clean = db.with_root(snapshotter);
+
+        println!("snap1: {}",snapshot1);
+        println!("rewound-snap1: {}",rewound_snapshot1);
+        println!("snap2: {}",snapshot2);
+
+        assert_eq!(clean_snapshot, rewound_clean);
+        assert_eq!(snapshot1, rewound_snapshot1);
+
+        assert_ne!(snapshot1, clean_snapshot);
+        assert_ne!(snapshot2, snapshot1);
+
+
+    }
+
+    #[test]
+    fn rewind_test_cell() {
+        impl DummyTestMessageApply for DatabaseCell<u32> {
+            fn test_message_apply(time: NoatunTime, root: Pin<&mut Self>) {
+                root.set(time.0 as u32)
+            }
+        }
+
+        rewind_tester::<DatabaseCell<u32>>();
+    }
+
+    #[test]
+    fn rewind_test_string_mod() {
+        impl DummyTestMessageApply for NoatunString {
+            fn test_message_apply(time: NoatunTime, root: Pin<&mut Self>) {
+                root.assign(&time.to_string());
+            }
+        }
+
+        rewind_tester::<NoatunString>();
+    }
+
+    #[test]
+    fn rewind_test_vec_add() {
+        impl DummyTestMessageApply for DatabaseVec<DatabaseCell<u16>> {
+            fn test_message_apply(time: NoatunTime, root: Pin<&mut Self>) {
+                if root.is_empty() {
+                    root.push(time.0 as u16);
+                } else {
+                    root.getmut(0).set(time.0 as u16);
+                }
+            }
+        }
+
+        rewind_tester::<DatabaseVec<DatabaseCell<u16>>>();
+    }
+    #[test]
+    fn rewind_test_vec_remove() {
+        impl DummyTestMessageApply for DatabaseVec<DatabaseCell<u32>> {
+            fn test_message_apply(time: NoatunTime, root: Pin<&mut Self>) {
+                if root.is_empty() {
+                    root.push(time.0 as u32);
+                } else {
+                    root.shift_remove(0);
+                }
+            }
+        }
+
+        rewind_tester::<DatabaseVec<DatabaseCell<u32>>>();
+    }
+    #[test]
+    fn rewind_test_hashmap_insert() {
+        impl DummyTestMessageApply for crate::data_types::DatabaseHash<u16,DatabaseCell<u16>> {
+            fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
+                root.insert(time.0 as u16, &(time.0 as u16))
+            }
+        }
+
+        rewind_tester::<crate::data_types::DatabaseHash<u16,DatabaseCell<u16>>>();
+    }
+    #[test]
+    fn rewind_test_hashmap_remove() {
+        super::setup_tracing();
+        impl DummyTestMessageApply for DatabaseHash<u64,DatabaseCell<u32>> {
+            fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
+                if root.is_empty() {
+                    root.insert(time.0, &(time.0 as u32))
+                } else {
+                    println!("Before remove: {:?}", root);
+                    let key = *root.iter().next().unwrap().0;
+                    root.remove(key);
+                    println!("After remove: {:?}", root);
+                    //root.insert(time.0 as u64, &(time.0 as u32));
+                    println!("After re-add: {:?}", root);
+                }
+            }
+        }
+
+        rewind_tester::<DatabaseHash<u64,DatabaseCell<u32>>>();
+    }
+}
+
 #[repr(transparent)]
-#[derive(Clone,Copy,Zeroable,Pod)]
+#[derive(Clone,Copy,AnyBitPattern,Debug)]
 pub struct DummyTestApp<Root>(pub Root);
 
-impl<Root:Pod> Object for DummyTestApp<Root> {
+impl<Root> DummyTestApp<Root> {
+    pub fn inner_mut(self: Pin<&mut Self>) -> Pin<&mut Root> {
+        unsafe {
+            self.map_unchecked_mut(|x|&mut x.0)
+        }
+    }
+    pub fn inner(&self) -> &Root {
+        &self.0
+    }
+}
+
+impl<Root:FixedSizeObject> Object for DummyTestApp<Root> {
     type Ptr = ThinPtr;
     type DetachedType = ();
     type DetachedOwnedType = ();
@@ -47,7 +204,7 @@ impl<Root:Pod> Object for DummyTestApp<Root> {
     }
 
     unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        NoatunContext.access_pod(index)
+        NoatunContext.access_object(index)
     }
 
     unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
@@ -63,26 +220,51 @@ impl<Root> Debug for DummyTestMessage<Root> {
         write!(f, "DummyTestMessage")
     }
 }
-impl<Root:Object+Pod> MessagePayload for DummyTestMessage<Root> {
-    type Root = DummyTestApp<Root>;
 
-    fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
-        unimplemented!()
+impl<T> WithSchema for DummyTestMessage<T> {
+    fn schema(_version: u32, _context: &mut WithSchemaContext) -> Schema {
+        Schema::Custom("DummyTestMessage".to_string())
     }
-
-    fn deserialize(_buf: &[u8]) -> Result<Self>
-    where
-        Self: Sized
-    {
-        unimplemented!()
+}
+impl<T> Packed for DummyTestMessage<T> {}
+impl<T> Serialize for DummyTestMessage<T> {
+    fn serialize(&self, _serializer: &mut Serializer<impl Write>) -> std::result::Result<(), SavefileError> {
+        Ok(())
     }
-
-    fn serialize<W: Write>(&self, _writer: W) -> Result<()> {
-        unimplemented!()
+}
+impl<T> Deserialize for DummyTestMessage<T> {
+    fn deserialize(_deserializer: &mut Deserializer<impl Read>) -> std::result::Result<Self, SavefileError> {
+        Ok(DummyTestMessage(std::marker::PhantomData))
     }
 }
 
-impl<Root:Object+Pod> Application for DummyTestApp<Root>{
+
+
+
+pub(crate) trait DummyTestMessageApply {
+    fn test_message_apply(time: NoatunTime, root: Pin<&mut Self>);
+}
+
+impl<Root:FixedSizeObject+DummyTestMessageApply> MessagePayload for DummyTestMessage<Root> {
+    type Root = DummyTestApp<Root>;
+
+    fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
+        Root::test_message_apply(time, root.inner_mut())
+    }
+
+    fn deserialize(buf: &[u8]) -> Result<Self>
+    where
+        Self: Sized
+    {
+        msg_deserialize(buf)
+    }
+
+    fn serialize<W: Write>(&self, writer: W) -> Result<()> {
+        msg_serialize(self, writer)
+    }
+}
+
+impl<Root:FixedSizeObject+DummyTestMessageApply> Application for DummyTestApp<Root>{
     type Message = DummyTestMessage<Root>;
     type Params = ();
 
@@ -294,7 +476,7 @@ fn test1() {
         true,
         1000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
     .unwrap();
@@ -357,7 +539,10 @@ fn test_projection_time_limit() {
         true,
         10000,
         CutOffDuration::from_minutes(15),
-        Some(datetime!(2024-01-02 00:00:00 Z).into()),
+        DatabaseSettings {
+            projection_time_limit: Some(datetime!(2024-01-02 00:00:00 Z).into()),
+            ..Default::default()
+        },
         (),
     )
     .unwrap();
@@ -437,7 +622,7 @@ fn test_msg_store_real() {
         true,
         10000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
     .unwrap();
@@ -493,8 +678,10 @@ fn test_msg_store_inmem_miri() {
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10000,
         CutOffDuration::from_minutes(15),
-        Some(datetime!(2021-01-01 Z).into()),
-        None,
+        DatabaseSettings {
+            mock_time: Some(datetime!(2021-01-01 Z).into()),
+            ..Default::default()
+        },
         (),
     )
     .unwrap();
@@ -549,8 +736,10 @@ fn test_msg_store_after_cutoff_inmem_miri() {
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10000,
         CutOffDuration::from_minutes(15),
-        Some(datetime!(2024-01-01 Z).into()),
-        None,
+        DatabaseSettings {
+            mock_time: Some(datetime!(2024-01-01 Z).into()),
+            ..Default::default()
+        },
         (),
     )
     .unwrap();
@@ -609,7 +798,9 @@ fn test_msg_store_after_cutoff_inmem_miri() {
 #[test]
 fn test_cutoff_handling() {
     let mut db: Database<CounterObject> =
-        Database::create_in_memory(10000, CutOffDuration::from_minutes(15), None, None, ())
+        Database::create_in_memory(10000, CutOffDuration::from_minutes(15),
+                                   DatabaseSettings::default(),
+                                   ())
             .unwrap();
 
     db.append_single(
@@ -677,7 +868,7 @@ fn test_handle() {
         true,
         1000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
     .unwrap();
@@ -713,8 +904,10 @@ fn test_handle_to_unsized_miri() {
     let db: Database<DatabaseObjectHandle<[DatabaseCell<u8>]>> = Database::create_in_memory(
         1000,
         CutOffDuration::from_minutes(15),
-        Some(datetime!(2021-01-01 Z).into()),
-        None,
+        DatabaseSettings {
+            mock_time: Some(datetime!(2021-01-01 Z).into()),
+            ..Default::default()
+        },
         (),
     )
     .unwrap();
@@ -729,8 +922,10 @@ fn test_handle_miri() {
     let mut db: Database<DatabaseObjectHandle<DatabaseCell<u32>>> = Database::create_in_memory(
         1000,
         CutOffDuration::from_minutes(15),
-        Some(datetime!(2021-01-01 Z).into()),
-        None,
+        DatabaseSettings {
+            mock_time: Some(datetime!(2021-01-01 Z).into()),
+            ..Default::default()
+        },
         (),
     )
     .unwrap();
@@ -772,7 +967,7 @@ fn test_string0() {
         true,
         10000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
     .unwrap();
@@ -796,7 +991,7 @@ fn test_vec0() {
         true,
         10000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
     .unwrap();
@@ -834,8 +1029,10 @@ fn test_vec_miri0() {
     let mut db: Database<DatabaseVec<CounterObject>> = Database::create_in_memory(
         10000,
         CutOffDuration::from_minutes(15),
-        Some(datetime!(2021-01-01 Z).into()),
-        None,
+        DatabaseSettings {
+            mock_time: Some(datetime!(2021-01-01 Z).into()),
+            ..Default::default()
+        },
         (),
     )
     .unwrap();
@@ -889,7 +1086,7 @@ fn test_vec_undo() {
         true,
         10000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
     .unwrap();

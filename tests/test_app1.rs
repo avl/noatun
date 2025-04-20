@@ -1,7 +1,7 @@
 use bytemuck::AnyBitPattern;
 use datetime_literal::datetime;
 use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
-use noatun::database::Database;
+use noatun::database::{Database, DatabaseSettings};
 use noatun::{
     Application, CutOffDuration, Message, MessageHeader, MessageId, MessagePayload, NoatunContext,
     NoatunTime, Object, ThinPtr,
@@ -106,8 +106,10 @@ fn test_counter_object_miri() {
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10_000,
         CutOffDuration::from_minutes(15),
-        Some(datetime!(2023-01-01 Z).into()),
-        None,
+        DatabaseSettings {
+            mock_time: Some(datetime!(2023-01-01 Z).into()),
+            ..Default::default()
+        },
         (),
     )
     .unwrap();

@@ -5,6 +5,8 @@ use savefile_derive::Savefile;
 use crate::Application;
 use crate::Database;
 use crate::CutOffDuration;
+use crate::database::DatabaseSettings;
+
 noatun_object!(
     #[derive(PartialEq)]
     struct RotationDoc {
@@ -59,7 +61,7 @@ fn test_rotation1() {
         true,
         100000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();
@@ -94,7 +96,7 @@ fn test_rotation_big1() {
         true,
         10_000_000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();

@@ -2,6 +2,7 @@ use std::io::Write;
 use std::pin::Pin;
 use savefile_derive::Savefile;
 use crate::{msg_deserialize, msg_serialize, Application, CutOffDuration, Database, DatabaseCell, MessagePayload, NoatunContext, NoatunTime};
+use crate::database::DatabaseSettings;
 use crate::DatabaseVec;
 
 noatun_object!(
@@ -63,7 +64,7 @@ fn test_vec1() {
         true,
         100000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();
@@ -94,7 +95,7 @@ fn test_vec2() {
         true,
         100000,
         CutOffDuration::from_minutes(15),
-        None,
+        DatabaseSettings::default(),
         (),
     )
         .unwrap();
