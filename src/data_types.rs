@@ -179,11 +179,12 @@ impl<T: Copy + Pod> DatabaseOption<T> {
     }
 }
 
-//TODO: This is unsound. Stop using bytemuck for these types in Noatun
 unsafe impl<T> AnyBitPattern for DatabaseOption<T> where T: AnyBitPattern {}
 unsafe impl<T: Copy> Zeroable for DatabaseOption<T> where T: Zeroable {}
 
-// TODO: DatabaseCell should not be copy. .
+// It may seem that DatabaseCell should not be copy.
+// However, in fact, the case is that the user should never be able to get a
+// non-pinned instance of it, so copy or not doesn't matter.
 // It's not a disaster, but it's a bit error-prone.
 // Someone can copy it, then overwrite the copy.
 // This will not affect the db, but may lead to an out-of-bounds write-report.
@@ -1937,14 +1938,29 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
 
     /// Return true if a value was removed
     pub fn remove(&mut self, key: impl Borrow<K::DetachedType>) -> bool {
+        self.remove_impl(key, |_|{})
+    }
+
+    /// Remove and return value for the given key.
+    ///
+    /// If the key is not present, None is returned.
+    pub fn pop(&mut self, key: impl Borrow<K::DetachedType>) -> Option<V::DetachedOwnedType> {
+        let mut retval = None;
+        self.remove_impl(key, |val|{
+            retval = Some(val.detach());
+        });
+        retval
+    }
+
+    fn remove_impl(&mut self, key: impl Borrow<K::DetachedType>, getval: impl FnOnce(&mut Pin<&mut V>)) -> bool {
         let context = self.data_meta_len_mut();
         let Some(bucket) = Self::probe_read(context.readonly(), key) else {
             return false;
         };
 
-
         unsafe {
-            let val = Pin::new_unchecked(&mut context.buckets[bucket.0].assume_init_mut().v);
+            let mut val = Pin::new_unchecked(&mut context.buckets[bucket.0].assume_init_mut().v);
+            getval(&mut val);
             val.clear();
         };
 
@@ -1982,7 +1998,6 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
 
         let new_length = self.length - 1;
         NoatunContext.write_pod_internal(new_length, &mut self.length);
-
 
         true
     }
@@ -2242,7 +2257,7 @@ mod tests {
         db.with_root_mut(|mut map| {
             map.0.insert("hello", &42);
             assert_eq!(map.0.get("hello").unwrap().value, 42);
-            assert!(map.0.remove("hello"));
+            assert_eq!(map.0.pop("hello"), Some(42));
             assert!(map.0.get("hello").is_none());
         }).unwrap();
     }

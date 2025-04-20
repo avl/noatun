@@ -637,9 +637,8 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                 if cursend.is_none() {
                     let mut temp = vec![];
                     cursend = self.queue.pop_front().map(|x| {
-                        // Consider if savefile really is the best here. Some more efficiency
+                        // Consider if savefile really is the best here. Some more space efficiency
                         // wouldn't hurt!
-                        //debug!("Sending raw seq = {:?}", x.entity.seq);
                         Serializer::bare_serialize(
                             &mut temp,
                             0,
@@ -647,7 +646,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                                 self.queue.is_empty(),
                                 x.entity.clone(),
                             ),
-                        ) //TODO: Optimize away this clone
+                        )
                         .unwrap();
                         let (Ok(insert_point) | Err(insert_point)) = self
                             .history
@@ -716,7 +715,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                     }
                     msg = receive => {
                         let (size, src_addr) = msg.expect("network should not fail");
-                        if src_addr == send_local_addr { //TODO: maybe remember local_addr, don't get it each time
+                        if src_addr == send_local_addr {
                             continue;
                         }
 
@@ -1088,7 +1087,7 @@ where
             .before_time
             .to_noatun_time())
     }
-    /// TODO: Probably remove this, it should never be necessary
+    /// TODO: Probably remove this before release, it should never be necessary
     pub fn reproject(&mut self) -> Result<()> {
         self.database.lock().unwrap().reproject()?;
         Ok(())

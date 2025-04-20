@@ -145,7 +145,7 @@ mod test_types_rewind {
             }
         }
 
-        rewind_tester::<crate::data_types::DatabaseHash<u16,DatabaseCell<u16>>>();
+        rewind_tester::<DatabaseHash<u16,DatabaseCell<u16>>>();
     }
     #[test]
     fn rewind_test_hashmap_remove() {
@@ -155,12 +155,8 @@ mod test_types_rewind {
                 if root.is_empty() {
                     root.insert(time.0, &(time.0 as u32))
                 } else {
-                    println!("Before remove: {:?}", root);
                     let key = *root.iter().next().unwrap().0;
                     root.remove(key);
-                    println!("After remove: {:?}", root);
-                    //root.insert(time.0 as u64, &(time.0 as u32));
-                    println!("After re-add: {:?}", root);
                 }
             }
         }
