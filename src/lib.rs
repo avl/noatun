@@ -11,6 +11,10 @@
 // Yeah, this is not ideal. This should be fixed.
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::let_and_return)]
+#![allow(clippy::collapsible_else_if)]
+// TODO: Maybe use arg-struct in some places
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::expect_fun_call)]
 
 pub use crate::data_types::{DatabaseCell, DatabaseVec};
 use crate::sequence_nr::SequenceNr;
@@ -64,6 +68,12 @@ pub(crate) mod disk_access;
 mod sha2_helper;
 mod xxh3_vendored;
 
+
+// TODO: Make sure there's no way for the user to safely get at an unpinned instance
+// of any Object. Also, make sure there's no way for the user to bring their own
+// pinned objects. I think this means we can never give an user a `&mut Pin<&mut T>`, since
+// I believe they could then maybe use `std::mem::replace` to move in some own `&'static mut T`,
+// not pointing inside the mmap.
 
 thread_local! {
     pub static CONTEXT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
@@ -150,7 +160,10 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy_pod(src, dst) }
     }
-
+    pub fn copy_any<T: AnyBitPattern>(&self, src: &T, dst: &mut MaybeUninit<T>) {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).copy_any(src, dst) }
+    }
     pub fn index_of_ptr(&self, ptr: *const u8) -> ThinPtr {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
@@ -980,6 +993,7 @@ macro_rules! noatun_object {
 
 }
 
+/// Get bytes of object that may contain padding bytes
 pub(crate) fn bytes_of_uninit<T:AnyBitPattern>(t: &T) -> &[MaybeUninit<u8>] {
     let ptr = t as *const _ as *const MaybeUninit<u8>;
     // SAFETY:
@@ -988,6 +1002,14 @@ pub(crate) fn bytes_of_uninit<T:AnyBitPattern>(t: &T) -> &[MaybeUninit<u8>] {
     unsafe { slice::from_raw_parts(ptr, size_of::<T>()) }
 }
 
+/// Get bytes of object that may be uninitialized.
+pub(crate) fn bytes_of_maybe_uninit<T:AnyBitPattern>(t: &MaybeUninit<T>) -> &[MaybeUninit<u8>] {
+    let ptr = t as *const _ as *const MaybeUninit<u8>;
+    // SAFETY:
+    // Pointer is known to point to valid object. There may be padding bytes
+    // that are unknown, but that's okay sinze we create a [MaybeUninit<u8>]
+    unsafe { slice::from_raw_parts(ptr, size_of::<T>()) }
+}
 pub(crate) fn uninit_slice(slice: &[u8]) -> &[MaybeUninit<u8>] {
     // SAFETY:
     // MaybeUninit[u8] has exact same layout as u8

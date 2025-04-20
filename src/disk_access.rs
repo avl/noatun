@@ -208,7 +208,7 @@ impl FileAccessor {
     pub fn write_uninit(&mut self, buf: &[MaybeUninit<u8>]) -> Result<()> {
         if self.seek_pos + buf.len() > self.used_space() {
             self.grow(self.seek_pos + buf.len())
-                .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
+                .map_err(std::io::Error::other)?;
         }
 
         let dest = unsafe {
@@ -229,7 +229,7 @@ impl Write for FileAccessor {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if self.seek_pos + buf.len() > self.used_space() {
             self.grow(self.seek_pos + buf.len())
-                .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
+                .map_err(std::io::Error::other)?;
         }
 
         let dest = unsafe {

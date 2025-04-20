@@ -27,6 +27,10 @@ DEALINGS IN THE SOFTWARE.
 */
 // The reason for vendoring is that this makes it possible for us to
 // guarantee that its behavior will never change.
+#![allow(clippy::len_zero)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::identity_op)]
+
 
 use std::hash::Hasher;
 
@@ -617,6 +621,7 @@ pub mod xxh3 {
         }
     }
 
+    #[allow(clippy::needless_range_loop)]
     #[cfg(all(target_feature = "sse2", not(target_feature = "avx2")))]
     fn scramble_acc_sse2(acc: &mut Acc, secret: &StripeLanes) {
         unsafe {
@@ -984,6 +989,7 @@ pub mod xxh3 {
     }
 
     //Internal function shared between Xxh3 and Xxh3Default
+    #[allow(clippy::assign_op_pattern)]
     fn xxh3_stateful_update(
         input: &[u8],
         total_len: &mut u64,

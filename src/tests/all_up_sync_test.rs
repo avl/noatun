@@ -139,7 +139,7 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
             if driver_inner.loss <= random(0.0..1.0) {
                 item.send((self.0 /*src*/, data.clone()))
                     .await
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("simulated net failed {:?}",e)))
+                    .map_err(|e| std::io::Error::other( format!("simulated net failed {:?}",e)))
                     ?;
             } else {
                 //info!("== SIMULATOR CAUSED PACKET LOSS ==");

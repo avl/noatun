@@ -44,7 +44,7 @@ impl MessagePayload for KeyValMessage {
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let mut projected = root.pin_project();
-        projected.keyval.as_mut().retain(|item|&**item.key() != self.key);
+        projected.keyval.as_mut().retain(|item|**item.key() != self.key);
         projected.keyval.push(KeyValItemDetached {
             key: self.key.clone(),
             value: self.val.clone()

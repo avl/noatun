@@ -83,15 +83,17 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
             start_offset,
         }
     }
-    pub fn all(&mut self) -> Result<Vec<MessageId>> {
-        // TODO: Optimize this!
-        let l = self.len()?;
-        let mut result = Vec::with_capacity(l);
-        for i in 0..l {
-            result.push(self.get(i)?);
-        }
 
-        Ok(result)
+    pub fn all(&mut self) -> Result<Vec<MessageId>> {
+        let count = self.len()?;
+        let mut temp = Vec::with_capacity(count);
+        self.handle
+            .seek(SeekFrom::Start(self.start_offset as u64))?;
+        for _i in 0..count {
+            let msg: MessageId = self.handle.read_pod()?;
+            temp.push(msg);
+        }
+        Ok(temp)
     }
     pub fn contains(&mut self, id: MessageId) -> Result<bool> {
         // TODO: Verify correctness, and Optimize this? Or remove it?
@@ -168,18 +170,6 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
         Ok(self.handle.write_pod(&val)?)
     }
 
-    // Unify with all(), remove one of them? Probably the other, I think this is better?
-    pub fn to_vec(&mut self) -> Result<Vec<MessageId>> {
-        let mut temp = Vec::new();
-        let count = self.len()?;
-        self.handle
-            .seek(SeekFrom::Start(self.start_offset as u64))?;
-        for _i in 0..count {
-            let msg: MessageId = self.handle.read_pod()?;
-            temp.push(msg);
-        }
-        Ok(temp)
-    }
 
     pub fn remove(&mut self, id: MessageId) -> Result<()>
     where
@@ -697,7 +687,7 @@ impl<M> OnDiskMessageStore<M> {
                     break;
                 }
 
-                fn read_header_and_parents<M:MessagePayload>(file_info: &mut FileAccessor) -> Result<(FileHeaderEntry, Vec<MessageId>, usize)> {
+                fn read_header_and_parents(file_info: &mut FileAccessor) -> Result<(FileHeaderEntry, Vec<MessageId>, usize)> {
                     let file_offset = file_info.stream_position()?;
                     //println!("Reading message at {} / {}", file_offset, file_info.used_space());
                     let header = file_info.read_pod::<FileHeaderEntry>()?;
@@ -748,7 +738,7 @@ impl<M> OnDiskMessageStore<M> {
                 }
 
 
-                let (header, parents, msg_size_bytes) = match read_header_and_parents::<M>(&mut file_info.file) {
+                let (header, parents, msg_size_bytes) = match read_header_and_parents(&mut file_info.file) {
                     Ok((header, parents, msg_size_bytes)) => {
                         debug_assert!(file_info.file.stream_position()? >= largest_used_offset);
                         largest_used_offset = file_info.file.stream_position()?;
@@ -794,7 +784,7 @@ impl<M> OnDiskMessageStore<M> {
         index = &mut index[0..index_header.entries as usize];
 
         for item in index.iter() {
-            debug_assert_eq!(item.file_offset.is_deleted(), false);
+            debug_assert!(!item.file_offset.is_deleted());
             if let Some((file, offset)) = item.file_offset.file_and_offset() {
                 let mut file = &mut self.data_files[file.index()].file;
                 let mut parent_accessor = EmbVecAccessor::new_parents(&mut file, offset);
@@ -2333,11 +2323,11 @@ mod tests {
 
         //let init = Instant::now();
         let msg = Message::new(
-            MessageId::new_debug(0 as u32),
+            MessageId::new_debug(0u32),
             vec![],
             OnDiskMessage {
-                id: 0 as u64,
-                seq: 0 as u64,
+                id: 0u64,
+                seq: 0u64,
                 data: vec![42u8; 4],
             },
         );
@@ -2615,7 +2605,7 @@ mod tests {
             let mut temp = input.to_vec();
             let new_len = dedup_slice(&mut temp);
             temp.truncate(new_len);
-            return temp;
+            temp
         }
 
         assert_eq!(dedup(&[]), &[]);

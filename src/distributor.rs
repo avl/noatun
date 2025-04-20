@@ -512,7 +512,7 @@ impl Distributor {
             {
                 let mut actual_children = vec![];
                 for child_msg in database.get_all_messages()? {
-                    if child_msg.header.parents.iter().any(|x| *x == msg_id) {
+                    if child_msg.header.parents.contains(&msg_id) {
                         actual_children.push(child_msg.id());
                     }
                 }

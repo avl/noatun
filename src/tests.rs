@@ -33,7 +33,6 @@ impl<Root:Pod> Object for DummyTestApp<Root> {
     type DetachedOwnedType = ();
 
     fn detach(&self) -> Self::DetachedOwnedType {
-        ()
     }
 
     fn clear(self: Pin<&mut Self>) {
@@ -963,6 +962,8 @@ fn test_object_macro() {
         }
     );
 }
+
+#[allow(clippy::assertions_on_constants)]
 #[test]
 fn test_id_generation_must_be_random() {
     assert!(!FOR_TEST_NON_RANDOM_ID);

@@ -4,7 +4,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{bytes_of_uninit, FatPtr, FixedSizeObject, GenPtr, MessagePayload, Object, Pointer, SerializableGenPtr, Target, ThinPtr};
+use crate::{bytes_of_maybe_uninit, bytes_of_uninit, FatPtr, FixedSizeObject, GenPtr, MessagePayload, Object, Pointer, SerializableGenPtr, Target, ThinPtr};
 use anyhow::{bail, Context, Result};
 use bytemuck::{bytes_of, from_bytes, from_bytes_mut, AnyBitPattern, Pod, Zeroable};
 use std::any::{Any, TypeId};
@@ -737,6 +737,14 @@ impl DatabaseContextData {
             data: bytes_of(dest),
         });
         *dest = *source;
+    }
+    pub fn copy_any<T: AnyBitPattern>(&mut self, source: &T, dest: &mut MaybeUninit<T>) {
+        let dest_index = self.index_of_sized(dest);
+        self.undo_log.record(UndoLogEntry::RestoreUninit {
+            start: dest_index.0,
+            data: bytes_of_maybe_uninit(dest),
+        });
+        *dest = MaybeUninit::new(*source);
     }
     #[allow(clippy::mut_from_ref)]
     pub fn allocate_pod<T: AnyBitPattern>(&mut self) -> Pin<&mut T> {
