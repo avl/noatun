@@ -1,14 +1,14 @@
 #![allow(non_local_definitions)]
 use super::*;
-use crate::data_types::{DatabaseCellArrayExt, NoatunString};
+use crate::data_types::{NoatunCellArrayExt, NoatunString};
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use byteorder::{LittleEndian, WriteBytesExt};
 
 use crate::cutoff::CutOffDuration;
-use data_types::DatabaseCell;
-use data_types::DatabaseObjectHandle;
-use data_types::DatabaseVec;
+use data_types::NoatunCell;
+use data_types::NoatunBox;
+use data_types::NoatunVec;
 use database::Database;
 use datetime_literal::datetime;
 use savefile::{load_noschema, save_noschema, Deserialize, Packed, SavefileError, Schema, Serialize, Serializer, WithSchema, WithSchemaContext};
@@ -28,12 +28,12 @@ mod test_subsumption;
 mod test_types_rewind {
     use std::marker::PhantomData;
     use datetime_literal::datetime;
-    use crate::{CutOffDuration, Database, DatabaseCell, FixedSizeObject, Message, MessageId, NoatunTime};
+    use crate::{CutOffDuration, Database, NoatunCell, FixedSizeObject, Message, MessageId, NoatunTime};
     use crate::tests::{DummyTestApp, DummyTestMessage, DummyTestMessageApply};
     use std::pin::Pin;
     //TODO: Move DatabaseVec to data_types, like the rest of the noatun types
-    use crate::DatabaseVec;
-    use crate::data_types::{DatabaseHash, NoatunString};
+    use crate::NoatunVec;
+    use crate::data_types::{NoatunHashMap, NoatunString};
     use crate::database::DatabaseSettings;
 
     fn rewind_tester<T>() where
@@ -89,13 +89,13 @@ mod test_types_rewind {
 
     #[test]
     fn rewind_test_cell() {
-        impl DummyTestMessageApply for DatabaseCell<u32> {
+        impl DummyTestMessageApply for NoatunCell<u32> {
             fn test_message_apply(time: NoatunTime, root: Pin<&mut Self>) {
                 root.set(time.0 as u32)
             }
         }
 
-        rewind_tester::<DatabaseCell<u32>>();
+        rewind_tester::<NoatunCell<u32>>();
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod test_types_rewind {
 
     #[test]
     fn rewind_test_vec_add() {
-        impl DummyTestMessageApply for DatabaseVec<DatabaseCell<u16>> {
+        impl DummyTestMessageApply for NoatunVec<NoatunCell<u16>> {
             fn test_message_apply(time: NoatunTime, root: Pin<&mut Self>) {
                 if root.is_empty() {
                     root.push(time.0 as u16);
@@ -121,11 +121,11 @@ mod test_types_rewind {
             }
         }
 
-        rewind_tester::<DatabaseVec<DatabaseCell<u16>>>();
+        rewind_tester::<NoatunVec<NoatunCell<u16>>>();
     }
     #[test]
     fn rewind_test_vec_remove() {
-        impl DummyTestMessageApply for DatabaseVec<DatabaseCell<u32>> {
+        impl DummyTestMessageApply for NoatunVec<NoatunCell<u32>> {
             fn test_message_apply(time: NoatunTime, root: Pin<&mut Self>) {
                 if root.is_empty() {
                     root.push(time.0 as u32);
@@ -135,22 +135,22 @@ mod test_types_rewind {
             }
         }
 
-        rewind_tester::<DatabaseVec<DatabaseCell<u32>>>();
+        rewind_tester::<NoatunVec<NoatunCell<u32>>>();
     }
     #[test]
     fn rewind_test_hashmap_insert() {
-        impl DummyTestMessageApply for crate::data_types::DatabaseHash<u16,DatabaseCell<u16>> {
+        impl DummyTestMessageApply for crate::data_types::NoatunHashMap<u16, NoatunCell<u16>> {
             fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
                 root.insert(time.0 as u16, &(time.0 as u16))
             }
         }
 
-        rewind_tester::<DatabaseHash<u16,DatabaseCell<u16>>>();
+        rewind_tester::<NoatunHashMap<u16, NoatunCell<u16>>>();
     }
     #[test]
     fn rewind_test_hashmap_remove() {
         super::setup_tracing();
-        impl DummyTestMessageApply for DatabaseHash<u64,DatabaseCell<u32>> {
+        impl DummyTestMessageApply for NoatunHashMap<u64, NoatunCell<u32>> {
             fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
                 if root.is_empty() {
                     root.insert(time.0, &(time.0 as u32))
@@ -161,7 +161,7 @@ mod test_types_rewind {
             }
         }
 
-        rewind_tester::<DatabaseHash<u64,DatabaseCell<u32>>>();
+        rewind_tester::<NoatunHashMap<u64, NoatunCell<u32>>>();
     }
 }
 
@@ -201,13 +201,7 @@ impl<Root:FixedSizeObject> Object for DummyTestApp<Root> {
         unimplemented!()
     }
 
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        NoatunContext.access_object(index)
-    }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        NoatunContext.access_object_mut(index)
-    }
 }
 
 
@@ -265,13 +259,6 @@ impl<Root:FixedSizeObject+DummyTestMessageApply> MessagePayload for DummyTestMes
 impl<Root:FixedSizeObject+DummyTestMessageApply> Application for DummyTestApp<Root>{
     type Message = DummyTestMessage<Root>;
     type Params = ();
-
-    //TODO: Should `initialize_root' be unsafe?
-    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
-        unsafe {
-            std::mem::transmute(NoatunContext.allocate::<Root>())
-        }
-    }
 }
 
 
@@ -381,8 +368,8 @@ impl<T: Object> MessagePayload for DummyMessage<T> {
 
 #[repr(C)]
 struct CounterObject {
-    counter: DatabaseCell<u32>,
-    counter2: DatabaseCell<u32>,
+    counter: NoatunCell<u32>,
+    counter2: NoatunCell<u32>,
 }
 
 unsafe impl NoatunStorable for CounterObject {}
@@ -412,13 +399,7 @@ impl Object for CounterObject {
         todo!()
     }
 
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        unsafe { NoatunContext.access_pod(index) }
-    }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_object_mut(index) }
-    }
 }
 
 impl CounterObject {
@@ -438,10 +419,6 @@ impl Application for CounterObject {
     type Message = CounterMessage;
     type Params = ();
 
-    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
-        let new_obj = NoatunContext.allocate();
-        new_obj
-    }
 }
 
 #[derive(Debug)]
@@ -862,7 +839,7 @@ fn test_cutoff_handling() {
 
 #[test]
 fn test_handle() {
-    let db: Database<DatabaseObjectHandle<DatabaseCell<u32>>> = Database::create_new(
+    let db: Database<NoatunBox<NoatunCell<u32>>> = Database::create_new(
         "test/test_handle.bin",
         true,
         1000,
@@ -873,34 +850,30 @@ fn test_handle() {
     .unwrap();
 
     db.with_root(|handle| {
-        assert_eq!(handle.get().get(), 43);
+        assert_eq!(handle.get_inner().get(), 43);
     });
 }
 
-impl Application for DatabaseObjectHandle<DatabaseCell<u32>> {
-    type Message = DummyMessage<DatabaseObjectHandle<DatabaseCell<u32>>>;
+impl Application for NoatunBox<NoatunCell<u32>> {
+    type Message = DummyMessage<NoatunBox<NoatunCell<u32>>>;
     type Params = ();
 
-    fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
-        let obj = DatabaseObjectHandle::allocate(DatabaseCell::new(43u32));
-        obj
+    fn initialize_root<'a>(root: Pin<&mut Self>, _params: &()) {
+        root.assign(&43u32);
     }
 }
-impl Application for DatabaseObjectHandle<[DatabaseCell<u8>]> {
-    type Message = DummyMessage<DatabaseObjectHandle<[DatabaseCell<u8>]>>;
+impl Application for NoatunBox<[NoatunCell<u8>]> {
+    type Message = DummyMessage<NoatunBox<[NoatunCell<u8>]>>;
     type Params = ();
 
-    fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
-        let obj = DatabaseObjectHandle::allocate_unsized(
-            [43u8, 45].map(DatabaseCell::new).as_slice(),
-        );
-        obj
+    fn initialize_root<'a>(root: Pin<&mut Self>, _params: &()) {
+        root.assign([43u8, 45].as_slice());
     }
 }
 
 #[test]
 fn test_handle_to_unsized_miri() {
-    let db: Database<DatabaseObjectHandle<[DatabaseCell<u8>]>> = Database::create_in_memory(
+    let db: Database<NoatunBox<[NoatunCell<u8>]>> = Database::create_in_memory(
         1000,
         CutOffDuration::from_minutes(15),
         DatabaseSettings {
@@ -912,13 +885,13 @@ fn test_handle_to_unsized_miri() {
     .unwrap();
 
     db.with_root(|handle| {
-        assert_eq!(handle.get().observe(), &[43, 45]);
+        assert_eq!(handle.get_inner().observe(), &[43, 45]);
     });
 }
 
 #[test]
 fn test_handle_miri() {
-    let mut db: Database<DatabaseObjectHandle<DatabaseCell<u32>>> = Database::create_in_memory(
+    let mut db: Database<NoatunBox<NoatunCell<u32>>> = Database::create_in_memory(
         1000,
         CutOffDuration::from_minutes(15),
         DatabaseSettings {
@@ -930,30 +903,25 @@ fn test_handle_miri() {
     .unwrap();
 
     db.with_root(|handle| {
-        assert_eq!(handle.get().get(), 43);
+        assert_eq!(handle.get_inner().get(), 43);
     });
 
     db.with_root_mut(|root| {
-        let a1 = root.getmut();
+        let a1 = root.get_inner_mut();
         assert_eq!(a1.get(), 43);
     })
     .unwrap();
 }
-impl Application for DatabaseVec<CounterObject> {
+impl Application for NoatunVec<CounterObject> {
     type Params = ();
 
-    fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
-        let obj: Pin<&mut DatabaseVec<CounterObject>> = DatabaseVec::new();
-        obj
-    }
-
-    type Message = DummyMessage<DatabaseVec<CounterObject>>;
+    type Message = DummyMessage<NoatunVec<CounterObject>>;
 }
 impl Application for NoatunString {
     type Params = ();
 
-    fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
-        unsafe { NoatunString::allocate_from_detached("hello") }
+    fn initialize_root<'a>(root: Pin<&mut Self>, _params: &()) {
+        root.assign("hello");
     }
 
     type Message = DummyMessage<NoatunString>;
@@ -985,7 +953,7 @@ fn test_string0() {
 
 #[test]
 fn test_vec0() {
-    let mut db: Database<DatabaseVec<CounterObject>> = Database::create_new(
+    let mut db: Database<NoatunVec<CounterObject>> = Database::create_new(
         "test/test_vec0",
         true,
         10000,
@@ -1025,7 +993,7 @@ fn test_vec0() {
 
 #[test]
 fn test_vec_miri0() {
-    let mut db: Database<DatabaseVec<CounterObject>> = Database::create_in_memory(
+    let mut db: Database<NoatunVec<CounterObject>> = Database::create_in_memory(
         10000,
         CutOffDuration::from_minutes(15),
         DatabaseSettings {
@@ -1080,7 +1048,7 @@ fn test_vec_miri0() {
 }
 #[test]
 fn test_vec_undo() {
-    let mut db: Database<DatabaseVec<CounterObject>> = Database::create_new(
+    let mut db: Database<NoatunVec<CounterObject>> = Database::create_new(
         "test/vec_undo",
         true,
         10000,
@@ -1142,19 +1110,19 @@ fn test_vec_undo() {
 
 #[test]
 fn test_object_macro() {
-    use crate::data_types::DatabaseVec;
+    use crate::data_types::NoatunVec;
     noatun_object!(
         struct Kalle {
             pod hej:u32,
             pod tva:u32,
-            object da: DatabaseVec<DatabaseCell<u32>>
+            object da: NoatunVec<NoatunCell<u32>>
         }
     );
     noatun_object!(
         struct Nalle {
             pod hej:u32,
             pod tva:u32,
-            object da: DatabaseVec<DatabaseCell<u32>>
+            object da: NoatunVec<NoatunCell<u32>>
         }
     );
 }

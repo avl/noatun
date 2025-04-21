@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::pin::Pin;
-use crate::{MessagePayload, NoatunContext, NoatunTime};
+use crate::{MessagePayload, NoatunTime};
 use savefile_derive::Savefile;
 use crate::Application;
 use crate::Database;
@@ -25,9 +25,7 @@ impl Application for RotationDoc {
     type Message = RotMessage;
     type Params = ();
 
-    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
-        NoatunContext.allocate()
-    }
+
 }
 impl MessagePayload for RotMessage {
     type Root = RotationDoc;

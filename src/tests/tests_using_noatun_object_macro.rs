@@ -1,7 +1,7 @@
 use crate::cutoff::CutOffDuration;
-use crate::data_types::DatabaseVec;
+use crate::data_types::NoatunVec;
 use crate::{msg_deserialize, msg_serialize};
-use crate::{Application, Database, MessagePayload, NoatunContext, NoatunTime};
+use crate::{Application, Database, MessagePayload, NoatunTime};
 use datetime_literal::datetime;
 use savefile_derive::Savefile;
 use std::io::Write;
@@ -17,7 +17,7 @@ noatun_object!(
 noatun_object!(
     struct Bank {
         pod total_money:u32,
-        object customers: DatabaseVec<Customer>
+        object customers: NoatunVec<Customer>
     }
 );
 
@@ -59,9 +59,6 @@ impl Application for Bank {
     type Message = BankMessage;
     type Params = ();
 
-    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
-        NoatunContext.allocate()
-    }
 }
 
 #[test]

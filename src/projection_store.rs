@@ -4,7 +4,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{bytes_of_mut, bytes_of_mut_uninit, from_bytes, from_bytes_mut,  FatPtr, FixedSizeObject, GenPtr, MessagePayload, NoatunStorable, Object, Pointer, SerializableGenPtr, Target, ThinPtr};
+use crate::{bytes_of_mut, bytes_of_mut_uninit, from_bytes, from_bytes_mut, FatPtr, FixedSizeObject, GenPtr, MessagePayload, NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
@@ -229,6 +229,7 @@ pub(crate) struct ReverseDepTrackLinkedListEntry {
 
 unsafe impl NoatunStorable for ReverseDepTrackLinkedListEntry {}
 
+
 impl DatabaseContextData {
     pub fn clear_tainted(&mut self) {
         self.tainted = false;
@@ -242,7 +243,7 @@ impl DatabaseContextData {
     }
     pub fn assert_mutable(&self) {
         if !self.is_mutable {
-            panic!("Attempt to modify DatabaseCell from outside of Message apply! \
+            panic!("Error: Attempt to modify database from outside of Message apply! \
                 It is not permissible to modify data in any other case except from \
                 the apply method in a Message.");
         }
@@ -715,23 +716,23 @@ impl DatabaseContextData {
 
             let dest = self.access_slice_mut::<u8>(FatPtr {
                 start: dst.start,
-                len: dst.len,
+                count: dst.count,
             });
 
             dest.fill(0);
         }
     }
-    pub fn copy(&mut self, source: FatPtr, dest_index: ThinPtr) {
+    pub fn copy_bytes(&mut self, source: FatPtr, dest_index: ThinPtr) {
         unsafe {
 
             self.undo_log.record(UndoLogEntry::RestorePod {
                 start: dest_index.0,
-                data: self.access_slice_mut(FatPtr::from(dest_index.0, source.len)),
+                data: self.access_slice_mut(FatPtr::from_idx_count(dest_index.0, source.count)),
             });
 
             let dest = self.access_slice_mut(FatPtr {
                 start: dest_index.0,
-                len: source.len,
+                count: source.count,
             });
 
             let src = self.access_slice::<u8>(source);
@@ -739,8 +740,9 @@ impl DatabaseContextData {
             dest.copy_from_slice(src);
         }
     }
-    pub fn copy_sized(&mut self, source: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
-        self.copy(FatPtr::from(source.0, size_bytes), dest_index)
+
+    pub fn copy_bytes_len(&mut self, source: ThinPtr, dest_index: ThinPtr, num_bytes: usize) {
+        self.copy_bytes(FatPtr::from_idx_count(source.0, num_bytes), dest_index)
     }
     pub fn copy_pod<T: NoatunStorable>(&mut self, source: &T, dest: &mut T) {
         let dest_index = self.index_of_sized(dest);
@@ -839,11 +841,11 @@ impl DatabaseContextData {
     /// The returned range must not overlap any mutable reference
     /// Alignment must be right.
     pub unsafe fn access_slice<'a, T: NoatunStorable>(&self, range: FatPtr) -> &'a [T] {
-        assert!(range.start + range.len <= self.main_db_mmap.used_space());
+        assert!(range.start + range.count*size_of::<T>() <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts(
                 self.main_db_mmap.map_const_ptr().wrapping_add(range.start) as *const T,
-                range.len / size_of::<T>(),
+                range.count,
             )
         }
     }
@@ -852,11 +854,11 @@ impl DatabaseContextData {
     /// The returned range must not overlap any mutable reference
     /// Alignment must be right.
     pub unsafe fn access_slice_uninit<'a, T: NoatunStorable>(&self, range: FatPtr) -> &'a [MaybeUninit<T>] {
-        assert!(range.start + range.len <= self.main_db_mmap.used_space());
+        assert!(range.start + range.count*size_of::<MaybeUninit<T>>() <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts(
                 self.main_db_mmap.map_const_ptr().wrapping_add(range.start) as *const MaybeUninit<T>,
-                range.len / size_of::<MaybeUninit<T>>(),
+                range.count,
             )
         }
     }
@@ -865,11 +867,11 @@ impl DatabaseContextData {
     /// The returned range must not overlap any other reference
     /// Alignment must be right.
     pub unsafe fn access_slice_mut<'a, T: NoatunStorable>(&self, range: FatPtr) -> &'a mut [T] {
-        assert!(range.start + range.len <= self.main_db_mmap.used_space());
+        assert!(range.start + range.count*size_of::<T>() <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.main_db_mmap.map_mut_ptr().wrapping_add(range.start) as *mut T,
-                range.len / size_of::<T>(),
+                range.count,
             )
         }
     }
@@ -878,11 +880,11 @@ impl DatabaseContextData {
     /// The returned range must not overlap any other reference
     /// Alignment must be right.
     pub unsafe fn access_slice_mut_uninit<'a>(&self, range: FatPtr) -> &'a mut [MaybeUninit<u8>] {
-        assert!(range.start + range.len <= self.main_db_mmap.used_space());
+        assert!(range.start + range.count*size_of::<u8>() <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.main_db_mmap.map_mut_ptr().wrapping_add(range.start) as *mut MaybeUninit<u8>,
-                range.len,
+                range.count,
             )
         }
     }
@@ -891,11 +893,11 @@ impl DatabaseContextData {
     /// The returned range must not overlap any mutable reference
     /// Alignment must be right.
     pub unsafe fn access_object_slice<'a, T: FixedSizeObject>(&self, range: FatPtr) -> &'a [T] {
-        assert!(range.start + range.len <= self.main_db_mmap.used_space());
+        assert!(range.start + range.count*size_of::<T>() <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts(
                 self.main_db_mmap.map_const_ptr().wrapping_add(range.start) as *const T,
-                range.len / size_of::<T>(),
+                range.count,
             )
         }
     }
@@ -906,11 +908,11 @@ impl DatabaseContextData {
         &self,
         range: FatPtr,
     ) -> &'a mut [T] {
-        assert!(range.start + range.len <= self.main_db_mmap.used_space());
+        assert!(range.start + range.count*size_of::<T>() <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.main_db_mmap.map_mut_ptr().wrapping_add(range.start) as *mut T,
-                range.len / size_of::<T>(),
+                range.count,
             )
         }
     }
@@ -946,6 +948,115 @@ impl DatabaseContextData {
             ))
         }
     }
+
+    /// # Safety
+    /// Caller must ensure no mutable reference exists to the requested object
+    #[inline]
+    pub unsafe fn access_thin<'a, T:?Sized>(&self, ptr: ThinPtr) -> &'a T {
+        assert_eq!(size_of::<&T>(), size_of::<*const u8>());
+        let ret = unsafe {
+            transmute_copy(&self.main_db_mmap.map_const_ptr().wrapping_add(ptr.0))
+        };
+
+        // Note: If the below fails, there has already been UB (because we'd already have produced
+        // a reference that overlaps invalid memory. However, this check can be best-effort,
+        // since this method is unsafe, and it is up to the caller to ensure validity.
+        if ptr
+            .0
+            .checked_add(size_of_val(ret))
+            .expect("invalid address for pointer")
+            > self.main_db_mmap.used_space()
+        {
+            panic!("invalid pointer value");
+        }
+
+        ret
+    }
+    /// # Safety
+    /// Caller must ensure no mutable or shared reference exists to the requested object
+    #[inline]
+    pub unsafe fn access_thin_mut<'a, T:?Sized>(&self, ptr: ThinPtr) -> &'a mut T {
+        assert_eq!(size_of::<&mut T>(), size_of::<*const u8>());
+        let ret: &mut _ = unsafe {
+            transmute_copy(&self.main_db_mmap.map_mut_ptr().wrapping_add(ptr.0))
+        };
+
+        // Note: If the below fails, there has already been UB (because we'd already have produced
+        // a reference that overlaps invalid memory. However, this check can be best-effort,
+        // since this method is unsafe, and it is up to the caller to ensure validity.
+        if ptr
+            .0
+            .checked_add(size_of_val(ret))
+            .expect("invalid address for pointer")
+            > self.main_db_mmap.used_space()
+        {
+            panic!("invalid pointer value");
+        }
+        ret
+    }
+
+    /// # Safety
+    /// Caller must ensure no mutable reference exists to the requested object
+    #[inline]
+    pub unsafe fn access_fat<'a, T:?Sized>(&self, ptr: FatPtr) -> &'a T {
+        assert_eq!(size_of::<&T>(), 2*size_of::<*const u8>());
+        let raw = RawFatPtr {
+            data: self.main_db_mmap.map_const_ptr().wrapping_add(ptr.start),
+            size: ptr.count
+        };
+        let ret = unsafe {
+            transmute_copy(&raw)
+        };
+
+        println!("Raw: {:#?}: {:#?}", ptr,raw);
+        println!("size-of: {}", size_of_val(ret));
+        println!("T: {}", std::any::type_name::<T>());
+
+        // Note: If the below fails, there has already been UB (because we'd already have produced
+        // a reference that overlaps invalid memory. However, this check can be best-effort,
+        // since this method is unsafe, and it is up to the caller to ensure validity.
+        if ptr
+            .start
+            .checked_add(size_of_val(ret))
+            .expect("invalid address for pointer")
+            > self.main_db_mmap.used_space()
+        {
+            panic!("invalid pointer value");
+        }
+
+        ret
+    }
+
+
+    /// # Safety
+    /// Caller must ensure no mutable reference exists to the requested object
+    #[inline]
+    pub unsafe fn access_fat_mut<'a, T:?Sized>(&self, ptr: FatPtr) -> &'a mut T {
+        assert_eq!(size_of::<&T>(), 2*size_of::<*const u8>());
+        let raw = RawFatPtr {
+            data: self.main_db_mmap.map_mut_ptr().wrapping_add(ptr.start),
+            size: ptr.count
+        };
+        let ret: &mut _ = unsafe {
+            transmute_copy(&raw)
+        };
+
+        // Note: If the below fails, there has already been UB (because we'd already have produced
+        // a reference that overlaps invalid memory. However, this check can be best-effort,
+        // since this method is unsafe, and it is up to the caller to ensure validity.
+        if ptr
+            .start
+            .checked_add(size_of_val(ret))
+            .expect("invalid address for pointer")
+            > self.main_db_mmap.used_space()
+        {
+            panic!("invalid pointer value");
+        }
+
+        ret
+    }
+
+
 
     /// # Safety
     /// Caller must ensure no mutable reference exists to the requested object
@@ -999,7 +1110,7 @@ impl DatabaseContextData {
         assert!(index + data.len() <= self.main_db_mmap.used_space());
         let fat = FatPtr {
             start: index,
-            len: data.len(),
+            count: data.len(),
         };
         let target = unsafe { self.access_slice_mut(fat) };
         target.copy_from_slice(data);

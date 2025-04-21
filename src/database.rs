@@ -2,10 +2,7 @@ use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
-use crate::{
-    Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageHeader,
-    MessageId, NoatunTime, Object, Pointer, Target,
-};
+use crate::{Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -111,7 +108,15 @@ impl<APP: Application> Database<APP> {
         Ok(())
     }
 
-    /// TODO: Document
+
+    /// Explicitly check if enough time has passed to be able to auto_delete some messages.
+    ///
+    /// Messages that are older than the cutoff period, are assumed to have reached all nodes.
+    /// Specifically, it is assumed that no message will ever arrive with a time stamp before
+    /// the cutoff time.
+    ///
+    /// This means that messages that have no current visible effects, can be considered
+    /// definitely stale and can be removed. This method will delete messages if possible.
     pub(crate) fn maybe_advance_cutoff(&mut self) -> Result<()> {
         if !self.auto_delete {
             return Ok(());
@@ -215,7 +220,7 @@ impl<APP: Application> Database<APP> {
         self.context.set_next_seqnr(current.successor());
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
-        let mut root = unsafe { <APP as Object>::access_mut(root_ptr) };
+        let mut root = unsafe { root_ptr.access_mut::<APP>() };
         self.message_store
             .apply_preview(time, root.as_mut(), preview)?;
         let ret = f(&*root);
@@ -237,7 +242,7 @@ impl<APP: Application> Database<APP> {
     pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let _guard = ContextGuard::new(&self.context);
-        let root = unsafe { <APP as Object>::access(root_ptr) };
+        let root = unsafe { root_ptr.access::<APP>() };
         f(root)
     }
 
@@ -263,7 +268,7 @@ impl<APP: Application> Database<APP> {
 
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
-        let root = unsafe { <APP as Object>::access_mut(root_ptr) };
+        let root = unsafe { root_ptr.access_mut::<APP>() };
         let t = f(root);
         drop(guard);
         self.context.mark_clean()?;
@@ -282,7 +287,7 @@ impl<APP: Application> Database<APP> {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
 
         let guard = ContextGuardMut::new(&mut self.context);
-        let root = unsafe { <APP as Object>::access_mut(root_ptr) };
+        let root = unsafe { root_ptr.access_mut::<APP>() };
         drop(guard);
 
         self.message_store.apply_missing_messages(
@@ -314,7 +319,7 @@ impl<APP: Application> Database<APP> {
 
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
-        let root = unsafe { <APP as Object>::access_mut(root_ptr) };
+        let root = unsafe { root_ptr.access_mut::<APP>() };
         drop(guard);
 
         let any_deletes = self.message_store.apply_missing_messages(
@@ -339,7 +344,8 @@ impl<APP: Application> Database<APP> {
         message_store.recover(settings.mock_time.unwrap_or_else(NoatunTime::now))?;
         let mmap_ptr = context.start_ptr();
         let guard = ContextGuardMut::new(context);
-        let root_obj_ref = APP::initialize_root(params);
+        let mut root_obj_ref = unsafe { NoatunContext.allocate::<APP>() };
+        APP::initialize_root(root_obj_ref.as_mut(), params);
         let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, &*root_obj_ref);
         drop(guard);
 
@@ -349,7 +355,7 @@ impl<APP: Application> Database<APP> {
         // Safety:
         // Recover is only called when the db is not used
         let guard = ContextGuardMut::new(context);
-        let root = unsafe { <APP as Object>::access_mut(root_ptr) };
+        let root = unsafe { root_ptr.access_mut::<APP>() };
         drop(guard);
         //let root = context.access_pod(root_ptr);
         message_store.apply_missing_messages(
@@ -528,7 +534,7 @@ impl<APP: Application> Database<APP> {
 
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
-        let root = unsafe { <APP as Object>::access_mut(root_ptr) };
+        let root = unsafe { root_ptr.access_mut::<APP>() };
         drop(guard);
         info!("apply_missing_messages");
         let mut earliest_deleted = self.message_store.apply_missing_messages(

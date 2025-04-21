@@ -769,7 +769,7 @@ impl<M> OnDiskMessageStore<M> {
                         let new_offset = file_info.file.with_all_bytes(|bytes|{
                             //println!("Starting search at {}", magic_search_start);
                             magic_finder.find(&bytes[magic_search_start..]).map(|x| x + magic_search_start - offset_of!(FileHeaderEntry, magic)).unwrap_or(file_length as usize)
-                        })?;
+                        });
                         //println!("Next offsed to try: {} of {}", new_offset, file_length);
                         file_info.file.seek_to(new_offset)?;
                         continue;
@@ -1024,7 +1024,7 @@ impl<M> OnDiskMessageStore<M> {
             ));
         };
         let file = &mut data_files[file.index()].file;
-        let header: &mut FileHeaderEntry = file.access_pod_mut(offset as usize)?;
+        let header: &mut FileHeaderEntry = unsafe { file.access_pod_mut(offset as usize)? };
 
         header.set_deleted();
         entry.file_offset.set_deleted();
@@ -1306,10 +1306,12 @@ impl<M> OnDiskMessageStore<M> {
         let index_entry = &message_index[index];
 
         if let Some((file, offset)) = index_entry.file_offset.file_and_offset() {
-            let file_header: &mut FileHeaderEntry = self.data_files[file.index()]
-                .file
-                .access_pod_mut(offset as usize)?;
-            file_header.has_been_transmitted = 1;
+            unsafe {
+                let file_header: &mut FileHeaderEntry = self.data_files[file.index()]
+                    .file
+                    .access_pod_mut(offset as usize)?;
+                file_header.has_been_transmitted = 1;
+            }
             Ok(true)
         } else {
             // Deleted
@@ -1514,7 +1516,7 @@ impl<M> OnDiskMessageStore<M> {
     }
     fn do_header_checksum(file: &mut FileAccessor, start_pos: u64) -> Result<()> {
         let payload_pos = {
-            let header: &FileHeaderEntry = file.access_pod(start_pos as usize)?;
+            let header: &FileHeaderEntry = unsafe { file.access_pod(start_pos as usize)? };
             header.offset_of_payload()
         };
 
@@ -1524,6 +1526,7 @@ impl<M> OnDiskMessageStore<M> {
             sha2(bytes)
         })?;
 
+        unsafe
         {
             let header: &mut FileHeaderEntry = file.access_pod_mut(start_pos as usize)?;
             header.header_checksum = header_checksum;
@@ -1580,7 +1583,7 @@ impl<M> OnDiskMessageStore<M> {
         };
         if let Some((file, offset)) = search_index[index].file_offset.file_and_offset() {
             let file = &mut self.data_files[file.index()].file;
-            let header: &FileHeaderEntry = file.access_pod(offset as usize)?;
+            let header: &FileHeaderEntry = unsafe { file.access_pod(offset as usize)? };
             if header.num_parents.free() < new_parents.len()
                 || header.num_children.free() < new_children.len()
             {

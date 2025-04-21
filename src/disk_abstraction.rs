@@ -131,10 +131,10 @@ impl Disk for InMemoryDisk {
         &mut self,
         target: &Target,
         _file: &str,
-        _min_size: usize, //TODO: Remove
+        _min_size: usize,
         max_size: usize,
     ) -> anyhow::Result<FileAccessor> {
-        //std::fs::create_dir_all(&path).context("create database directory")?;
+
         let create = target.create();
         let data = if !create {
             panic!("Open-use case not supported for in-memory db");

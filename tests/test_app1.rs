@@ -1,5 +1,5 @@
 use datetime_literal::datetime;
-use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
+use noatun::data_types::{NoatunCell, NoatunBox, NoatunVec};
 use noatun::database::{Database, DatabaseSettings};
 use noatun::{Application, CutOffDuration, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunStorable, NoatunTime, Object, ThinPtr};
 use savefile_derive::Savefile;
@@ -8,8 +8,8 @@ use std::pin::Pin;
 
 #[repr(C)]
 struct CounterObject {
-    counter: DatabaseCell<u32>,
-    counter2: DatabaseVec<DatabaseObjectHandle<[DatabaseCell<u8>]>>,
+    counter: NoatunCell<u32>,
+    counter2: NoatunVec<NoatunBox<[NoatunCell<u8>]>>,
 }
 
 unsafe impl NoatunStorable for CounterObject{}
@@ -38,13 +38,7 @@ impl Object for CounterObject {
         this
     }
 
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        unsafe { NoatunContext.access_object(index) }
-    }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_object_mut(index) }
-    }
 }
 
 #[derive(Debug, Savefile)]
@@ -93,10 +87,6 @@ impl Application for CounterObject {
     type Message = CounterMessage;
     type Params = ();
 
-    fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
-        let ctr = NoatunContext.allocate::<CounterObject>();
-        ctr
-    }
 }
 
 #[test]
@@ -152,7 +142,7 @@ fn test_counter_object_miri() {
         assert_eq!(root.counter.get(), 85);
         assert_eq!(root.counter2.len(), 2);
         let vec_elem = root.counter2[0];
-        let arr = vec_elem.get();
+        let arr = vec_elem.get_inner();
         let arr_item = &arr[0];
         assert_eq!(arr_item.get(), 43u8);
     });

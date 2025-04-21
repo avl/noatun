@@ -32,7 +32,7 @@ noatun_object!(
 noatun_object!(
     struct SubObj {
         pod counter: u32,
-        object subsub: DatabaseVec<SubSubObj>,
+        object subsub: NoatunVec<SubSubObj>,
     }
 );
 
@@ -45,7 +45,7 @@ impl PartialEq for SubObjDetached {
 noatun_object!(
     struct TestDb {
         pod now: NoatunTime,
-        object items: DatabaseVec<SubObj>,
+        object items: NoatunVec<SubObj>,
     }
 );
 
@@ -82,15 +82,6 @@ impl MessagePayload for TestMessage {
 impl Application for TestDb {
     type Message = TestMessage;
     type Params = ();
-
-    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
-        unsafe {
-            TestDb::allocate_from_detached(&TestDbDetached {
-                now: NoatunTime::ZERO,
-                items: vec![],
-            })
-        }
-    }
 }
 
 #[test]

@@ -15,8 +15,6 @@ use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Savefile, Clone)]
 pub struct SerializedMessage {
-    /// TODO: The serialized part should be just the user-part of the message.
-    /// Parents and id should be serialized by noatun directly.
     id: MessageId,
     parents: Vec<MessageId>,
     data: Vec<u8>,

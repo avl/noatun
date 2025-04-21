@@ -271,7 +271,10 @@ impl FileAccessor {
     }
 
     /// Does _not_ use or update seek position
-    pub fn access_pod<R: NoatunStorable>(&self, offset: usize) -> Result<&R> {
+    /// SAFETY:
+    /// Returned reference must not overlap mutable reference. Reference must have
+    /// correct alignment
+    pub unsafe fn access_pod<R: NoatunStorable>(&self, offset: usize) -> Result<&R> {
         if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");
         }
@@ -283,8 +286,11 @@ impl FileAccessor {
         };
         Ok(from_bytes(raw))
     }
-    /// Does _not_ use or update seek position TODO: This is unsafe as h***! Mark as unsafe!
-    pub fn access_pod_mut<R: NoatunStorable>(&self, offset: usize) -> Result<&mut R> {
+    /// Does _not_ use or update seek position
+    /// SAFETY:
+    /// Care must be taken to not create multiple overlapping mutable references.
+    /// Also, references must be aligned.
+    pub unsafe fn access_pod_mut<R: NoatunStorable>(&self, offset: usize) -> Result<&mut R> {
         if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");
         }
@@ -482,11 +488,10 @@ impl FileAccessor {
     /// the seek position. This includes all bytes in the physical file, except the header.
     /// Specifically, it includes *unused* parts of the file (as if the HEADER was claiming
     /// the entire physical file was used)
-    pub fn with_all_bytes<R>(&mut self, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
-        //TODO: This can't fail, doesn't need to return result!
+    pub fn with_all_bytes<R>(&mut self, mut f: impl FnMut(&[u8]) -> R) -> R {
         let data = &self.map_all_raw();
         let ret = f(data);
-        Ok(ret)
+        ret
     }
 
     /// Read the given number of bytes, and make them available to the closure.

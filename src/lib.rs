@@ -16,7 +16,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::expect_fun_call)]
 
-pub use crate::data_types::{DatabaseCell, DatabaseVec};
+pub use crate::data_types::{NoatunCell, NoatunVec};
 use crate::sequence_nr::SequenceNr;
 use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -141,8 +141,8 @@ pub struct NoatunContext;
 fn get_context_mut_ptr() -> *mut DatabaseContextData {
     let context_ptr = CONTEXT.get();
     if context_ptr.is_null() {
-        //TODO: Unify this error message with 'ensure_mutable'
-        panic!("No mutable NoatunContext is presently available on this thread");
+        panic!("No NoatunContext is presently available on this thread. The noatun-database \
+               may only be accessed from within Message apply, and from `with_root`-methods.");
     }
     unsafe {
         (*context_ptr).assert_mutable()
@@ -190,8 +190,7 @@ impl NoatunContext {
         unsafe { (*context_ptr).index_of(t) }
     }
 
-    // TODO: This should almost certainly NOT exist here.
-    // It's used in a very early test, from before we had the architecture down
+    // This is only used by a single test, we may remove it at some point
     #[doc(hidden)]
     pub(crate) unsafe fn rewind(self, new_time: SequenceNr) {
         let context_ptr = get_context_mut_ptr();
@@ -204,7 +203,7 @@ impl NoatunContext {
     }
     pub fn copy_ptr(&self, src: FatPtr, dest_index: ThinPtr) {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).copy(src, dest_index) }
+        unsafe { (*context_ptr).copy_bytes(src, dest_index) }
     }
     pub fn zero(&self, dst: FatPtr) {
         let context_ptr = get_context_mut_ptr();
@@ -212,15 +211,12 @@ impl NoatunContext {
     }
     pub fn copy_sized(&self, src: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).copy_sized(src, dest_index, size_bytes) }
+        unsafe { (*context_ptr).copy_bytes_len(src, dest_index, size_bytes) }
     }
     pub fn copy<T: NoatunStorable>(&self, src: &T, dst: &mut T) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy_pod(src, dst) }
     }
-    // TODO:
-    // Consider if we can use magic to get rid of uninit-due-to-padding
-    // In any case, make sure to unify terminology any/uninit
     pub fn copy_uninit<T: NoatunStorable>(&self, src: &T, dst: &mut MaybeUninit<T>) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy_uninit(src, dst) }
@@ -254,14 +250,12 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_pod_ptr(value, dest) }
     }
-    // TODO: This shouldn't really be 'safe'. The returned lifetime is unbounded, but it
-    // should be bounded to the current database. We can't express that lifetime.
-    pub fn allocate<'a, T: NoatunStorable>(&self) -> Pin<&'a mut T> {
+    pub unsafe fn allocate<'a, T: NoatunStorable>(&self) -> Pin<&'a mut T> {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_pod() }
     }
 
-    pub fn allocate_obj<'a, T: Object>(&self) -> Pin<&'a mut T> {
+    pub unsafe fn allocate_obj<'a, T: Object>(&self) -> Pin<&'a mut T> {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_obj() }
     }
@@ -276,6 +270,36 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).access_object_mut(ptr) }
     }
+
+    pub unsafe fn access_thin<'a, T:?Sized>(&self, ptr: ThinPtr) -> &'a T {
+        let context_ptr = CONTEXT.get();
+        if context_ptr.is_null() {
+            panic!("No NoatunContext available");
+        }
+        unsafe { (*context_ptr).access_thin::<T>(ptr) }
+    }
+    pub unsafe fn access_thin_mut<'a, T:?Sized>(&self, ptr: ThinPtr) -> &'a mut T {
+        let context_ptr = CONTEXT.get();
+        if context_ptr.is_null() {
+            panic!("No NoatunContext available");
+        }
+        unsafe { (*context_ptr).access_thin_mut::<T>(ptr) }
+    }
+    pub unsafe fn access_fat<'a, T:?Sized>(&self, ptr: FatPtr) -> &'a T {
+        let context_ptr = CONTEXT.get();
+        if context_ptr.is_null() {
+            panic!("No NoatunContext available");
+        }
+        unsafe { (*context_ptr).access_fat::<T>(ptr) }
+    }
+    pub unsafe fn access_fat_mut<'a, T:?Sized>(&self, ptr: FatPtr) -> &'a mut T {
+        let context_ptr = CONTEXT.get();
+        if context_ptr.is_null() {
+            panic!("No NoatunContext available");
+        }
+        unsafe { (*context_ptr).access_fat_mut::<T>(ptr) }
+    }
+
     //TODO: Unify terminology: pod/any/object etc
     pub unsafe fn access_pod<'a, T: NoatunStorable>(&self, ptr: ThinPtr) -> &'a T {
         let context_ptr = CONTEXT.get();
@@ -693,15 +717,7 @@ impl Object for DummyUnitObject {
         unsafe { Pin::new_unchecked(&mut *(1usize as *mut DummyUnitObject)) }
     }
 
-    unsafe fn access<'a>(_index: Self::Ptr) -> &'a Self {
-        &DummyUnitObject
-    }
 
-    unsafe fn access_mut<'a>(_index: Self::Ptr) -> Pin<&'a mut Self> {
-        // # SAFETY
-        // Any dangling pointer is a valid pointer to a zero-sized type
-        unsafe { Pin::new_unchecked(&mut *(1usize as *mut DummyUnitObject)) }
-    }
 }
 
 pub enum GenPtr {
@@ -713,7 +729,7 @@ pub enum GenPtr {
 #[repr(C)]
 struct SerializableGenPtr {
     ptr: usize,
-    len: usize, //usize::MAX for thin
+    count: usize, //usize::MAX for thin
 }
 
 unsafe impl NoatunStorable for SerializableGenPtr {}
@@ -721,12 +737,12 @@ unsafe impl NoatunStorable for SerializableGenPtr {}
 
 impl From<SerializableGenPtr> for GenPtr {
     fn from(value: SerializableGenPtr) -> Self {
-        if value.len == usize::MAX {
+        if value.count == usize::MAX {
             GenPtr::Thin(ThinPtr(value.ptr))
         } else {
             GenPtr::Fat(FatPtr{
                 start: value.ptr,
-                len: value.len,
+                count: value.count,
             })
         }
     }
@@ -737,13 +753,13 @@ impl From<GenPtr> for SerializableGenPtr {
             GenPtr::Thin(t) => {
                 Self {
                     ptr: t.0,
-                    len: usize::MAX,
+                    count: usize::MAX,
                 }
             }
             GenPtr::Fat(f) => {
                 Self {
                     ptr: f.start,
-                    len: f.len,
+                    count: f.count,
                 }
             }
         }
@@ -751,11 +767,14 @@ impl From<GenPtr> for SerializableGenPtr {
 }
 
 
-pub trait Pointer: Copy + Debug + 'static {
+pub trait Pointer: NoatunStorable + Copy + Debug + 'static {
     fn start(self) -> usize;
     fn create<T: ?Sized>(addr: &T, buffer_start: *const u8) -> Self;
     fn as_generic(&self) -> GenPtr;
     fn is_null(&self) -> bool;
+
+    unsafe fn access<'a, T:?Sized>(&self) -> &'a T;
+    unsafe fn access_mut<'a, T:?Sized>(&self) -> Pin<&'a mut T>;
 }
 
 pub fn from_bytes<T: NoatunStorable>(s: &[u8]) -> &T {
@@ -929,49 +948,17 @@ pub trait Object {
     /// not have a fixed size.
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self>;
 
-    /// Access a shared instance of Self at the given pointer address.
-    ///
-    /// # Safety
-    /// The caller must ensure that the accessed object is not aliased with a mutable
-    /// reference to the same object.
-    ///
-    /// Note! Instances of Object must only be created inside the database, and
-    /// carefully shepherded so that they do not escape! All callers must ensure that
-    /// the lifetime 'a' ends up bound to that of the Object that owns the returned instance,
-    /// which must ultimately be bounded by the lifetime of the root object!
-    // TODO: Don't expose these methods. Too hard to use correctly!
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self;
-    /// Access a mutable instance of Self at the given pointer address.
-    /// NOTE!
-    /// Self must not allow direct access to any of its fields. Self must
-    /// provide methods that can be used to mutate the fields, and those methods
-    /// must report all writes to the DatabaseContext.
-    ///
-    /// NOTE!
-    /// The above holds for all places that may be reachable through Self, not only direct
-    /// fields on Self. It also holds for collections or any other data. I.e, if Self
-    /// is a collection type, it cannot give direct mutable access to a u8 element, or similar.
-    ///
-    /// # Safety
-    /// The caller must ensure that the accessed object is not aliased with any other
-    /// reference to the same object.
-    ///
-    /// Note! Instances of Object must only be created inside the database, and
-    /// carefully shepherded so that they do not escape! All callers must ensure that
-    /// the lifetime 'a' ends up bound to that of the Object that owns the returned instance,
-    /// which must ultimately be bounded by the lifetime of the root object!
-    // TODO: Don't expose these methods. Too hard to use correctly!
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self>;
+
 }
 
 #[macro_export]
 macro_rules! noatun_object {
 
     ( bounded_type pod $typ:ty) => {
-        $crate::DatabaseCell<$typ>
+        $crate::NoatunCell<$typ>
     };
     ( declare_field pod $typ: ty ) => {
-        $crate::DatabaseCell<$typ>
+        $crate::NoatunCell<$typ>
     };
     ( declare_detached_field pod $typ: ty ) => {
         $typ
@@ -1132,13 +1119,6 @@ macro_rules! noatun_object {
                     ret
                 }
 
-                unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-                    unsafe { $crate::NoatunContext.access_object(index) }
-                }
-
-                unsafe fn access_mut<'a>(index: Self::Ptr) -> ::std::pin::Pin<&'a mut Self> {
-                    unsafe { $crate::NoatunContext.access_object_mut(index) }
-                }
             }
 
 
@@ -1177,24 +1157,41 @@ pub trait FixedSizeObject: Object<Ptr = ThinPtr> + NoatunStorable + Sized + 'sta
 
 impl<T: Object<Ptr = ThinPtr> + NoatunStorable + 'static> FixedSizeObject for T {}
 
-pub trait Application: Object {
+pub trait Application: FixedSizeObject {
     type Message: MessagePayload<Root = Self>;
     /// Parameters that will be available in the "initialize_root" call.
     type Params;
 
-    fn initialize_root<'a>(params: &Self::Params) -> Pin<&'a mut Self>;
+    /// Default initialization function does nothing.
+    ///
+    /// You can override to add initialization data. This data is always
+    /// present.
+    ///
+    /// Note that this present isn't actually persisted. So if later versions of
+    /// the software initialize the database differently, this can affect the
+    /// materialization of the database.
+    fn initialize_root(_root: Pin<&mut Self>, _params: &Self::Params)
+    {
+    }
+}
+#[derive(Debug)]
+#[repr(C)]
+struct RawFatPtr {
+    data: *const u8,
+    size: usize,
 }
 
 #[derive(Copy, Clone, Debug)]
+#[repr(C)]
 pub struct FatPtr {
     start: usize,
-    /// Size in bytes
-    len: usize,
+    /// Second part of fat pointer, typically item count of tail
+    count: usize,
 }
 impl FatPtr {
     /// Start index, and size in bytes
-    pub fn from(start: usize, len: usize) -> FatPtr {
-        FatPtr { start, len }
+    pub fn from_idx_count(start: usize, count: usize) -> FatPtr {
+        FatPtr { start, count }
     }
 }
 // TODO: We should probably have a generic ThinPtr type, like ThinPtr<T>,
@@ -1223,6 +1220,14 @@ impl Pointer for ThinPtr {
     fn is_null(&self) -> bool {
         self.0 == 0
     }
+
+    unsafe fn access<'a, T:?Sized>(&self) -> &'a T {
+        NoatunContext.access_thin::<T>(*self)
+    }
+
+    unsafe fn access_mut<'a, T:?Sized>(&self) -> Pin<&'a mut T> {
+        Pin::new_unchecked(NoatunContext.access_thin_mut::<T>(*self))
+    }
 }
 
 impl ThinPtr {
@@ -1238,12 +1243,14 @@ impl Pointer for FatPtr {
     fn create<T: ?Sized>(addr: &T, buffer_start: *const u8) -> Self {
         assert_eq!(
             std::mem::size_of::<*const T>(),
-            2 * std::mem::size_of::<usize>()
+            std::mem::size_of::<RawFatPtr>(),
         );
+
+        let raw: RawFatPtr = unsafe { transmute_copy(&(addr as *const T)) };
 
         FatPtr {
             start: ((addr as *const T as *const u8 as usize) - (buffer_start as usize)),
-            len: size_of_val(addr),
+            count: raw.size,
         }
     }
     fn as_generic(&self) -> GenPtr {
@@ -1252,6 +1259,14 @@ impl Pointer for FatPtr {
 
     fn is_null(&self) -> bool {
         self.start == 0
+    }
+
+    unsafe fn access<'a, T:?Sized>(&self) -> &'a T {
+        NoatunContext.access_fat::<T>(*self)
+    }
+
+    unsafe fn access_mut<'a, T:?Sized>(&self) -> Pin<&'a mut T> {
+        Pin::new_unchecked(NoatunContext.access_fat_mut::< T>(*self))
     }
 }
 
@@ -1293,13 +1308,7 @@ where
         Pin::new_unchecked(slice)
     }
 
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        unsafe { NoatunContext.access_object_slice(index) }
-    }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_object_slice_mut(index) }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -1396,14 +1405,14 @@ noatun_object!(
         struct Kalle {
             pod hej:u32,
             pod tva:u32,
-            object da: DatabaseCell<u32>
+            object da: NoatunCell<u32>
         }
 );
 noatun_object!(
     struct Nalle {
         pod hej:u32,
         pod tva:u32,
-        object da: DatabaseCell<u32>
+        object da: NoatunCell<u32>
     }
 );
 

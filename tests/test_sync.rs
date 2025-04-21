@@ -1,6 +1,6 @@
 use noatun::communication::udp::TokioUdpDriver;
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
-use noatun::data_types::DatabaseCell;
+use noatun::data_types::NoatunCell;
 use noatun::{Application, CutOffDuration, Database, MessagePayload, NoatunContext, NoatunStorable, NoatunTime, Object, ThinPtr};
 use savefile::{Deserializer, Serializer};
 use savefile_derive::Savefile;
@@ -17,8 +17,8 @@ struct MazeMessage {
 #[derive(Debug)]
 #[repr(C)]
 struct Maze {
-    player_pos_x: DatabaseCell<u32>,
-    player_pos_y: DatabaseCell<u32>,
+    player_pos_x: NoatunCell<u32>,
+    player_pos_y: NoatunCell<u32>,
 }
 
 unsafe impl NoatunStorable for Maze {}
@@ -50,13 +50,7 @@ impl Object for Maze {
         temp
     }
 
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        unsafe { NoatunContext.access_pod(index) }
-    }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_object_mut(index) }
-    }
 }
 
 
@@ -89,11 +83,6 @@ impl Application for Maze {
     type Message = MazeMessage;
     type Params = ();
 
-    fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Maze> {
-        let maze = NoatunContext.allocate();
-
-        maze
-    }
 }
 
 #[tokio::test]

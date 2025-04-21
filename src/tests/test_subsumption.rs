@@ -1,13 +1,13 @@
 use std::io::Write;
 use std::pin::Pin;
 use savefile_derive::Savefile;
-use crate::{msg_deserialize, msg_serialize, Application, CutOffDuration, Database, DatabaseCell, MessagePayload, NoatunContext, NoatunTime};
+use crate::{msg_deserialize, msg_serialize, Application, CutOffDuration, Database, NoatunCell, MessagePayload, NoatunTime};
 use crate::database::DatabaseSettings;
-use crate::DatabaseVec;
+use crate::NoatunVec;
 
 noatun_object!(
     struct VecDoc {
-        object items: DatabaseVec<DatabaseCell<u32>>,
+        object items: NoatunVec<NoatunCell<u32>>,
     }
 );
 
@@ -23,9 +23,7 @@ impl Application for VecDoc {
     type Message = VecMessage;
     type Params = ();
 
-    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
-        NoatunContext.allocate()
-    }
+
 }
 
 impl MessagePayload for VecMessage {

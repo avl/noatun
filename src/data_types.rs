@@ -77,13 +77,7 @@ impl Object for NoatunString {
         temp
     }
 
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        NoatunContext.access_pod(index)
-    }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        NoatunContext.access_object_mut(index)
-    }
 }
 
 impl Deref for NoatunString {
@@ -141,13 +135,13 @@ impl NoatunString {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
-pub struct DatabaseOption<T: Copy> {
+pub struct NoatunOption<T: Copy> {
     value: T,
     registrar: SequenceNr,
     present: u8,
 }
 
-impl<T: Copy + NoatunStorable> DatabaseOption<T> {
+impl<T: Copy + NoatunStorable> NoatunOption<T> {
     pub fn set(&mut self, new_value: Option<T>) {
         let c = CONTEXT.get();
         if c.is_null() {
@@ -158,7 +152,6 @@ impl<T: Copy + NoatunStorable> DatabaseOption<T> {
                 self.present = 0;
             }
             return;
-            //unreachable!("Attempt to modify DatabaseCell without a mutable context.");
         }
         let c = unsafe { &mut *c };
         if let Some(new_value) = new_value {
@@ -181,15 +174,15 @@ impl<T: Copy + NoatunStorable> DatabaseOption<T> {
 }
 
 #[repr(C)]
-pub struct DatabaseCell<T> {
+pub struct NoatunCell<T> {
     value: T,
     registrar: SequenceNr,
 }
 
-unsafe impl<T:NoatunStorable> NoatunStorable for DatabaseCell<T>{}
+unsafe impl<T:NoatunStorable> NoatunStorable for NoatunCell<T>{}
 
 
-impl<T: Copy + Debug> Debug for DatabaseCell<T> {
+impl<T: Copy + Debug> Debug for NoatunCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let value = self.value;
         value.fmt(f)
@@ -197,27 +190,27 @@ impl<T: Copy + Debug> Debug for DatabaseCell<T> {
 }
 
 
-pub trait DatabaseCellArrayExt<T: NoatunStorable> {
+pub trait NoatunCellArrayExt<T: NoatunStorable> {
     fn observe(&self) -> Vec<T>;
 }
-impl<T: NoatunStorable + Copy> DatabaseCellArrayExt<T> for &[DatabaseCell<T>] {
+impl<T: NoatunStorable + Copy> NoatunCellArrayExt<T> for &[NoatunCell<T>] {
     fn observe(&self) -> Vec<T> {
         self.iter().map(|x| x.get()).collect()
     }
 }
 
-impl<T> PartialEq<DatabaseCell<T>> for DatabaseCell<T>
+impl<T> PartialEq<NoatunCell<T>> for NoatunCell<T>
 where
     T: Copy + PartialEq,
 {
-    fn eq(&self, other: &DatabaseCell<T>) -> bool {
+    fn eq(&self, other: &NoatunCell<T>) -> bool {
         let val1 = self.value;
         let val2 = other.value;
         val1 == val2
     }
 }
 
-impl<T: Copy> Deref for DatabaseCell<T> {
+impl<T: Copy> Deref for NoatunCell<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -226,15 +219,11 @@ impl<T: Copy> Deref for DatabaseCell<T> {
     }
 }
 
-impl<T: NoatunStorable> DatabaseCell<T> {
+impl<T: NoatunStorable> NoatunCell<T> {
     pub fn get(&self) -> T where T: Copy {
         NoatunContext.observe_registrar(self.registrar);
         self.value
     }
-    /*pub fn get_ref(&self, context: &DatabaseContextData) -> &T {
-        context.observe_registrar(self.registrar);
-        &self.value
-    }*/
     pub fn set(self: Pin<&mut Self>, new_value: T) {
         let cptr = CONTEXT.get();
         let c = unsafe { &mut *cptr };
@@ -248,61 +237,10 @@ impl<T: NoatunStorable> DatabaseCell<T> {
         NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.registrar));
     }
 }
-/*
-impl<T: Pod> Object for OpaqueCell<T> {
-    type Ptr = ThinPtr;
-    type DetachedType = T;
-    type DetachedOwnedType = T;
 
-    fn detach(&self) -> Self::DetachedOwnedType {
-        // Aren't OpaqueCells actually completely useless?
-        // We need to make it so their value can be inspected in 'with_root', but
-        // not otherwise.
-        panic!("OpaqueCell cannot be detached")
-    }
-
-    fn clear(self: Pin<&mut Self>) {
-
-    }
-
-    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        self.set(*detached);
-    }
-
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
-        let mut ret: Pin<&mut Self> = NoatunContext.allocate_pod();
-        ret.as_mut().init_from_detached(detached);
-        ret
-    }
-
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        unsafe { NoatunContext.access_pod(index) }
-    }
-
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_object_mut(index) }
-    }
-}
-
-impl<T: Pod> OpaqueCell<T> {
-    pub fn set(self: Pin<&mut Self>, new_value: T) {
-        let tself = unsafe { self.get_unchecked_mut() };
-        //let index = NoatunContext.index_of(tself);
-        //context.write(index, bytes_of(&new_value));
-        NoatunContext.write_pod(new_value, unsafe { Pin::new_unchecked(&mut tself.value) });
-        NoatunContext.update_registrar(&mut tself.registrar);
-    }
-}
-*/
-
-impl<T: NoatunStorable> DatabaseCell<T> {
-    /*#[allow(clippy::mut_from_ref)]
-    pub fn allocate<'a>() -> &'a mut Self {
-        let memory = unsafe { NoatunContext.allocate_pod::<DatabaseCell<T>>() };
-        unsafe { &mut *(memory as *mut _) }
-    }*/
-    pub fn new(value: T) -> DatabaseCell<T> {
-        DatabaseCell {
+impl<T: NoatunStorable> NoatunCell<T> {
+    pub fn new(value: T) -> NoatunCell<T> {
+        NoatunCell {
             value,
             registrar: Default::default(),
         }
@@ -310,7 +248,7 @@ impl<T: NoatunStorable> DatabaseCell<T> {
 }
 
 
-impl<T: NoatunStorable+Debug+Copy> Object for DatabaseCell<T> {
+impl<T: NoatunStorable+Debug+Copy> Object for NoatunCell<T> {
     type Ptr = ThinPtr;
     type DetachedType = T;
     type DetachedOwnedType = T;
@@ -321,7 +259,7 @@ impl<T: NoatunStorable+Debug+Copy> Object for DatabaseCell<T> {
 
     fn clear(self: Pin<&mut Self>) {
         let tself =  unsafe { self.get_unchecked_mut() };
-        trace!("DatabaseCell::clear: {:?}", tself.value);
+        trace!("NoatunCell::clear: {:?}", tself.value);
         NoatunContext.clear_registrar_ptr(&mut tself.registrar);
     }
 
@@ -335,16 +273,10 @@ impl<T: NoatunStorable+Debug+Copy> Object for DatabaseCell<T> {
         ret
     }
 
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        unsafe { NoatunContext.access_pod(index) }
-    }
 
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_object_mut(index) }
-    }
 }
 
-/// Like DatabaseVec, but for crate internal use. Does not track
+/// Like NoatunVec, but for crate internal use. Does not track
 /// accesses. (Does not track dependencies between messages).
 #[repr(C)]
 pub(crate) struct RawDatabaseVec<T> {
@@ -390,8 +322,9 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
         let dest_index = ctx.index_of_ptr(dest);
 
         if self.length > 0 {
-            let old_ptr = FatPtr::from(self.data, size_of::<T>() * self.length);
-            ctx.copy(old_ptr, dest_index);
+            let old_ptr = FatPtr::from_idx_count(self.data, size_of::<T>() * self.length);
+            // old_ptr is a u8-pointer
+            ctx.copy_bytes(old_ptr, dest_index);
         }
 
         ctx.write_pod(
@@ -501,7 +434,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
             let dst_offset = self.data + index * size_of::<T>();
             let dst_obj = ThinPtr(dst_offset);
 
-            ctx.copy_sized(src_obj, dst_obj, size_of::<T>());
+            ctx.copy_bytes_len(src_obj, dst_obj, size_of::<T>());
         }
     }
     pub(crate) fn write_untracked(&mut self, ctx: &mut DatabaseContextData, index: usize, val: T) {
@@ -548,12 +481,7 @@ where
         panic!("allocate_from_detached is not implemented for RawDatabaseVec");
     }
 
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        unsafe { NoatunContext.access_pod(index) }
-    }
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_pod_mut(index) }
-    }
+
 }
 
 #[repr(C)]
@@ -568,7 +496,7 @@ struct DatabaseVecLengthCapData {
 unsafe impl NoatunStorable for DatabaseVecLengthCapData {}
 
 #[repr(C)]
-pub struct DatabaseVec<T: FixedSizeObject> {
+pub struct NoatunVec<T: FixedSizeObject> {
     //WARNING! These first 3 fields must be identical to DatabaseVecLengthCapData
     length: usize,
     capacity: usize,
@@ -577,26 +505,26 @@ pub struct DatabaseVec<T: FixedSizeObject> {
     phantom_data: PhantomData<T>,
 }
 
-unsafe impl<T:FixedSizeObject> NoatunStorable for DatabaseVec<T> {}
+unsafe impl<T:FixedSizeObject> NoatunStorable for NoatunVec<T> {}
 
-impl<T: FixedSizeObject+Debug> Debug for DatabaseVec<T> {
+impl<T: FixedSizeObject+Debug> Debug for NoatunVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(self.iter()).finish()
     }
 }
 
 
-pub struct DatabaseVecIterator<'a, T: FixedSizeObject> {
-    vec: &'a DatabaseVec<T>,
+pub struct NoatunVecIterator<'a, T: FixedSizeObject> {
+    vec: &'a NoatunVec<T>,
     index: usize,
 }
 
-pub struct DatabaseVecIteratorMut<'a, T: FixedSizeObject> {
-    vec: Pin<&'a mut DatabaseVec<T>>,
+pub struct NoatunVecIteratorMut<'a, T: FixedSizeObject> {
+    vec: Pin<&'a mut NoatunVec<T>>,
     index: usize,
 }
 
-impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIterator<'a, T> {
+impl<'a, T: FixedSizeObject + 'static> Iterator for NoatunVecIterator<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -608,7 +536,7 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIterator<'a, T> {
         Some(self.vec.get_index(index))
     }
 }
-impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIteratorMut<'a, T> {
+impl<'a, T: FixedSizeObject + 'static> Iterator for NoatunVecIteratorMut<'a, T> {
     type Item = Pin<&'a mut T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -622,21 +550,21 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIteratorMut<'a, T
         Some(unsafe {
             Pin::new_unchecked(
                 std::mem::transmute::<&mut T, &mut T>(
-                DatabaseVec::get_index_mut(self.vec.as_mut(), index).get_unchecked_mut(),
+                    NoatunVec::get_index_mut(self.vec.as_mut(), index).get_unchecked_mut(),
             ))
         })
     }
 }
 
-impl<T: FixedSizeObject + 'static> DatabaseVec<T> {
-    pub fn iter(&self) -> DatabaseVecIterator<T> {
-        DatabaseVecIterator {
+impl<T: FixedSizeObject + 'static> NoatunVec<T> {
+    pub fn iter(&self) -> NoatunVecIterator<T> {
+        NoatunVecIterator {
             vec: self,
             index: 0,
         }
     }
-    pub fn iter_mut<'a>(self: Pin<&'a mut Self>) -> DatabaseVecIteratorMut<'a, T> {
-        DatabaseVecIteratorMut {
+    pub fn iter_mut<'a>(self: Pin<&'a mut Self>) -> NoatunVecIteratorMut<'a, T> {
+        NoatunVecIteratorMut {
             vec: self,
             index: 0,
         }
@@ -649,7 +577,8 @@ impl<T: FixedSizeObject + 'static> DatabaseVec<T> {
         let dest_index = NoatunContext.index_of_ptr(dest);
 
         if self.length > 0 {
-            let old_ptr = FatPtr::from(self.data, size_of::<T>() * self.length);
+            //bytes
+            let old_ptr = FatPtr::from_idx_count(self.data, size_of::<T>() * self.length);
             NoatunContext.copy_ptr(old_ptr, dest_index);
         }
 
@@ -663,12 +592,12 @@ impl<T: FixedSizeObject + 'static> DatabaseVec<T> {
         )
     }
     #[allow(clippy::mut_from_ref)]
-    pub fn new<'a>() -> Pin<&'a mut DatabaseVec<T>> {
-        NoatunContext.allocate::<DatabaseVec<T>>()
+    pub fn new<'a>() -> Pin<&'a mut NoatunVec<T>> {
+        unsafe { NoatunContext.allocate::<NoatunVec<T>>() }
     }
 }
 
-impl<T:FixedSizeObject> Index<usize> for DatabaseVec<T> {
+impl<T:FixedSizeObject> Index<usize> for NoatunVec<T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -676,7 +605,7 @@ impl<T:FixedSizeObject> Index<usize> for DatabaseVec<T> {
     }
 }
 
-impl<T> DatabaseVec<T>
+impl<T> NoatunVec<T>
 where
     T: FixedSizeObject + 'static,
 {
@@ -691,25 +620,25 @@ where
     pub fn get_index(&self, index: usize) -> &T {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
-        unsafe { T::access(ThinPtr(offset)) }
+        unsafe { ThinPtr(offset).access::<T>() }
     }
 
     pub fn get_index_mut(self: Pin<&mut Self>, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
-        let t = unsafe { T::access_mut(ThinPtr(offset)) };
+        let t = unsafe { ThinPtr(offset).access_mut::<T>() };
         t
     }
     fn get_mut_internal(&mut self, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
-        let t = unsafe { T::access_mut(ThinPtr(offset)) };
+        let t = unsafe { ThinPtr(offset).access_mut::<T>() };
         t
     }
     pub(crate) fn write(&mut self, index: usize, val: T) {
         let offset = self.data + index * size_of::<T>();
         unsafe {
-            let dest = T::access_mut(ThinPtr(offset));
+            let dest = ThinPtr(offset).access_mut::<T>();
             NoatunContext.write(val, dest);
         };
     }
@@ -731,7 +660,7 @@ where
         }
         let offset = ThinPtr(tself.data + index * size_of::<T>());
         unsafe {
-            let item_data = <T as Object>::access_mut(offset);
+            let item_data = offset.access_mut::<T>();
             item_data.init_from_detached(val.borrow());
         }
     }
@@ -770,8 +699,8 @@ where
         }
         let src_ptr = ThinPtr(tself.data + (tself.length - 1) * size_of::<T>());
         let dst_ptr = ThinPtr(tself.data + index * size_of::<T>());
-        unsafe { T::access_mut(dst_ptr).clear(); }
-        NoatunContext.copy_ptr(FatPtr::from(src_ptr.0, size_of::<T>()), dst_ptr);
+        unsafe { dst_ptr.access_mut::<T>().clear(); }
+        NoatunContext.copy_ptr(FatPtr::from_idx_count(src_ptr.0, 1), dst_ptr);
 
         NoatunContext.update_registrar(&mut tself.length_registrar);
         NoatunContext.write_ptr(tself.length - 1, addr_of_mut!(tself.length));
@@ -785,7 +714,7 @@ where
 
         while read_offset < self.length {
             let read_ptr = ThinPtr(self.data + read_offset * size_of::<T>());
-            let mut val = unsafe { T::access_mut(read_ptr) };
+            let mut val = unsafe { read_ptr.access_mut::<T>() };
             let retain = f(val.as_mut());
             if !retain {
                 val.clear();
@@ -812,12 +741,12 @@ where
         let index = tself.length - 1;
         let offset = ThinPtr(tself.data + index * size_of::<T>());
         unsafe {
-            <T as Object>::access_mut(offset).init_from_detached(t.borrow());
+            offset.access_mut::<T>().init_from_detached(t.borrow());
         }
     }
 }
 
-impl<T> Object for DatabaseVec<T>
+impl<T> Object for NoatunVec<T>
 where
     T: FixedSizeObject + 'static,
 {
@@ -846,32 +775,27 @@ where
         pod
     }
 
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        unsafe { NoatunContext.access_pod(index) }
-    }
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_pod_mut(index) }
-    }
+
 }
 
 #[repr(transparent)]
-pub struct DatabaseObjectHandle<T: Object + ?Sized> {
+pub struct NoatunBox<T: Object + ?Sized> {
     object_index: T::Ptr,
     phantom: PhantomData<T>,
 }
 
 
-unsafe impl<T:Object+?Sized+'static> NoatunStorable for DatabaseObjectHandle<T> {}
+unsafe impl<T:Object+?Sized+'static> NoatunStorable for NoatunBox<T> {}
 
-impl<T: Object + ?Sized> Copy for DatabaseObjectHandle<T> {}
+impl<T: Object + ?Sized> Copy for NoatunBox<T> {}
 
-impl<T: Object + ?Sized> Clone for DatabaseObjectHandle<T> {
+impl<T: Object + ?Sized> Clone for NoatunBox<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T: Object + ?Sized + 'static> Object for DatabaseObjectHandle<T>
+impl<T: Object + ?Sized + 'static> Object for NoatunBox<T>
 where
     T::Ptr: NoatunStorable,
 {
@@ -880,11 +804,11 @@ where
     type DetachedOwnedType = T::DetachedOwnedType;
 
     fn detach(&self) -> Self::DetachedOwnedType {
-        self.get().detach()
+        self.get_inner().detach()
     }
 
     fn clear(self: Pin<&mut Self>) {
-        Self::getmut(self).clear()
+        Self::get_inner_mut(self).clear()
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -898,44 +822,46 @@ where
         }
     }
 
+
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         let mut pod: Pin<&mut Self> = NoatunContext.allocate_obj();
         pod.as_mut().init_from_detached(detached);
         pod
     }
 
-    unsafe fn access<'a>(index: Self::Ptr) -> &'a Self {
-        unsafe { NoatunContext.access_pod(index) }
-    }
-    unsafe fn access_mut<'a>(index: Self::Ptr) -> Pin<&'a mut Self> {
-        unsafe { NoatunContext.access_object_mut(index) }
-    }
+
 }
 
-impl<T: Object + ?Sized> Deref for DatabaseObjectHandle<T> {
+impl<T: Object + ?Sized> Deref for NoatunBox<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
         if self.object_index.is_null() {
-            panic!("get() called on an uninitialized (null) DatabaseObjectHandle.");
+            panic!("get() called on an uninitialized (null) NoatunBox.");
         }
-        unsafe { T::access(self.object_index) }
+        unsafe { self.object_index.access::<T>() }
     }
 }
 
-impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
-    pub fn get(&self) -> &T {
+
+
+impl<T: Object + ?Sized> NoatunBox<T> {
+    /// Synonym of `deref`. You usually don't have to call this.
+    pub fn get_inner(&self) -> &T {
         if self.object_index.is_null() {
-            panic!("get() called on an uninitialized (null) DatabaseObjectHandle.");
+            panic!("get() called on an uninitialized (null) NoatunBox.");
         }
-        unsafe { T::access(self.object_index) }
+        unsafe { self.object_index.access::<T>() }
     }
-    pub fn getmut(self: Pin<&mut Self>) -> Pin<&mut T> {
+
+    /// This could have been a `DerefMut` impl, but unfortunately that doesn't work
+    /// with a Pin self
+    pub fn get_inner_mut(self: Pin<&mut Self>) -> Pin<&mut T> {
         let tself = unsafe { self.get_unchecked_mut() };
         if tself.object_index.is_null() {
-            panic!("get_mut() called on an uninitialized (null) DatabaseObjectHandle.");
+            panic!("get_mut() called on an uninitialized (null) NoatunBox.");
         }
-        unsafe { T::access_mut(tself.object_index) }
+        unsafe { tself.object_index.access_mut::<T>() }
     }
 
     pub fn new(value: T::Ptr) -> Self {
@@ -945,13 +871,20 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
         }
     }
 
+    pub fn assign(self: Pin<&mut Self>, value: &T::DetachedType) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        let target = unsafe { T::allocate_from_detached(value) };
+        let index = NoatunContext.index_of(&*target);
+        NoatunContext.write_internal(index, &mut tself.object_index);
+    }
+
     #[allow(clippy::mut_from_ref)]
-    pub fn allocate<'a>(value: T) -> Pin<&'a mut Self>
+    pub unsafe fn allocate<'a>(value: T) -> Pin<&'a mut Self>
     where
         T: Object<Ptr = ThinPtr>,
         T: NoatunStorable,
     {
-        let mut this = NoatunContext.allocate::<DatabaseObjectHandle<T>>();
+        let mut this = NoatunContext.allocate::<NoatunBox<T>>();
         let mut target = NoatunContext.allocate::<T>();
         unsafe {
             *target.as_mut().get_unchecked_mut() = value;
@@ -962,13 +895,13 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
         this
     }
 
-    #[allow(clippy::mut_from_ref)]
-    pub fn allocate_unsized<'a>(value: &T) -> Pin<&'a mut Self>
+    /*#[allow(clippy::mut_from_ref)]
+    pub unsafe fn allocate_unsized<'a>(value: &T) -> Pin<&'a mut Self>
     where
         T: Object<Ptr = FatPtr> + 'static,
     {
         let size_bytes = std::mem::size_of_val(value);
-        let mut this = NoatunContext.allocate::<DatabaseObjectHandle<T>>();
+        let mut this = NoatunContext.allocate::<NoatunBox<T>>();
         let target_dst_ptr = NoatunContext.allocate_raw(size_bytes, std::mem::align_of_val(value));
 
         let target_src_ptr = value as *const T as *const u8;
@@ -980,10 +913,10 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
 
         unsafe {
             this.as_mut().get_unchecked_mut().object_index =
-                FatPtr::from(thin_index.start(), size_bytes)
+                FatPtr::from_idx_count(thin_index.start(), count)
         };
         this
-    }
+    }*/
 }
 
 
@@ -993,28 +926,27 @@ const HASH_META_GROUP_SIZE: usize = 32;
 
 #[repr(C)]
 #[derive(Clone,Copy)]
-struct DatabaseHashBucket<K,V> {
+struct NoatunHashBucket<K,V> {
     hash: u32,
     key: K,
     v: V,
 }
 
-unsafe impl<K:NoatunStorable, V:NoatunStorable> NoatunStorable for DatabaseHashBucket<K,V> {}
+unsafe impl<K:NoatunStorable, V:NoatunStorable> NoatunStorable for NoatunHashBucket<K,V> {}
 
 
-//TODO: Rename to NoatunHash?
 #[repr(C)]
 #[derive(Clone,Copy)]
-pub struct DatabaseHash<K: NoatunStorable, V: FixedSizeObject> {
+pub struct NoatunHashMap<K: NoatunStorable, V: FixedSizeObject> {
     length: usize,
     capacity: usize,
     data: usize,
     phantom_data: PhantomData<(K,V)>,
 }
 
-unsafe impl<K:NoatunStorable, V:FixedSizeObject> NoatunStorable for DatabaseHash<K,V> {}
+unsafe impl<K:NoatunStorable, V:FixedSizeObject> NoatunStorable for NoatunHashMap<K,V> {}
 
-impl<K:NoatunStorable+NoatunKey+PartialEq+Debug,V:FixedSizeObject+Debug> Debug for DatabaseHash<K, V> {
+impl<K:NoatunStorable+NoatunKey+PartialEq+Debug,V:FixedSizeObject+Debug> Debug for NoatunHashMap<K, V> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_map().entries(self.iter()).finish()
     }
@@ -1529,8 +1461,8 @@ impl<I:Iterator> ExactSizeIterator for WithConcat<I,I::Item> {
 }
 
 
-pub struct DatabaseHashIterator<'a, K:NoatunStorable+ NoatunKey +PartialEq,V:FixedSizeObject> {
-    hash_buckets: &'a [MaybeUninit<DatabaseHashBucket<K,V>>],
+pub struct NoatunHashMapIterator<'a, K:NoatunStorable+ NoatunKey +PartialEq,V:FixedSizeObject> {
+    hash_buckets: &'a [MaybeUninit<NoatunHashBucket<K,V>>],
     metas: &'a [MetaGroup],
     next_position: usize,
 }
@@ -1538,7 +1470,7 @@ struct DatabaseHashOwningIterator<'a, K:NoatunStorable+ NoatunKey +PartialEq,V:F
     hash_buckets: HashAccessContextMut<'a, K, V>,
     next_position: usize,
 }
-impl<'a,K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> Iterator for DatabaseHashIterator<'a,K,V> {
+impl<'a,K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> Iterator for NoatunHashMapIterator<'a,K,V> {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1588,7 +1520,7 @@ impl<'a, K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> Iterator f
 
 struct HashAccessContext<'a,K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> {
     metas: &'a [MetaGroup],
-    buckets: &'a [MaybeUninit<DatabaseHashBucket<K,V>>],
+    buckets: &'a [MaybeUninit<NoatunHashBucket<K,V>>],
 }
 
 impl<'a,K:NoatunStorable+NoatunKey+PartialEq,V:FixedSizeObject> Copy for HashAccessContext<'a,K,V> {}
@@ -1601,7 +1533,7 @@ impl<'a,K:NoatunStorable+NoatunKey+PartialEq,V:FixedSizeObject> Clone for HashAc
 
 struct HashAccessContextMut<'a,K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> {
     metas: &'a mut [MetaGroup],
-    buckets: &'a mut [MaybeUninit<DatabaseHashBucket<K,V>>],
+    buckets: &'a mut [MaybeUninit<NoatunHashBucket<K,V>>],
 }
 
 
@@ -1677,7 +1609,7 @@ impl<'a,K: NoatunKey +PartialEq, V: FixedSizeObject> HashAccessContextMut<'a,K,V
     }
 }
 
-impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
+impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> NoatunHashMap<K, V> {
 
     pub fn len(&self) -> usize {
         self.length
@@ -1685,9 +1617,9 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
     pub fn is_empty(&self) -> bool {
         self.length == 0
     }
-    pub fn iter(&self) -> DatabaseHashIterator<K,V> {
+    pub fn iter(&self) -> NoatunHashMapIterator<K,V> {
         let context = self.data_meta_len();
-        DatabaseHashIterator {
+        NoatunHashMapIterator {
             hash_buckets: context.buckets,
             metas: context.metas,
             next_position: 0,
@@ -1707,7 +1639,7 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
     }
     fn data_meta_len_mut_unsafe<'a>(&mut self) -> HashAccessContextMut<'a, K,V> {
         let dptr = NoatunContext.start_ptr_mut().wrapping_add(self.data);
-        let align = align_of::<DatabaseHashBucket<K,V>>().max(align_of::<MetaGroup>());
+        let align = align_of::<NoatunHashBucket<K,V>>().max(align_of::<MetaGroup>());
         let cap = self.capacity;
         if cap == 0 {
             return HashAccessContextMut {
@@ -1720,7 +1652,7 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
 
         unsafe {
             let meta_groups = slice::from_raw_parts_mut(dptr as *mut MetaGroup, meta_group_count);
-            let buckets = slice::from_raw_parts_mut(dptr.wrapping_add(aligned_meta_size) as *mut MaybeUninit<DatabaseHashBucket<K,V>>, cap);
+            let buckets = slice::from_raw_parts_mut(dptr.wrapping_add(aligned_meta_size) as *mut MaybeUninit<NoatunHashBucket<K,V>>, cap);
             HashAccessContextMut {
                 metas: meta_groups,
                 buckets,
@@ -1729,7 +1661,7 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
     }
     fn data_meta_len(&self) -> HashAccessContext<K,V> {
         let dptr = NoatunContext.start_ptr().wrapping_add(self.data);
-        let align = align_of::<DatabaseHashBucket<K,V>>().max(align_of::<MetaGroup>());
+        let align = align_of::<NoatunHashBucket<K,V>>().max(align_of::<MetaGroup>());
         let cap = self.capacity;
         if cap == 0 {
             return HashAccessContext {
@@ -1742,7 +1674,7 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
 
         unsafe {
             let meta_groups = slice::from_raw_parts(dptr as *const MetaGroup, meta_group_count);
-            let buckets = slice::from_raw_parts(dptr.wrapping_add(aligned_meta_size) as *const MaybeUninit<DatabaseHashBucket<K,V>>, cap);
+            let buckets = slice::from_raw_parts(dptr.wrapping_add(aligned_meta_size) as *const MaybeUninit<NoatunHashBucket<K,V>>, cap);
             HashAccessContext {
                 metas: meta_groups,
                 buckets,
@@ -2069,9 +2001,9 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
 
         let meta_size = capacity.div_ceil(HASH_META_GROUP_SIZE);
 
-        let align = align_of::<DatabaseHashBucket<K,V>>().max(align_of::<MetaGroup>());
+        let align = align_of::<NoatunHashBucket<K,V>>().max(align_of::<MetaGroup>());
         let aligned_meta_size = (HASH_META_GROUP_SIZE*meta_size).next_multiple_of(align);
-        let bucket_data_size = capacity * size_of::<DatabaseHashBucket<K,V>>();
+        let bucket_data_size = capacity * size_of::<NoatunHashBucket<K,V>>();
 
         let data = NoatunContext.allocate_raw(aligned_meta_size + bucket_data_size, align);
 
@@ -2152,7 +2084,7 @@ pub trait NoatunKey : NoatunStorable + Sized + Debug {
 
 
 
-impl<K:NoatunKey +Hash+Eq,V:FixedSizeObject> Object for DatabaseHash<K,V> {
+impl<K:NoatunKey +Hash+Eq,V:FixedSizeObject> Object for NoatunHashMap<K,V> {
     type Ptr = ThinPtr;
     type DetachedType = HashMap<K::DetachedOwnedType,V::DetachedOwnedType>;
     type DetachedOwnedType = HashMap<K::DetachedOwnedType,V::DetachedOwnedType>;
@@ -2177,20 +2109,14 @@ impl<K:NoatunKey +Hash+Eq,V:FixedSizeObject> Object for DatabaseHash<K,V> {
         todo!()
     }
 
-    unsafe fn access<'a>(_index: Self::Ptr) -> &'a Self {
-        todo!()
-    }
 
-    unsafe fn access_mut<'a>(_index: Self::Ptr) -> Pin<&'a mut Self> {
-        todo!()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use datetime_literal::datetime;
-    use super::{DatabaseHash, NoatunString};
-    use crate::{CutOffDuration, Database, DatabaseCell, NoatunTime, Object};
+    use super::{NoatunHashMap, NoatunString};
+    use crate::{CutOffDuration, Database, NoatunCell, NoatunTime, Object};
     use crate::tests::{DummyTestApp};
     use std::time::Instant;
     use std::hint::black_box;
@@ -2198,19 +2124,19 @@ mod tests {
     use crate::database::DatabaseSettings;
     use crate::tests::DummyTestMessageApply;
 
-    impl DummyTestMessageApply for DatabaseHash<u32, DatabaseCell<u32>> {
+    impl DummyTestMessageApply for NoatunHashMap<u32, NoatunCell<u32>> {
         fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
             let x = (time.0 % (1u64<<32)) as u32;
             root.insert(x, &x);
         }
     }
-    impl DummyTestMessageApply for DatabaseHash<NoatunString, DatabaseCell<u32>> {
+    impl DummyTestMessageApply for NoatunHashMap<NoatunString, NoatunCell<u32>> {
         fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
             let x = (time.0 % (1u64<<32)) as u32;
             root.insert(x.to_string(), &x);
         }
     }
-    impl DummyTestMessageApply for DatabaseHash<NoatunString, NoatunString> {
+    impl DummyTestMessageApply for NoatunHashMap<NoatunString, NoatunString> {
         fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
             let x = (time.0 % (1u64<<32)) as u32;
             root.insert(x.to_string(), &x.to_string());
@@ -2219,7 +2145,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_miri0() {
-        let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
+        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> = Database::create_in_memory(
             10000,
             CutOffDuration::from_minutes(15),
             DatabaseSettings {
@@ -2247,10 +2173,10 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_string_keys() {
-        let mut db: Database<DummyTestApp<DatabaseHash<NoatunString, DatabaseCell<u32>>>> = Database::create_in_memory(
+        let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunCell<u32>>>> = Database::create_in_memory(
             10000,
             CutOffDuration::from_minutes(15),
-           DatabaseSettings {
+            DatabaseSettings {
                mock_time: Some(datetime!(2021-01-01 Z).into()),
                ..Default::default()
             },
@@ -2266,7 +2192,7 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_detach() {
-        let mut db: Database<DummyTestApp<DatabaseHash<NoatunString, DatabaseCell<u32>>>> = Database::create_in_memory(
+        let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunCell<u32>>>> = Database::create_in_memory(
             10000,
             CutOffDuration::from_minutes(15),
             DatabaseSettings {
@@ -2285,7 +2211,7 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_detach2() {
-        let mut db: Database<DummyTestApp<DatabaseHash<NoatunString, NoatunString>>> = Database::create_in_memory(
+        let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunString>>> = Database::create_in_memory(
             10000,
             CutOffDuration::from_minutes(15),
             DatabaseSettings {
@@ -2309,7 +2235,7 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_delete() {
-        let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
+        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> = Database::create_in_memory(
             10000,
             CutOffDuration::from_minutes(15),
             DatabaseSettings {
@@ -2342,7 +2268,7 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_delete_many0() {
-        let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
+        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> = Database::create_in_memory(
             100000,
             CutOffDuration::from_minutes(15),
             DatabaseSettings {
@@ -2375,7 +2301,7 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_insert_many() {
-        let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
+        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> = Database::create_in_memory(
             200000,
             CutOffDuration::from_minutes(15),
             DatabaseSettings {
@@ -2402,7 +2328,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_lookup_speed_noatun() {
-        let mut db: Database<DummyTestApp<DatabaseHash<u32, DatabaseCell<u32>>>> = Database::create_in_memory(
+        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> = Database::create_in_memory(
             5000000,
             CutOffDuration::from_minutes(15),
             DatabaseSettings {

@@ -5,7 +5,7 @@ use crate::communication::{
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::distributor::Status;
 use crate::{Persistence, Savefile};
-use crate::{Application, Database, MessagePayload, NoatunContext, NoatunTime, Object};
+use crate::{Application, Database, MessagePayload, NoatunTime, Object};
 use arcshift::ArcShift;
 use bytes::BufMut;
 use chrono::DateTime;
@@ -185,10 +185,6 @@ impl CommunicationDriver for TestDriver {
 impl Application for SyncApp {
     type Message = SyncMessage;
     type Params = ();
-
-    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
-        NoatunContext.allocate()
-    }
 }
 
 const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);

@@ -3,7 +3,7 @@ use std::io::Write;
 use std::pin::Pin;
 use savefile_derive::Savefile;
 use crate::data_types::NoatunString;
-use crate::{Application, CutOffDuration, Database, DatabaseVec, MessagePayload, NoatunContext, NoatunTime, Object};
+use crate::{Application, CutOffDuration, Database, NoatunVec, MessagePayload, NoatunTime, Object};
 use datetime_literal::datetime;
 use chrono::{DateTime, Utc};
 use crate::database::{DatabaseSettings, LoadingStatus};
@@ -19,7 +19,7 @@ noatun_object!(
 noatun_object!(
     #[derive(PartialEq)]
     struct KeyValStore {
-        object keyval: DatabaseVec<KeyValItem>,
+        object keyval: NoatunVec<KeyValItem>,
         pod edit_count: u32,
     }
 );
@@ -34,9 +34,6 @@ impl Application for KeyValStore {
     type Message = KeyValMessage;
     type Params = ();
 
-    fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
-        NoatunContext.allocate()
-    }
 }
 
 impl MessagePayload for KeyValMessage {
