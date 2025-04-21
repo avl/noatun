@@ -31,7 +31,7 @@ use std::borrow::Borrow;
 use std::cell::Cell;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::Write;
-use std::mem::{transmute, transmute_copy, MaybeUninit};
+use std::mem::{transmute_copy, MaybeUninit};
 use std::ops::{Add, Sub};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -815,7 +815,7 @@ pub fn cast_slice_mut<I:NoatunStorable,O:NoatunStorable>(s: &mut [I]) -> &mut [O
     const {
         assert!(align_of::<O>() <= align_of::<I>());
     }
-    let tot_size_i = size_of::<I>()*s.len();
+    let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
     assert_eq!(tot_size_i, size_of::<O>()*count_o);
     unsafe {
@@ -826,7 +826,7 @@ pub fn cast_slice<I:NoatunStorable,O:NoatunStorable>(s: &[I]) -> &[O] {
     const {
         assert!(align_of::<O>() <= align_of::<I>());
     }
-    let tot_size_i = size_of::<I>()*s.len();
+    let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
     assert_eq!(tot_size_i, size_of::<O>()*count_o);
     unsafe {
@@ -839,7 +839,7 @@ pub fn dyn_cast_slice<I:NoatunStorable,O:NoatunStorable>(s: &[I]) -> &[O] {
 
     assert!((s.as_ptr() as *mut O).is_aligned());
 
-    let tot_size_i = size_of::<I>()*s.len();
+    let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
     assert_eq!(tot_size_i, size_of::<O>()*count_o);
     unsafe {
@@ -849,7 +849,7 @@ pub fn dyn_cast_slice<I:NoatunStorable,O:NoatunStorable>(s: &[I]) -> &[O] {
 /// Requires alignment to be correct at runtime, panics otherwise
 pub fn dyn_cast_slice_mut<I:NoatunStorable,O:NoatunStorable>(s: &mut [I]) -> &mut [O] {
     assert!((s.as_ptr() as *mut O).is_aligned());
-    let tot_size_i = size_of::<I>()*s.len();
+    let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
     assert_eq!(tot_size_i, size_of::<O>()*count_o);
     unsafe {
@@ -1390,7 +1390,6 @@ impl Drop for ContextGuardMut {
 }
 
 pub use paste::paste;
-use crate::data_types::DatabaseObjectHandle;
 use crate::undo_store::magic_initialize_ptr;
 
 noatun_object!(

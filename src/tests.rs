@@ -116,7 +116,7 @@ mod test_types_rewind {
                 if root.is_empty() {
                     root.push(time.0 as u16);
                 } else {
-                    root.getmut(0).set(time.0 as u16);
+                    root.get_index_mut(0).set(time.0 as u16);
                 }
             }
         }
@@ -999,7 +999,7 @@ fn test_vec0() {
             assert_eq!(counter_vec.len(), 0);
 
             let _new_element = counter_vec.as_mut().push_zeroed();
-            let new_element = counter_vec.as_mut().getmut(0);
+            let new_element = counter_vec.as_mut().get_index_mut(0);
 
             new_element.map_unchecked_mut(|x| &mut x.counter).set(47);
             let new_element = counter_vec.as_mut().push_zeroed();
@@ -1007,7 +1007,7 @@ fn test_vec0() {
 
             assert_eq!(counter_vec.len(), 2);
 
-            let item = counter_vec.as_mut().getmut(1);
+            let item = counter_vec.as_mut().get_index_mut(1);
             //let item2 = counter_vec.get_mut(context, 1);
             assert_eq!(item.counter.get(), 48);
             //assert_eq!(*item2.counter, 48);
@@ -1016,7 +1016,7 @@ fn test_vec0() {
                 let _new_element = counter_vec.as_mut().push_zeroed();
             }
 
-            let item = counter_vec.as_mut().getmut(1);
+            let item = counter_vec.as_mut().get_index_mut(1);
             assert_eq!(item.counter.get(), 48);
         }
     })
@@ -1040,7 +1040,7 @@ fn test_vec_miri0() {
 
         let _new_element = counter_vec.as_mut().push_zeroed();
 
-        let new_element = counter_vec.as_mut().getmut(0);
+        let new_element = counter_vec.as_mut().get_index_mut(0);
 
         unsafe {
             new_element.map_unchecked_mut(|x| &mut x.counter).set(47);
@@ -1052,7 +1052,7 @@ fn test_vec_miri0() {
 
         assert_eq!(counter_vec.len(), 2);
 
-        let item = counter_vec.as_mut().getmut(1);
+        let item = counter_vec.as_mut().get_index_mut(1);
         //let item2 = counter_vec.get_mut(context, 1);
         assert_eq!(item.counter.get(), 48);
         //assert_eq!(*item2.counter, 48);
@@ -1061,19 +1061,19 @@ fn test_vec_miri0() {
             let _new_element = counter_vec.as_mut().push_zeroed();
         }
 
-        let item = counter_vec.as_mut().getmut(1);
+        let item = counter_vec.as_mut().get_index_mut(1);
         assert_eq!(item.counter.get(), 48);
         assert_eq!(counter_vec.len(), 12);
 
         counter_vec.as_mut().shift_remove(1);
         assert_eq!(counter_vec.len(), 11);
-        assert_eq!(counter_vec.as_mut().get(0).counter.get(), 47);
+        assert_eq!(counter_vec.as_mut()[0].counter.get(), 47);
 
         counter_vec.as_mut().retain(|x| x.counter.get() == 0);
         assert_eq!(counter_vec.len(), 10);
 
         for i in 0..10 {
-            assert_eq!(counter_vec.get(i).counter.get() as usize, 0);
+            assert_eq!(counter_vec[i].counter.get() as usize, 0);
         }
     })
     .unwrap();
@@ -1116,7 +1116,7 @@ fn test_vec_undo() {
 
     {
         db.with_root_mut(|counter_vec| {
-            let mut counter = counter_vec.getmut(0);
+            let mut counter = counter_vec.get_index_mut(0);
 
             unsafe {
                 counter

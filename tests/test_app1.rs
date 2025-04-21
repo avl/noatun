@@ -151,7 +151,7 @@ fn test_counter_object_miri() {
     db.with_root(|root| {
         assert_eq!(root.counter.get(), 85);
         assert_eq!(root.counter2.len(), 2);
-        let vec_elem = root.counter2.get(0);
+        let vec_elem = root.counter2[0];
         let arr = vec_elem.get();
         let arr_item = &arr[0];
         assert_eq!(arr_item.get(), 43u8);

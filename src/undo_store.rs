@@ -2,11 +2,10 @@ use std::arch::asm;
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
-use crate::{bytes_of, read_unaligned, uninit_slice, Target};
+use crate::{bytes_of, read_unaligned, Target};
 use anyhow::Result;
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use std::io::{Seek, SeekFrom, Write};
-use std::mem::MaybeUninit;
 
 #[derive(Debug)]
 pub enum UndoLogEntry<'a> {

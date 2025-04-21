@@ -77,6 +77,7 @@ pub mod udp {
                 }
                 (IpAddr::V6(multicast_ipv6), IpAddr::V6(_bind_ipv6)) => {
                     //TODO: Fix ipv6 multicast?
+                    //In what way doesn't it work?
                     receive_socket.join_multicast_v6(&multicast_ipv6, 0)?;
                     receive_socket.set_multicast_loop_v6(true)?;
                 }

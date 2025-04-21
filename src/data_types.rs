@@ -6,7 +6,7 @@ use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use std::ops::{Add, Deref, Range};
+use std::ops::{Add, Deref, Index, Range};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
@@ -196,16 +196,6 @@ impl<T: Copy + Debug> Debug for DatabaseCell<T> {
     }
 }
 
-// TODO: Document. Also rename this or DatabaseCell, the names should harmonize.
-// TODO: Does OpaqueCell even work? Can we delete messages if they only write OpaqueCell?
-#[derive(Copy, Clone)]
-#[repr(C)]
-pub struct OpaqueCell<T> {
-    value: T,
-    registrar: SequenceNr,
-}
-
-unsafe impl<T:NoatunStorable> NoatunStorable for OpaqueCell<T>{}
 
 pub trait DatabaseCellArrayExt<T: NoatunStorable> {
     fn observe(&self) -> Vec<T>;
@@ -246,18 +236,10 @@ impl<T: NoatunStorable> DatabaseCell<T> {
         &self.value
     }*/
     pub fn set(self: Pin<&mut Self>, new_value: T) {
-        let c = CONTEXT.get();
-        /*if c.is_null() {
-            let tself = unsafe { self.get_unchecked_mut() };
-            tself.value = new_value;
-            return;
-        }*/
-        let c = unsafe { &mut *c };
+        let cptr = CONTEXT.get();
+        let c = unsafe { &mut *cptr };
         let tself = unsafe { self.get_unchecked_mut() };
-        //TODO: Use this consistently for all mutable access!
         c.assert_mutable();
-        //let _index = c.index_of(tself);
-        //context.write(index, bytes_of(&new_value));
         c.write_pod_ptr(new_value, addr_of_mut!(tself.value));
         c.update_registrar_ptr(addr_of_mut!(tself.registrar));
     }
@@ -495,9 +477,11 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
         let offset = self.data + index * size_of::<T>();
         unsafe { ctx.access_pod(ThinPtr(offset)) }
     }
-    #[allow(clippy::mut_from_ref)]
-    // TODO: Maybe make this unsafe(even though it's internal)
-    pub(crate) fn get_mut(&self, ctx: &DatabaseContextData, index: usize) -> Pin<&mut T> {
+
+    /// SAFETY requirements:
+    /// This method gives out mutable references from shared references.
+    /// You must make sure to only access every element mutably at most once concurrently.
+    pub(crate) unsafe fn get_mut(&self, ctx: &DatabaseContextData, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         let t = unsafe { ctx.access_pod_mut(ThinPtr(offset)) };
@@ -550,7 +534,7 @@ where
     type DetachedOwnedType = Vec<T::DetachedOwnedType>;
 
     fn detach(&self) -> Self::DetachedOwnedType {
-        todo!("RawDatabaseVec does not support detach")
+        unimplemented!("RawDatabaseVec does not support detach")
     }
 
     fn clear(self: Pin<&mut Self>) {
@@ -621,7 +605,7 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIterator<'a, T> {
         }
         let index = self.index;
         self.index += 1;
-        Some(self.vec.get(index))
+        Some(self.vec.get_index(index))
     }
 }
 impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIteratorMut<'a, T> {
@@ -633,11 +617,12 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for DatabaseVecIteratorMut<'a, T
         }
         let index = self.index;
         self.index += 1;
-        //TODO: Get rid of this transmute. Why is it even needed?
-        let vec = unsafe { Pin::new_unchecked(self.vec.as_mut().get_unchecked_mut()) };
+        // Transmute is needed, since the rust typesystem "doesn't know" that all the
+        // mutable references to `'a` that we're giving out, are in fact disjoint.
         Some(unsafe {
-            Pin::new_unchecked(std::mem::transmute::<&mut T, &mut T>(
-                DatabaseVec::getmut(vec, index).get_unchecked_mut(),
+            Pin::new_unchecked(
+                std::mem::transmute::<&mut T, &mut T>(
+                DatabaseVec::get_index_mut(self.vec.as_mut(), index).get_unchecked_mut(),
             ))
         })
     }
@@ -674,13 +659,20 @@ impl<T: FixedSizeObject + 'static> DatabaseVec<T> {
                 capacity: new_capacity,
                 data: dest_index.0,
             },
-            //TODO: Add a "write-many-consecutive-fields" macro, with offset+size validation, rather than the following abomination
             unsafe { Pin::new_unchecked(std::mem::transmute::<&mut Self, &mut DatabaseVecLengthCapData>(self)) },
         )
     }
     #[allow(clippy::mut_from_ref)]
     pub fn new<'a>() -> Pin<&'a mut DatabaseVec<T>> {
         NoatunContext.allocate::<DatabaseVec<T>>()
+    }
+}
+
+impl<T:FixedSizeObject> Index<usize> for DatabaseVec<T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get_index(index)
     }
 }
 
@@ -696,14 +688,13 @@ where
         NoatunContext.observe_registrar(self.length_registrar);
         self.length == 0
     }
-    pub fn get(&self, index: usize) -> &T {
+    pub fn get_index(&self, index: usize) -> &T {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         unsafe { T::access(ThinPtr(offset)) }
     }
 
-    // TODO: Find a better name for this!
-    pub fn getmut(self: Pin<&mut Self>, index: usize) -> Pin<&mut T> {
+    pub fn get_index_mut(self: Pin<&mut Self>, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         let t = unsafe { T::access_mut(ThinPtr(offset)) };
@@ -723,12 +714,21 @@ where
         };
     }
 
-    pub fn set_item_infallible(mut self: Pin<&mut Self>, index: usize, val: impl Borrow<<T as Object>::DetachedType>) {
-        while index <= self.length {
-            //TODO: We could optimize this, when growing by a lot, we should set capacity first
-            self.as_mut().push_zeroed();
-        }
+    /// Write the given value to the given index.
+    ///
+    /// If the vector isn't large enough, it will be extended with zeroed elements.
+    pub fn set_item_infallible(self: Pin<&mut Self>, index: usize, val: impl Borrow<<T as Object>::DetachedType>) {
         let tself = unsafe { self.get_unchecked_mut() };
+        if index <= tself.length {
+            let new_length = index + 1;
+            if new_length > tself.capacity {
+                // Reallocate
+                tself.realloc_add((new_length + 1) * 2, new_length);
+            } else {
+                // Just increase length
+                NoatunContext.write_ptr(new_length, addr_of_mut!(tself.length));
+            }
+        }
         let offset = ThinPtr(tself.data + index * size_of::<T>());
         unsafe {
             let item_data = <T as Object>::access_mut(offset);
@@ -738,7 +738,7 @@ where
 
     pub fn clear(mut self: Pin<&mut Self>) {
         for i in 0..self.length {
-            self.as_mut().getmut(i).clear();
+            self.as_mut().get_index_mut(i).clear();
         }
         let tself =  unsafe { self.get_unchecked_mut() };
         NoatunContext.update_registrar(&mut tself.length_registrar);
@@ -944,6 +944,7 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
             phantom: Default::default(),
         }
     }
+
     #[allow(clippy::mut_from_ref)]
     pub fn allocate<'a>(value: T) -> Pin<&'a mut Self>
     where
@@ -952,8 +953,6 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
     {
         let mut this = NoatunContext.allocate::<DatabaseObjectHandle<T>>();
         let mut target = NoatunContext.allocate::<T>();
-        // TODO: This is a bug, isn't it? Should use NoatunContext.write!?
-        // TODO: Maybe not? Maybe overwriting newly allocated info doesn't need tracked writes?
         unsafe {
             *target.as_mut().get_unchecked_mut() = value;
         }
@@ -989,6 +988,8 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
 
 
 
+
+const HASH_META_GROUP_SIZE: usize = 32;
 
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -1036,10 +1037,10 @@ impl MetaGroup {
         {
             let first_empty = self.0.iter().position(|x|x.empty());
             if let Some(first_empty) = first_empty {
-                for i in 0..32 {
+                for i in 0..HASH_META_GROUP_SIZE {
                     assert!(!self.0[i].deleted());
                 }
-                for i in first_empty .. 32 {
+                for i in first_empty .. HASH_META_GROUP_SIZE {
                     assert!(self.0[i].empty());
                 }
             }
@@ -1049,7 +1050,7 @@ impl MetaGroup {
 
 impl MetaGroupNr {
     fn from_u64(x: u64, cap: usize) -> (MetaGroupNr,Meta) {
-        let groupcount = cap.div_ceil(32);
+        let groupcount = cap.div_ceil(HASH_META_GROUP_SIZE);
         (MetaGroupNr((x as usize)%groupcount),
          Meta(((x as usize)/groupcount) as u8|128)
         )
@@ -1129,7 +1130,7 @@ unsafe impl NoatunStorable for Meta {}
 #[repr(align(32))]
 #[doc(hidden)]
 #[derive(Clone,Copy,Debug)]
-pub struct MetaGroup(pub [Meta;32]);
+pub struct MetaGroup(pub [Meta;HASH_META_GROUP_SIZE]);
 
 
 enum ProbeResult {
@@ -1148,9 +1149,9 @@ pub fn run_get_probe_sequence(metas: &[MetaGroup], max_buckets: usize, needle: M
         };
         let group = &metas[group_index.0];
 
-        let bucket_offset = BucketNr(group_index.0 * 32);
+        let bucket_offset = BucketNr(group_index.0 * HASH_META_GROUP_SIZE);
         if meta_finder::meta_get_group_find(group,
-                                            if group_index.0 + 1 ==metas.len() {max_buckets-32*group_index.0} else {32},
+                                            if group_index.0 + 1 ==metas.len() {max_buckets-HASH_META_GROUP_SIZE*group_index.0} else {HASH_META_GROUP_SIZE},
                                             needle, |index|f(bucket_offset + index)) {
             return;
         }
@@ -1174,11 +1175,11 @@ pub fn run_insert_probe_sequence(metas: &[MetaGroup], max_buckets: usize, needle
         let Some(group_index) = probe.probe_next() else {
             return ProbeRunResult::HashFull;
         };
-        let bucket_offset = BucketNr(32*group_index.0);
+        let bucket_offset = BucketNr(HASH_META_GROUP_SIZE*group_index.0);
         let group = &metas[group_index.0];
 
         match meta_finder::meta_insert_group_find(bucket_offset,  &mut first_deleted, group,
-                                                  if group_index.0 + 1 ==metas.len() {max_buckets-32*group_index.0} else {32},
+                                                  if group_index.0 + 1 ==metas.len() {max_buckets-HASH_META_GROUP_SIZE*group_index.0} else {HASH_META_GROUP_SIZE},
                                                   needle, |index|f(bucket_offset + index)) {
             Some(ProbeRunResult::FoundUnoccupied(_, meta)) if first_deleted.is_some() => {
                 return ProbeRunResult::FoundUnoccupied(first_deleted.unwrap(), meta);
@@ -1195,7 +1196,6 @@ pub fn run_insert_probe_sequence(metas: &[MetaGroup], max_buckets: usize, needle
 pub mod meta_finder {
     use std::ops::Range;
     use std::arch::x86_64::{__m256i, _mm256_set1_epi8, _mm256_movemask_epi8, _mm256_load_si256, _mm256_cmpeq_epi8, _mm256_cmpgt_epi8, _mm256_or_si256};
-    pub(super) const META_ALIGNMENT:usize = 32;
     use crate::data_types::{MetaGroup, ProbeRunResult, BucketNr, Meta};
 
     #[inline]
@@ -1253,7 +1253,7 @@ pub mod meta_finder {
                 }
 
                 let step = next + 1;
-                if step >= 32 {
+                if step >= HASH_META_GROUP_SIZE {
                     break;
                 }
                 temp_pos += step as usize;
@@ -1296,7 +1296,7 @@ pub mod meta_finder {
                 }
 
                 let step = next + 1;
-                if step >= 32 {
+                if step >= HASH_META_GROUP_SIZE {
                     break;
                 }
                 temp_pos += step as usize;
@@ -1372,31 +1372,36 @@ pub mod meta_finder {
 mod meta_tests {
     use crate::data_types::{meta_finder, Meta, MetaGroup, BucketNr, ProbeRunResult};
     use crate::data_types::meta_finder::get_any_empty;
+    use super::HASH_META_GROUP_SIZE;
 
     #[test]
+    fn meta_alignment() {
+        assert_eq!(HASH_META_GROUP_SIZE, align_of::<MetaGroup>());
+    }
+    #[test]
     fn meta_check_empty() {
-        let haystack = MetaGroup([Meta(129u8);32]);
+        let haystack = MetaGroup([Meta(129u8);HASH_META_GROUP_SIZE]);
         assert!(get_any_empty(&haystack).is_none());
     }
     #[test]
     fn meta_check_empty2() {
-        let mut haystack = MetaGroup([Meta(129u8);32]);
+        let mut haystack = MetaGroup([Meta(129u8);HASH_META_GROUP_SIZE]);
         haystack.0[13] = Meta::EMPTY;
         assert_eq!(get_any_empty(&haystack), Some(13));
     }
     #[test]
     fn meta_get_finds_medium() {
-        let mut haystack = MetaGroup([Meta(129u8);32]);
+        let mut haystack = MetaGroup([Meta(129u8);HASH_META_GROUP_SIZE]);
         haystack.0[0] = Meta::new(142u8);
         haystack.0[13] = Meta::new(142u8);
         let needle = Meta::new(142u8);
         let mut found = Vec::new();
-        meta_finder::meta_get_group_find(&haystack, 32, needle, |pos|{found.push(pos);false});
+        meta_finder::meta_get_group_find(&haystack, HASH_META_GROUP_SIZE, needle, |pos|{found.push(pos);false});
         assert_eq!(found, vec![0,13]);
     }
     #[test]
     fn meta_get_finds_small() {
-        let mut haystack = MetaGroup([Meta(129u8);32]);
+        let mut haystack = MetaGroup([Meta(129u8);HASH_META_GROUP_SIZE]);
         haystack.0[0] = Meta::new(142u8);
         haystack.0[13] = Meta::new(142u8);
         haystack.0[14] = Meta::new(142u8);
@@ -1407,7 +1412,7 @@ mod meta_tests {
     }
     #[test]
     fn meta_insert_medium() {
-        let mut haystack = MetaGroup([Meta(129u8);32]);
+        let mut haystack = MetaGroup([Meta(129u8);HASH_META_GROUP_SIZE]);
         haystack.0[0] = Meta::new(142u8);
         haystack.0[1] = Meta::DELETED;
         haystack.0[13] = Meta::new(142u8);
@@ -1424,7 +1429,7 @@ mod meta_tests {
 
     #[test]
     fn meta_insert2() {
-        let mut haystack = MetaGroup([Meta(129u8);32]);
+        let mut haystack = MetaGroup([Meta(129u8);HASH_META_GROUP_SIZE]);
         haystack.0[2] = Meta::DELETED;
         haystack.0[13] = Meta::new(142u8);
         haystack.0[14] = Meta::new(142u8);
@@ -1432,14 +1437,14 @@ mod meta_tests {
         let mut found = Vec::new();
         let mut first_deleted = None;
 
-        let result = meta_finder::meta_insert_group_find(BucketNr(32), &mut first_deleted, &haystack, 32, needle, |pos|{found.push(pos);true});
+        let result = meta_finder::meta_insert_group_find(BucketNr(32), &mut first_deleted, &haystack, HASH_META_GROUP_SIZE, needle, |pos|{found.push(pos);true});
         assert_eq!(result, Some(ProbeRunResult::FoundPopulated(BucketNr(13+32), needle)));
         assert_eq!(first_deleted, Some(BucketNr(34)));
         assert_eq!(found, vec![13]);
     }
     #[test]
     fn meta_insert3() {
-        let mut haystack = MetaGroup([Meta(129u8);32]);
+        let mut haystack = MetaGroup([Meta(129u8);HASH_META_GROUP_SIZE]);
         haystack.0[2] = Meta::DELETED;
         haystack.0[13] = Meta::EMPTY;
         haystack.0[14] = Meta::new(142u8);
@@ -1455,7 +1460,7 @@ mod meta_tests {
 
     #[test]
     fn meta_get_finds_empty() {
-        let mut haystack = MetaGroup([Meta::new(129u8);32]);
+        let mut haystack = MetaGroup([Meta::new(129u8);HASH_META_GROUP_SIZE]);
         haystack.0[0] = Meta::new(142u8);
         haystack.0[17] = Meta::new(142u8);
         haystack.0[18] = Meta::EMPTY;
@@ -1590,10 +1595,7 @@ impl<'a,K:NoatunStorable+NoatunKey+PartialEq,V:FixedSizeObject> Copy for HashAcc
 
 impl<'a,K:NoatunStorable+NoatunKey+PartialEq,V:FixedSizeObject> Clone for HashAccessContext<'a,K,V> {
     fn clone(&self) -> Self {
-        Self {
-            metas: self.metas,
-            buckets: self.buckets,
-        }
+        *self
     }
 }
 
@@ -1604,13 +1606,13 @@ struct HashAccessContextMut<'a,K: NoatunStorable+ NoatunKey +PartialEq, V: Fixed
 
 
 fn get_meta_mut(metas: &mut [MetaGroup], bucket: BucketNr) -> &mut Meta {
-    let group = bucket.0/32;
-    let subindex = bucket.0%32;
+    let group = bucket.0/HASH_META_GROUP_SIZE;
+    let subindex = bucket.0%HASH_META_GROUP_SIZE;
     &mut metas[group].0[subindex]
 }
 fn get_meta(metas: &[MetaGroup], bucket: BucketNr) -> &Meta {
-    let group = bucket.0/32;
-    let subindex = bucket.0%32;
+    let group = bucket.0/HASH_META_GROUP_SIZE;
+    let subindex = bucket.0%HASH_META_GROUP_SIZE;
     &metas[group].0[subindex]
 }
 
@@ -1633,8 +1635,8 @@ enum MetaMutAndEmpty<'a> {
 /// Some(x) if the given bucket is part of a group with at least one empty slot.
 /// x will be the first such empty slot.
 fn get_meta_mut_and_emptyable(metas: &mut [MetaGroup], bucket: BucketNr) -> MetaMutAndEmpty {
-    let group = bucket.0/32;
-    let subindex = bucket.0%32;
+    let group = bucket.0/HASH_META_GROUP_SIZE;
+    let subindex = bucket.0%HASH_META_GROUP_SIZE;
     let group_obj = &mut metas[group];
     group_obj.validate();
     let any_empty = get_any_empty(group_obj);
@@ -1654,7 +1656,7 @@ fn get_meta_mut_and_emptyable(metas: &mut [MetaGroup], bucket: BucketNr) -> Meta
                 MetaMutAndEmpty::HasEmpty {
                     meta_bucket: bucket,
                     meta,
-                    before_empty_bucket: BucketNr(32*group + empty-1),
+                    before_empty_bucket: BucketNr(HASH_META_GROUP_SIZE*group + empty-1),
                     before_empty
                 }
             }
@@ -1713,7 +1715,7 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
                 buckets: &mut [],
             };
         }
-        let meta_group_count = cap.div_ceil(32);
+        let meta_group_count = cap.div_ceil(HASH_META_GROUP_SIZE);
         let aligned_meta_size = (size_of::<MetaGroup>()*meta_group_count).next_multiple_of(align);
 
         unsafe {
@@ -1735,7 +1737,7 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
                 buckets: &[],
             };
         }
-        let meta_group_count = cap.div_ceil(32);
+        let meta_group_count = cap.div_ceil(HASH_META_GROUP_SIZE);
         let aligned_meta_size = (size_of::<MetaGroup>()*meta_group_count).next_multiple_of(align);
 
         unsafe {
@@ -1762,7 +1764,7 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
 
         let mut result = None;
         //println!("Group-nr: {:?}, key_meta: {:?}", group_nr, key_meta);
-        let probe = BucketProbeSequence::new(group_nr, cap.div_ceil(32));
+        let probe = BucketProbeSequence::new(group_nr, cap.div_ceil(HASH_META_GROUP_SIZE));
 
         run_get_probe_sequence(metas, cap, key_meta, |bucket_nr|{
             //println!("Checking key for bucket {:?}", bucket_nr);
@@ -1820,7 +1822,7 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
         //let mut visited_buckets = 0;
         //let max_visited_buckets = self.capacity/2;
         //let mut first_deleted = None;
-        let probe = BucketProbeSequence::new(meta_group_nr, cap.div_ceil(32));
+        let probe = BucketProbeSequence::new(meta_group_nr, cap.div_ceil(HASH_META_GROUP_SIZE));
 
         run_insert_probe_sequence(metas, cap, key_meta, |bucket_nr|{
             unsafe{<K as NoatunKey>::eq(buckets[bucket_nr.0].assume_init_ref().key.detach_key_ref(), key)}
@@ -1859,6 +1861,7 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
         if capacity < 16 {
             return 32;
         }
+        assert_eq!(HASH_META_GROUP_SIZE, 32); //Consider how any change to this affects the sizes to be chosen in this method
         static PRIMES:&[usize] =&[
             1,
             3,
@@ -1924,9 +1927,9 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
             (1usize<<62) - 	57,
             (1usize<<63) - 	25,
         ];
-        let group_count = capacity.div_ceil(32);
+        let group_count = capacity.div_ceil(HASH_META_GROUP_SIZE);
         let (Ok(x)|Err(x)) = PRIMES.binary_search(&group_count);
-        32*PRIMES[x.min(PRIMES.len()-1)]
+        HASH_META_GROUP_SIZE*PRIMES[x.min(PRIMES.len()-1)]
     }
     pub fn get(&self, key: impl Borrow<K::DetachedType>) -> Option<&V> {
         let context = self.data_meta_len();
@@ -2015,7 +2018,7 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
                 // Will not give infinite recursion, since 'new' has a capacity of at least 2 more
                 self.insert(key, val);
             }
-            ProbeRunResult::FoundUnoccupied(bucket, meta)| //TODO: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
+            ProbeRunResult::FoundUnoccupied(bucket, meta)| //Optimization: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
             ProbeRunResult::FoundPopulated(bucket, meta) => {
                 let bucket_obj = unsafe { context.buckets[bucket.0].assume_init_mut() };
                 let old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
@@ -2042,7 +2045,7 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
                 // Will not give infinite recursion, since 'new' has a capacity of at least 2 more
                 self.insert_impl(key, val);
             }
-            ProbeRunResult::FoundUnoccupied(bucket, meta)| //TODO: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
+            ProbeRunResult::FoundUnoccupied(bucket, meta)| //Optimization: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
             ProbeRunResult::FoundPopulated(bucket, meta) => {
                 let bucket_obj = unsafe { context.buckets[bucket.0].assume_init_mut()};
                 let old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
@@ -2064,10 +2067,10 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
     /// the noatun db. This is a fickle thing, most operations on it yield garbage.
     fn initialize_with_capacity(&mut self, capacity: usize) {
 
-        let meta_size = capacity.div_ceil(32); //TODO: Introduce constant
+        let meta_size = capacity.div_ceil(HASH_META_GROUP_SIZE);
 
         let align = align_of::<DatabaseHashBucket<K,V>>().max(align_of::<MetaGroup>());
-        let aligned_meta_size = (32*meta_size).next_multiple_of(align);
+        let aligned_meta_size = (HASH_META_GROUP_SIZE*meta_size).next_multiple_of(align);
         let bucket_data_size = capacity * size_of::<DatabaseHashBucket<K,V>>();
 
         let data = NoatunContext.allocate_raw(aligned_meta_size + bucket_data_size, align);
@@ -2119,9 +2122,8 @@ impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K
 /// keys. If you know that the underlying `Hash` implementation is actually stable, you can of
 /// course just forward to such an impl.
 ///
-/// Also, the bit pattern must be stable.
-/// TODO: This (and Object), should probably be unsafe traits. Soundness depends on the bit
-/// representations being stable across recompilations/versions.
+/// This is not an unsafe trait. However, incorrect implementations may potentially lead to
+/// infinite loops, or incorrect hashmap operations.
 pub trait NoatunKey : NoatunStorable + Sized + Debug {
     /// A 'detached' variant of Self.
     ///

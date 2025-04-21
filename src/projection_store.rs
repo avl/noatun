@@ -4,7 +4,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{bytes_of, bytes_of_maybe_uninit, bytes_of_mut, bytes_of_mut_uninit, bytes_of_uninit, from_bytes, from_bytes_mut, FatPtr, FixedSizeObject, GenPtr, MessagePayload, NoatunStorable, Object, Pointer, SerializableGenPtr, Target, ThinPtr};
+use crate::{bytes_of_mut, bytes_of_mut_uninit, from_bytes, from_bytes_mut,  FatPtr, FixedSizeObject, GenPtr, MessagePayload, NoatunStorable, Object, Pointer, SerializableGenPtr, Target, ThinPtr};
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
@@ -317,7 +317,7 @@ impl DatabaseContextData {
         let keys: &RawDatabaseVec<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observee.index() < keys.len() {
-            keys.get_mut(self, observee.index()).dep
+            unsafe { keys.get_mut(self, observee.index()).dep  }
         } else {
             ThinPtr(0)
         };
@@ -340,7 +340,7 @@ impl DatabaseContextData {
         let keys: &RawDatabaseVec<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observer.index() < keys.len() {
-            keys.get_mut(self, observer.index()).reverse_dep
+            unsafe { keys.get_mut(self, observer.index()).reverse_dep }
         } else {
             ThinPtr(0)
         };
@@ -1287,7 +1287,7 @@ impl DatabaseContextData {
         if uses.len() <= registrar.index() {
             uses.grow(self, registrar.index() + 1);
         }
-        let mut info = uses.get_mut(self, registrar.index());
+        let mut info = unsafe { uses.get_mut(self, registrar.index()) };
         info.increase_use(self);
         trace!("increased use of {:?} to {} (tainted:{})", registrar, info.get_use(), info.tainted());
 
@@ -1295,7 +1295,7 @@ impl DatabaseContextData {
 
     pub(crate) fn rt_decrease_use(&mut self, registrar: SequenceNr, overwriter: SequenceNr, overwriter_tainted: bool) {
         let uses = unsafe { self.get_uses() };
-        let mut cur = uses.get_mut(self, registrar.index());
+        let mut cur = unsafe { uses.get_mut(self, registrar.index()) };
         let cur_use = cur.get_use();
         if cur_use == 0 {
             panic!("Corrupt use count for sequence nr {:?}", registrar);
