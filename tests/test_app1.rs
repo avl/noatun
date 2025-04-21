@@ -1,21 +1,19 @@
-use bytemuck::AnyBitPattern;
 use datetime_literal::datetime;
 use noatun::data_types::{DatabaseCell, DatabaseObjectHandle, DatabaseVec};
 use noatun::database::{Database, DatabaseSettings};
-use noatun::{
-    Application, CutOffDuration, Message, MessageHeader, MessageId, MessagePayload, NoatunContext,
-    NoatunTime, Object, ThinPtr,
-};
+use noatun::{Application, CutOffDuration, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunStorable, NoatunTime, Object, ThinPtr};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::pin::Pin;
 
-#[derive(Clone, Copy, AnyBitPattern)]
 #[repr(C)]
 struct CounterObject {
     counter: DatabaseCell<u32>,
     counter2: DatabaseVec<DatabaseObjectHandle<[DatabaseCell<u8>]>>,
 }
+
+unsafe impl NoatunStorable for CounterObject{}
+
 
 impl Object for CounterObject {
     type Ptr = ThinPtr;
@@ -35,7 +33,7 @@ impl Object for CounterObject {
     }
 
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
-        let mut this: Pin<&mut CounterObject> = NoatunContext.allocate_pod();
+        let mut this: Pin<&mut CounterObject> = NoatunContext.allocate();
         this.as_mut().init_from_detached(detached);
         this
     }
@@ -96,7 +94,7 @@ impl Application for CounterObject {
     type Params = ();
 
     fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Self> {
-        let ctr = NoatunContext.allocate_pod::<CounterObject>();
+        let ctr = NoatunContext.allocate::<CounterObject>();
         ctr
     }
 }

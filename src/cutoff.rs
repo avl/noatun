@@ -1,6 +1,5 @@
-use crate::{MessageId, NoatunTime};
+use crate::{cast_slice, cast_storable, MessageId, NoatunStorable, NoatunTime};
 use anyhow::{anyhow, bail, Result};
-use bytemuck::{Pod, Zeroable};
 use savefile_derive::Savefile;
 use std::fmt::{Debug, Formatter};
 
@@ -34,15 +33,16 @@ impl CutOffConfig {
     }
 }
 
-#[derive(Savefile, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
+#[derive(Savefile, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
 pub struct CutoffHash {
     values: [u64; 2],
 }
+unsafe impl NoatunStorable for CutoffHash {}
 
 impl Debug for CutoffHash {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let data: &[u32] = bytemuck::cast_slice(&self.values);
+        let data: &[u32] = cast_slice(&self.values);
 
         write!(
             f,
@@ -66,7 +66,8 @@ impl CutoffHash {
         temp
     }*/
     pub fn from_msg(msg: MessageId) -> CutoffHash {
-        bytemuck::cast(msg)
+        cast_storable(msg)
+
     }
     fn xor_with(&mut self, other: CutoffHash) {
         self.values[0] ^= other.values[0];
@@ -109,9 +110,11 @@ impl CutOffDuration {
     }
 }
 
-#[derive(Clone, Copy, Pod, Zeroable, Savefile, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Clone, Copy, Savefile, PartialEq, Eq, PartialOrd, Ord, Default)]
 #[repr(C)]
 pub struct CutOffTime(u32 /*minutes since unix epoch*/);
+
+unsafe impl NoatunStorable for CutOffTime {}
 
 impl Debug for CutOffTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -146,7 +149,7 @@ impl CutOffTime {
     }
 }
 
-#[derive(Clone, Copy, Debug, Pod, Zeroable, Savefile, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Savefile, PartialEq, Eq)]
 #[repr(C)]
 pub struct CutOffHashPos {
     pub(crate) hash: CutoffHash,
@@ -155,12 +158,18 @@ pub struct CutOffHashPos {
     padding: u32,
 }
 
-#[derive(Clone, Copy, Debug, Pod, Zeroable, Savefile)]
+unsafe impl NoatunStorable for CutOffHashPos {}
+
+
+#[derive(Clone, Copy, Debug, Savefile)]
 #[repr(C)]
 pub struct CutOffState {
     /// The prior, the current, and the upcoming,
     stamps: CutOffHashPos,
 }
+
+unsafe impl NoatunStorable for CutOffState {}
+
 
 pub enum Acceptability {
     /// The hashes are identical. This is the nominal case

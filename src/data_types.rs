@@ -1,8 +1,5 @@
 use crate::sequence_nr::SequenceNr;
-use crate::{
-    DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, Object, Pointer, ThinPtr, CONTEXT,
-};
-use bytemuck::{AnyBitPattern, Pod, Zeroable};
+use crate::{DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer, ThinPtr, CONTEXT};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
@@ -19,7 +16,9 @@ use crate::xxh3_vendored::NoatunHasher;
 
 mod noatun_hash_impls;
 
-#[derive(Copy, Clone, AnyBitPattern)]
+
+
+#[derive(Copy, Clone)]
 #[repr(C)]
 pub struct NoatunString {
     start: ThinPtr,
@@ -27,6 +26,8 @@ pub struct NoatunString {
     registrar: SequenceNr,
     padding: u32
 }
+
+unsafe impl NoatunStorable for NoatunString{}
 
 impl Debug for NoatunString {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -71,7 +72,7 @@ impl Object for NoatunString {
     }
 
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
-        let mut temp: Pin<&mut Self> = NoatunContext.allocate_pod();
+        let mut temp: Pin<&mut Self> = NoatunContext.allocate();
         temp.as_mut().assign(detached);
         temp
     }
@@ -110,7 +111,7 @@ impl NoatunString {
         let tself = unsafe { self.get_unchecked_mut() };
         if tself.get().starts_with(value) {
             if tself.length != value.len() {
-                NoatunContext.write_pod_internal(value.len(), &mut tself.length);
+                NoatunContext.write_internal(value.len(), &mut tself.length);
             }
             return;
         }
@@ -119,8 +120,8 @@ impl NoatunString {
         let target = unsafe { slice::from_raw_parts_mut(raw, value.len()) };
         target.copy_from_slice(value.as_bytes());
         let raw_index = NoatunContext.index_of_ptr(raw);
-        NoatunContext.write_pod_internal(raw_index, &mut tself.start);
-        NoatunContext.write_pod_internal(value.len(), &mut tself.length);
+        NoatunContext.write_internal(raw_index, &mut tself.start);
+        NoatunContext.write_internal(value.len(), &mut tself.length);
         NoatunContext.update_registrar_ptr(addr_of_mut!(tself.registrar));
     }
     pub(crate) fn assign_untracked(&mut self, value: &str) {
@@ -146,7 +147,7 @@ pub struct DatabaseOption<T: Copy> {
     present: u8,
 }
 
-impl<T: Copy + Pod> DatabaseOption<T> {
+impl<T: Copy + NoatunStorable> DatabaseOption<T> {
     pub fn set(&mut self, new_value: Option<T>) {
         let c = CONTEXT.get();
         if c.is_null() {
@@ -161,10 +162,10 @@ impl<T: Copy + Pod> DatabaseOption<T> {
         }
         let c = unsafe { &mut *c };
         if let Some(new_value) = new_value {
-            NoatunContext.write_pod_ptr(new_value, std::ptr::addr_of_mut!(self.value));
-            NoatunContext.write_pod(1, Pin::new(&mut self.present));
+            NoatunContext.write_ptr(new_value, std::ptr::addr_of_mut!(self.value));
+            NoatunContext.write(1, Pin::new(&mut self.present));
         } else {
-            NoatunContext.write_pod(0, Pin::new(&mut self.present));
+            NoatunContext.write(0, Pin::new(&mut self.present));
         }
 
         c.update_registrar_ptr(addr_of_mut!(self.registrar));
@@ -179,22 +180,14 @@ impl<T: Copy + Pod> DatabaseOption<T> {
     }
 }
 
-unsafe impl<T> AnyBitPattern for DatabaseOption<T> where T: AnyBitPattern {}
-unsafe impl<T: Copy> Zeroable for DatabaseOption<T> where T: Zeroable {}
-
-// It may seem that DatabaseCell should not be copy.
-// However, in fact, the case is that the user should never be able to get a
-// non-pinned instance of it, so copy or not doesn't matter.
-// It's not a disaster, but it's a bit error-prone.
-// Someone can copy it, then overwrite the copy.
-// This will not affect the db, but may lead to an out-of-bounds write-report.
-// registrar observe should work regardless.
-#[derive(Copy, Clone, AnyBitPattern)]
 #[repr(C)]
 pub struct DatabaseCell<T> {
     value: T,
     registrar: SequenceNr,
 }
+
+unsafe impl<T:NoatunStorable> NoatunStorable for DatabaseCell<T>{}
+
 
 impl<T: Copy + Debug> Debug for DatabaseCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -205,17 +198,19 @@ impl<T: Copy + Debug> Debug for DatabaseCell<T> {
 
 // TODO: Document. Also rename this or DatabaseCell, the names should harmonize.
 // TODO: Does OpaqueCell even work? Can we delete messages if they only write OpaqueCell?
-#[derive(Copy, Clone, AnyBitPattern)]
+#[derive(Copy, Clone)]
 #[repr(C)]
 pub struct OpaqueCell<T> {
     value: T,
     registrar: SequenceNr,
 }
 
-pub trait DatabaseCellArrayExt<T: Pod> {
+unsafe impl<T:NoatunStorable> NoatunStorable for OpaqueCell<T>{}
+
+pub trait DatabaseCellArrayExt<T: NoatunStorable> {
     fn observe(&self) -> Vec<T>;
 }
-impl<T: Pod> DatabaseCellArrayExt<T> for &[DatabaseCell<T>] {
+impl<T: NoatunStorable + Copy> DatabaseCellArrayExt<T> for &[DatabaseCell<T>] {
     fn observe(&self) -> Vec<T> {
         self.iter().map(|x| x.get()).collect()
     }
@@ -241,8 +236,8 @@ impl<T: Copy> Deref for DatabaseCell<T> {
     }
 }
 
-impl<T: Pod> DatabaseCell<T> {
-    pub fn get(&self) -> T {
+impl<T: NoatunStorable> DatabaseCell<T> {
+    pub fn get(&self) -> T where T: Copy {
         NoatunContext.observe_registrar(self.registrar);
         self.value
     }
@@ -318,7 +313,7 @@ impl<T: Pod> OpaqueCell<T> {
 }
 */
 
-impl<T: Pod> DatabaseCell<T> {
+impl<T: NoatunStorable> DatabaseCell<T> {
     /*#[allow(clippy::mut_from_ref)]
     pub fn allocate<'a>() -> &'a mut Self {
         let memory = unsafe { NoatunContext.allocate_pod::<DatabaseCell<T>>() };
@@ -333,7 +328,7 @@ impl<T: Pod> DatabaseCell<T> {
 }
 
 
-impl<T: Pod+Debug> Object for DatabaseCell<T> {
+impl<T: NoatunStorable+Debug+Copy> Object for DatabaseCell<T> {
     type Ptr = ThinPtr;
     type DetachedType = T;
     type DetachedOwnedType = T;
@@ -353,7 +348,7 @@ impl<T: Pod+Debug> Object for DatabaseCell<T> {
     }
 
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
-        let mut ret: Pin<&mut Self> = NoatunContext.allocate_pod();
+        let mut ret: Pin<&mut Self> = NoatunContext.allocate();
         ret.as_mut().init_from_detached(detached);
         ret
     }
@@ -376,11 +371,9 @@ pub(crate) struct RawDatabaseVec<T> {
     data: usize,
     phantom_data: PhantomData<T>,
 }
-unsafe impl<T: 'static> Pod for RawDatabaseVec<T> {}
 
-unsafe impl<T> Zeroable for RawDatabaseVec<T> {}
+unsafe impl<T:NoatunStorable> NoatunStorable for RawDatabaseVec<T> {}
 
-impl<T> Copy for RawDatabaseVec<T> {}
 
 impl<T> Default for RawDatabaseVec<T> {
     fn default() -> Self {
@@ -393,11 +386,11 @@ impl<T> Default for RawDatabaseVec<T> {
     }
 }
 
-impl<T> Clone for RawDatabaseVec<T> {
+/*impl<T:Clone> Clone for RawDatabaseVec<T> {
     fn clone(&self) -> Self {
         *self
     }
-}
+}*/
 
 impl<T> Debug for RawDatabaseVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -405,7 +398,7 @@ impl<T> Debug for RawDatabaseVec<T> {
     }
 }
 
-impl<T: Pod + 'static> RawDatabaseVec<T> {
+impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
     fn realloc_add(&mut self, ctx: &mut DatabaseContextData, new_capacity: usize, new_len: usize) {
         debug_assert!(new_capacity >= new_len);
         debug_assert!(new_capacity >= self.capacity);
@@ -446,7 +439,7 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
         }
     }
 }
-impl<T: Pod + 'static> RawDatabaseVec<T> {
+impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
     pub fn retain(&mut self, ctx: &mut DatabaseContextData, mut f: impl FnMut(&mut T) -> bool) {
         let mut read_offset = 0;
         let mut write_offset = 0;
@@ -468,7 +461,7 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
                 write_offset += 1;
             }
         }
-        NoatunContext.write_pod_ptr(new_len, addr_of_mut!(self.length));
+        NoatunContext.write_ptr(new_len, addr_of_mut!(self.length));
     }
 
     pub(crate) fn get_slice(&self, context: &DatabaseContextData, range: Range<usize>) -> &[T] {
@@ -535,7 +528,7 @@ impl<T: Pod + 'static> RawDatabaseVec<T> {
     }
     pub(crate) fn push_untracked(&mut self, ctx: &mut DatabaseContextData, t: T) -> ThinPtr
     where
-        T: AnyBitPattern,
+        T: NoatunStorable,
     {
         if self.length >= self.capacity {
             self.realloc_add(ctx, (self.capacity + 1) * 2, self.length + 1);
@@ -580,13 +573,15 @@ where
 }
 
 #[repr(C)]
-#[derive(Clone,Copy,Zeroable,Pod)]
+#[derive(Clone,Copy)]
 //WARNING! this must be identical to first 3 fields of DatabaseVec
 struct DatabaseVecLengthCapData {
     length: usize,
     capacity: usize,
     data: usize,
 }
+
+unsafe impl NoatunStorable for DatabaseVecLengthCapData {}
 
 #[repr(C)]
 pub struct DatabaseVec<T: FixedSizeObject> {
@@ -598,24 +593,14 @@ pub struct DatabaseVec<T: FixedSizeObject> {
     phantom_data: PhantomData<T>,
 }
 
+unsafe impl<T:FixedSizeObject> NoatunStorable for DatabaseVec<T> {}
+
 impl<T: FixedSizeObject+Debug> Debug for DatabaseVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(self.iter()).finish()
     }
 }
 
-unsafe impl<T: FixedSizeObject> Zeroable for DatabaseVec<T> {}
-
-impl<T: FixedSizeObject> Copy for DatabaseVec<T> {}
-
-impl<T: FixedSizeObject> Clone for DatabaseVec<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-// TODO: This is currently unsound. DatabaseVec has padding.
-unsafe impl<T: FixedSizeObject> Pod for DatabaseVec<T> where T: 'static {}
 
 pub struct DatabaseVecIterator<'a, T: FixedSizeObject> {
     vec: &'a DatabaseVec<T>,
@@ -680,10 +665,10 @@ impl<T: FixedSizeObject + 'static> DatabaseVec<T> {
 
         if self.length > 0 {
             let old_ptr = FatPtr::from(self.data, size_of::<T>() * self.length);
-            NoatunContext.copy(old_ptr, dest_index);
+            NoatunContext.copy_ptr(old_ptr, dest_index);
         }
 
-        NoatunContext.write_pod(
+        NoatunContext.write(
             DatabaseVecLengthCapData {
                 length: new_len,
                 capacity: new_capacity,
@@ -695,7 +680,7 @@ impl<T: FixedSizeObject + 'static> DatabaseVec<T> {
     }
     #[allow(clippy::mut_from_ref)]
     pub fn new<'a>() -> Pin<&'a mut DatabaseVec<T>> {
-        NoatunContext.allocate_pod::<DatabaseVec<T>>()
+        NoatunContext.allocate::<DatabaseVec<T>>()
     }
 }
 
@@ -734,7 +719,7 @@ where
         let offset = self.data + index * size_of::<T>();
         unsafe {
             let dest = T::access_mut(ThinPtr(offset));
-            NoatunContext.write_object(val, dest);
+            NoatunContext.write(val, dest);
         };
     }
 
@@ -757,7 +742,7 @@ where
         }
         let tself =  unsafe { self.get_unchecked_mut() };
         NoatunContext.update_registrar(&mut tself.length_registrar);
-        NoatunContext.write_pod_ptr(0, addr_of_mut!(tself.length));
+        NoatunContext.write_ptr(0, addr_of_mut!(tself.length));
     }
 
     pub fn push_zeroed(self: Pin<&mut Self>) -> Pin<&mut T> {
@@ -765,7 +750,7 @@ where
         if tself.length >= tself.capacity {
             tself.realloc_add((tself.capacity + 1) * 2, tself.length + 1);
         } else {
-            NoatunContext.write_pod_ptr(tself.length + 1, addr_of_mut!(tself.length));
+            NoatunContext.write_ptr(tself.length + 1, addr_of_mut!(tself.length));
         }
         NoatunContext.update_registrar(&mut tself.length_registrar);
         tself.get_mut_internal(tself.length - 1)
@@ -780,16 +765,16 @@ where
 
         if index == tself.length - 1 {
             NoatunContext.update_registrar(&mut tself.length_registrar);
-            NoatunContext.write_pod_ptr(tself.length - 1, addr_of_mut!(tself.length));
+            NoatunContext.write_ptr(tself.length - 1, addr_of_mut!(tself.length));
             return;
         }
         let src_ptr = ThinPtr(tself.data + (tself.length - 1) * size_of::<T>());
         let dst_ptr = ThinPtr(tself.data + index * size_of::<T>());
         unsafe { T::access_mut(dst_ptr).clear(); }
-        NoatunContext.copy(FatPtr::from(src_ptr.0, size_of::<T>()), dst_ptr);
+        NoatunContext.copy_ptr(FatPtr::from(src_ptr.0, size_of::<T>()), dst_ptr);
 
         NoatunContext.update_registrar(&mut tself.length_registrar);
-        NoatunContext.write_pod_ptr(tself.length - 1, addr_of_mut!(tself.length));
+        NoatunContext.write_ptr(tself.length - 1, addr_of_mut!(tself.length));
     }
 
     pub fn retain(self: Pin<&mut Self>, mut f: impl FnMut(Pin<&mut T>) -> bool) {
@@ -817,7 +802,7 @@ where
         }
         let self_mut = unsafe {self.get_unchecked_mut()};
         NoatunContext.update_registrar(&mut self_mut.length_registrar);
-        NoatunContext.write_pod_ptr(new_len, addr_of_mut!(self_mut.length));
+        NoatunContext.write_ptr(new_len, addr_of_mut!(self_mut.length));
     }
 
     pub fn push(mut self: Pin<&mut Self>, t: impl Borrow<<T as Object>::DetachedType>) {
@@ -856,7 +841,7 @@ where
         }
     }
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
-        let mut pod: Pin<&mut Self> = NoatunContext.allocate_pod();
+        let mut pod: Pin<&mut Self> = NoatunContext.allocate();
         pod.as_mut().init_from_detached(detached);
         pod
     }
@@ -875,7 +860,8 @@ pub struct DatabaseObjectHandle<T: Object + ?Sized> {
     phantom: PhantomData<T>,
 }
 
-unsafe impl<T: Object + ?Sized> Zeroable for DatabaseObjectHandle<T> {}
+
+unsafe impl<T:Object+?Sized+'static> NoatunStorable for DatabaseObjectHandle<T> {}
 
 impl<T: Object + ?Sized> Copy for DatabaseObjectHandle<T> {}
 
@@ -885,10 +871,9 @@ impl<T: Object + ?Sized> Clone for DatabaseObjectHandle<T> {
     }
 }
 
-unsafe impl<T: Object + ?Sized + 'static> AnyBitPattern for DatabaseObjectHandle<T> {}
 impl<T: Object + ?Sized + 'static> Object for DatabaseObjectHandle<T>
 where
-    T::Ptr: Pod,
+    T::Ptr: NoatunStorable,
 {
     type Ptr = ThinPtr;
     type DetachedType = T::DetachedType;
@@ -906,7 +891,7 @@ where
         unsafe {
             let target = T::allocate_from_detached(detached);
             let new_index = NoatunContext.index_of(&*target);
-            NoatunContext.write_pod(
+            NoatunContext.write(
                 new_index,
                 Pin::new_unchecked(&mut self.get_unchecked_mut().object_index),
             );
@@ -914,7 +899,7 @@ where
     }
 
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
-        let mut pod: Pin<&mut Self> = NoatunContext.allocate_pod();
+        let mut pod: Pin<&mut Self> = NoatunContext.allocate_obj();
         pod.as_mut().init_from_detached(detached);
         pod
     }
@@ -963,10 +948,10 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
     pub fn allocate<'a>(value: T) -> Pin<&'a mut Self>
     where
         T: Object<Ptr = ThinPtr>,
-        T: AnyBitPattern,
+        T: NoatunStorable,
     {
-        let mut this = NoatunContext.allocate_pod::<DatabaseObjectHandle<T>>();
-        let mut target = NoatunContext.allocate_pod::<T>();
+        let mut this = NoatunContext.allocate::<DatabaseObjectHandle<T>>();
+        let mut target = NoatunContext.allocate::<T>();
         // TODO: This is a bug, isn't it? Should use NoatunContext.write!?
         // TODO: Maybe not? Maybe overwriting newly allocated info doesn't need tracked writes?
         unsafe {
@@ -984,7 +969,7 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
         T: Object<Ptr = FatPtr> + 'static,
     {
         let size_bytes = std::mem::size_of_val(value);
-        let mut this = NoatunContext.allocate_pod::<DatabaseObjectHandle<T>>();
+        let mut this = NoatunContext.allocate::<DatabaseObjectHandle<T>>();
         let target_dst_ptr = NoatunContext.allocate_raw(size_bytes, std::mem::align_of_val(value));
 
         let target_src_ptr = value as *const T as *const u8;
@@ -1006,32 +991,34 @@ impl<T: Object + ?Sized> DatabaseObjectHandle<T> {
 
 
 #[repr(C)]
-#[derive(Clone,Copy,AnyBitPattern)]
+#[derive(Clone,Copy)]
 struct DatabaseHashBucket<K,V> {
     hash: u32,
     key: K,
     v: V,
 }
 
+unsafe impl<K:NoatunStorable, V:NoatunStorable> NoatunStorable for DatabaseHashBucket<K,V> {}
+
 
 //TODO: Rename to NoatunHash?
 #[repr(C)]
 #[derive(Clone,Copy)]
-pub struct DatabaseHash<K: AnyBitPattern, V: FixedSizeObject> {
+pub struct DatabaseHash<K: NoatunStorable, V: FixedSizeObject> {
     length: usize,
     capacity: usize,
     data: usize,
     phantom_data: PhantomData<(K,V)>,
 }
 
-impl<K:AnyBitPattern+NoatunKey+PartialEq+Debug,V:FixedSizeObject+Debug> Debug for DatabaseHash<K, V> {
+unsafe impl<K:NoatunStorable, V:FixedSizeObject> NoatunStorable for DatabaseHash<K,V> {}
+
+impl<K:NoatunStorable+NoatunKey+PartialEq+Debug,V:FixedSizeObject+Debug> Debug for DatabaseHash<K, V> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_map().entries(self.iter()).finish()
     }
 }
 
-unsafe impl<K:AnyBitPattern,V:FixedSizeObject> Pod for DatabaseHash<K,V> {}
-unsafe impl<K:AnyBitPattern,V:FixedSizeObject> Zeroable for DatabaseHash<K,V> {}
 
 // Some of the stuff here is public doc(hidden) just so that a benchmark can get at it
 #[doc(hidden)]
@@ -1132,10 +1119,12 @@ impl BucketProbeSequence {
 /// 1 = deleted
 /// 2..=127 = invalid
 /// >=128 = populated
-#[derive(Clone,Copy,Debug, PartialEq, Zeroable, Pod)]
+#[derive(Clone,Copy,Debug, PartialEq)]
 #[repr(transparent)]
 #[doc(hidden)]
 pub struct Meta(u8);
+
+unsafe impl NoatunStorable for Meta {}
 
 #[repr(align(32))]
 #[doc(hidden)]
@@ -1535,16 +1524,16 @@ impl<I:Iterator> ExactSizeIterator for WithConcat<I,I::Item> {
 }
 
 
-pub struct DatabaseHashIterator<'a, K:AnyBitPattern+ NoatunKey +PartialEq,V:FixedSizeObject> {
+pub struct DatabaseHashIterator<'a, K:NoatunStorable+ NoatunKey +PartialEq,V:FixedSizeObject> {
     hash_buckets: &'a [MaybeUninit<DatabaseHashBucket<K,V>>],
     metas: &'a [MetaGroup],
     next_position: usize,
 }
-struct DatabaseHashOwningIterator<'a, K:AnyBitPattern+ NoatunKey +PartialEq,V:FixedSizeObject> {
+struct DatabaseHashOwningIterator<'a, K:NoatunStorable+ NoatunKey +PartialEq,V:FixedSizeObject> {
     hash_buckets: HashAccessContextMut<'a, K, V>,
     next_position: usize,
 }
-impl<'a,K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> Iterator for DatabaseHashIterator<'a,K,V> {
+impl<'a,K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> Iterator for DatabaseHashIterator<'a,K,V> {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1565,7 +1554,7 @@ impl<'a,K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> Iterator for
     }
 }
 
-impl<'a, K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> Iterator for DatabaseHashOwningIterator<'a, K,V> {
+impl<'a, K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> Iterator for DatabaseHashOwningIterator<'a, K,V> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1591,12 +1580,24 @@ impl<'a, K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> Iterator fo
     }
 }
 
-#[derive(Clone,Copy)]
-struct HashAccessContext<'a,K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> {
+
+struct HashAccessContext<'a,K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> {
     metas: &'a [MetaGroup],
     buckets: &'a [MaybeUninit<DatabaseHashBucket<K,V>>],
 }
-struct HashAccessContextMut<'a,K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> {
+
+impl<'a,K:NoatunStorable+NoatunKey+PartialEq,V:FixedSizeObject> Copy for HashAccessContext<'a,K,V> {}
+
+impl<'a,K:NoatunStorable+NoatunKey+PartialEq,V:FixedSizeObject> Clone for HashAccessContext<'a,K,V> {
+    fn clone(&self) -> Self {
+        Self {
+            metas: self.metas,
+            buckets: self.buckets,
+        }
+    }
+}
+
+struct HashAccessContextMut<'a,K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> {
     metas: &'a mut [MetaGroup],
     buckets: &'a mut [MaybeUninit<DatabaseHashBucket<K,V>>],
 }
@@ -1665,7 +1666,7 @@ fn get_meta_mut_and_emptyable(metas: &mut [MetaGroup], bucket: BucketNr) -> Meta
 }
 
 
-impl<'a,K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> HashAccessContextMut<'a,K,V> {
+impl<'a,K: NoatunKey +PartialEq, V: FixedSizeObject> HashAccessContextMut<'a,K,V> {
     fn readonly(&'a self) -> HashAccessContext<'a,K,V> {
         HashAccessContext {
             metas: self.metas,
@@ -1674,7 +1675,7 @@ impl<'a,K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> HashAccessCo
     }
 }
 
-impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
+impl<K: NoatunStorable+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K, V> {
 
     pub fn len(&self) -> usize {
         self.length
@@ -1967,22 +1968,22 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
         match get_meta_mut_and_emptyable(context.metas, bucket) {
             MetaMutAndEmpty::NoEmpty(meta) => {
                 println!("No empty found");
-                NoatunContext.write_pod_internal(Meta::DELETED, meta);
+                NoatunContext.write_internal(Meta::DELETED, meta);
             }
             MetaMutAndEmpty::HasEmptyAfterMeta(meta) => {
                 println!("empty just after meta");
-                NoatunContext.write_pod_internal(Meta::EMPTY, meta);
+                NoatunContext.write_internal(Meta::EMPTY, meta);
             }
             MetaMutAndEmpty::HasEmpty { meta_bucket, meta, before_empty_bucket, before_empty } => {
                 println!("has empty");
 
-                NoatunContext.copy_pod(before_empty, meta);
-                NoatunContext.write_pod_internal(Meta::EMPTY, before_empty);
+                NoatunContext.copy(before_empty, meta);
+                NoatunContext.write_internal(Meta::EMPTY, before_empty);
 
                 let [meta_bucket_obj, before_empty_bucket_obj] = context.buckets.get_disjoint_mut([meta_bucket.0, before_empty_bucket.0]).unwrap();
 
                 unsafe {
-                    NoatunContext.copy_any(before_empty_bucket_obj.assume_init_ref(), meta_bucket_obj);
+                    NoatunContext.copy(before_empty_bucket_obj.assume_init_ref(), meta_bucket_obj.assume_init_mut());
                 }
             }
         }
@@ -1997,7 +1998,7 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
         }
 
         let new_length = self.length - 1;
-        NoatunContext.write_pod_internal(new_length, &mut self.length);
+        NoatunContext.write_internal(new_length, &mut self.length);
 
         true
     }
@@ -2021,11 +2022,11 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
                 V::init_from_detached(old_v, val);
                 if matches!(probe_result, ProbeRunResult::FoundUnoccupied(_, _)) {
                     let bucket_meta = get_meta_mut(context.metas, bucket);
-                    NoatunContext.write_pod_internal(meta, bucket_meta);
+                    NoatunContext.write_internal(meta, bucket_meta);
                     let old_k= unsafe { Pin::new_unchecked(&mut bucket_obj.key) };
                     old_k.init_from_detached(key);
                     let new_length = self.length + 1;
-                    NoatunContext.write_pod_internal(new_length, &mut self.length);
+                    NoatunContext.write_internal(new_length, &mut self.length);
                 }
             }
         }
@@ -2045,15 +2046,15 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
             ProbeRunResult::FoundPopulated(bucket, meta) => {
                 let bucket_obj = unsafe { context.buckets[bucket.0].assume_init_mut()};
                 let old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
-                NoatunContext.write_any(val, old_v);
+                NoatunContext.write(val, old_v);
                 let bucket_meta = get_meta_mut(context.metas, bucket);
-                NoatunContext.write_pod_internal(meta, bucket_meta);
+                NoatunContext.write_internal(meta, bucket_meta);
                 if matches!(probe_result, ProbeRunResult::FoundUnoccupied(_, _)) {
                     let old_k= unsafe { Pin::new_unchecked(&mut bucket_obj.key) };
-                    NoatunContext.write_any(key, old_k);
+                    NoatunContext.write(key, old_k);
 
                     let new_length = self.length + 1;
-                    NoatunContext.write_pod_internal(new_length, &mut self.length);
+                    NoatunContext.write_internal(new_length, &mut self.length);
                 }
             }
         }
@@ -2080,7 +2081,7 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
             data: NoatunContext.index_of_ptr(data).0,
             phantom_data: PhantomData,
         };
-        NoatunContext.write_pod(new, unsafe { Pin::new_unchecked(self) });
+        NoatunContext.write(new, unsafe { Pin::new_unchecked(self) });
     }
 
     // This does not write the handle itself into the noatun database!!
@@ -2121,7 +2122,7 @@ impl<K: AnyBitPattern+ NoatunKey +PartialEq, V: FixedSizeObject> DatabaseHash<K,
 /// Also, the bit pattern must be stable.
 /// TODO: This (and Object), should probably be unsafe traits. Soundness depends on the bit
 /// representations being stable across recompilations/versions.
-pub trait NoatunKey : AnyBitPattern + Sized + Debug {
+pub trait NoatunKey : NoatunStorable + Sized + Debug {
     /// A 'detached' variant of Self.
     ///
     /// Detached types are meant to be ergonomic to work with, but may have representations
@@ -2149,7 +2150,7 @@ pub trait NoatunKey : AnyBitPattern + Sized + Debug {
 
 
 
-impl<K:AnyBitPattern+ NoatunKey +Hash+Eq,V:FixedSizeObject> Object for DatabaseHash<K,V> {
+impl<K:NoatunKey +Hash+Eq,V:FixedSizeObject> Object for DatabaseHash<K,V> {
     type Ptr = ThinPtr;
     type DetachedType = HashMap<K::DetachedOwnedType,V::DetachedOwnedType>;
     type DetachedOwnedType = HashMap<K::DetachedOwnedType,V::DetachedOwnedType>;
@@ -2160,7 +2161,7 @@ impl<K:AnyBitPattern+ NoatunKey +Hash+Eq,V:FixedSizeObject> Object for DatabaseH
 
     fn clear(self: Pin<&mut Self>) {
         let length = unsafe  { self.map_unchecked_mut(|x|&mut x.length) };
-        NoatunContext.write_pod(0, length);
+        NoatunContext.write(0, length);
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {

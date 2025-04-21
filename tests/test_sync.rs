@@ -1,10 +1,7 @@
 use noatun::communication::udp::TokioUdpDriver;
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::DatabaseCell;
-use noatun::{
-    AnyBitPattern, Application, CutOffDuration, Database, MessagePayload, NoatunContext,
-    NoatunTime, Object, ThinPtr,
-};
+use noatun::{Application, CutOffDuration, Database, MessagePayload, NoatunContext, NoatunStorable, NoatunTime, Object, ThinPtr};
 use savefile::{Deserializer, Serializer};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
@@ -17,12 +14,14 @@ struct MazeMessage {
     delta_y: i32,
 }
 
-#[derive(Copy, Clone, AnyBitPattern, Debug)]
+#[derive(Debug)]
 #[repr(C)]
 struct Maze {
     player_pos_x: DatabaseCell<u32>,
     player_pos_y: DatabaseCell<u32>,
 }
+
+unsafe impl NoatunStorable for Maze {}
 
 impl Object for Maze {
     type Ptr = ThinPtr;
@@ -46,7 +45,7 @@ impl Object for Maze {
     }
 
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
-        let mut temp: Pin<&mut Maze> = NoatunContext.allocate_pod();
+        let mut temp: Pin<&mut Maze> = NoatunContext.allocate();
         temp.as_mut().init_from_detached(detached);
         temp
     }
@@ -91,7 +90,7 @@ impl Application for Maze {
     type Params = ();
 
     fn initialize_root<'a>(_params: &()) -> Pin<&'a mut Maze> {
-        let maze = NoatunContext.allocate_pod();
+        let maze = NoatunContext.allocate();
 
         maze
     }

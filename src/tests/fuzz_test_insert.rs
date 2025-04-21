@@ -1,11 +1,10 @@
 use crate::cutoff::CutOffDuration;
 use crate::data_types::*;
 use crate::sequence_nr::SequenceNr;
-use crate::Object;
+use crate::{NoatunStorable, Object};
 use crate::{
-    msg_deserialize, msg_serialize, Application, Database, MessagePayload, NoatunTime, Zeroable,
+    msg_deserialize, msg_serialize, Application, Database, MessagePayload, NoatunTime,
 };
-use bytemuck::Pod;
 use datetime_literal::datetime;
 use rand::prelude::SliceRandom;
 use savefile_derive::Savefile;
@@ -15,12 +14,14 @@ use std::pin::Pin;
 use std::time::Duration;
 use crate::database::DatabaseSettings;
 
-#[derive(Copy, Clone, Debug, Zeroable, Pod, Serialize, Deserialize, Savefile)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, Savefile)]
 #[repr(C)]
 pub struct DummyObj {
     x: u32,
     y: u32,
 }
+
+unsafe impl NoatunStorable for DummyObj{}
 
 noatun_object!(
     struct SubSubObj {

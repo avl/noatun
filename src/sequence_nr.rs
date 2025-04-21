@@ -1,10 +1,13 @@
-use bytemuck::{Pod, Zeroable};
 use std::fmt::{Debug, Display, Formatter};
+use crate::NoatunStorable;
 
-#[derive(Pod, Zeroable, Copy, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(C)]
 // 0 is an invalid sequence number, used to represent 'not a number'
 pub struct SequenceNr(u32);
+
+unsafe impl NoatunStorable for SequenceNr {}
+
 impl Display for SequenceNr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if self.0 == 0 {

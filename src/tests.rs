@@ -166,8 +166,10 @@ mod test_types_rewind {
 }
 
 #[repr(transparent)]
-#[derive(Clone,Copy,AnyBitPattern,Debug)]
+#[derive(Debug)]
 pub struct DummyTestApp<Root>(pub Root);
+
+unsafe impl<Root:NoatunStorable> NoatunStorable for DummyTestApp<Root> {}
 
 impl<Root> DummyTestApp<Root> {
     pub fn inner_mut(self: Pin<&mut Self>) -> Pin<&mut Root> {
@@ -267,7 +269,7 @@ impl<Root:FixedSizeObject+DummyTestMessageApply> Application for DummyTestApp<Ro
     //TODO: Should `initialize_root' be unsafe?
     fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
         unsafe {
-            std::mem::transmute(NoatunContext.allocate_pod::<Root>())
+            std::mem::transmute(NoatunContext.allocate::<Root>())
         }
     }
 }
@@ -377,12 +379,13 @@ impl<T: Object> MessagePayload for DummyMessage<T> {
     }
 }
 
-#[derive(Clone, Copy, AnyBitPattern)]
 #[repr(C)]
 struct CounterObject {
     counter: DatabaseCell<u32>,
     counter2: DatabaseCell<u32>,
 }
+
+unsafe impl NoatunStorable for CounterObject {}
 
 impl Object for CounterObject {
     type Ptr = ThinPtr;
@@ -436,7 +439,7 @@ impl Application for CounterObject {
     type Params = ();
 
     fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
-        let new_obj = NoatunContext.allocate_pod();
+        let new_obj = NoatunContext.allocate();
         new_obj
     }
 }

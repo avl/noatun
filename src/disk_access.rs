@@ -1,7 +1,6 @@
 use crate::platform_specific::FileMapping;
-use crate::Target;
+use crate::{from_bytes, from_bytes_mut, NoatunStorable, Target};
 use anyhow::{bail, Context, Result};
-use bytemuck::Pod;
 use std::fmt::{Debug, Formatter};
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
@@ -67,7 +66,7 @@ impl ReadonlyFileAccessor<'_> {
         unsafe { slice::from_raw_parts(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE), used) }
     }
 
-    pub fn access_pod<R: Pod>(&self, offset: usize) -> Result<&R> {
+    pub fn access_pod<R: NoatunStorable>(&self, offset: usize) -> Result<&R> {
         if self.seek_pos + size_of::<R>() > self.size {
             bail!("requested number of bytes not available in file");
         }
@@ -77,7 +76,7 @@ impl ReadonlyFileAccessor<'_> {
                 size_of::<R>(),
             )
         };
-        Ok(bytemuck::from_bytes(raw))
+        Ok(from_bytes(raw))
     }
     pub fn with_bytes<R>(&mut self, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
         if self.seek_pos + bytes > self.size {
@@ -272,7 +271,7 @@ impl FileAccessor {
     }
 
     /// Does _not_ use or update seek position
-    pub fn access_pod<R: Pod>(&self, offset: usize) -> Result<&R> {
+    pub fn access_pod<R: NoatunStorable>(&self, offset: usize) -> Result<&R> {
         if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");
         }
@@ -282,10 +281,10 @@ impl FileAccessor {
                 size_of::<R>(),
             )
         };
-        Ok(bytemuck::from_bytes(raw))
+        Ok(from_bytes(raw))
     }
     /// Does _not_ use or update seek position TODO: This is unsafe as h***! Mark as unsafe!
-    pub fn access_pod_mut<R: Pod>(&self, offset: usize) -> Result<&mut R> {
+    pub fn access_pod_mut<R: NoatunStorable>(&self, offset: usize) -> Result<&mut R> {
         if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");
         }
@@ -295,7 +294,7 @@ impl FileAccessor {
                 size_of::<R>(),
             )
         };
-        Ok(bytemuck::from_bytes_mut(raw))
+        Ok(from_bytes_mut(raw))
     }
 
     #[inline(always)]

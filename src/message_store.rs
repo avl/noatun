@@ -4,9 +4,8 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::{sha2, sha2_message};
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{Message, MessageHeader, MessageId, MessagePayload, NoatunTime, Target};
+use crate::{bytes_of, bytes_of_mut, cast_slice, cast_slice_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, Message, MessageHeader, MessageId, MessagePayload, NoatunStorable, NoatunTime, Target};
 use anyhow::{anyhow, bail, Context, Result};
-use bytemuck::{Pod, Zeroable};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
@@ -16,9 +15,11 @@ use std::marker::PhantomData;
 use std::mem::offset_of;
 use tracing::{info, trace, warn};
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct FileOffset(u64);
+
+unsafe impl NoatunStorable for FileOffset {}
 
 /// Size of header for each individual message in store
 const MSG_HEADER_SIZE: usize = size_of::<FileHeaderEntry>();
@@ -35,7 +36,7 @@ struct EmbVecAccessor<T> {
     start_offset: usize,
 }
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct EmbVecHeader {
     num: u16,
@@ -220,7 +221,9 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
 
 const MAGIC: [u8;8] = [b'N', 152, 202, 45, 103, 197, 68, b'N'];
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+
+
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct FileHeaderEntry {
     header_checksum: [u8; HASH_SIZE],
@@ -236,6 +239,8 @@ struct FileHeaderEntry {
     num_children: EmbVecHeader,
     padding4: u32,
 }
+
+unsafe impl NoatunStorable for FileHeaderEntry {}
 
 impl FileHeaderEntry {
     pub fn is_deleted(&self) -> bool {
@@ -268,30 +273,33 @@ impl FileHeaderEntry {
 }
 
 pub trait ReadPod {
-    fn read_pod<T: Pod>(&mut self) -> Result<T>;
+    fn read_pod<T: NoatunStorable>(&mut self) -> Result<T>;
 }
 pub trait WritePod {
-    fn write_pod<T: Pod>(&mut self, pod: &T) -> Result<()>;
+    fn write_pod<T: NoatunStorable>(&mut self, pod: &T) -> Result<()>;
 }
 impl<R: Read> ReadPod for R {
-    fn read_pod<T: Pod>(&mut self) -> Result<T> {
+    fn read_pod<T: NoatunStorable>(&mut self) -> Result<T> {
         let mut zeroed = T::zeroed();
-        let bytes = bytemuck::bytes_of_mut(&mut zeroed);
+        let bytes = bytes_of_mut(&mut zeroed);
         self.read_exact(bytes)?;
         Ok(zeroed)
     }
 }
 impl<W: Write> WritePod for W {
-    fn write_pod<T: Pod>(&mut self, pod: &T) -> Result<()> {
-        let bytes = bytemuck::bytes_of(pod);
+    fn write_pod<T: NoatunStorable>(&mut self, pod: &T) -> Result<()> {
+        let bytes = bytes_of(pod);
         self.write_all(bytes)?;
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 struct U1(u8);
+
+unsafe impl NoatunStorable for U1 {}
+
 
 impl Display for U1 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -362,7 +370,7 @@ impl FileOffset {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy)]
 pub struct IndexEntry {
     pub(crate) message: MessageId,
     /// Offset into the logical file-area, or deletion-marker
@@ -370,6 +378,8 @@ pub struct IndexEntry {
     /// This is the size with header, parents and payload.
     pub(crate) file_total_size: u64,
 }
+
+unsafe impl NoatunStorable for IndexEntry {}
 
 const DEFAULT_MAX_COUNT: usize = 1024;
 const DEFAULT_MAX_SIZE_BYTES: usize = DEFAULT_MAX_COUNT * std::mem::size_of::<IndexEntry>();
@@ -391,7 +401,7 @@ impl Ord for IndexEntry {
     }
 }
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct DataFileEntry {
     /// The size of this file, in bytes.
@@ -406,6 +416,8 @@ struct DataFileEntry {
     compaction_pointer: u64,
 }
 
+unsafe impl NoatunStorable for DataFileEntry {}
+
 #[derive(Debug)]
 struct DataFileInfo {
     file: FileAccessor,
@@ -417,7 +429,7 @@ const STATUS_OK: u32 = 1;
 const STATUS_NOK: u32 = 0;
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy)]
 struct StoreHeader {
     entries: u32,
     padding: u32,
@@ -425,6 +437,8 @@ struct StoreHeader {
     data_files: [DataFileEntry; 2],
     cutoff: CutOffHashPos,
 }
+
+unsafe impl NoatunStorable for StoreHeader {}
 
 pub(crate) struct OnDiskMessageStore<M> {
     target: Target,
@@ -556,7 +570,7 @@ impl<M> OnDiskMessageStore<M> {
         }
 
         let slice: &mut [u8] = map.map_mut();
-        let header: &StoreHeader = bytemuck::from_bytes(&slice[0..size_of::<StoreHeader>()]);
+        let header: &StoreHeader = from_bytes(&slice[0..size_of::<StoreHeader>()]);
         let file_capacity =
             (xlen.saturating_sub(size_of::<StoreHeader>())) / size_of::<IndexEntry>();
         let used = header.entries as usize;
@@ -589,7 +603,7 @@ impl<M> OnDiskMessageStore<M> {
 
         let slice: &mut [u8] = map.map_mut();
         let header: &mut StoreHeader =
-            bytemuck::from_bytes_mut(&mut slice[0..size_of::<StoreHeader>()]);
+            from_bytes_mut(&mut slice[0..size_of::<StoreHeader>()]);
         Ok(header)
     }
 
@@ -620,8 +634,8 @@ impl<M> OnDiskMessageStore<M> {
         Self::provide_index_map(map, extra)?;
         let slice: &mut [u8] = map.map_mut();
         let (store_header_bytes, index_bytes) = slice.split_at_mut(size_of::<StoreHeader>());
-        let header: &mut StoreHeader = bytemuck::from_bytes_mut(store_header_bytes);
-        let rest = bytemuck::cast_slice_mut(index_bytes);
+        let header: &mut StoreHeader = from_bytes_mut(store_header_bytes);
+        let rest = dyn_cast_slice_mut(index_bytes);
         Ok((header, rest))
     }
     #[inline]
@@ -639,8 +653,8 @@ impl<M> OnDiskMessageStore<M> {
     fn header_and_index(&self) -> Result<(&StoreHeader, &[IndexEntry])> {
         let slice: &[u8] = self.index_mmap.map();
         let (store_header_bytes, index_bytes) = slice.split_at(size_of::<StoreHeader>());
-        let header: &StoreHeader = bytemuck::from_bytes(store_header_bytes);
-        let rest = bytemuck::cast_slice(index_bytes);
+        let header: &StoreHeader = from_bytes(store_header_bytes);
+        let rest = dyn_cast_slice(index_bytes);
         Ok((header, &rest[0..header.entries as usize]))
     }
 

@@ -1,6 +1,6 @@
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
-use crate::{MessageId, NoatunTime};
+use crate::{cast_slice, cast_slice_mut, dyn_cast_slice, dyn_cast_slice_mut, MessageId, NoatunTime};
 use anyhow::Result;
 use tracing::{ info, trace};
 
@@ -11,7 +11,7 @@ pub(crate) struct UpdateHeadTracker {
 impl UpdateHeadTracker {
     pub(crate) fn remove_update_head(&mut self, message_id: MessageId) -> Result<()> {
         let mapping = self.file.map_mut();
-        let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
+        let id_mapping: &mut [MessageId] = dyn_cast_slice_mut(mapping);
         if let Some(index) = id_mapping.iter().position(|id| *id == message_id) {
             if index + 1 < id_mapping.len() {
                 id_mapping.swap(index, id_mapping.len() - 1);
@@ -24,7 +24,7 @@ impl UpdateHeadTracker {
     pub(crate) fn remove_before_cutoff(&mut self, cutoff: NoatunTime) -> Result<()> {
         info!("Deleting all heads before cutoff: {:?}", cutoff);
         let mapping = self.file.map_mut();
-        let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
+        let id_mapping: &mut [MessageId] = dyn_cast_slice_mut(mapping);
         let mut index = 0;
         let mut mapping_len = id_mapping.len();
         while index < mapping_len {
@@ -60,7 +60,7 @@ impl UpdateHeadTracker {
             new_message_id, cutoff
         );
         let mapping = self.file.map_mut();
-        let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
+        let id_mapping: &mut [MessageId] = dyn_cast_slice_mut(mapping);
         let mut i = 0;
         let mut file_len = id_mapping.len();
         let mut maplen = id_mapping.len();
@@ -80,7 +80,7 @@ impl UpdateHeadTracker {
         }
 
         let mapping = self.file.map_mut();
-        let id_mapping: &mut [MessageId] = bytemuck::cast_slice_mut(mapping);
+        let id_mapping: &mut [MessageId] = dyn_cast_slice_mut(mapping);
 
         id_mapping[maplen] = new_message_id;
         maplen += 1;
@@ -95,7 +95,7 @@ impl UpdateHeadTracker {
     }
 
     pub(crate) fn get_update_heads(&self) -> &[MessageId] {
-        bytemuck::cast_slice(self.file.map())
+        dyn_cast_slice(self.file.map())
     }
     pub(crate) fn new<D: Disk>(disk: &mut D, target: &crate::Target) -> Result<UpdateHeadTracker> {
         Ok(Self {

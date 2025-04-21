@@ -187,7 +187,7 @@ impl Application for SyncApp {
     type Params = ();
 
     fn initialize_root<'a>(_params: &Self::Params) -> Pin<&'a mut Self> {
-        NoatunContext.allocate_pod()
+        NoatunContext.allocate()
     }
 }
 
