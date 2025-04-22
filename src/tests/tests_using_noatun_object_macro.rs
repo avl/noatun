@@ -1,7 +1,7 @@
 use crate::cutoff::CutOffDuration;
 use crate::data_types::NoatunVec;
 use crate::{msg_deserialize, msg_serialize};
-use crate::{Application, Database, MessagePayload, NoatunTime};
+use crate::{Application, Database, Message, NoatunTime};
 use datetime_literal::datetime;
 use savefile_derive::Savefile;
 use std::io::Write;
@@ -26,8 +26,7 @@ pub enum BankMessage {
     AddCustomerAndMoney { money: u32, customer: u32 },
 }
 
-// TODO: Rename MessagePayload to Message, and Message to MessageFrame?
-impl MessagePayload for BankMessage {
+impl Message for BankMessage {
     type Root = Bank;
 
     fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {

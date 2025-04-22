@@ -1,7 +1,7 @@
 use noatun::communication::udp::TokioUdpDriver;
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::NoatunCell;
-use noatun::{Application, CutOffDuration, Database, MessagePayload, NoatunContext, NoatunStorable, NoatunTime, Object, ThinPtr};
+use noatun::{Application, CutOffDuration, Database, Message, NoatunContext, NoatunStorable, NoatunTime, Object, ThinPtr};
 use savefile::{Deserializer, Serializer};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
@@ -54,7 +54,7 @@ impl Object for Maze {
 }
 
 
-impl MessagePayload for MazeMessage {
+impl Message for MazeMessage {
     type Root = Maze;
 
     fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {

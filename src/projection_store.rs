@@ -4,7 +4,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{bytes_of_mut, bytes_of_mut_uninit, from_bytes, from_bytes_mut, FatPtr, FixedSizeObject, GenPtr, MessagePayload, NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
+use crate::{bytes_of_mut, bytes_of_mut_uninit, from_bytes, from_bytes_mut, FatPtr, GenPtr, Message, NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
@@ -50,8 +50,8 @@ mod registrar_info {
             if self.get_use() >= 0x7FFF_FFFF {
                 return;
             }
-            //TODO: We could have a special "inc 1" noatun primitive.
-            context.write_pod(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) });
+            //TODO: We could have a special "increment 1" noatun primitive.
+            context.write_storable(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
         pub fn decrease_use(&mut self, context: &mut DatabaseContextData, tainted: bool) {
             let mut raw_uses = self.uses;
@@ -70,9 +70,9 @@ mod registrar_info {
                 debug!("mark tainted (raw use={}, ptr = {:x?})", self.uses, &self.uses as *const u32);
                 raw_uses|=0x8000_0000;
             }
-            // TODO: We could have a special "dec 1" noatun primitive.
-            // println!("Write pod {:?}", self.uses - 1);
-            context.write_pod(raw_uses, unsafe { Pin::new_unchecked(&mut self.uses) });
+            // TODO: We could have a special "decrement 1" noatun primitive.
+
+            context.write_storable(raw_uses, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
     }
 
@@ -212,7 +212,6 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct DepTrackLinkedListEntry {
-    // TODO: Possibly make this struct 4-byte aligned, and remove the padding
     pub next: ThinPtr,
     pub seq: SequenceNr,
     pub padding: u32,
@@ -266,15 +265,15 @@ impl DatabaseContextData {
                 .map_unchecked_mut(|x| &mut x.dep)
         };
 
-        let new_entry: &mut DepTrackLinkedListEntry = self.allocate_pod_internal();
+        let new_entry: &mut DepTrackLinkedListEntry = self.allocate_internal();
 
-        self.write_pod(*key_place, unsafe {
+        self.write_storable(*key_place, unsafe {
             Pin::new_unchecked(&mut new_entry.next)
         });
-        self.write_pod(observer, unsafe { Pin::new_unchecked(&mut new_entry.seq) });
+        self.write_storable(observer, unsafe { Pin::new_unchecked(&mut new_entry.seq) });
 
         let new_entry_index = self.index_of_sized(new_entry);
-        self.write_pod(new_entry_index, key_place);
+        self.write_storable(new_entry_index, key_place);
     }
     fn record_reverse_dependency(
         &mut self,
@@ -298,20 +297,20 @@ impl DatabaseContextData {
                 .map_unchecked_mut(|x| &mut x.reverse_dep)
         };
 
-        let new_entry: &mut ReverseDepTrackLinkedListEntry = self.allocate_pod_internal();
+        let new_entry: &mut ReverseDepTrackLinkedListEntry = self.allocate_internal();
 
         // TODO: Create more efficient undo-construct for adjacent fields. Can be used
         // here and in other places.
-        self.write_pod(*key_place, unsafe {
+        self.write_storable(*key_place, unsafe {
             Pin::new_unchecked(&mut new_entry.next)
         });
-        self.write_pod(observee, unsafe { Pin::new_unchecked(&mut new_entry.seq) });
-        self.write_pod(last_overwriter, unsafe {
+        self.write_storable(observee, unsafe { Pin::new_unchecked(&mut new_entry.seq) });
+        self.write_storable(last_overwriter, unsafe {
             Pin::new_unchecked(&mut new_entry.last_overwriter)
         });
 
         let new_entry_index = self.index_of_sized(new_entry);
-        self.write_pod(new_entry_index, key_place);
+        self.write_storable(new_entry_index, key_place);
     }
 
     pub(crate) fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> + '_ {
@@ -327,13 +326,12 @@ impl DatabaseContextData {
             if cur.0 == 0 {
                 return None;
             }
-            let entry: &DepTrackLinkedListEntry = unsafe { self.access_pod(cur) };
+            let entry: &DepTrackLinkedListEntry = unsafe { self.access_storable(cur) };
             cur = entry.next;
             Some(entry.seq)
         })
     }
 
-    //TODO: Maybe elliminate this code duplication
     pub(crate) fn read_reverse_dependency(
         &self,
         observer: SequenceNr,
@@ -350,7 +348,7 @@ impl DatabaseContextData {
             if cur.0 == 0 {
                 return None;
             }
-            let entry: &ReverseDepTrackLinkedListEntry = unsafe { self.access_pod(cur) };
+            let entry: &ReverseDepTrackLinkedListEntry = unsafe { self.access_storable(cur) };
             cur = entry.next;
             Some((entry.seq, entry.last_overwriter))
         })
@@ -559,7 +557,7 @@ impl DatabaseContextData {
             filesystem_sync_disabled: false,
             tainted: false,
         };
-        // TODO: It's a bit of a code smell that at this precise point in the execution,
+        // It's a bit of a code smell that at this precise point in the execution,
         // a DatabaseContext exists, but it's not actually fully initialized until we write the
         // aux header. This is functionally correct, no-one can observe this half-initialized
         // DatabaseContext at this point in the code. But ideally we'd find a way to not have a
@@ -595,14 +593,14 @@ impl DatabaseContextData {
                 let cur = Self::pointer_of(&self.main_db_mmap);
                 debug_assert!(new_pointer <= cur);
                 unsafe {
-                    Self::mut_slice(self.main_db_mmap.map_mut_ptr(), new_pointer..cur).fill(0)
+                    Self::mut_byte_slice(self.main_db_mmap.map_mut_ptr(), new_pointer..cur).fill(0)
                 };
                 Self::set_pointer_of(&self.main_db_mmap, new_pointer);
                 HowToProceed::PopAndContinue
             }
             UndoLogEntry::ZeroOut { start, len } => {
                 unsafe {
-                    Self::mut_slice(self.main_db_mmap.map_mut_ptr(), start..start + len).fill(0)
+                    Self::mut_byte_slice(self.main_db_mmap.map_mut_ptr(), start..start + len).fill(0)
                 };
                 HowToProceed::PopAndContinue
             }
@@ -615,7 +613,7 @@ impl DatabaseContextData {
             }*/
             UndoLogEntry::RestorePod { start, data } => {
                 unsafe {
-                    Self::mut_slice(self.main_db_mmap.map_mut_ptr(), start..start + data.len())
+                    Self::mut_byte_slice(self.main_db_mmap.map_mut_ptr(), start..start + data.len())
                         .copy_from_slice(data)
                 };
                 HowToProceed::PopAndContinue
@@ -744,7 +742,7 @@ impl DatabaseContextData {
     pub fn copy_bytes_len(&mut self, source: ThinPtr, dest_index: ThinPtr, num_bytes: usize) {
         self.copy_bytes(FatPtr::from_idx_count(source.0, num_bytes), dest_index)
     }
-    pub fn copy_pod<T: NoatunStorable>(&mut self, source: &T, dest: &mut T) {
+    pub fn copy_storable<T: NoatunStorable>(&mut self, source: &T, dest: &mut T) {
         let dest_index = self.index_of_sized(dest);
         self.undo_log.record(UndoLogEntry::RestorePod {
             start: dest_index.0,
@@ -760,7 +758,7 @@ impl DatabaseContextData {
         });
         T::initialize(dest, source);
     }
-    pub fn allocate_pod<T: NoatunStorable>(&mut self) -> Pin<&mut T> {
+    pub fn allocate_storable<T: NoatunStorable>(&mut self) -> Pin<&mut T> {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { Pin::new_unchecked(&mut *(bytes as *mut T)) }
     }
@@ -768,7 +766,7 @@ impl DatabaseContextData {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { Pin::new_unchecked(&mut *(bytes as *mut T)) }
     }
-    pub(crate) fn allocate_pod_internal<'a, T: NoatunStorable>(&mut self) -> &'a mut T {
+    pub(crate) fn allocate_internal<'a, T: NoatunStorable>(&mut self) -> &'a mut T {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { &mut *(bytes as *mut T) }
     }
@@ -851,19 +849,6 @@ impl DatabaseContextData {
     }
 
     /// # Safety
-    /// The returned range must not overlap any mutable reference
-    /// Alignment must be right.
-    pub unsafe fn access_slice_uninit<'a, T: NoatunStorable>(&self, range: FatPtr) -> &'a [MaybeUninit<T>] {
-        assert!(range.start + range.count*size_of::<MaybeUninit<T>>() <= self.main_db_mmap.used_space());
-        unsafe {
-            std::slice::from_raw_parts(
-                self.main_db_mmap.map_const_ptr().wrapping_add(range.start) as *const MaybeUninit<T>,
-                range.count,
-            )
-        }
-    }
-
-    /// # Safety
     /// The returned range must not overlap any other reference
     /// Alignment must be right.
     pub unsafe fn access_slice_mut<'a, T: NoatunStorable>(&self, range: FatPtr) -> &'a mut [T] {
@@ -876,63 +861,18 @@ impl DatabaseContextData {
         }
     }
 
+
     /// # Safety
-    /// The returned range must not overlap any other reference
-    /// Alignment must be right.
-    pub unsafe fn access_slice_mut_uninit<'a>(&self, range: FatPtr) -> &'a mut [MaybeUninit<u8>] {
-        assert!(range.start + range.count*size_of::<u8>() <= self.main_db_mmap.used_space());
+    /// The given range must point to valid memory, and must not overlap any other reference
+    pub unsafe fn mut_byte_slice<'a>(data: *mut u8, range: Range<usize>) -> &'a mut [u8] {
         unsafe {
-            std::slice::from_raw_parts_mut(
-                self.main_db_mmap.map_mut_ptr().wrapping_add(range.start) as *mut MaybeUninit<u8>,
-                range.count,
-            )
+            std::slice::from_raw_parts_mut(data.wrapping_add(range.start), range.end - range.start)
         }
     }
 
     /// # Safety
-    /// The returned range must not overlap any mutable reference
-    /// Alignment must be right.
-    pub unsafe fn access_object_slice<'a, T: FixedSizeObject>(&self, range: FatPtr) -> &'a [T] {
-        assert!(range.start + range.count*size_of::<T>() <= self.main_db_mmap.used_space());
-        unsafe {
-            std::slice::from_raw_parts(
-                self.main_db_mmap.map_const_ptr().wrapping_add(range.start) as *const T,
-                range.count,
-            )
-        }
-    }
-    /// # Safety
-    /// The returned range must not overlap any other reference
-    /// Alignment must be right.
-    pub unsafe fn access_object_slice_mut<'a, T: FixedSizeObject>(
-        &self,
-        range: FatPtr,
-    ) -> &'a mut [T] {
-        assert!(range.start + range.count*size_of::<T>() <= self.main_db_mmap.used_space());
-        unsafe {
-            std::slice::from_raw_parts_mut(
-                self.main_db_mmap.map_mut_ptr().wrapping_add(range.start) as *mut T,
-                range.count,
-            )
-        }
-    }
-    /// # Safety
-    /// The given range must point to valid memory, and must not overlap any other reference
-    pub unsafe fn mut_slice<'a>(data: *mut u8, range: Range<usize>) -> &'a mut [u8] {
-        unsafe {
-            std::slice::from_raw_parts_mut(data.wrapping_add(range.start), range.end - range.start)
-        }
-    }
-    /// # Safety
-    /// The given range must point to valid memory, and must not overlap any other reference
-    pub unsafe fn mut_slice_uninit<'a>(data: *mut MaybeUninit<u8>, range: Range<usize>) -> &'a mut [MaybeUninit<u8>] {
-        unsafe {
-            std::slice::from_raw_parts_mut(data.wrapping_add(range.start), range.end - range.start)
-        }
-    }
-    /// # Safety
     /// Caller must ensure no mutable reference exists to the requested object
-    pub unsafe fn access_pod<'a, T: NoatunStorable>(&self, index: ThinPtr) -> &'a T {
+    pub unsafe fn access_storable<'a, T: NoatunStorable>(&self, index: ThinPtr) -> &'a T {
         if index
             .0
             .checked_add(size_of::<T>())
@@ -1056,16 +996,9 @@ impl DatabaseContextData {
         ret
     }
 
-
-
-    /// # Safety
-    /// Caller must ensure no mutable reference exists to the requested object
-    pub unsafe fn access_object<'a, T: FixedSizeObject>(&self, index: ThinPtr) -> &'a T {
-        unsafe { self.access_pod(index) }
-    }
     /// # Safety
     /// Caller must ensure no references exists to the requested object
-    pub unsafe fn access_pod_mut<'a, T: NoatunStorable>(&self, index: ThinPtr) -> Pin<&'a mut T> {
+    pub unsafe fn access_storable_mut<'a, T: NoatunStorable>(&self, index: ThinPtr) -> Pin<&'a mut T> {
         if index
             .0
             .checked_add(size_of::<T>())
@@ -1083,39 +1016,8 @@ impl DatabaseContextData {
             )))
         }
     }
-    /// # Safety
-    /// Caller must ensure no references exists to the requested object
-    pub unsafe fn access_object_mut<'a, T: FixedSizeObject>(
-        &self,
-        index: ThinPtr,
-    ) -> Pin<&'a mut T> {
-        if index
-            .0
-            .checked_add(size_of::<T>())
-            .expect("invalid address for pointer")
-            > self.main_db_mmap.used_space()
-        {
-            panic!("invalid pointer value");
-        }
-        unsafe {
-            let ptr = self.main_db_mmap.map_mut_ptr().wrapping_add(index.0);
-            assert!((ptr as *mut T).is_aligned());
-            Pin::new_unchecked(crate::from_bytes_mut(std::slice::from_raw_parts_mut(
-                ptr,
-                size_of::<T>(),
-            )))
-        }
-    }
-    pub fn write(&mut self, index: usize, data: &[u8]) {
-        assert!(index + data.len() <= self.main_db_mmap.used_space());
-        let fat = FatPtr {
-            start: index,
-            count: data.len(),
-        };
-        let target = unsafe { self.access_slice_mut(fat) };
-        target.copy_from_slice(data);
-    }
-    pub fn write_pod<T: NoatunStorable>(&mut self, src: T, dest: Pin<&mut T>) {
+
+    pub fn write_storable<T: NoatunStorable>(&mut self, src: T, dest: Pin<&mut T>) {
         let dest = unsafe { dest.get_unchecked_mut() };
         let dest_index = self.index_of_sized(dest);
 
@@ -1126,18 +1028,8 @@ impl DatabaseContextData {
         *dest = src;
     }
 
-    pub fn write_object<T: FixedSizeObject>(&mut self, src: T, dest: Pin<&mut T>) {
-        let dest = unsafe { dest.get_unchecked_mut() };
-        let dest_index = self.index_of_sized(dest);
-
-        self.undo_log.record(UndoLogEntry::RestorePod {
-            start: dest_index.0,
-            data: bytes_of_mut(dest),
-        });
-        *dest = src;
-    }
     #[allow(clippy::not_unsafe_ptr_arg_deref)] //False positive, we check the bounds
-    pub fn write_pod_ptr<T: NoatunStorable>(&mut self, src: T, dest: *mut T) {
+    pub fn write_storable_ptr<T: NoatunStorable>(&mut self, src: T, dest: *mut T) {
         let dest_index = self.index_of_ptr(dest);
         assert!(dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space());
 
@@ -1166,7 +1058,7 @@ impl DatabaseContextData {
     }
     /// Call after a complete update, i.e, applying multiple messages
     /// Returns all messages that can now be removed.
-    pub(crate) fn calculate_stale_messages<MSG: MessagePayload + Debug>(
+    pub(crate) fn calculate_stale_messages<MSG: Message + Debug>(
         &mut self,
         message_store: &mut OnDiskMessageStore<MSG>,
     ) -> Result<Vec<SequenceNr>> {
@@ -1190,7 +1082,7 @@ impl DatabaseContextData {
         }
         self.rt_increase_use(current_registrar);
 
-        self.write_pod(current_registrar, Pin::new(registrar_point))
+        self.write_storable(current_registrar, Pin::new(registrar_point))
     }
 
     pub fn update_registrar_ptr_impl(&mut self, registrar_point: *mut SequenceNr, actor: SequenceNr, actor_tainted: bool) {
@@ -1208,7 +1100,7 @@ impl DatabaseContextData {
         }
         self.rt_increase_use(current_registrar);
 
-        self.write_pod_ptr(current_registrar, registrar_point)
+        self.write_storable_ptr(current_registrar, registrar_point)
     }
     pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr) {
         self.update_registrar_ptr_impl(registrar_point, self.next_seqnr(), self.tainted);
@@ -1292,7 +1184,7 @@ impl DatabaseContextData {
     /// Called in two situations:
     /// 1) Immediately when noticing a message is stale
     /// 2) During advancement of the cutoff time.
-    pub(crate) fn rt_calculate_stale_messages_impl<M: MessagePayload + Debug>(
+    pub(crate) fn rt_calculate_stale_messages_impl<M: Message + Debug>(
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
         mut unused_messages: Vec<UnusedInfo>,
@@ -1385,7 +1277,7 @@ impl DatabaseContextData {
     /// Called immediately after noticing a message has no live written data.
     /// In some cases, the message can be removed immediately (non-transmitted or
     /// opaque for example).
-    pub(crate) fn first_stale_message_step<M: MessagePayload + Debug>(
+    pub(crate) fn first_stale_message_step<M: Message + Debug>(
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
     ) -> anyhow::Result<Vec<SequenceNr>> {

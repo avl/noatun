@@ -3,7 +3,7 @@ use crate::disk_abstraction::Disk;
 use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{Application, ContextGuardMut, DatabaseContextData, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunTime, Persistence, Target};
+use crate::{Application, ContextGuardMut, DatabaseContextData, MessageFrame, MessageHeader, MessageId, Message, NoatunContext, NoatunTime, Persistence, Target};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::marker::PhantomData;
@@ -82,7 +82,7 @@ impl<APP: Application> Projector<APP> {
         self.messages.set_cutoff_hash(cutoff_state)?;
 
         println!("Advance cutoff batch: {:?}", process_now);
-        let must_remove = context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?; //TODO: Rename
+        let must_remove = context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?;
         for index in must_remove {
             self.messages
                 .mark_deleted_by_index(index, &mut self.head_tracker)?;
@@ -133,7 +133,7 @@ impl<APP: Application> Projector<APP> {
         self.messages.contains_message(id)
     }
 
-    pub(crate) fn load_message(&self, id: MessageId) -> Result<Message<APP::Message>> {
+    pub(crate) fn load_message(&self, id: MessageId) -> Result<MessageFrame<APP::Message>> {
         Ok(self
             .messages
             .read_message(id)?
@@ -156,12 +156,12 @@ impl<APP: Application> Projector<APP> {
         //TODO: Return iterator instead of Vec, for perf
         self.messages.get_children_of(msg)
     }
-    pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
+    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
         self.messages.get_all_messages()
     }
     pub fn get_all_messages_with_children(
         &self,
-    ) -> Result<Vec<(Message<APP::Message>, Vec<MessageId>)>> {
+    ) -> Result<Vec<(MessageFrame<APP::Message>, Vec<MessageId>)>> {
         self.messages.get_all_messages_with_children()
     }
 
@@ -190,8 +190,7 @@ impl<APP: Application> Projector<APP> {
         self.messages.count_messages()
     }
 
-    // TODO: Remove this once we've made it automatic
-    pub fn compact(&mut self) -> Result<()> {
+    pub(crate) fn compact(&mut self) -> Result<()> {
         self.messages.compact()
     }
 
@@ -199,7 +198,7 @@ impl<APP: Application> Projector<APP> {
     fn push_message(
         &mut self,
         context: &mut DatabaseContextData,
-        message: Message<APP::Message>,
+        message: MessageFrame<APP::Message>,
         local: bool,
     ) -> Result<bool> {
         self.push_sorted_messages(context, std::iter::once(message), local)
@@ -209,10 +208,10 @@ impl<APP: Application> Projector<APP> {
     pub(crate) fn push_messages(
         &mut self,
         context: &mut DatabaseContextData,
-        message: impl Iterator<Item = Message<APP::Message>>,
+        message: impl Iterator<Item = MessageFrame<APP::Message>>,
         local: bool,
     ) -> Result<bool> {
-        let mut messages: Vec<Message<APP::Message>> = message.collect();
+        let mut messages: Vec<MessageFrame<APP::Message>> = message.collect();
         messages.sort_unstable_by_key(|x| x.id());
         messages.dedup_by_key(|x| x.id());
         trace!("Deduped list to insert: {:?}", messages);
@@ -229,7 +228,7 @@ impl<APP: Application> Projector<APP> {
     pub(crate) fn push_sorted_messages(
         &mut self,
         context: &mut DatabaseContextData,
-        messages: impl ExactSizeIterator<Item = Message<APP::Message>>,
+        messages: impl ExactSizeIterator<Item = MessageFrame<APP::Message>>,
         local: bool,
     ) -> Result<bool> {
         //debug_assert_eq!(self.messages.count_messages()?, context.next_seqnr().try_index().unwrap_or(0));
@@ -268,7 +267,7 @@ impl<APP: Application> Projector<APP> {
     fn apply_single_message(
         context: &mut DatabaseContextData,
         root: &mut APP,
-        msg: &Message<APP::Message>,
+        msg: &MessageFrame<APP::Message>,
         seqnr: SequenceNr,
     ) {
 
@@ -285,7 +284,6 @@ impl<APP: Application> Projector<APP> {
         }
         let guard = ContextGuardMut::new(context);
 
-        println!("Calling message apply");
         msg.payload.apply(msg.header.id.timestamp(), unsafe {
             Pin::new_unchecked(root)
         }); //TODO: Handle panics in apply gracefully
@@ -352,7 +350,7 @@ impl<APP: Application> Projector<APP> {
         fn do_run<APP: Application>(
             context: &mut DatabaseContextData,
             root: &mut APP,
-            items: impl Iterator<Item = (usize, Message<APP::Message>)>,
+            items: impl Iterator<Item = (usize, MessageFrame<APP::Message>)>,
             max_project_to: NoatunTime,
         ) -> Result<()> {
             for (seq, msg) in items {

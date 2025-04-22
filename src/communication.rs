@@ -1,7 +1,7 @@
 use crate::distributor::{Distributor, DistributorMessage, SerializedMessage, Status};
 
 use crate::communication::udp::TokioUdpDriver;
-use crate::{Application, Database, Message, MessageId, MessagePayload, NoatunTime};
+use crate::{Application, Database, MessageFrame, MessageId, Message, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
@@ -55,36 +55,63 @@ pub mod udp {
                 .parse()
                 .context(format!("parsing listening/bind address {}", bind_address))?;
             let send_socket = UdpSocket::bind(bind_address).await?;
-            let udp = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-            if mtu >= u16::MAX as usize {
-                bail!("Maximum MTU supported by noatun is 65534");
-            }
-            udp.set_reuse_address(true)?;
-            udp.set_multicast_loop_v4(true)?;
-            info!("Binding to group {:?}", multicast_group);
-            udp.bind(&multicast_group.into())?;
-            udp.set_nonblocking(true)?;
-            let receive_socket = UdpSocket::from_std(udp.into())?;
-
+            let domain;
             match (multicast_group.ip(), bind_address.ip()) {
                 (IpAddr::V4(multicast_ipv4), IpAddr::V4(bind_ipv4)) => {
                     info!(
                         "Joining multicast group {} on if {}",
                         multicast_ipv4, bind_ipv4
                     );
-                    receive_socket.join_multicast_v4(multicast_ipv4, bind_ipv4)?;
-                    receive_socket.set_multicast_loop_v4(true)?;
+                    domain = Domain::IPV4;
                 }
-                (IpAddr::V6(multicast_ipv6), IpAddr::V6(_bind_ipv6)) => {
-                    //TODO: Fix ipv6 multicast?
-                    //In what way doesn't it work?
-                    receive_socket.join_multicast_v6(&multicast_ipv6, 0)?;
-                    receive_socket.set_multicast_loop_v6(true)?;
+                (IpAddr::V6(multicast_ipv6), IpAddr::V6(bind_ipv6)) => {
+                    info!(
+                        "Joining multicast group {} on if {}",
+                        multicast_ipv6, bind_ipv6
+                    );
+                    domain = Domain::IPV6
                 }
                 _ => {
                     panic!(
                         "Bind address and multicast group used different address family. They must both be ipv4 or both ipv6."
                     );
+                }
+            }
+
+            let udp_receive = socket2::Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+            if mtu >= u16::MAX as usize {
+                bail!("Maximum MTU supported by noatun is 65534");
+            }
+            //udp.set_multicast_loop_v4(true)?;
+            info!("Binding to group {:?}", multicast_group);
+            let receive_socket;
+            match (multicast_group.ip(), bind_address) {
+                (IpAddr::V4(multicast_ipv4), SocketAddr::V4(bind_ipv4)) => {
+                    udp_receive.set_reuse_address(true)?;
+                    udp_receive.set_nonblocking(true)?;
+                    udp_receive.bind(&multicast_group.into())?;
+                    receive_socket = UdpSocket::from_std(udp_receive.into())?;
+                    receive_socket.join_multicast_v4(multicast_ipv4, *bind_ipv4.ip())?;
+                    receive_socket.set_multicast_loop_v4(true)?;
+                }
+                (IpAddr::V6(multicast_ipv6), SocketAddr::V6(bind_ipv6)) => {
+                    udp_receive.set_reuse_address(true)?;
+                    udp_receive.set_nonblocking(true)?;
+                    udp_receive.set_multicast_loop_v6(true)?;
+                    //udp_receive.bind(&multicast_group.into()).context("binding ipv6 multicast group")?;
+                    /*udp_receive.bind(&SockAddr::from(
+                        SocketAddr::V6(SocketAddrV6::new(multicast_group, bind_address.port(), 0 ,0))
+                    ))?;*/
+                    //udp_receive.set_only_v6(true)?;
+                    println!("Joining multicastgroup for scope {}", bind_ipv6.scope_id());
+                    println!("binding receive socket to {:?}", multicast_group);
+                    udp_receive.bind(&multicast_group.into()).context("binding multicast group")?;
+                    udp_receive.join_multicast_v6(&multicast_ipv6, bind_ipv6.scope_id())?;
+
+                    receive_socket = UdpSocket::from_std(udp_receive.into())?;
+                }
+                _ => {
+                    unreachable!()
                 }
             }
 
@@ -112,7 +139,10 @@ pub mod udp {
         }
 
         async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            UdpSocket::send_to(&self.socket, buf, self.multicast_addr).await
+            println!("Sending to {:?}", self.multicast_addr);
+            let res = UdpSocket::send_to(&self.socket, buf, self.multicast_addr).await;
+            println!("Res: {:?}", res);
+            res
         }
     }
 
@@ -121,7 +151,10 @@ pub mod udp {
             &mut self,
             buf: &mut B,
         ) -> std::io::Result<(usize, SocketAddr)> {
-            UdpSocket::recv_buf_from(self, buf).await
+            println!("About to receive from udp socket");
+            let ret = UdpSocket::recv_buf_from(self, buf).await;
+            println!("Udp receive: {:?}", ret);
+            ret
         }
     }
 }
@@ -684,7 +717,12 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                         }
                         Err(err) => {
                             // Apply rate limit even on failure
+                            println!("Send err");
                             self.limiter.incur_debt(send_size as u64);
+                            cursend.take();
+                            println!("Sleeping");
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                            println!("Slept");
                             error!("Send error: {:?}", err);
                         }
                     }
@@ -938,7 +976,7 @@ where
                                     let msg: APP::Message = APP::Message::deserialize(&temp).unwrap();
                                     self.outbuf.push_back(
                                         DistributorMessage::Message(SerializedMessage::new(
-                                            Message {
+                                            MessageFrame {
                                                 header: res.clone(),
                                                 payload: msg
                                             }
@@ -1073,7 +1111,7 @@ where
         db.set_mock_time(time).unwrap();
         db.maybe_advance_cutoff().unwrap();
     }
-    pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
+    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
         self.database.lock().unwrap().get_all_messages()
     }
     pub fn get_update_heads(&self) -> Vec<crate::MessageId> {
@@ -1205,6 +1243,7 @@ mod tests {
     use crate::communication::udp::TokioUdpDriver;
     use crate::communication::{MulticasterSenderLoop, ReceiveTrack};
     use tokio::spawn;
+    use crate::tests::setup_tracing;
 
     #[test]
     fn reconstruct_seq_logic() {
@@ -1224,7 +1263,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused=true)]
-    async fn test_sender() {
+    async fn test_sender_ipv4() {
         let (sender_tx1, sender_rx1) = tokio::sync::mpsc::channel(1000);
         let (_quit_tx1, quit_rx1) = tokio::sync::oneshot::channel();
         let (receiver_tx1, _receiver_rx1) = tokio::sync::mpsc::channel(1000);
@@ -1279,4 +1318,61 @@ mod tests {
         jh1.await.unwrap().unwrap();
         jh2.await.unwrap().unwrap();
     }
+
+
+    #[tokio::test]
+    async fn test_sender_ipv6() {
+        setup_tracing();
+        let (sender_tx1, sender_rx1) = tokio::sync::mpsc::channel(1000);
+        let (_quit_tx1, quit_rx1) = tokio::sync::oneshot::channel();
+        let (receiver_tx1, _receiver_rx1) = tokio::sync::mpsc::channel(1000);
+
+        let mloop1 = MulticasterSenderLoop::new(
+            &mut TokioUdpDriver,
+            "[::]:0",
+            "[ff02::42:41%2]:7775",
+            receiver_tx1,
+            sender_rx1,
+            10000,
+            quit_rx1,
+            200,
+        )
+            .await
+            .unwrap();
+
+        let (sender_tx2, sender_rx2) = tokio::sync::mpsc::channel(1000);
+        let (_quit_tx2, quit_rx2) = tokio::sync::oneshot::channel();
+        let (receiver_tx2, mut receiver_rx2) = tokio::sync::mpsc::channel(1000);
+
+        let mloop2 = MulticasterSenderLoop::new(
+            &mut TokioUdpDriver,
+            "[::]:0",
+            "[ff02::42:41%2]:7775",
+            receiver_tx2,
+            sender_rx2,
+            10000,
+            quit_rx2,
+            200,
+        )
+            .await
+            .unwrap();
+
+        let jh1 = spawn(mloop1.run());
+        let jh2 = spawn(mloop2.run());
+
+        for packet in [
+            vec![1u8; 1],
+            vec![2u8; 10],
+        ] {
+            sender_tx1.send(packet.clone()).await.unwrap();
+
+            let got = receiver_rx2.recv().await.unwrap();
+            assert_eq!(got, packet);
+        }
+        drop(sender_tx1);
+        drop(sender_tx2);
+        jh1.await.unwrap().unwrap();
+        jh2.await.unwrap().unwrap();
+    }
+
 }

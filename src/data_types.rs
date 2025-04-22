@@ -1,3 +1,4 @@
+#![allow(non_local_definitions)]
 use crate::sequence_nr::SequenceNr;
 use crate::{DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer, ThinPtr, CONTEXT};
 use std::borrow::Borrow;
@@ -229,7 +230,7 @@ impl<T: NoatunStorable> NoatunCell<T> {
         let c = unsafe { &mut *cptr };
         let tself = unsafe { self.get_unchecked_mut() };
         c.assert_mutable();
-        c.write_pod_ptr(new_value, addr_of_mut!(tself.value));
+        c.write_storable_ptr(new_value, addr_of_mut!(tself.value));
         c.update_registrar_ptr(addr_of_mut!(tself.registrar));
     }
     pub fn clear(self: Pin<&mut Self>) {
@@ -327,7 +328,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
             ctx.copy_bytes(old_ptr, dest_index);
         }
 
-        ctx.write_pod(
+        ctx.write_storable(
             RawDatabaseVec {
                 length: new_len,
                 capacity: new_capacity,
@@ -350,7 +351,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
         if self.capacity < new_length {
             self.realloc_add(ctx, 2 * new_length, new_length);
         } else {
-            ctx.write_pod(new_length, unsafe { Pin::new_unchecked(&mut self.length) });
+            ctx.write_storable(new_length, unsafe { Pin::new_unchecked(&mut self.length) });
         }
     }
 }
@@ -362,7 +363,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
 
         while read_offset < self.length {
             let read_ptr = ThinPtr(self.data + read_offset * size_of::<T>());
-            let val: Pin<&mut T> = unsafe { ctx.access_pod_mut(read_ptr) };
+            let val: Pin<&mut T> = unsafe { ctx.access_storable_mut(read_ptr) };
             let retain = f(unsafe { val.get_unchecked_mut() });
             if !retain {
                 new_len -= 1;
@@ -408,7 +409,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
     pub(crate) fn get(&self, ctx: &DatabaseContextData, index: usize) -> &T {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
-        unsafe { ctx.access_pod(ThinPtr(offset)) }
+        unsafe { ctx.access_storable(ThinPtr(offset)) }
     }
 
     /// SAFETY requirements:
@@ -417,16 +418,16 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
     pub(crate) unsafe fn get_mut(&self, ctx: &DatabaseContextData, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
-        let t = unsafe { ctx.access_pod_mut(ThinPtr(offset)) };
+        let t = unsafe { ctx.access_storable_mut(ThinPtr(offset)) };
         t
     }
     pub(crate) fn swap_remove(&mut self, ctx: &mut DatabaseContextData, index: usize) {
         assert!(index < self.length);
         if index + 1 == self.length {
-            ctx.write_pod(index, unsafe { Pin::new_unchecked(&mut self.length) });
+            ctx.write_storable(index, unsafe { Pin::new_unchecked(&mut self.length) });
         } else {
             let last_index = self.length - 1;
-            ctx.write_pod(last_index, unsafe { Pin::new_unchecked(&mut self.length) });
+            ctx.write_storable(last_index, unsafe { Pin::new_unchecked(&mut self.length) });
 
             let src_offset = self.data + last_index * size_of::<T>();
             let src_obj = ThinPtr(src_offset);
@@ -440,7 +441,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
     pub(crate) fn write_untracked(&mut self, ctx: &mut DatabaseContextData, index: usize, val: T) {
         let offset = self.data + index * size_of::<T>();
         unsafe {
-            ctx.write_pod(val, ctx.access_pod_mut(ThinPtr(offset)));
+            ctx.write_storable(val, ctx.access_storable_mut(ThinPtr(offset)));
         };
     }
     pub(crate) fn push_untracked(&mut self, ctx: &mut DatabaseContextData, t: T) -> ThinPtr
@@ -450,7 +451,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
         if self.length >= self.capacity {
             self.realloc_add(ctx, (self.capacity + 1) * 2, self.length + 1);
         } else {
-            ctx.write_pod(self.length + 1, Pin::new(&mut self.length));
+            ctx.write_storable(self.length + 1, Pin::new(&mut self.length));
         }
 
         self.write_untracked(ctx, self.length - 1, t);
@@ -2105,8 +2106,10 @@ impl<K:NoatunKey +Hash+Eq,V:FixedSizeObject> Object for NoatunHashMap<K,V> {
         }
     }
 
-    unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
-        todo!()
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+        let mut ret: Pin<&mut Self> = NoatunContext.allocate();
+        ret.as_mut().init_from_detached(detached);
+        ret
     }
 
 
@@ -2115,7 +2118,7 @@ impl<K:NoatunKey +Hash+Eq,V:FixedSizeObject> Object for NoatunHashMap<K,V> {
 #[cfg(test)]
 mod tests {
     use datetime_literal::datetime;
-    use super::{NoatunHashMap, NoatunString};
+    use super::{NoatunHashMap, NoatunString, NoatunBox};
     use crate::{CutOffDuration, Database, NoatunCell, NoatunTime, Object};
     use crate::tests::{DummyTestApp};
     use std::time::Instant;
@@ -2210,6 +2213,31 @@ mod tests {
         }).unwrap();
     }
     #[test]
+    fn test_hashmap_miri_attach() {
+        let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunCell<u32>>>> = Database::create_in_memory(
+            10000,
+            CutOffDuration::from_minutes(15),
+            DatabaseSettings {
+                mock_time: Some(datetime!(2021-01-01 Z).into()),
+                ..Default::default()
+            },
+            (),
+        )
+            .unwrap();
+        db.with_root_mut(|map| {
+            let mut map = map.inner_mut();
+            map.insert("hello", &42);
+
+            let mut hm = std::collections::HashMap::new();
+            hm.insert("world".to_string(), 43);
+            map.as_mut().init_from_detached(&hm);
+
+            let mut reg_map:Vec<_> = map.detach().into_iter().collect();
+            reg_map.sort();
+            assert_eq!(&[("hello".to_string(), 42), ("world".to_string(), 43)], &*reg_map);
+        }).unwrap();
+    }
+    #[test]
     fn test_hashmap_miri_detach2() {
         let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunString>>> = Database::create_in_memory(
             10000,
@@ -2268,6 +2296,11 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_delete_many0() {
+        #[cfg(miri)]
+        const N: u32 = 8;
+        #[cfg(not(miri))]
+        const N: u32 = 200;
+
         let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> = Database::create_in_memory(
             100000,
             CutOffDuration::from_minutes(15),
@@ -2282,17 +2315,17 @@ mod tests {
             let map = unsafe { map.get_unchecked_mut() };
             assert_eq!(map.0.len(), 0);
 
-            for i in 0..200 {
+            for i in 0..N {
                 map.0.insert(i, &i);
             }
 
-            for i in 0..200 {
+            for i in 0..N {
                 map.0.get(i).expect("key exists before starting deletes");
             }
 
-            for i in 0..200 {
+            for i in 0..N {
                 assert!(map.0.remove(i));
-                for j in i+1 .. 200 {
+                for j in i+1 ..N {
                     map.0.get(j).expect(&format!("key {} exists after delete of {}", j, i));
                 }
             }
@@ -2367,6 +2400,42 @@ mod tests {
         }
         println!("std hashmap: 10000 lookups in {:?}", bef.elapsed());
     }
+
+
+
+    #[test]
+    fn test_noatun_boxed_hashmap_miri() {
+
+        impl DummyTestMessageApply for NoatunBox<NoatunHashMap<u32,NoatunCell<u32>>> {
+            fn test_message_apply(_time: NoatunTime, _root: Pin<&mut Self>) {
+            }
+        }
+
+        let mut db: Database<DummyTestApp<NoatunBox<NoatunHashMap<u32, NoatunCell<u32>>>>> = Database::create_in_memory(
+            10000,
+            CutOffDuration::from_minutes(15),
+            DatabaseSettings {
+                mock_time: Some(datetime!(2021-01-01 Z).into()),
+                projection_time_limit: None,
+                ..DatabaseSettings::default()
+            },
+            (),
+        )
+            .unwrap();
+        db.with_root_mut(|map| {
+            let mut noatun_box = map.inner_mut();
+
+            let mut hm= std::collections::HashMap::new();
+            hm.insert(1,1);
+
+            noatun_box.as_mut().init_from_detached(&hm);
+
+            let items: Vec<_> = noatun_box.iter().map(|x|(*x.0,x.1.get())).collect();
+            assert_eq!(items, [(1,1)]);
+        })
+            .unwrap();
+    }
+
 
 
 }

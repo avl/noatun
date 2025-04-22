@@ -4,7 +4,7 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::{sha2, sha2_message};
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, Message, MessageHeader, MessageId, MessagePayload, NoatunStorable, NoatunTime, Target};
+use crate::{bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, MessageFrame, MessageHeader, MessageId, Message, NoatunStorable, NoatunTime, Target};
 use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::cmp::Ordering;
@@ -95,17 +95,6 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
             temp.push(msg);
         }
         Ok(temp)
-    }
-    pub fn contains(&mut self, id: MessageId) -> Result<bool> {
-        // TODO: Verify correctness, and Optimize this? Or remove it?
-        let l = self.len()?;
-        for i in 0..l {
-            if self.get(i)? == id {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
     }
     pub fn capacity(&mut self) -> Result<usize> {
         self.handle
@@ -486,7 +475,7 @@ impl<M> OnDiskMessageStore<M> {
         message_ids: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
     ) -> Result<impl Iterator<Item = (MessageHeader, usize /*query count*/)> + '_>
     where
-        M: MessagePayload,
+        M: Message,
     {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
         let data_files = &self.data_files;
@@ -668,7 +657,7 @@ impl<M> OnDiskMessageStore<M> {
         cutoff_config: &CutOffConfig,
     ) -> Result<()>
     where
-        M: MessagePayload,
+        M: Message,
     {
         info!("Start recovery procedure");
         self.index_mmap.truncate(0)?;
@@ -874,9 +863,9 @@ impl<M> OnDiskMessageStore<M> {
     pub fn query_by_index(
         &self,
         index: usize,
-    ) -> Result<impl Iterator<Item = (usize /*seqnr/index*/, Message<M>)> + '_>
+    ) -> Result<impl Iterator<Item = (usize /*seqnr/index*/, MessageFrame<M>)> + '_>
     where
-        M: MessagePayload,
+        M: Message,
     {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
 
@@ -891,7 +880,6 @@ impl<M> OnDiskMessageStore<M> {
                     Ok(x) => Some((index, x)),
                     Err(x) => {
                         warn!("Failed to load message #{}: {:?}", index, x);
-                        //TODO: Log
                         None
                     }
                 }
@@ -965,9 +953,9 @@ impl<M> OnDiskMessageStore<M> {
         entry: &IndexEntry,
         data_files: &[DataFileInfo; 2],
         children: Option<&mut Vec<MessageId>>,
-    ) -> Result<Message<M>>
+    ) -> Result<MessageFrame<M>>
     where
-        M: MessagePayload,
+        M: Message,
     {
         let Some((file, offset)) = entry.file_offset.file_and_offset() else {
             return Err(anyhow!(
@@ -1003,7 +991,7 @@ impl<M> OnDiskMessageStore<M> {
         })??;
 
         debug_assert_eq!(header.message_id, entry.message);
-        Ok(Message {
+        Ok(MessageFrame {
             header: MessageHeader {
                 id: header.message_id,
                 parents,
@@ -1034,9 +1022,9 @@ impl<M> OnDiskMessageStore<M> {
 
     /// Return the given message, or None if it does not exist.
     /// If the call itself fails, returns Err.
-    pub fn read_message(&self, id: MessageId) -> Result<Option<Message<M>>>
+    pub fn read_message(&self, id: MessageId) -> Result<Option<MessageFrame<M>>>
     where
-        M: MessagePayload,
+        M: Message,
     {
         let (_header, message_index) = self.header_and_index().context("Reading index file")?;
 
@@ -1059,9 +1047,9 @@ impl<M> OnDiskMessageStore<M> {
     pub fn read_message_and_children(
         &self,
         id: MessageId,
-    ) -> Result<Option<(Message<M>, Vec<MessageId>)>>
+    ) -> Result<Option<(MessageFrame<M>, Vec<MessageId>)>>
     where
-        M: MessagePayload,
+        M: Message,
     {
         let (_header, message_index) = self.header_and_index().context("Reading index file")?;
 
@@ -1166,9 +1154,9 @@ impl<M> OnDiskMessageStore<M> {
             .map(|x| x.message)
             .collect())
     }
-    pub fn get_all_messages(&self) -> Result<Vec<Message<M>>>
+    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<M>>>
     where
-        M: MessagePayload,
+        M: Message,
     {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
         let data_files = &self.data_files;
@@ -1178,9 +1166,9 @@ impl<M> OnDiskMessageStore<M> {
             .map(|x| Self::read_msg(x, data_files, None))
             .collect()
     }
-    pub fn get_all_messages_with_children(&self) -> Result<Vec<(Message<M>, Vec<MessageId>)>>
+    pub fn get_all_messages_with_children(&self) -> Result<Vec<(MessageFrame<M>, Vec<MessageId>)>>
     where
-        M: MessagePayload,
+        M: Message,
     {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
         let data_files = &self.data_files;
@@ -1208,7 +1196,7 @@ impl<M> OnDiskMessageStore<M> {
         head_tracker: &mut UpdateHeadTracker,
     ) -> Result<bool>
     where
-        M: MessagePayload,
+        M: Message,
     {
         let Some((msg, children)) = self.read_message_header_and_children_by_index(delete_index)?
         else {
@@ -1226,6 +1214,7 @@ impl<M> OnDiskMessageStore<M> {
 
         let Some(entry) = message_index.get_mut(delete_index.index()) else {
             //TODO: Trace log
+            trace!("message delete_index not found: {}", delete_index);
             return Ok(false);
         };
         if entry.file_offset.is_deleted() {
@@ -1268,9 +1257,9 @@ impl<M> OnDiskMessageStore<M> {
 
     /// Return the given message, or None if it does not exist.
     /// If the call itself fails, returns Err.
-    pub fn read_message_by_index(&mut self, index: usize) -> Result<Option<Message<M>>>
+    pub fn read_message_by_index(&mut self, index: usize) -> Result<Option<MessageFrame<M>>>
     where
-        M: MessagePayload,
+        M: Message,
     {
         let (_header, message_index) =
             Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
@@ -1299,8 +1288,7 @@ impl<M> OnDiskMessageStore<M> {
         let (_header, message_index) =
             Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
         let Ok(index) = message_index.binary_search_by_key(&message_id, |x| x.message) else {
-            // TODO: Trace log?
-            info!("Message to mark as transmitted no longer existed");
+            trace!("Message to mark as transmitted no longer existed");
             return Ok(false);
         };
         let index_entry = &message_index[index];
@@ -1339,12 +1327,12 @@ impl<M> OnDiskMessageStore<M> {
     /// that index did not correspond to a non-deleted message.
     pub fn append_many_sorted(
         &mut self,
-        messages: impl ExactSizeIterator<Item = Message<M>>,
+        messages: impl ExactSizeIterator<Item = MessageFrame<M>>,
         message_inserted: impl FnMut(MessageId, /*parents*/ &[MessageId]) -> Result<()>,
         local: bool,
     ) -> Result<Option<usize>>
     where
-        M: MessagePayload + Debug,
+        M: Message + Debug,
     {
         self.do_append_many_sorted(messages, message_inserted, local)
     }
@@ -1362,7 +1350,7 @@ impl<M> OnDiskMessageStore<M> {
         update_head_tracker: &mut UpdateHeadTracker,
     ) -> Result<()>
     where
-        M: MessagePayload,
+        M: Message,
     {
         self.do_delete_many(messages, update_head_tracker)
     }
@@ -1373,7 +1361,7 @@ impl<M> OnDiskMessageStore<M> {
         update_head_tracker: &mut UpdateHeadTracker,
     ) -> Result<()>
     where
-        M: MessagePayload,
+        M: Message,
     {
         for message in messages {
             let (_header, message_index) =
@@ -1417,13 +1405,13 @@ impl<M> OnDiskMessageStore<M> {
     fn do_write_message(
         files: &mut [DataFileInfo; 2],
         file_index: U1,
-        msg: &Message<M>,
+        msg: &MessageFrame<M>,
         children: &[MessageId],
         local: bool,
         remaining_child_assignments: Option<&mut RemainingChildAssignments>,
     ) -> Result<MessageWriteReport>
     where
-        M: MessagePayload,
+        M: Message,
     {
         for parent in msg.header.parents.iter() {
             if *parent >= msg.id() {
@@ -1541,7 +1529,7 @@ impl<M> OnDiskMessageStore<M> {
         children_to_remove: &[MessageId],
     ) -> Result<()>
     where
-        M: MessagePayload,
+        M: Message,
     {
         //dbg!(id,new_parents,new_children, removed_parent, removed_child);
         let (_header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
@@ -1573,7 +1561,7 @@ impl<M> OnDiskMessageStore<M> {
         removed_child: Option<MessageId>,
     ) -> Result<()>
     where
-        M: MessagePayload,
+        M: Message,
     {
         //dbg!(id,new_parents,new_children, removed_parent, removed_child);
         let (_header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
@@ -1615,10 +1603,10 @@ impl<M> OnDiskMessageStore<M> {
         new_children: &[MessageId],
     ) -> Result<()>
     where
-        M: MessagePayload,
+        M: Message,
     {
         //dbg!(new_parents, new_children);
-        // TODO: Maybe add fast apth, where caller can supply index
+        // TODO: Maybe add fast path, where caller can supply index
         let Some((mut msg, mut children)) = self.read_message_and_children(id)? else {
             return Ok(());
         };
@@ -1666,7 +1654,7 @@ impl<M> OnDiskMessageStore<M> {
         remaining_child_assignments: RemainingChildAssignments,
     ) -> Result<()>
     where
-        M: MessagePayload,
+        M: Message,
     {
         for (parent, new_children) in remaining_child_assignments.parent2child {
             self.add_remove_parents_and_children(parent, &[], None, &new_children, None)?;
@@ -1689,12 +1677,12 @@ impl<M> OnDiskMessageStore<M> {
 
     fn do_append_many_sorted(
         &mut self,
-        messages: impl ExactSizeIterator<Item = Message<M>>,
+        messages: impl ExactSizeIterator<Item = MessageFrame<M>>,
         mut message_inserted: impl FnMut(MessageId, &[MessageId] /*parents*/) -> Result<()>,
         local: bool,
     ) -> Result<Option<usize>>
     where
-        M: MessagePayload + Debug,
+        M: Message + Debug,
     {
 
         let mut prev = None;
@@ -1744,7 +1732,7 @@ impl<M> OnDiskMessageStore<M> {
         let mut carry_buffer: VecDeque<IndexEntry> = VecDeque::with_capacity(len);
         //let input_stream_pos = 0;
 
-        let first_input_message: Message<M> = messages.next().unwrap();
+        let first_input_message: MessageFrame<M> = messages.next().unwrap();
 
         let initial_index_entries = index_header.entries as usize;
         let (Ok(first_index) | Err(first_index)) = mmap_index[0..index_header.entries as usize]
@@ -1968,7 +1956,7 @@ impl<M> OnDiskMessageStore<M> {
     /// to abysmal performance. If disk space permits, consider allowing up to 50% fragmentation.
     fn compact_to_target(&mut self, tolerated_fragmentation_percent: u32) -> Result<()>
     where
-        M: MessagePayload,
+        M: Message,
     {
         self.do_compact(|wasted_space, total_space| {
             let frag_perc = (100 * wasted_space) / total_space;
@@ -1979,7 +1967,7 @@ impl<M> OnDiskMessageStore<M> {
     /// Compact all files
     pub(crate) fn compact(&mut self) -> Result<()>
     where
-        M: MessagePayload,
+        M: Message,
     {
         self.compact_to_target(25)
     }
@@ -2241,7 +2229,7 @@ impl<M> OnDiskMessageStore<M> {
 mod tests {
     use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
     use crate::message_store::{FileOffset, OnDiskMessageStore, U1};
-    use crate::{DummyUnitObject, Message, MessageId, MessagePayload, NoatunTime, Target};
+    use crate::{DummyUnitObject, MessageFrame, MessageId, Message, NoatunTime, Target};
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use std::io::{Cursor, Read, Write};
 
@@ -2257,7 +2245,7 @@ mod tests {
         data: Vec<u8>,
     }
 
-    impl MessagePayload for OnDiskMessage {
+    impl Message for OnDiskMessage {
         type Root = DummyUnitObject;
 
         fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
@@ -2299,7 +2287,7 @@ mod tests {
 
         //let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(
+            MessageFrame::new(
                 MessageId::new_debug(i as u32),
                 vec![],
                 OnDiskMessage {
@@ -2339,7 +2327,7 @@ mod tests {
         .unwrap();
 
         //let init = Instant::now();
-        let msg = Message::new(
+        let msg = MessageFrame::new(
             MessageId::new_debug(0u32),
             vec![],
             OnDiskMessage {
@@ -2378,7 +2366,7 @@ mod tests {
 
         //let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(
+            MessageFrame::new(
                 MessageId::new_debug(i as u32),
                 if i != 0 {
                     vec![MessageId::new_debug(0)]
@@ -2429,7 +2417,7 @@ mod tests {
 
         //let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(
+            MessageFrame::new(
                 MessageId::new_debug(2 * i as u32),
                 vec![],
                 OnDiskMessage {
@@ -2444,7 +2432,7 @@ mod tests {
             .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
             .unwrap();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(
+            MessageFrame::new(
                 MessageId::new_debug(2 * i as u32 + 1),
                 vec![],
                 OnDiskMessage {
@@ -2476,7 +2464,7 @@ mod tests {
 
         //let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(
+            MessageFrame::new(
                 MessageId::new_debug(i as u32),
                 vec![],
                 OnDiskMessage {
@@ -2527,7 +2515,7 @@ mod tests {
 
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(
+            MessageFrame::new(
                 MessageId::new_debug(i as u32),
                 vec![],
                 OnDiskMessage {
@@ -2569,7 +2557,7 @@ mod tests {
 
         let init = Instant::now();
         let msgs = (0..COUNT).map(|i| {
-            Message::new(
+            MessageFrame::new(
                 MessageId::new_debug(i as u32),
                 vec![],
                 OnDiskMessage {

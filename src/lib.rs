@@ -15,8 +15,9 @@
 // TODO: Maybe use arg-struct in some places
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::expect_fun_call)]
+#![allow(clippy::needless_late_init)]
 
-pub use crate::data_types::{NoatunCell, NoatunVec};
+use crate::data_types::{NoatunCell};
 use crate::sequence_nr::SequenceNr;
 use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -215,7 +216,7 @@ impl NoatunContext {
     }
     pub fn copy<T: NoatunStorable>(&self, src: &T, dst: &mut T) {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).copy_pod(src, dst) }
+        unsafe { (*context_ptr).copy_storable(src, dst) }
     }
     pub fn copy_uninit<T: NoatunStorable>(&self, src: &T, dst: &mut MaybeUninit<T>) {
         let context_ptr = get_context_mut_ptr();
@@ -240,35 +241,24 @@ impl NoatunContext {
     }
     pub fn write<T: NoatunStorable>(&self, value: T, dest: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).write_pod(value, dest) }
+        unsafe { (*context_ptr).write_storable(value, dest) }
     }
     pub(crate) fn write_internal<T: NoatunStorable>(&self, value: T, dest: &mut T) {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).write_pod(value, Pin::new_unchecked(dest)) }
+        unsafe { (*context_ptr).write_storable(value, Pin::new_unchecked(dest)) }
     }
     pub fn write_ptr<T: NoatunStorable>(&self, value: T, dest: *mut T) {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).write_pod_ptr(value, dest) }
+        unsafe { (*context_ptr).write_storable_ptr(value, dest) }
     }
     pub unsafe fn allocate<'a, T: NoatunStorable>(&self) -> Pin<&'a mut T> {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).allocate_pod() }
+        unsafe { (*context_ptr).allocate_storable() }
     }
 
     pub unsafe fn allocate_obj<'a, T: Object>(&self) -> Pin<&'a mut T> {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_obj() }
-    }
-    pub unsafe fn access_pod_mut<'a, T: NoatunStorable>(&mut self, ptr: ThinPtr) -> Pin<&'a mut T> {
-        let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).access_pod_mut(ptr) }
-    }
-    pub unsafe fn access_object_mut<'a, T: FixedSizeObject>(
-        &mut self,
-        ptr: ThinPtr,
-    ) -> Pin<&'a mut T> {
-        let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).access_object_mut(ptr) }
     }
 
     pub unsafe fn access_thin<'a, T:?Sized>(&self, ptr: ThinPtr) -> &'a T {
@@ -300,22 +290,6 @@ impl NoatunContext {
         unsafe { (*context_ptr).access_fat_mut::<T>(ptr) }
     }
 
-    //TODO: Unify terminology: pod/any/object etc
-    pub unsafe fn access_pod<'a, T: NoatunStorable>(&self, ptr: ThinPtr) -> &'a T {
-        let context_ptr = CONTEXT.get();
-        if context_ptr.is_null() {
-            panic!("No NoatunContext available");
-        }
-        unsafe { (*context_ptr).access_pod(ptr) }
-    }
-    pub unsafe fn access_object<'a, T: FixedSizeObject>(&self, ptr: ThinPtr) -> &'a T {
-        let context_ptr = CONTEXT.get();
-        if context_ptr.is_null() {
-            panic!("No NoatunContext available");
-        }
-        unsafe { (*context_ptr).access_object(ptr) }
-    }
-
     pub fn observe_registrar(self, registrar: SequenceNr) {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
@@ -325,28 +299,6 @@ impl NoatunContext {
             return;
         }
         unsafe { (*context_ptr).observe_registrar(registrar) }
-    }
-    pub unsafe fn access_pod_slice<'a, T: NoatunStorable>(self, range: FatPtr) -> &'a [T] {
-        let p = CONTEXT.get();
-        if p.is_null() {
-            panic!("No NoatunContext available");
-        }
-        unsafe { (*p).access_slice(range) }
-    }
-    pub unsafe fn access_pod_slice_mut<'a, T: NoatunStorable>(self, range: FatPtr) -> Pin<&'a mut [T]> {
-        let context_ptr = get_context_mut_ptr();
-        unsafe { Pin::new_unchecked((*context_ptr).access_slice_mut(range)) }
-    }
-    pub unsafe fn access_object_slice<'a, T: FixedSizeObject>(self, range: FatPtr) -> &'a [T] {
-        let p = get_context_ptr();
-        unsafe { (*p).access_object_slice(range) }
-    }
-    pub unsafe fn access_object_slice_mut<'a, T: FixedSizeObject>(
-        self,
-        range: FatPtr,
-    ) -> Pin<&'a mut [T]> {
-        let context_ptr = get_context_mut_ptr();
-        unsafe { Pin::new_unchecked((*context_ptr).access_object_slice_mut(range)) }
     }
 }
 
@@ -641,12 +593,9 @@ pub enum Persistence {
     /// messages exists at all times, to ease troubleshooting or building functionality to show
     /// 'recent events' to users.
     AtLeastUntilCutoff,
-    // This message will not be deleted.
-    // TODO: Implement?
-    //Forever
 }
 
-pub trait MessagePayload: Debug {
+pub trait Message: Debug {
     type Root: Object;
     fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>);
 
@@ -667,12 +616,12 @@ pub struct MessageHeader {
 }
 
 #[derive(Debug)]
-pub struct Message<M: MessagePayload> {
+pub struct MessageFrame<M: Message> {
     pub header: MessageHeader,
     pub payload: M,
 }
 
-impl<M: MessagePayload> PartialEq for Message<M>
+impl<M: Message> PartialEq for MessageFrame<M>
 where
     M: PartialEq,
 {
@@ -681,7 +630,7 @@ where
     }
 }
 
-impl<M: MessagePayload> Message<M> {
+impl<M: Message> MessageFrame<M> {
     pub fn new(id: MessageId, parents: Vec<MessageId>, payload: M) -> Self {
         Self {
             header: MessageHeader { id, parents },
@@ -849,7 +798,7 @@ pub fn cast_slice<I:NoatunStorable,O:NoatunStorable>(s: &[I]) -> &[O] {
     let count_o = tot_size_i / size_of::<O>();
     assert_eq!(tot_size_i, size_of::<O>()*count_o);
     unsafe {
-        slice::from_raw_parts_mut(s.as_ptr() as *mut O, count_o)
+        slice::from_raw_parts(s.as_ptr() as *const O, count_o)
     }
 }
 
@@ -862,7 +811,7 @@ pub fn dyn_cast_slice<I:NoatunStorable,O:NoatunStorable>(s: &[I]) -> &[O] {
     let count_o = tot_size_i / size_of::<O>();
     assert_eq!(tot_size_i, size_of::<O>()*count_o);
     unsafe {
-        slice::from_raw_parts_mut(s.as_ptr() as *mut O, count_o)
+        slice::from_raw_parts(s.as_ptr() as *const O, count_o)
     }
 }
 /// Requires alignment to be correct at runtime, panics otherwise
@@ -940,7 +889,7 @@ pub trait Object {
 
     /// This can in most cases be:
     /// ```dontrun
-    ///    let ret: &mut Self = NoatunContext.allocate_pod();
+    ///    let ret: &mut Self = NoatunContext.allocate_storable();
     ///    ret.init_from_detached(detached);
     ///    ret
     /// ```
@@ -1158,7 +1107,7 @@ pub trait FixedSizeObject: Object<Ptr = ThinPtr> + NoatunStorable + Sized + 'sta
 impl<T: Object<Ptr = ThinPtr> + NoatunStorable + 'static> FixedSizeObject for T {}
 
 pub trait Application: FixedSizeObject {
-    type Message: MessagePayload<Root = Self>;
+    type Message: Message<Root = Self>;
     /// Parameters that will be available in the "initialize_root" call.
     type Params;
 
@@ -1194,8 +1143,7 @@ impl FatPtr {
         FatPtr { start, count }
     }
 }
-// TODO: We should probably have a generic ThinPtr type, like ThinPtr<T>,
-// that allows type-safe access to &mut T
+
 #[derive(Copy, Clone, Debug)]
 pub struct ThinPtr(pub usize);
 

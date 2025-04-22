@@ -28,12 +28,10 @@ mod test_subsumption;
 mod test_types_rewind {
     use std::marker::PhantomData;
     use datetime_literal::datetime;
-    use crate::{CutOffDuration, Database, NoatunCell, FixedSizeObject, Message, MessageId, NoatunTime};
+    use crate::{CutOffDuration, Database, NoatunCell, FixedSizeObject, MessageFrame, MessageId, NoatunTime};
     use crate::tests::{DummyTestApp, DummyTestMessage, DummyTestMessageApply};
     use std::pin::Pin;
-    //TODO: Move DatabaseVec to data_types, like the rest of the noatun types
-    use crate::NoatunVec;
-    use crate::data_types::{NoatunHashMap, NoatunString};
+    use crate::data_types::{NoatunHashMap, NoatunString, NoatunVec};
     use crate::database::DatabaseSettings;
 
     fn rewind_tester<T>() where
@@ -56,13 +54,13 @@ mod test_types_rewind {
         let clean_snapshot = db.with_root(snapshotter);
 
         db.append_single(
-            Message::new(MessageId::from_parts_for_test(datetime!(2020-01-02 Z).into(), 0), vec![], DummyTestMessage(PhantomData))
+            MessageFrame::new(MessageId::from_parts_for_test(datetime!(2020-01-02 Z).into(), 0), vec![], DummyTestMessage(PhantomData))
             , false).unwrap();
 
         let snapshot1 = db.with_root(snapshotter);
 
         db.append_single(
-            Message::new(MessageId::from_parts_for_test(datetime!(2020-01-04 Z).into(), 0), vec![], DummyTestMessage(PhantomData))
+            MessageFrame::new(MessageId::from_parts_for_test(datetime!(2020-01-04 Z).into(), 0), vec![], DummyTestMessage(PhantomData))
             , false).unwrap();
 
         let snapshot2 = db.with_root(snapshotter);
@@ -237,7 +235,7 @@ pub(crate) trait DummyTestMessageApply {
     fn test_message_apply(time: NoatunTime, root: Pin<&mut Self>);
 }
 
-impl<Root:FixedSizeObject+DummyTestMessageApply> MessagePayload for DummyTestMessage<Root> {
+impl<Root:FixedSizeObject+DummyTestMessageApply> Message for DummyTestMessage<Root> {
     type Root = DummyTestApp<Root>;
 
     fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
@@ -347,7 +345,7 @@ impl<T> Debug for DummyMessage<T> {
     }
 }
 
-impl<T: Object> MessagePayload for DummyMessage<T> {
+impl<T: Object> Message for DummyMessage<T> {
     type Root = T;
 
     fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
@@ -426,7 +424,7 @@ struct IncrementMessage {
     increment_by: u32,
 }
 
-impl MessagePayload for IncrementMessage {
+impl Message for IncrementMessage {
     type Root = CounterObject;
 
     fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
@@ -479,11 +477,11 @@ struct CounterMessage {
     set1: u32,
 }
 impl CounterMessage {
-    fn wrap(&self) -> Message<CounterMessage> {
-        Message::new(self.id, self.parent.clone(), self.clone())
+    fn wrap(&self) -> MessageFrame<CounterMessage> {
+        MessageFrame::new(self.id, self.parent.clone(), self.clone())
     }
 }
-impl MessagePayload for CounterMessage {
+impl Message for CounterMessage {
     type Root = CounterObject;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut CounterObject>) {
@@ -890,7 +888,7 @@ fn test_handle_to_unsized_miri() {
 }
 
 #[test]
-fn test_handle_miri() {
+fn test_noatun_box_miri() {
     let mut db: Database<NoatunBox<NoatunCell<u32>>> = Database::create_in_memory(
         1000,
         CutOffDuration::from_minutes(15),

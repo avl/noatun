@@ -1,7 +1,7 @@
 use datetime_literal::datetime;
 use noatun::data_types::{NoatunCell, NoatunBox, NoatunVec};
 use noatun::database::{Database, DatabaseSettings};
-use noatun::{Application, CutOffDuration, Message, MessageHeader, MessageId, MessagePayload, NoatunContext, NoatunStorable, NoatunTime, Object, ThinPtr};
+use noatun::{Application, CutOffDuration, MessageFrame, MessageHeader, MessageId, Message, NoatunContext, NoatunStorable, NoatunTime, Object, ThinPtr};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::pin::Pin;
@@ -48,7 +48,7 @@ struct CounterMessage {
     delta: u32,
 }
 
-impl MessagePayload for CounterMessage {
+impl Message for CounterMessage {
     type Root = CounterObject;
 
     fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
@@ -103,7 +103,7 @@ fn test_counter_object_miri() {
     .unwrap();
 
     db.append_single(
-        Message {
+        MessageFrame {
             header: MessageHeader {
                 id: MessageId::new_debug(2),
                 parents: vec![],
@@ -123,7 +123,7 @@ fn test_counter_object_miri() {
     });
 
     db.append_single(
-        Message {
+        MessageFrame {
             header: MessageHeader {
                 id: MessageId::new_debug(1),
                 parents: vec![],

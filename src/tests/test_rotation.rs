@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::pin::Pin;
-use crate::{MessagePayload, NoatunTime};
+use crate::{Message, NoatunTime};
 use savefile_derive::Savefile;
 use crate::Application;
 use crate::Database;
@@ -27,7 +27,7 @@ impl Application for RotationDoc {
 
 
 }
-impl MessagePayload for RotMessage {
+impl Message for RotMessage {
     type Root = RotationDoc;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {

@@ -3,7 +3,7 @@ use crate::data_types::*;
 use crate::sequence_nr::SequenceNr;
 use crate::{NoatunStorable, Object};
 use crate::{
-    msg_deserialize, msg_serialize, Application, Database, MessagePayload, NoatunTime,
+    msg_deserialize, msg_serialize, Application, Database, Message, NoatunTime,
 };
 use datetime_literal::datetime;
 use rand::prelude::SliceRandom;
@@ -54,7 +54,7 @@ pub struct TestMessage {
     insert: u32,
 }
 
-impl MessagePayload for TestMessage {
+impl Message for TestMessage {
     type Root = TestDb;
 
     fn apply(&self, time: NoatunTime, mut root: Pin<&mut Self::Root>) {

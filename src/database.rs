@@ -2,7 +2,7 @@ use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
-use crate::{Application, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target};
+use crate::{Application, ContextGuard, ContextGuardMut, DatabaseContextData, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -166,7 +166,7 @@ impl<APP: Application> Database<APP> {
         self.message_store.get_upstream_of(message_id)
     }
 
-    pub fn load_message(&self, message_id: MessageId) -> Result<Message<APP::Message>> {
+    pub fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<APP::Message>> {
         self.assert_not_dirty()?;
         self.message_store.load_message(message_id)
     }
@@ -197,13 +197,13 @@ impl<APP: Application> Database<APP> {
     pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.message_store.get_message_children(msg)
     }
-    pub fn get_all_messages(&self) -> Result<Vec<Message<APP::Message>>> {
+    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
         self.assert_not_dirty()?;
         self.message_store.get_all_messages()
     }
     pub(crate) fn get_all_messages_with_children(
         &self,
-    ) -> Result<Vec<(Message<APP::Message>, Vec<MessageId>)>> {
+    ) -> Result<Vec<(MessageFrame<APP::Message>, Vec<MessageId>)>> {
         self.message_store.get_all_messages_with_children()
     }
 
@@ -305,7 +305,7 @@ impl<APP: Application> Database<APP> {
     ///
     /// You should never need this, but it remains publicly visible to ease in
     /// debugging. Since this re-runs all message-applies, it can be used during debugging
-    /// of [`crate::MessagePayload::apply`].
+    /// of [`crate::Message::apply`].
     pub fn reproject(&mut self) -> Result<()> {
         self.mark_dirty()?;
         self.reproject_from(SequenceNr::from_index(0))?;
@@ -431,7 +431,7 @@ impl<APP: Application> Database<APP> {
 
     /// Local is true if this message has been locally created. I.e, it isn't a message that
     /// has been received from some other node.
-    pub fn append_single(&mut self, message: Message<APP::Message>, local: bool) -> Result<()> {
+    pub fn append_single(&mut self, message: MessageFrame<APP::Message>, local: bool) -> Result<()> {
         self.append_many(std::iter::once(message), local, true)
     }
 
@@ -499,7 +499,7 @@ impl<APP: Application> Database<APP> {
             message
         );*/
 
-        let t = Message::new(
+        let t = MessageFrame::new(
             new_id,
             self.get_update_heads()
                 .iter()
@@ -517,7 +517,7 @@ impl<APP: Application> Database<APP> {
     /// For messages before the cutoff-time, all parents are removed.
     pub fn append_many(
         &mut self,
-        messages: impl Iterator<Item = Message<APP::Message>>,
+        messages: impl Iterator<Item = MessageFrame<APP::Message>>,
         local: bool,
         allow_cutoff_advance: bool,
     ) -> Result<()> {
@@ -547,7 +547,7 @@ impl<APP: Application> Database<APP> {
         while let Some(cur_earliest_deleted) = earliest_deleted {
             info!("Post-apply deletion carried out");
             // TODO: If this loop works, see where else it's needed
-            println!("Post add reproject bc delete: {:?}", cur_earliest_deleted);
+            //println!("Post add reproject bc delete: {:?}", cur_earliest_deleted);
             earliest_deleted = self.reproject_from(cur_earliest_deleted)?;
         }
 
@@ -557,7 +557,6 @@ impl<APP: Application> Database<APP> {
 
     /// Create a database residing entirely in memory.
     /// This is mostly useful for tests
-    // TODO: Use builder pattern?
     pub fn create_in_memory(
         max_size: usize,
         cutoff_interval: CutOffDuration,

@@ -5,7 +5,7 @@ use crate::communication::{
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::distributor::Status;
 use crate::{Persistence, Savefile};
-use crate::{Application, Database, MessagePayload, NoatunTime, Object};
+use crate::{Application, Database, Message, NoatunTime, Object};
 use arcshift::ArcShift;
 use bytes::BufMut;
 use chrono::DateTime;
@@ -45,7 +45,7 @@ pub struct SyncMessage {
     persist: bool
 }
 
-impl MessagePayload for SyncMessage {
+impl Message for SyncMessage {
     type Root = SyncApp;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
@@ -623,23 +623,6 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
     info!(" -------------- NETWORK HEALED -----------------");
     driver.set_loss(0.0);
     tokio::time::sleep(Duration::from_secs(20)).await;
-    /*for _ in 0..20 {
-        //TODO: This sleep loop should NOT be needed
-        {
-            let my_span = tracing::span!(tracing::Level::INFO, "app1.reproject");
-            let _e = my_span.enter();
-            app1.reproject().unwrap();
-        }
-        {
-            let my_span = tracing::span!(tracing::Level::INFO, "app2.reproject");
-            let _e = my_span.enter();
-            app2.reproject().unwrap();
-        }
-        tokio::time::sleep(Duration::from_secs(20)).await;
-        let time_now = noatun_start_time + start_instant.elapsed();
-        app1.set_mock_time(time_now);
-        app2.set_mock_time(time_now);
-    }*/
 
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());

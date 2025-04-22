@@ -1,5 +1,5 @@
 use crate::cutoff::{Acceptability, CutOffHashPos};
-use crate::{Application, Database, Message, MessageHeader, MessageId, MessagePayload, NoatunTime};
+use crate::{Application, Database, MessageFrame, MessageHeader, MessageId, Message, NoatunTime};
 use anyhow::Result;
 use arrayvec::ArrayString;
 use indexmap::{IndexMap, IndexSet};
@@ -20,9 +20,9 @@ pub struct SerializedMessage {
     data: Vec<u8>,
 }
 impl SerializedMessage {
-    pub fn to_message<M: MessagePayload>(self) -> Result<Message<M>> {
+    pub fn to_message<M: Message>(self) -> Result<MessageFrame<M>> {
         let reader = Cursor::new(&self.data);
-        Ok(Message {
+        Ok(MessageFrame {
             header: MessageHeader {
                 id: self.id,
                 parents: self.parents,
@@ -30,7 +30,7 @@ impl SerializedMessage {
             payload: M::deserialize(&self.data[reader.position() as usize..])?,
         })
     }
-    pub fn new<M: MessagePayload>(m: Message<M>) -> Result<SerializedMessage> {
+    pub fn new<M: Message>(m: MessageFrame<M>) -> Result<SerializedMessage> {
         let mut data = vec![];
         m.payload.serialize(&mut data)?;
         Ok(SerializedMessage {

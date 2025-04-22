@@ -2,11 +2,12 @@ use std::fmt::{Debug};
 use std::io::Write;
 use std::pin::Pin;
 use savefile_derive::Savefile;
-use crate::data_types::NoatunString;
-use crate::{Application, CutOffDuration, Database, NoatunVec, MessagePayload, NoatunTime, Object};
+use crate::data_types::{NoatunVec,NoatunString};
+use crate::{Application, CutOffDuration, Database, Message, NoatunTime, Object};
 use datetime_literal::datetime;
 use chrono::{DateTime, Utc};
 use crate::database::{DatabaseSettings, LoadingStatus};
+
 
 noatun_object!(
     #[derive(PartialEq)]
@@ -36,7 +37,7 @@ impl Application for KeyValStore {
 
 }
 
-impl MessagePayload for KeyValMessage {
+impl Message for KeyValMessage {
     type Root = KeyValStore;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {

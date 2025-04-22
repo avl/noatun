@@ -1,9 +1,9 @@
 use std::io::Write;
 use std::pin::Pin;
 use savefile_derive::Savefile;
-use crate::{msg_deserialize, msg_serialize, Application, CutOffDuration, Database, NoatunCell, MessagePayload, NoatunTime};
+use crate::{msg_deserialize, msg_serialize, Application, CutOffDuration, Database, NoatunCell, Message, NoatunTime};
 use crate::database::DatabaseSettings;
-use crate::NoatunVec;
+use crate::data_types::{NoatunVec};
 
 noatun_object!(
     struct VecDoc {
@@ -26,7 +26,7 @@ impl Application for VecDoc {
 
 }
 
-impl MessagePayload for VecMessage {
+impl Message for VecMessage {
     type Root = VecDoc;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
