@@ -90,9 +90,8 @@ mod unix {
                     max_size,
                     libc::PROT_NONE,
                     libc::MAP_ANONYMOUS
-                        | libc::MAP_SHARED
-                        | libc::MAP_NORESERVE
-                        | libc::MAP_HUGE_2MB,
+                        | libc::MAP_PRIVATE
+                        | libc::MAP_NORESERVE,
                     -1,
                     0,
                 )
@@ -182,19 +181,21 @@ mod unix {
                 libc::mmap(
                     self.base_ptr.wrapping_add(new_size) as *mut _,
                     shrink_by,
-                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::PROT_NONE,
                     libc::MAP_FIXED
                         | libc::MAP_ANONYMOUS
-                        | libc::MAP_SHARED
-                        | libc::MAP_NORESERVE
-                        | libc::MAP_HUGE_2MB
-                        | libc::MAP_HUGETLB,
+                        | libc::MAP_PRIVATE
+                        | libc::MAP_NORESERVE,
                     -1,
                     0,
                 )
             };
             if ptr as usize == 0 || ptr as usize == usize::MAX {
-                bail!("while remapping, mmap failed");
+                bail!("while remapping(shrink), mmap failed. prev_size = {}, shrink_by = {}, new_size = {}, ptr = {:?}, base_ptr = {:?}, err = {:?}", prev_size, shrink_by, new_size, ptr, self.base_ptr,
+                std::io::Error::from_raw_os_error(
+                        std::io::Error::last_os_error().raw_os_error().unwrap()
+                    )
+                );
             }
 
             self.file.set_len(new_size as u64)?;
@@ -225,15 +226,16 @@ mod unix {
                     self.base_ptr as *mut _,
                     new_size,
                     libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_FIXED | libc::MAP_SHARED | libc::MAP_HUGE_2MB,
+                    libc::MAP_FIXED | libc::MAP_SHARED,
                     self.file.as_raw_fd(),
                     0,
                 )
             };
             if ptr as usize == 0 || ptr as usize == usize::MAX {
                 bail!(
-                    "while remapping, mmap of file {} failed: {:?}",
-                    self.file_name,
+                    "error remapping (grow), mmap of file {} new_size = {}, ptr = {:?}, base_ptr = {:?}, prev_size = {}, failed: {:?}",
+                    self.file_name,new_size, ptr, self.base_ptr,
+                    self.committed_size,
                     std::io::Error::from_raw_os_error(
                         std::io::Error::last_os_error().raw_os_error().unwrap()
                     )
