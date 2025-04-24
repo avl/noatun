@@ -96,7 +96,9 @@ impl<APP: Application> Database<APP> {
                 auto_delete: self.auto_delete,
             },
             &self.params,
-        )
+        )?;
+        self.do_apply_missing()?;
+        Ok(())
     }
 
     /// Recover database if in corrupted state.
@@ -215,22 +217,22 @@ impl<APP: Application> Database<APP> {
         preview: impl Iterator<Item = APP::Message>,
         f: impl FnOnce(&APP) -> R,
     ) -> Result<R> {
-        self.mark_dirty()?;
+        self.with_dirty(|tself|{
 
-        let current = self.context.next_seqnr();
+            let current = tself.context.next_seqnr();
 
-        self.context.set_next_seqnr(current.successor());
-        let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
-        let guard = ContextGuardMut::new(&mut self.context);
-        let mut root = unsafe { root_ptr.access_mut::<APP>() };
-        self.message_store
-            .apply_preview(time, root.as_mut(), preview)?;
-        let ret = f(&*root);
-        drop(guard);
-        self.message_store.rewind(&mut self.context, current)?;
+            tself.context.set_next_seqnr(current.successor());
+            let root_ptr = tself.context.get_root_ptr::<<APP as Object>::Ptr>();
+            let guard = ContextGuardMut::new(&mut tself.context);
+            let mut root = unsafe { root_ptr.access_mut::<APP>() };
+            tself.message_store
+                .apply_preview(time, root.as_mut(), preview)?;
+            let ret = f(&*root);
+            drop(guard);
+            tself.message_store.rewind(&mut tself.context, current)?;
 
-        self.mark_clean()?;
-        Ok(ret)
+            Ok(ret)
+        })?
     }
 
     /// Note, this method offer very little overhead, but this means it also does not validate
@@ -251,21 +253,18 @@ impl<APP: Application> Database<APP> {
         self.time_override.unwrap_or_else(NoatunTime::now)
     }
 
+    fn with_dirty<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> Result<R> {
+        self.mark_dirty()?;
+
+        let ret = f(self);
+
+        self.mark_clean()?;
+        Ok(ret)
+    }
+
+
+
     pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
-        let now = self.noatun_now();
-        if !self.context.mark_dirty()? {
-            // Recovery needed
-            Self::recover_impl(
-                &mut self.context,
-                &mut self.message_store,
-                &DatabaseSettings {
-                    mock_time: Some(now),
-                    projection_time_limit: self.projection_time_limit,
-                    auto_delete: self.auto_delete,
-                },
-                &self.params,
-            )?;
-        }
 
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
@@ -277,30 +276,19 @@ impl<APP: Application> Database<APP> {
         Ok(t)
     }
 
+    compile_error!("verify things still work, then keep going through todos")
+
     pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
-        self.mark_dirty()?;
+        self.with_dirty(|tself|{
+            let index = tself.message_store.get_index_of_time(limit)?;
+            tself.message_store
+                .rewind(&mut tself.context, SequenceNr::from_index(index))?;
 
-        let index = self.message_store.get_index_of_time(limit)?;
-        self.message_store
-            .rewind(&mut self.context, SequenceNr::from_index(index))?;
+            tself.projection_time_limit = Some(limit);
 
-        self.projection_time_limit = Some(limit);
-
-        let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
-
-        let guard = ContextGuardMut::new(&mut self.context);
-        let root = unsafe { root_ptr.access_mut::<APP>() };
-        drop(guard);
-
-        self.message_store.apply_missing_messages(
-            &mut self.context,
-            unsafe { root.get_unchecked_mut() },
-            self.projection_time_limit,
-            self.auto_delete,
-        )?;
-
-        self.mark_clean()?;
-        Ok(())
+            tself.do_apply_missing()?;
+            Ok(())
+        })?
     }
 
     /// Force a complete rewind and re-application of all messages.
@@ -309,29 +297,40 @@ impl<APP: Application> Database<APP> {
     /// debugging. Since this re-runs all message-applies, it can be used during debugging
     /// of [`crate::Message::apply`].
     pub fn reproject(&mut self) -> Result<()> {
-        self.mark_dirty()?;
-        self.reproject_from(SequenceNr::from_index(0))?;
-        self.mark_clean()?;
-        Ok(())
+        self.with_dirty(|tself| {
+            tself.reproject_from(SequenceNr::from_index(0))?;
+            Ok(())
+        })?
     }
     /// Returns earliest seq deleted (if any)
     fn reproject_from(&mut self, index: SequenceNr) -> Result<Option<SequenceNr>> {
         self.message_store.rewind(&mut self.context, index)?;
 
+        self.do_apply_missing()
+    }
+
+    fn do_apply_missing(&mut self) -> Result<Option<SequenceNr>> {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
-        let root = unsafe { root_ptr.access_mut::<APP>() };
+        let mut root = unsafe { root_ptr.access_mut::<APP>() };
         drop(guard);
 
-        let any_deletes = self.message_store.apply_missing_messages(
-            &mut self.context,
-            unsafe { root.get_unchecked_mut() },
-            self.projection_time_limit,
-            self.auto_delete,
-        )?;
+        let mut earliest = None;
 
-        Ok(any_deletes)
+        while let Some(cur_earliest_deleted) = self.message_store.apply_missing_messages(
+                &mut self.context,
+                unsafe { root.as_mut().get_unchecked_mut() },
+                self.projection_time_limit,
+                self.auto_delete,
+            )? {
+
+            earliest = Some(earliest.unwrap_or(SequenceNr::default()).max(cur_earliest_deleted));
+            info!("Post-apply deletion carried out, rewinding to {}", cur_earliest_deleted);
+            self.message_store.rewind(&mut self.context, cur_earliest_deleted)?;
+        }
+        Ok(earliest)
     }
+
 
     #[inline(never)]
     fn recover_impl(
@@ -353,18 +352,6 @@ impl<APP: Application> Database<APP> {
         context.set_root_ptr(root_ptr.as_generic());
         context.set_next_seqnr(SequenceNr::from_index(0));
 
-        // Safety:
-        // Recover is only called when the db is not used
-        let guard = ContextGuardMut::new(context);
-        let root = unsafe { root_ptr.access_mut::<APP>() };
-        drop(guard);
-        //let root = context.access_pod(root_ptr);
-        message_store.apply_missing_messages(
-            context,
-            unsafe { root.get_unchecked_mut() },
-            settings.projection_time_limit,
-            settings.auto_delete,
-        )?;
 
         Ok(())
     }
@@ -484,6 +471,7 @@ impl<APP: Application> Database<APP> {
         time: Option<NoatunTime>,
         message: APP::Message,
     ) -> Result<MessageFrame<APP::Message>> {
+        self.recover()?;
         self.create_message_frame_impl(time, message, self.message_store.current_cutoff_time()?)
     }
 
@@ -498,7 +486,6 @@ impl<APP: Application> Database<APP> {
 
         if let Some(prev_local) = self.prev_local {
             if time == prev_local.timestamp() {
-                //TODO: Fix all cases of u64 timestamps. We should probably just use i64 instead
                 new_id = prev_local.successor();
             } else {
                 new_id = MessageId::generate_for_time(time)?;
@@ -529,10 +516,13 @@ impl<APP: Application> Database<APP> {
         time: Option<NoatunTime>,
         message: APP::Message,
     ) -> Result<MessageHeader> {
-        let t = self.create_message_frame(time, message)?;
-        let header = t.header.clone();
-        self.append_single(&t, true)?;
-        Ok(header)
+        self.with_dirty(|tself|{
+            let cutoff_time = tself.message_store.current_cutoff_time()?;
+            let t = tself.create_message_frame_impl(time, message, cutoff_time)?;
+            let header = t.header.clone();
+            tself.append_many_impl(std::iter::once(&t), true, true)?;
+            Ok(header)
+        })?
     }
 
     /// For messages before the cutoff-time, all parents are removed.
@@ -542,7 +532,18 @@ impl<APP: Application> Database<APP> {
         local: bool,
         allow_cutoff_advance: bool,
     ) -> Result<()> {
-        self.mark_dirty()?;
+
+        self.with_dirty(|tself|{
+            tself.append_many_impl(messages, local, allow_cutoff_advance)
+        })?
+    }
+    /// For messages before the cutoff-time, all parents are removed.
+    fn append_many_impl<'a>(
+        &mut self,
+        messages: impl Iterator<Item = &'a MessageFrame<APP::Message>>,
+        local: bool,
+        allow_cutoff_advance: bool,
+    ) -> Result<()> {
 
         if allow_cutoff_advance {
             self.maybe_advance_cutoff()?;
@@ -551,29 +552,11 @@ impl<APP: Application> Database<APP> {
         self.message_store
             .push_messages(&mut self.context, messages, local)?;
 
-        let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
-        let guard = ContextGuardMut::new(&mut self.context);
-        let root = unsafe { root_ptr.access_mut::<APP>() };
-        drop(guard);
         info!("apply_missing_messages");
-        let mut earliest_deleted = self.message_store.apply_missing_messages(
-            &mut self.context,
-            unsafe { root.get_unchecked_mut() },
-            self.projection_time_limit,
-            self.auto_delete,
-        )?;
 
-        while let Some(cur_earliest_deleted) = earliest_deleted {
-            info!("Post-apply deletion carried out");
-            // TODO: If this loop works, see where else it's needed
-            //println!("Post add reproject bc delete: {:?}", cur_earliest_deleted);
-            earliest_deleted = self.reproject_from(cur_earliest_deleted)?;
-        }
-
-        self.mark_clean()?;
+        self.do_apply_missing()?;
         Ok(())
     }
-
     /// Create a database residing entirely in memory.
     /// This is mostly useful for tests
     pub fn create_in_memory(
@@ -591,7 +574,7 @@ impl<APP: Application> Database<APP> {
         Self::recover_impl(&mut ctx, &mut message_store, &settings, &params)?;
         ctx.mark_clean()?;
 
-        Ok(Database {
+        let mut db = Database {
             prev_local: None,
             context: ctx,
             message_store,
@@ -600,7 +583,10 @@ impl<APP: Application> Database<APP> {
             params,
             load_status: LoadingStatus::NewDatabase,
             auto_delete: settings.auto_delete,
-        })
+        };
+        db.do_apply_missing()?;
+
+        Ok(db)
     }
 
     fn create(
@@ -647,7 +633,7 @@ impl<APP: Application> Database<APP> {
             }
         }
         //println!("Load status: {:?}", load_status);
-        Ok(Database {
+        let mut db = Database {
             params,
             prev_local: None,
             context: ctx,
@@ -656,7 +642,9 @@ impl<APP: Application> Database<APP> {
             projection_time_limit: settings.projection_time_limit,
             load_status,
             auto_delete: settings.auto_delete,
-        })
+        };
+        db.do_apply_missing()?;
+        Ok(db)
     }
     pub fn load_status(&self) -> LoadingStatus {
         self.load_status

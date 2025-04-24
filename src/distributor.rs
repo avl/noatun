@@ -504,6 +504,7 @@ impl Distributor {
                 false,
             ));
 
+
             let mut children = database.get_message_children(msg_id)?;
             message_list.extend(children.iter().copied());
             #[cfg(debug_assertions)]

@@ -820,21 +820,6 @@ fn test_cutoff_handling() {
     )
     .unwrap();
 
-    /*
-    let mut d = distributor::Distributor::new("1");
-
-    //println!("Heads: {:?}", d.get_periodic_message(&db));
-    let r = d
-        .receive_message(
-            &mut db,
-            std::iter::once(DistributorMessage::RequestUpstream {
-                query: vec![(MessageId::new_debug(0x102), 2)],
-            }),
-        )
-        .unwrap();
-    println!("Clarify: {:?}", r);
-    */
-
     // Fix, this is what was done here before: messages.apply_missing_messages(&mut db);
 
     db.with_root_mut(|root| {
