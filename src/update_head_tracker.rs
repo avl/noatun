@@ -2,7 +2,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::{dyn_cast_slice, dyn_cast_slice_mut, MessageId, NoatunTime};
 use anyhow::Result;
-use tracing::{ info, trace};
+use tracing::{info, trace};
 
 pub(crate) struct UpdateHeadTracker {
     file: FileAccessor,
@@ -51,13 +51,15 @@ impl UpdateHeadTracker {
         if new_message_id.timestamp() < cutoff {
             trace!(
                 "Not adding update-head {:?} because cutoff {:?}",
-                new_message_id, cutoff
+                new_message_id,
+                cutoff
             );
             return Ok(());
         }
         trace!(
             "Adding update-head {:?} (cutoff {:?})",
-            new_message_id, cutoff
+            new_message_id,
+            cutoff
         );
         let mapping = self.file.map_mut();
         let id_mapping: &mut [MessageId] = dyn_cast_slice_mut(mapping);

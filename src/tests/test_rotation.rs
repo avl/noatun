@@ -1,11 +1,11 @@
-use std::io::Write;
-use std::pin::Pin;
+use crate::database::DatabaseSettings;
+use crate::Application;
+use crate::CutOffDuration;
+use crate::Database;
 use crate::{Message, NoatunTime};
 use savefile_derive::Savefile;
-use crate::Application;
-use crate::Database;
-use crate::CutOffDuration;
-use crate::database::DatabaseSettings;
+use std::io::Write;
+use std::pin::Pin;
 
 noatun_object!(
     #[derive(PartialEq)]
@@ -13,7 +13,6 @@ noatun_object!(
         pod counter: u64,
     }
 );
-
 
 #[derive(Savefile, Debug)]
 pub struct RotMessage {
@@ -24,17 +23,15 @@ pub struct RotMessage {
 impl Application for RotationDoc {
     type Message = RotMessage;
     type Params = ();
-
-
 }
 impl Message for RotMessage {
     type Root = RotationDoc;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
-        if self.reset!=0 {
+        if self.reset != 0 {
             root.counter.set(0);
-        }else {
+        } else {
             let new_counter = root.counter.get().wrapping_add(self.increment);
             root.counter.set(new_counter);
         }
@@ -42,7 +39,7 @@ impl Message for RotMessage {
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
     where
-        Self: Sized
+        Self: Sized,
     {
         crate::msg_deserialize(buf)
     }
@@ -62,30 +59,30 @@ fn test_rotation1() {
         DatabaseSettings::default(),
         (),
     )
-        .unwrap();
+    .unwrap();
     for _ in 0..5 {
         for _ in 0..10 {
             db.append_local(RotMessage {
                 increment: 1,
                 reset: 0,
-            }).unwrap();
+            })
+            .unwrap();
             db.compact().unwrap();
         }
         db.append_local(RotMessage {
             increment: 0,
             reset: 1,
-        }).unwrap();
+        })
+        .unwrap();
         db.compact().unwrap();
     }
 }
-
 
 /*compile_error!("
  * Hashmaps!
  * More chaos testing!
  * More testing of noatun-objects. Do observe etc actually work for all types?
 ")*/
-
 
 #[test]
 fn test_rotation_big1() {
@@ -97,20 +94,22 @@ fn test_rotation_big1() {
         DatabaseSettings::default(),
         (),
     )
-        .unwrap();
+    .unwrap();
     db.disable_filesystem_sync().unwrap();
     for _ in 0..200 {
         for _ in 0..50 {
             db.append_local(RotMessage {
                 increment: 1,
                 reset: 0,
-            }).unwrap();
+            })
+            .unwrap();
             db.compact().unwrap();
         }
         db.append_local(RotMessage {
             increment: 0,
             reset: 1,
-        }).unwrap();
+        })
+        .unwrap();
         db.compact().unwrap();
     }
 }

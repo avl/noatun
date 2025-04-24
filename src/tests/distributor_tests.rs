@@ -1,11 +1,11 @@
 use crate::cutoff::CutOffDuration;
+use crate::database::DatabaseSettings;
 use crate::distributor::{Distributor, DistributorMessage};
 use crate::tests::{CounterMessage, CounterObject};
 use crate::{Database, MessageId, NoatunTime};
 use datetime_literal::datetime;
 use std::iter::once;
 use std::mem::swap;
-use crate::database::DatabaseSettings;
 
 fn create_app<'a>(
     msgs: impl IntoIterator<
@@ -31,7 +31,7 @@ fn create_app<'a>(
     for (id, parents, inc1, set1, local) in msgs {
         let id: NoatunTime = id.into();
         db.append_single(
-            CounterMessage {
+            &CounterMessage {
                 id: MessageId::from_parts_for_test(id, 0),
                 parent: parents
                     .iter()
@@ -41,7 +41,7 @@ fn create_app<'a>(
                 inc1,
                 set1,
             }
-            .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
             local,
         )
         .unwrap();

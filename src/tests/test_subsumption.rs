@@ -1,9 +1,12 @@
+use crate::data_types::NoatunVec;
+use crate::database::DatabaseSettings;
+use crate::{
+    msg_deserialize, msg_serialize, Application, CutOffDuration, Database, Message, NoatunCell,
+    NoatunTime,
+};
+use savefile_derive::Savefile;
 use std::io::Write;
 use std::pin::Pin;
-use savefile_derive::Savefile;
-use crate::{msg_deserialize, msg_serialize, Application, CutOffDuration, Database, NoatunCell, Message, NoatunTime};
-use crate::database::DatabaseSettings;
-use crate::data_types::{NoatunVec};
 
 noatun_object!(
     struct VecDoc {
@@ -11,19 +14,16 @@ noatun_object!(
     }
 );
 
-
 #[derive(Savefile, Debug)]
 pub struct VecMessage {
     index: usize,
     val: u32,
-    reset: bool
+    reset: bool,
 }
 
 impl Application for VecDoc {
     type Message = VecMessage;
     type Params = ();
-
-
 }
 
 impl Message for VecMessage {
@@ -44,7 +44,7 @@ impl Message for VecMessage {
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
     where
-        Self: Sized
+        Self: Sized,
     {
         msg_deserialize(buf)
     }
@@ -65,15 +65,16 @@ fn test_vec1() {
         DatabaseSettings::default(),
         (),
     )
-        .unwrap();
+    .unwrap();
     db.disable_filesystem_sync().unwrap();
 
     for i in 0..3 {
         db.append_local(VecMessage {
             index: i,
-            val: (i+10) as u32,
+            val: (i + 10) as u32,
             reset: false,
-        }).unwrap();
+        })
+        .unwrap();
         db.compact().unwrap();
     }
     assert_eq!(db.count_messages(), 3);
@@ -81,7 +82,8 @@ fn test_vec1() {
         index: 0,
         val: 0,
         reset: true,
-    }).unwrap();
+    })
+    .unwrap();
 
     assert_eq!(db.count_messages(), 1);
 }
@@ -96,17 +98,18 @@ fn test_vec2() {
         DatabaseSettings::default(),
         (),
     )
-        .unwrap();
+    .unwrap();
     db.disable_filesystem_sync().unwrap();
 
     for _i in 0..2 {
-        let msg = db.append_local(VecMessage {
-            index: 0,
-            val: 0,
-            reset: true,
-        }).unwrap();
+        let msg = db
+            .append_local(VecMessage {
+                index: 0,
+                val: 0,
+                reset: true,
+            })
+            .unwrap();
         db.mark_transmitted(msg.id).unwrap();
     }
     assert_eq!(db.count_messages(), 1);
 }
-

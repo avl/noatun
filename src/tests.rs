@@ -6,36 +6,43 @@ use crate::sequence_nr::SequenceNr;
 use byteorder::{LittleEndian, WriteBytesExt};
 
 use crate::cutoff::CutOffDuration;
-use data_types::NoatunCell;
+use crate::database::DatabaseSettings;
 use data_types::NoatunBox;
+use data_types::NoatunCell;
 use data_types::NoatunVec;
 use database::Database;
 use datetime_literal::datetime;
-use savefile::{load_noschema, save_noschema, Deserialize, Packed, SavefileError, Schema, Serialize, Serializer, WithSchema, WithSchemaContext};
+use savefile::{
+    load_noschema, save_noschema, Deserialize, Packed, SavefileError, Schema, Serialize,
+    Serializer, WithSchema, WithSchemaContext,
+};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Read, SeekFrom};
 use tracing_subscriber::Layer;
-use crate::database::DatabaseSettings;
 
 mod all_up_sync_test;
 mod distributor_tests;
 mod fuzz_test_insert;
-mod tests_using_noatun_object_macro;
 mod recovery_tests;
 mod test_rotation;
 mod test_subsumption;
+mod tests_using_noatun_object_macro;
 
 mod test_types_rewind {
-    use std::marker::PhantomData;
-    use datetime_literal::datetime;
-    use crate::{CutOffDuration, Database, NoatunCell, FixedSizeObject, MessageFrame, MessageId, NoatunTime};
-    use crate::tests::{DummyTestApp, DummyTestMessage, DummyTestMessageApply};
-    use std::pin::Pin;
     use crate::data_types::{NoatunHashMap, NoatunString, NoatunVec};
     use crate::database::DatabaseSettings;
+    use crate::tests::{DummyTestApp, DummyTestMessage, DummyTestMessageApply};
+    use crate::{
+        CutOffDuration, Database, FixedSizeObject, MessageFrame, MessageId, NoatunCell, NoatunTime,
+    };
+    use datetime_literal::datetime;
+    use std::marker::PhantomData;
+    use std::pin::Pin;
 
-    fn rewind_tester<T>() where
-        T: FixedSizeObject + DummyTestMessageApply + std::fmt::Debug {
+    fn rewind_tester<T>()
+    where
+        T: FixedSizeObject + DummyTestMessageApply + std::fmt::Debug,
+    {
         let mut db: Database<DummyTestApp<T>> = Database::create_in_memory(
             10000,
             CutOffDuration::from_days(365).unwrap(),
@@ -46,43 +53,55 @@ mod test_types_rewind {
             },
             (),
         )
-            .unwrap();
-        fn snapshotter<T:std::fmt::Debug>(t: &T) -> String {
+        .unwrap();
+        fn snapshotter<T: std::fmt::Debug>(t: &T) -> String {
             format!("{:#?}", t)
         }
 
         let clean_snapshot = db.with_root(snapshotter);
 
         db.append_single(
-            MessageFrame::new(MessageId::from_parts_for_test(datetime!(2020-01-02 Z).into(), 0), vec![], DummyTestMessage(PhantomData))
-            , false).unwrap();
+            &MessageFrame::new(
+                MessageId::from_parts_for_test(datetime!(2020-01-02 Z).into(), 0),
+                vec![],
+                DummyTestMessage(PhantomData),
+            ),
+            false,
+        )
+        .unwrap();
 
         let snapshot1 = db.with_root(snapshotter);
 
         db.append_single(
-            MessageFrame::new(MessageId::from_parts_for_test(datetime!(2020-01-04 Z).into(), 0), vec![], DummyTestMessage(PhantomData))
-            , false).unwrap();
+            &MessageFrame::new(
+                MessageId::from_parts_for_test(datetime!(2020-01-04 Z).into(), 0),
+                vec![],
+                DummyTestMessage(PhantomData),
+            ),
+            false,
+        )
+        .unwrap();
 
         let snapshot2 = db.with_root(snapshotter);
 
-        db.set_projection_time_limit(datetime!(2020-01-03 Z).into()).unwrap();
+        db.set_projection_time_limit(datetime!(2020-01-03 Z).into())
+            .unwrap();
         println!("Have rewound to 01-03");
 
         let rewound_snapshot1 = db.with_root(snapshotter);
-        db.set_projection_time_limit(datetime!(2020-01-01 Z).into()).unwrap();
+        db.set_projection_time_limit(datetime!(2020-01-01 Z).into())
+            .unwrap();
         let rewound_clean = db.with_root(snapshotter);
 
-        println!("snap1: {}",snapshot1);
-        println!("rewound-snap1: {}",rewound_snapshot1);
-        println!("snap2: {}",snapshot2);
+        println!("snap1: {}", snapshot1);
+        println!("rewound-snap1: {}", rewound_snapshot1);
+        println!("snap2: {}", snapshot2);
 
         assert_eq!(clean_snapshot, rewound_clean);
         assert_eq!(snapshot1, rewound_snapshot1);
 
         assert_ne!(snapshot1, clean_snapshot);
         assert_ne!(snapshot2, snapshot1);
-
-
     }
 
     #[test]
@@ -167,42 +186,34 @@ mod test_types_rewind {
 #[derive(Debug)]
 pub struct DummyTestApp<Root>(pub Root);
 
-unsafe impl<Root:NoatunStorable> NoatunStorable for DummyTestApp<Root> {}
+unsafe impl<Root: NoatunStorable> NoatunStorable for DummyTestApp<Root> {}
 
 impl<Root> DummyTestApp<Root> {
     pub fn inner_mut(self: Pin<&mut Self>) -> Pin<&mut Root> {
-        unsafe {
-            self.map_unchecked_mut(|x|&mut x.0)
-        }
+        unsafe { self.map_unchecked_mut(|x| &mut x.0) }
     }
     pub fn inner(&self) -> &Root {
         &self.0
     }
 }
 
-impl<Root:FixedSizeObject> Object for DummyTestApp<Root> {
+impl<Root: FixedSizeObject> Object for DummyTestApp<Root> {
     type Ptr = ThinPtr;
     type DetachedType = ();
     type DetachedOwnedType = ();
 
-    fn detach(&self) -> Self::DetachedOwnedType {
-    }
+    fn detach(&self) -> Self::DetachedOwnedType {}
 
     fn clear(self: Pin<&mut Self>) {
         unimplemented!()
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {
-    }
+    fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {}
 
     unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         unimplemented!()
     }
-
-
 }
-
-
 
 pub struct DummyTestMessage<Root>(std::marker::PhantomData<Root>);
 impl<Root> Debug for DummyTestMessage<Root> {
@@ -218,24 +229,26 @@ impl<T> WithSchema for DummyTestMessage<T> {
 }
 impl<T> Packed for DummyTestMessage<T> {}
 impl<T> Serialize for DummyTestMessage<T> {
-    fn serialize(&self, _serializer: &mut Serializer<impl Write>) -> std::result::Result<(), SavefileError> {
+    fn serialize(
+        &self,
+        _serializer: &mut Serializer<impl Write>,
+    ) -> std::result::Result<(), SavefileError> {
         Ok(())
     }
 }
 impl<T> Deserialize for DummyTestMessage<T> {
-    fn deserialize(_deserializer: &mut Deserializer<impl Read>) -> std::result::Result<Self, SavefileError> {
+    fn deserialize(
+        _deserializer: &mut Deserializer<impl Read>,
+    ) -> std::result::Result<Self, SavefileError> {
         Ok(DummyTestMessage(std::marker::PhantomData))
     }
 }
-
-
-
 
 pub(crate) trait DummyTestMessageApply {
     fn test_message_apply(time: NoatunTime, root: Pin<&mut Self>);
 }
 
-impl<Root:FixedSizeObject+DummyTestMessageApply> Message for DummyTestMessage<Root> {
+impl<Root: FixedSizeObject + DummyTestMessageApply> Message for DummyTestMessage<Root> {
     type Root = DummyTestApp<Root>;
 
     fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
@@ -244,7 +257,7 @@ impl<Root:FixedSizeObject+DummyTestMessageApply> Message for DummyTestMessage<Ro
 
     fn deserialize(buf: &[u8]) -> Result<Self>
     where
-        Self: Sized
+        Self: Sized,
     {
         msg_deserialize(buf)
     }
@@ -254,11 +267,10 @@ impl<Root:FixedSizeObject+DummyTestMessageApply> Message for DummyTestMessage<Ro
     }
 }
 
-impl<Root:FixedSizeObject+DummyTestMessageApply> Application for DummyTestApp<Root>{
+impl<Root: FixedSizeObject + DummyTestMessageApply> Application for DummyTestApp<Root> {
     type Message = DummyTestMessage<Root>;
     type Params = ();
 }
-
 
 pub fn setup_tracing() {
     pub struct TracingTimer(tokio::time::Instant);
@@ -396,8 +408,6 @@ impl Object for CounterObject {
     unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         todo!()
     }
-
-
 }
 
 impl CounterObject {
@@ -416,7 +426,6 @@ impl CounterObject {
 impl Application for CounterObject {
     type Message = CounterMessage;
     type Params = ();
-
 }
 
 #[derive(Debug)]
@@ -477,8 +486,10 @@ struct CounterMessage {
     set1: u32,
 }
 impl CounterMessage {
-    fn wrap(&self) -> MessageFrame<CounterMessage> {
-        MessageFrame::new(self.id, self.parent.clone(), self.clone())
+    fn wrap(&self, cutoff: NoatunTime) -> MessageFrame<CounterMessage> {
+        MessageFrame::new(self.id,
+                          if self.id.timestamp() >= cutoff {self.parent.clone()} else {vec![]},
+                          self.clone())
     }
 }
 impl Message for CounterMessage {
@@ -522,14 +533,13 @@ fn test_projection_time_limit() {
     .unwrap();
 
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![],
-            id: MessageId::from_parts(datetime!(2024-01-01 00:00:00 Z).into(), [0; 10])
-                .unwrap(),
+            id: MessageId::from_parts(datetime!(2024-01-01 00:00:00 Z).into(), [0; 10]).unwrap(),
             inc1: 1,
             set1: 0,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -537,26 +547,24 @@ fn test_projection_time_limit() {
     db.mark_transmitted(MessageId::new_debug(0x100)).unwrap();
 
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![],
-            id: MessageId::from_parts(datetime!(2024-01-02 00:00:00 Z).into(), [0; 10])
-                .unwrap(),
+            id: MessageId::from_parts(datetime!(2024-01-02 00:00:00 Z).into(), [0; 10]).unwrap(),
             inc1: 1,
             set1: 0,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![],
-            id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z).into(), [0; 10])
-                .unwrap(),
+            id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z).into(), [0; 10]).unwrap(),
             inc1: 1, //This is never projected, because of time limit
             set1: 0,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -571,8 +579,7 @@ fn test_projection_time_limit() {
         datetime!(2024-01-03 00:00:00 Z),
         [CounterMessage {
             parent: vec![],
-            id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z).into(), [0; 10])
-                .unwrap(),
+            id: MessageId::from_parts(datetime!(2024-01-03 00:00:00 Z).into(), [0; 10]).unwrap(),
             inc1: 2,
             set1: 0,
         }]
@@ -602,13 +609,13 @@ fn test_msg_store_real() {
     .unwrap();
 
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![],
             id: MessageId::new_debug(0x100),
             inc1: 2,
             set1: 0,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -616,24 +623,24 @@ fn test_msg_store_real() {
     db.mark_transmitted(MessageId::new_debug(0x100)).unwrap();
 
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![MessageId::new_debug(0x100)],
             id: MessageId::new_debug(0x101),
             inc1: 0,
             set1: 42,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![MessageId::new_debug(0x101)],
             id: MessageId::new_debug(0x102),
             inc1: 1,
             set1: 0,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -661,35 +668,35 @@ fn test_msg_store_inmem_miri() {
     .unwrap();
 
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![],
             id: MessageId::new_debug(0x100),
             inc1: 2,
             set1: 0,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![MessageId::new_debug(0x100)],
             id: MessageId::new_debug(0x101),
             inc1: 0,
             set1: 42,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![MessageId::new_debug(0x101)],
             id: MessageId::new_debug(0x102),
             inc1: 1,
             set1: 0,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -720,26 +727,26 @@ fn test_msg_store_after_cutoff_inmem_miri() {
 
     let m1 = MessageId::from_parts(datetime!(2024-01-01 Z).into(), [0u8; 10]).unwrap();
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![],
             id: m1,
             inc1: 2,
             set1: 0,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
     db.mark_transmitted(m1).unwrap();
     let m2 = MessageId::from_parts(datetime!(2024-01-01 Z).into(), [1u8; 10]).unwrap();
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![MessageId::new_debug(0x100)],
             id: m2,
             inc1: 0,
             set1: 42,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -748,13 +755,13 @@ fn test_msg_store_after_cutoff_inmem_miri() {
     println!("Appending 2nd");
     let m3 = MessageId::from_parts(datetime!(2024-01-10 Z).into(), [2u8; 10]).unwrap();
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             parent: vec![MessageId::new_debug(0x101)],
             id: m3,
             inc1: 1,
             set1: 0,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -771,46 +778,47 @@ fn test_msg_store_after_cutoff_inmem_miri() {
 
 #[test]
 fn test_cutoff_handling() {
-    let mut db: Database<CounterObject> =
-        Database::create_in_memory(10000, CutOffDuration::from_minutes(15),
-                                   DatabaseSettings::default(),
-                                   ())
-            .unwrap();
+    let mut db: Database<CounterObject> = Database::create_in_memory(
+        10000,
+        CutOffDuration::from_minutes(15),
+        DatabaseSettings::default(),
+        (),
+    )
+    .unwrap();
 
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             id: MessageId::new_debug(0x100),
             parent: vec![],
             inc1: 2,
             set1: 0,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             id: MessageId::new_debug(0x101),
             parent: vec![MessageId::new_debug(0x100)],
             inc1: 0,
             set1: 42,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
     db.append_single(
-        CounterMessage {
+        &CounterMessage {
             id: MessageId::new_debug(0x102),
             parent: vec![MessageId::new_debug(0x101)],
             inc1: 1,
             set1: 0,
         }
-        .wrap(),
+            .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
-
 
     /*
     let mut d = distributor::Distributor::new("1");

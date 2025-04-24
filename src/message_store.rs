@@ -4,7 +4,10 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::{sha2, sha2_message};
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, MessageFrame, MessageHeader, MessageId, Message, NoatunStorable, NoatunTime, Target};
+use crate::{
+    bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut,
+    Message, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime, Target,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::cmp::Ordering;
@@ -110,8 +113,7 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
     where
         T: Write,
     {
-        self.handle
-            .seek(SeekFrom::Start(self.len_offset as u64))?;
+        self.handle.seek(SeekFrom::Start(self.len_offset as u64))?;
         Ok(self
             .handle
             .write_u16::<LittleEndian>(val.try_into().unwrap())?)
@@ -124,7 +126,9 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
         Ok(())
     }
 
-    pub fn retain(&mut self, mut f: impl FnMut(MessageId) -> bool) -> Result<()> where T: Write
+    pub fn retain(&mut self, mut f: impl FnMut(MessageId) -> bool) -> Result<()>
+    where
+        T: Write,
     {
         let mut i = 0;
         let mut len = self.len()?;
@@ -132,7 +136,7 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
             let item = self.get(i)?;
             if !f(item) {
                 if i + 1 != len {
-                    let last = self.get(len-1)?;
+                    let last = self.get(len - 1)?;
                     self.set(i, last)?;
                 }
                 len -= 1;
@@ -159,7 +163,6 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
         self.handle.seek(SeekFrom::Start(target as u64))?;
         Ok(self.handle.write_pod(&val)?)
     }
-
 
     pub fn remove(&mut self, id: MessageId) -> Result<()>
     where
@@ -207,16 +210,13 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
     }
 }
 
-
-const MAGIC: [u8;8] = [b'N', 152, 202, 45, 103, 197, 68, b'N'];
-
-
+const MAGIC: [u8; 8] = [b'N', 152, 202, 45, 103, 197, 68, b'N'];
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct FileHeaderEntry {
     header_checksum: [u8; HASH_SIZE],
-    magic: [u8;8],
+    magic: [u8; 8],
     sha2: [u8; HASH_SIZE],
     // The following field, and below, are included in the header checksum!
     payload_size: u64,
@@ -288,7 +288,6 @@ impl<W: Write> WritePod for W {
 struct U1(u8);
 
 unsafe impl NoatunStorable for U1 {}
-
 
 impl Display for U1 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -451,7 +450,7 @@ struct RemainingChildAssignments {
 }
 
 /// Returns the new last element
-fn dedup_slice<T:PartialEq+Copy>(slice: &mut [T]) -> usize {
+fn dedup_slice<T: PartialEq + Copy>(slice: &mut [T]) -> usize {
     if slice.len() <= 1 {
         return slice.len();
     }
@@ -591,8 +590,7 @@ impl<M> OnDiskMessageStore<M> {
         Self::provide_index_map(map, 0)?;
 
         let slice: &mut [u8] = map.map_mut();
-        let header: &mut StoreHeader =
-            from_bytes_mut(&mut slice[0..size_of::<StoreHeader>()]);
+        let header: &mut StoreHeader = from_bytes_mut(&mut slice[0..size_of::<StoreHeader>()]);
         Ok(header)
     }
 
@@ -665,8 +663,10 @@ impl<M> OnDiskMessageStore<M> {
         let magic_finder = memchr::memmem::Finder::new(&MAGIC);
 
         self.index_mmap.write_zeroes(size_of::<StoreHeader>())?;
-        let pending_index_header: &mut StoreHeader = unsafe { &mut *(self.index_mmap.map_mut_ptr() as *mut StoreHeader) };
-        self.index_mmap.seek(SeekFrom::Start(size_of::<StoreHeader>() as u64))?;
+        let pending_index_header: &mut StoreHeader =
+            unsafe { &mut *(self.index_mmap.map_mut_ptr() as *mut StoreHeader) };
+        self.index_mmap
+            .seek(SeekFrom::Start(size_of::<StoreHeader>() as u64))?;
 
         debug_assert_eq!(size_of_val(&MAGIC), 8);
 
@@ -690,7 +690,9 @@ impl<M> OnDiskMessageStore<M> {
                     break;
                 }
 
-                fn read_header_and_parents(file_info: &mut FileAccessor) -> Result<(FileHeaderEntry, Vec<MessageId>, usize)> {
+                fn read_header_and_parents(
+                    file_info: &mut FileAccessor,
+                ) -> Result<(FileHeaderEntry, Vec<MessageId>, usize)> {
                     let file_offset = file_info.stream_position()?;
                     //println!("Reading message at {} / {}", file_offset, file_info.used_space());
                     let header = file_info.read_pod::<FileHeaderEntry>()?;
@@ -705,8 +707,7 @@ impl<M> OnDiskMessageStore<M> {
                         if tot_size == 0 {
                             bail!("Corrupt file"); //TODO: More robust recovery!
                         }
-                        file_info
-                            .seek(SeekFrom::Start(file_offset + tot_size as u64))?;
+                        file_info.seek(SeekFrom::Start(file_offset + tot_size as u64))?;
                         bail!("Header is deleted");
                     }
 
@@ -714,56 +715,68 @@ impl<M> OnDiskMessageStore<M> {
                     let parents = parvec.all()?;
 
                     let payload_start = file_offset as usize + header.offset_of_payload();
-                    let checksum_start = file_offset  as usize + header.start_of_data_covered_by_header_checksum();
-                    let header_checksum = file_info.with_bytes_at(checksum_start, payload_start-checksum_start, |bytes|{
-                        sha2(bytes)
-                    })?;
+                    let checksum_start =
+                        file_offset as usize + header.start_of_data_covered_by_header_checksum();
+                    let header_checksum = file_info.with_bytes_at(
+                        checksum_start,
+                        payload_start - checksum_start,
+                        sha2,
+                    )?;
                     if header.header_checksum != header_checksum {
-                        bail!("Header checksum mismatch: {:?} {:?}", header.header_checksum, header_checksum);
+                        bail!(
+                            "Header checksum mismatch: {:?} {:?}",
+                            header.header_checksum,
+                            header_checksum
+                        );
                     }
 
                     file_info.seek(SeekFrom::Start(
                         file_offset + header.offset_of_payload() as u64,
                     ))?;
 
-                    file_info
-                        .with_bytes(header.payload_size as usize, |payload_bytes| {
-                            let actual_sha2 = sha2_message(header.message_id, payload_bytes);
-                            if actual_sha2 != header.sha2 {
-                                return Err(anyhow!("data corrupted on disk - checksum mismatch"));
-                            }
-                            Ok(())
-                        })??;
+                    file_info.with_bytes(header.payload_size as usize, |payload_bytes| {
+                        let actual_sha2 = sha2_message(header.message_id, payload_bytes);
+                        if actual_sha2 != header.sha2 {
+                            return Err(anyhow!("data corrupted on disk - checksum mismatch"));
+                        }
+                        Ok(())
+                    })??;
 
-                    file_info
-                        .seek(SeekFrom::Start(file_offset + tot_size as u64))?;
+                    file_info.seek(SeekFrom::Start(file_offset + tot_size as u64))?;
                     Ok((header, parents, tot_size))
                 }
 
-
-                let (header, parents, msg_size_bytes) = match read_header_and_parents(&mut file_info.file) {
-                    Ok((header, parents, msg_size_bytes)) => {
-                        debug_assert!(file_info.file.stream_position()? >= largest_used_offset);
-                        largest_used_offset = file_info.file.stream_position()?;
-                        (header, parents, msg_size_bytes)
-                    },
-                    Err(err) => {
-                        if file_offset < prev_used_space  as u64 {
-                            warn!("Error reading message: {} @ offset {}", err, file_offset);
-                        } else {
-                            trace!("Message not recovered: {} @ offset {}", err, file_offset);
+                let (header, parents, msg_size_bytes) =
+                    match read_header_and_parents(&mut file_info.file) {
+                        Ok((header, parents, msg_size_bytes)) => {
+                            debug_assert!(file_info.file.stream_position()? >= largest_used_offset);
+                            largest_used_offset = file_info.file.stream_position()?;
+                            (header, parents, msg_size_bytes)
                         }
-                        //println!("Error reading message: {:?} @ offset {}, seek pos: {}", err, file_offset,file_info.file.stream_position()?);;
-                        let magic_search_start = file_offset as usize + offset_of!(FileHeaderEntry, magic) + size_of_val(&MAGIC);
-                        let new_offset = file_info.file.with_all_bytes(|bytes|{
-                            //println!("Starting search at {}", magic_search_start);
-                            magic_finder.find(&bytes[magic_search_start..]).map(|x| x + magic_search_start - offset_of!(FileHeaderEntry, magic)).unwrap_or(file_length as usize)
-                        });
-                        //println!("Next offsed to try: {} of {}", new_offset, file_length);
-                        file_info.file.seek_to(new_offset)?;
-                        continue;
-                    }
-                };
+                        Err(err) => {
+                            if file_offset < prev_used_space as u64 {
+                                warn!("Error reading message: {} @ offset {}", err, file_offset);
+                            } else {
+                                trace!("Message not recovered: {} @ offset {}", err, file_offset);
+                            }
+                            //println!("Error reading message: {:?} @ offset {}, seek pos: {}", err, file_offset,file_info.file.stream_position()?);;
+                            let magic_search_start = file_offset as usize
+                                + offset_of!(FileHeaderEntry, magic)
+                                + size_of_val(&MAGIC);
+                            let new_offset = file_info.file.with_all_bytes(|bytes| {
+                                //println!("Starting search at {}", magic_search_start);
+                                magic_finder
+                                    .find(&bytes[magic_search_start..])
+                                    .map(|x| {
+                                        x + magic_search_start - offset_of!(FileHeaderEntry, magic)
+                                    })
+                                    .unwrap_or(file_length as usize)
+                            });
+                            //println!("Next offsed to try: {} of {}", new_offset, file_length);
+                            file_info.file.seek_to(new_offset)?;
+                            continue;
+                        }
+                    };
 
                 report_inserted(header.message_id, &parents)?;
                 file_entry.bytes_used += msg_size_bytes as u64;
@@ -779,9 +792,7 @@ impl<M> OnDiskMessageStore<M> {
             file_entry.nominal_size = largest_used_offset;
         }
 
-
-        let (index_header, mut index) =
-            Self::header_and_index_mut(&mut self.index_mmap)?;
+        let (index_header, mut index) = Self::header_and_index_mut(&mut self.index_mmap)?;
         index.sort();
         index_header.entries = dedup_slice(index) as u32;
         index = &mut index[0..index_header.entries as usize];
@@ -792,17 +803,14 @@ impl<M> OnDiskMessageStore<M> {
                 let mut file = &mut self.data_files[file.index()].file;
                 let mut parent_accessor = EmbVecAccessor::new_parents(&mut file, offset);
 
-                parent_accessor.retain(|cand|{
-                    index.binary_search_by_key(&cand, |x|x.message).is_ok()
-                })?;
+                parent_accessor
+                    .retain(|cand| index.binary_search_by_key(&cand, |x| x.message).is_ok())?;
 
                 let mut child_accesor = EmbVecAccessor::new_children(&mut file, offset)?;
-                child_accesor.retain(|cand|{
-                    index.binary_search_by_key(&cand, |x|x.message).is_ok()
-                })?;
+                child_accesor
+                    .retain(|cand| index.binary_search_by_key(&cand, |x| x.message).is_ok())?;
             }
         }
-
 
         Self::recover_cutoff_state(now, index_header, index, cutoff_config)?;
         Ok(())
@@ -875,13 +883,11 @@ impl<M> OnDiskMessageStore<M> {
             .enumerate()
             .filter(|(_sub_index, x)| !x.file_offset.is_deleted())
             .map(move |(sub_index, x)| (index + sub_index, Self::read_msg(x, data_files, None)))
-            .filter_map(|(index, x)| {
-                match x {
-                    Ok(x) => Some((index, x)),
-                    Err(x) => {
-                        warn!("Failed to load message #{}: {:?}", index, x);
-                        None
-                    }
+            .filter_map(|(index, x)| match x {
+                Ok(x) => Some((index, x)),
+                Err(x) => {
+                    warn!("Failed to load message #{}: {:?}", index, x);
+                    None
                 }
             }))
     }
@@ -979,9 +985,7 @@ impl<M> OnDiskMessageStore<M> {
             *output_children = child_accessor.all()?;
         }
 
-        file.seek(SeekFrom::Start(
-            offset + header.offset_of_payload() as u64,
-        ))?;
+        file.seek(SeekFrom::Start(offset + header.offset_of_payload() as u64))?;
 
         let msg_payload = file.with_bytes(header.payload_size as usize, |bytes| {
             if sha2_message(header.message_id, bytes) != header.sha2 {
@@ -1211,7 +1215,6 @@ impl<M> OnDiskMessageStore<M> {
         let (header, message_index) =
             Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
 
-
         let Some(entry) = message_index.get_mut(delete_index.index()) else {
             //TODO: Trace log
             trace!("message delete_index not found: {}", delete_index);
@@ -1245,7 +1248,6 @@ impl<M> OnDiskMessageStore<M> {
             warn!("Message was already deleted");
             Ok(false)
         }
-
     }
 
     pub fn set_cutoff_hash(&mut self, cutoff: CutOffHashPos) -> Result<()> {
@@ -1280,7 +1282,6 @@ impl<M> OnDiskMessageStore<M> {
     pub fn loaded_existing_db(&self) -> bool {
         self.loaded_existing
     }
-
 
     /// Returns true if the message existed and was marked as transmitted.
     /// If this returns false, the message didn't (any longer) exist, and must NOT be transmitted
@@ -1325,14 +1326,14 @@ impl<M> OnDiskMessageStore<M> {
     /// Returns the index that the database has to be rewound to in order to reproject
     /// all added messages. This can be before the index of an added message, if
     /// that index did not correspond to a non-deleted message.
-    pub fn append_many_sorted(
+    pub fn append_many_sorted<'a>(
         &mut self,
-        messages: impl ExactSizeIterator<Item = MessageFrame<M>>,
+        messages: impl ExactSizeIterator<Item = &'a MessageFrame<M>>,
         message_inserted: impl FnMut(MessageId, /*parents*/ &[MessageId]) -> Result<()>,
         local: bool,
     ) -> Result<Option<usize>>
     where
-        M: Message + Debug,
+        M: Message + Debug + 'a,
     {
         self.do_append_many_sorted(messages, message_inserted, local)
     }
@@ -1460,7 +1461,7 @@ impl<M> OnDiskMessageStore<M> {
         // Write data store header
         file.seek(SeekFrom::Start(start_pos))?;
         let header = FileHeaderEntry {
-            header_checksum: [0;HASH_SIZE],
+            header_checksum: [0; HASH_SIZE],
             sha2: sha2_hash,
             magic: MAGIC,
             message_id: msg.id(),
@@ -1493,7 +1494,6 @@ impl<M> OnDiskMessageStore<M> {
 
         Self::do_header_checksum(file, start_pos)?;
 
-
         let file = &mut files[file_index.index()].file;
         file.seek(SeekFrom::Start(end_pos))?;
 
@@ -1508,14 +1508,17 @@ impl<M> OnDiskMessageStore<M> {
             header.offset_of_payload()
         };
 
-        let start_of_data_for_header_checksum = start_pos as usize + offset_of!(FileHeaderEntry, payload_size);
-        let size_of_data_for_header_checksum = payload_pos - offset_of!(FileHeaderEntry, payload_size);
-        let header_checksum = file.with_bytes_at(start_of_data_for_header_checksum, size_of_data_for_header_checksum, |bytes|{
-            sha2(bytes)
-        })?;
+        let start_of_data_for_header_checksum =
+            start_pos as usize + offset_of!(FileHeaderEntry, payload_size);
+        let size_of_data_for_header_checksum =
+            payload_pos - offset_of!(FileHeaderEntry, payload_size);
+        let header_checksum = file.with_bytes_at(
+            start_of_data_for_header_checksum,
+            size_of_data_for_header_checksum,
+            sha2,
+        )?;
 
-        unsafe
-        {
+        unsafe {
             let header: &mut FileHeaderEntry = file.access_pod_mut(start_pos as usize)?;
             header.header_checksum = header_checksum;
         }
@@ -1566,7 +1569,10 @@ impl<M> OnDiskMessageStore<M> {
         //dbg!(id,new_parents,new_children, removed_parent, removed_child);
         let (_header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
         let Ok(index) = search_index.binary_search_by_key(&id, |x| x.message) else {
-            info!("message not found, can't addremove parents/children {:?}", id);
+            info!(
+                "message not found, can't addremove parents/children {:?}",
+                id
+            );
             return Ok(());
         };
         if let Some((file, offset)) = search_index[index].file_offset.file_and_offset() {
@@ -1675,16 +1681,15 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
-    fn do_append_many_sorted(
+    fn do_append_many_sorted<'a>(
         &mut self,
-        messages: impl ExactSizeIterator<Item = MessageFrame<M>>,
+        messages: impl ExactSizeIterator<Item = &'a MessageFrame<M>>,
         mut message_inserted: impl FnMut(MessageId, &[MessageId] /*parents*/) -> Result<()>,
         local: bool,
     ) -> Result<Option<usize>>
     where
-        M: Message + Debug,
+        M: Message + Debug + 'a,
     {
-
         let mut prev = None;
         // TODO: Remove this perhaps, below?
         let mut messages = messages.inspect(|test| {
@@ -1727,12 +1732,11 @@ impl<M> OnDiskMessageStore<M> {
 
         //Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
 
-
         let mut last_msg_id = None;
         let mut carry_buffer: VecDeque<IndexEntry> = VecDeque::with_capacity(len);
         //let input_stream_pos = 0;
 
-        let first_input_message: MessageFrame<M> = messages.next().unwrap();
+        let first_input_message: &MessageFrame<M> = messages.next().unwrap();
 
         let initial_index_entries = index_header.entries as usize;
         let (Ok(first_index) | Err(first_index)) = mmap_index[0..index_header.entries as usize]
@@ -1862,7 +1866,7 @@ impl<M> OnDiskMessageStore<M> {
                     } = Self::do_write_message(
                         &mut self.data_files,
                         self.active_file,
-                        &msg,
+                        msg,
                         &[],
                         local,
                         Some(&mut remaining_child_assignments),
@@ -1889,7 +1893,6 @@ impl<M> OnDiskMessageStore<M> {
                     index_header.data_files[self.active_file.index()].nominal_size += full_msg_size;
 
                     cur_input_message = messages.next();
-
                 }
             }
         }
@@ -1903,7 +1906,6 @@ impl<M> OnDiskMessageStore<M> {
                     (final_file_position - initial_file_position) as usize,
                 )
                 .context("flush file to disk")?;
-
         }
         //let data_file = &mut index_header.data_files[self.active_file.index()];
 
@@ -2017,10 +2019,8 @@ impl<M> OnDiskMessageStore<M> {
             let src_tot = src_file_entry.nominal_size;
             let dst_tot = dst_file_entry.nominal_size;
 
-
             let src_position = src_file_entry.compaction_pointer;
             if src_file_entry.compaction_pointer >= src_file_entry.nominal_size {
-
                 if !self.filesystem_sync_disabled {
                     dst_file_info.file.flush_all()?;
                 }
@@ -2107,10 +2107,12 @@ impl<M> OnDiskMessageStore<M> {
                 db_existed = true;
             }
 
-
-            data_file
-                .try_lock_exclusive()
-                .with_context(||format!("While obtaining file lock on data file: {:?}", target.path().join(&file_name)))?;
+            data_file.try_lock_exclusive().with_context(|| {
+                format!(
+                    "While obtaining file lock on data file: {:?}",
+                    target.path().join(&file_name)
+                )
+            })?;
 
             Ok(DataFileInfo {
                 file: data_file,
@@ -2175,16 +2177,14 @@ impl<M> OnDiskMessageStore<M> {
             return 0;
         };
 
-        index.iter().filter(|x|!x.file_offset.is_deleted()).count()
+        index.iter().filter(|x| !x.file_offset.is_deleted()).count()
     }
 
     pub fn current_cutoff_hash(&self) -> Result<CutOffHashPos> {
-        //TODO: Name? Current is superfluous?
         let (header, _index) = self.header_and_index()?;
         Ok(header.cutoff)
     }
     pub fn current_cutoff_time(&self) -> Result<NoatunTime> {
-        //TODO: Name? Current is superfluous?
         let (header, _index) = self.header_and_index()?;
         Ok(header.cutoff.before_time.to_noatun_time())
     }
@@ -2229,7 +2229,7 @@ impl<M> OnDiskMessageStore<M> {
 mod tests {
     use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
     use crate::message_store::{FileOffset, OnDiskMessageStore, U1};
-    use crate::{DummyUnitObject, MessageFrame, MessageId, Message, NoatunTime, Target};
+    use crate::{DummyUnitObject, Message, MessageFrame, MessageId, NoatunTime, Target};
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use std::io::{Cursor, Read, Write};
 
@@ -2286,20 +2286,22 @@ mod tests {
         const COUNT: usize = 5; //1_000_000usize;
 
         //let init = Instant::now();
-        let msgs = (0..COUNT).map(|i| {
-            MessageFrame::new(
-                MessageId::new_debug(i as u32),
-                vec![],
-                OnDiskMessage {
-                    id: i as u64,
-                    seq: i as u64,
-                    data: vec![42u8; 4],
-                },
-            )
-        });
+        let msgs: Vec<_> = (0..COUNT)
+            .map(|i| {
+                MessageFrame::new(
+                    MessageId::new_debug(i as u32),
+                    vec![],
+                    OnDiskMessage {
+                        id: i as u64,
+                        seq: i as u64,
+                        data: vec![42u8; 4],
+                    },
+                )
+            })
+            .collect();
 
         store
-            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .append_many_sorted(msgs.iter(), |_, _| Ok(()), true)
             .unwrap();
 
         {
@@ -2339,7 +2341,7 @@ mod tests {
 
         //let prev = Instant::now();
         store
-            .append_many_sorted(std::iter::once(msg), |_, _| Ok(()), true)
+            .append_many_sorted(std::iter::once(&msg), |_, _| Ok(()), true)
             .unwrap();
 
         //let prev = Instant::now();
@@ -2365,25 +2367,27 @@ mod tests {
         const COUNT: usize = 1000usize;
 
         //let init = Instant::now();
-        let msgs = (0..COUNT).map(|i| {
-            MessageFrame::new(
-                MessageId::new_debug(i as u32),
-                if i != 0 {
-                    vec![MessageId::new_debug(0)]
-                } else {
-                    vec![]
-                },
-                OnDiskMessage {
-                    id: i as u64,
-                    seq: i as u64,
-                    data: vec![42u8; 4],
-                },
-            )
-        });
+        let msgs: Vec<_> = (0..COUNT)
+            .map(|i| {
+                MessageFrame::new(
+                    MessageId::new_debug(i as u32),
+                    if i != 0 {
+                        vec![MessageId::new_debug(0)]
+                    } else {
+                        vec![]
+                    },
+                    OnDiskMessage {
+                        id: i as u64,
+                        seq: i as u64,
+                        data: vec![42u8; 4],
+                    },
+                )
+            })
+            .collect();
 
         //let prev = Instant::now();
         store
-            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .append_many_sorted(msgs.iter(), |_, _| Ok(()), true)
             .unwrap();
 
         let mut all_children_of_0 = vec![];
@@ -2416,35 +2420,39 @@ mod tests {
         const COUNT: usize = 5; //1_000_000usize;
 
         //let init = Instant::now();
-        let msgs = (0..COUNT).map(|i| {
-            MessageFrame::new(
-                MessageId::new_debug(2 * i as u32),
-                vec![],
-                OnDiskMessage {
-                    id: 2 * i as u64,
-                    seq: 2 * i as u64,
-                    data: vec![42u8; 4],
-                },
-            )
-        });
+        let msgs: Vec<_> = (0..COUNT)
+            .map(|i| {
+                MessageFrame::new(
+                    MessageId::new_debug(2 * i as u32),
+                    vec![],
+                    OnDiskMessage {
+                        id: 2 * i as u64,
+                        seq: 2 * i as u64,
+                        data: vec![42u8; 4],
+                    },
+                )
+            })
+            .collect();
 
         store
-            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .append_many_sorted(msgs.iter(), |_, _| Ok(()), true)
             .unwrap();
-        let msgs = (0..COUNT).map(|i| {
-            MessageFrame::new(
-                MessageId::new_debug(2 * i as u32 + 1),
-                vec![],
-                OnDiskMessage {
-                    id: 2 * i as u64 + 1,
-                    seq: 2 * i as u64 + 1,
-                    data: vec![43u8; 4],
-                },
-            )
-        });
+        let msgs: Vec<_> = (0..COUNT)
+            .map(|i| {
+                MessageFrame::new(
+                    MessageId::new_debug(2 * i as u32 + 1),
+                    vec![],
+                    OnDiskMessage {
+                        id: 2 * i as u64 + 1,
+                        seq: 2 * i as u64 + 1,
+                        data: vec![43u8; 4],
+                    },
+                )
+            })
+            .collect();
 
         store
-            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .append_many_sorted(msgs.iter(), |_, _| Ok(()), true)
             .unwrap();
 
         let msg = store
@@ -2463,20 +2471,22 @@ mod tests {
         const COUNT: usize = 3;
 
         //let init = Instant::now();
-        let msgs = (0..COUNT).map(|i| {
-            MessageFrame::new(
-                MessageId::new_debug(i as u32),
-                vec![],
-                OnDiskMessage {
-                    id: i as u64,
-                    seq: i as u64,
-                    data: vec![42u8; 4],
-                },
-            )
-        });
+        let msgs: Vec<_> = (0..COUNT)
+            .map(|i| {
+                MessageFrame::new(
+                    MessageId::new_debug(i as u32),
+                    vec![],
+                    OnDiskMessage {
+                        id: i as u64,
+                        seq: i as u64,
+                        data: vec![42u8; 4],
+                    },
+                )
+            })
+            .collect();
 
         store
-            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .append_many_sorted(msgs.iter(), |_, _| Ok(()), true)
             .unwrap();
 
         store
@@ -2514,20 +2524,22 @@ mod tests {
         const COUNT: usize = 1_000; //1_000_000usize;
 
         let init = Instant::now();
-        let msgs = (0..COUNT).map(|i| {
-            MessageFrame::new(
-                MessageId::new_debug(i as u32),
-                vec![],
-                OnDiskMessage {
-                    id: (1_000_000 + i) as u64,
-                    seq: i as u64,
-                    data: vec![42u8; 1024],
-                },
-            )
-        });
+        let msgs: Vec<_> = (0..COUNT)
+            .map(|i| {
+                MessageFrame::new(
+                    MessageId::new_debug(i as u32),
+                    vec![],
+                    OnDiskMessage {
+                        id: (1_000_000 + i) as u64,
+                        seq: i as u64,
+                        data: vec![42u8; 1024],
+                    },
+                )
+            })
+            .collect();
 
         store
-            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .append_many_sorted(msgs.iter(), |_, _| Ok(()), true)
             .unwrap();
 
         println!("Init: {:?}", init.elapsed());
@@ -2556,20 +2568,22 @@ mod tests {
         const COUNT: usize = 1; //1_000_000usize;
 
         let init = Instant::now();
-        let msgs = (0..COUNT).map(|i| {
-            MessageFrame::new(
-                MessageId::new_debug(i as u32),
-                vec![],
-                OnDiskMessage {
-                    id: (1_000_000 + i) as u64,
-                    seq: i as u64,
-                    data: vec![42u8; 4],
-                },
-            )
-        });
+        let msgs: Vec<_> = (0..COUNT)
+            .map(|i| {
+                MessageFrame::new(
+                    MessageId::new_debug(i as u32),
+                    vec![],
+                    OnDiskMessage {
+                        id: (1_000_000 + i) as u64,
+                        seq: i as u64,
+                        data: vec![42u8; 4],
+                    },
+                )
+            })
+            .collect();
 
         store
-            .append_many_sorted(msgs.into_iter(), |_, _| Ok(()), true)
+            .append_many_sorted(msgs.iter(), |_, _| Ok(()), true)
             .unwrap();
 
         println!("Init: {:?}", init.elapsed());
@@ -2615,15 +2629,14 @@ mod tests {
 
         assert_eq!(dedup(&[]), &[]);
         assert_eq!(dedup(&[1]), &[1]);
-        assert_eq!(dedup(&[1,2]), &[1,2]);
-        assert_eq!(dedup(&[1,1]), &[1]);
-        assert_eq!(dedup(&[1,1,1]), &[1]);
-        assert_eq!(dedup(&[1,2,2]), &[1,2]);
-        assert_eq!(dedup(&[1,2,2,3]), &[1,2,3]);
-        assert_eq!(dedup(&[1,2,2,3,3,3]), &[1,2,3]);
+        assert_eq!(dedup(&[1, 2]), &[1, 2]);
+        assert_eq!(dedup(&[1, 1]), &[1]);
+        assert_eq!(dedup(&[1, 1, 1]), &[1]);
+        assert_eq!(dedup(&[1, 2, 2]), &[1, 2]);
+        assert_eq!(dedup(&[1, 2, 2, 3]), &[1, 2, 3]);
+        assert_eq!(dedup(&[1, 2, 2, 3, 3, 3]), &[1, 2, 3]);
 
-        assert_eq!(dedup(&[1,2,2,3,3,3,5]), &[1,2,3,5]);
-        assert_eq!(dedup(&[1,1,1,2,2,3,3,3,5]), &[1,2,3,5]);
-
+        assert_eq!(dedup(&[1, 2, 2, 3, 3, 3, 5]), &[1, 2, 3, 5]);
+        assert_eq!(dedup(&[1, 1, 1, 2, 2, 3, 3, 3, 5]), &[1, 2, 3, 5]);
     }
 }

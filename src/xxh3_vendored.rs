@@ -31,7 +31,6 @@ DEALINGS IN THE SOFTWARE.
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::identity_op)]
 
-
 use std::hash::Hasher;
 
 pub(crate) mod xxh32_common {
@@ -107,24 +106,25 @@ pub(crate) mod xxh3_common {
     pub const ACC_NB: usize = STRIPE_LEN / mem::size_of::<u64>();
 
     pub const SECRET_MERGEACCS_START: usize = 11;
-    pub const SECRET_LASTACC_START: usize = 7;  //not aligned on 8, last secret is different from acc & scrambler
+    pub const SECRET_LASTACC_START: usize = 7; //not aligned on 8, last secret is different from acc & scrambler
 
     pub const MID_SIZE_MAX: usize = 240;
     pub const SECRET_SIZE_MIN: usize = 136;
     pub const DEFAULT_SECRET_SIZE: usize = 192;
     pub const DEFAULT_SECRET: [u8; DEFAULT_SECRET_SIZE] = [
-        0xb8, 0xfe, 0x6c, 0x39, 0x23, 0xa4, 0x4b, 0xbe, 0x7c, 0x01, 0x81, 0x2c, 0xf7, 0x21, 0xad, 0x1c,
-        0xde, 0xd4, 0x6d, 0xe9, 0x83, 0x90, 0x97, 0xdb, 0x72, 0x40, 0xa4, 0xa4, 0xb7, 0xb3, 0x67, 0x1f,
-        0xcb, 0x79, 0xe6, 0x4e, 0xcc, 0xc0, 0xe5, 0x78, 0x82, 0x5a, 0xd0, 0x7d, 0xcc, 0xff, 0x72, 0x21,
-        0xb8, 0x08, 0x46, 0x74, 0xf7, 0x43, 0x24, 0x8e, 0xe0, 0x35, 0x90, 0xe6, 0x81, 0x3a, 0x26, 0x4c,
-        0x3c, 0x28, 0x52, 0xbb, 0x91, 0xc3, 0x00, 0xcb, 0x88, 0xd0, 0x65, 0x8b, 0x1b, 0x53, 0x2e, 0xa3,
-        0x71, 0x64, 0x48, 0x97, 0xa2, 0x0d, 0xf9, 0x4e, 0x38, 0x19, 0xef, 0x46, 0xa9, 0xde, 0xac, 0xd8,
-        0xa8, 0xfa, 0x76, 0x3f, 0xe3, 0x9c, 0x34, 0x3f, 0xf9, 0xdc, 0xbb, 0xc7, 0xc7, 0x0b, 0x4f, 0x1d,
-        0x8a, 0x51, 0xe0, 0x4b, 0xcd, 0xb4, 0x59, 0x31, 0xc8, 0x9f, 0x7e, 0xc9, 0xd9, 0x78, 0x73, 0x64,
-        0xea, 0xc5, 0xac, 0x83, 0x34, 0xd3, 0xeb, 0xc3, 0xc5, 0x81, 0xa0, 0xff, 0xfa, 0x13, 0x63, 0xeb,
-        0x17, 0x0d, 0xdd, 0x51, 0xb7, 0xf0, 0xda, 0x49, 0xd3, 0x16, 0x55, 0x26, 0x29, 0xd4, 0x68, 0x9e,
-        0x2b, 0x16, 0xbe, 0x58, 0x7d, 0x47, 0xa1, 0xfc, 0x8f, 0xf8, 0xb8, 0xd1, 0x7a, 0xd0, 0x31, 0xce,
-        0x45, 0xcb, 0x3a, 0x8f, 0x95, 0x16, 0x04, 0x28, 0xaf, 0xd7, 0xfb, 0xca, 0xbb, 0x4b, 0x40, 0x7e,
+        0xb8, 0xfe, 0x6c, 0x39, 0x23, 0xa4, 0x4b, 0xbe, 0x7c, 0x01, 0x81, 0x2c, 0xf7, 0x21, 0xad,
+        0x1c, 0xde, 0xd4, 0x6d, 0xe9, 0x83, 0x90, 0x97, 0xdb, 0x72, 0x40, 0xa4, 0xa4, 0xb7, 0xb3,
+        0x67, 0x1f, 0xcb, 0x79, 0xe6, 0x4e, 0xcc, 0xc0, 0xe5, 0x78, 0x82, 0x5a, 0xd0, 0x7d, 0xcc,
+        0xff, 0x72, 0x21, 0xb8, 0x08, 0x46, 0x74, 0xf7, 0x43, 0x24, 0x8e, 0xe0, 0x35, 0x90, 0xe6,
+        0x81, 0x3a, 0x26, 0x4c, 0x3c, 0x28, 0x52, 0xbb, 0x91, 0xc3, 0x00, 0xcb, 0x88, 0xd0, 0x65,
+        0x8b, 0x1b, 0x53, 0x2e, 0xa3, 0x71, 0x64, 0x48, 0x97, 0xa2, 0x0d, 0xf9, 0x4e, 0x38, 0x19,
+        0xef, 0x46, 0xa9, 0xde, 0xac, 0xd8, 0xa8, 0xfa, 0x76, 0x3f, 0xe3, 0x9c, 0x34, 0x3f, 0xf9,
+        0xdc, 0xbb, 0xc7, 0xc7, 0x0b, 0x4f, 0x1d, 0x8a, 0x51, 0xe0, 0x4b, 0xcd, 0xb4, 0x59, 0x31,
+        0xc8, 0x9f, 0x7e, 0xc9, 0xd9, 0x78, 0x73, 0x64, 0xea, 0xc5, 0xac, 0x83, 0x34, 0xd3, 0xeb,
+        0xc3, 0xc5, 0x81, 0xa0, 0xff, 0xfa, 0x13, 0x63, 0xeb, 0x17, 0x0d, 0xdd, 0x51, 0xb7, 0xf0,
+        0xda, 0x49, 0xd3, 0x16, 0x55, 0x26, 0x29, 0xd4, 0x68, 0x9e, 0x2b, 0x16, 0xbe, 0x58, 0x7d,
+        0x47, 0xa1, 0xfc, 0x8f, 0xf8, 0xb8, 0xd1, 0x7a, 0xd0, 0x31, 0xce, 0x45, 0xcb, 0x3a, 0x8f,
+        0x95, 0x16, 0x04, 0x28, 0xaf, 0xd7, 0xfb, 0xca, 0xbb, 0x4b, 0x40, 0x7e,
     ];
 
     #[inline(always)]
@@ -163,16 +163,14 @@ pub(crate) mod xxh3_common {
 
 pub(crate) mod utils {
     //! Utilities of the crate
-    use core::{ptr, mem};
+    use core::{mem, ptr};
 
     #[inline(always)]
     pub const fn get_aligned_chunk_ref<T: Copy>(input: &[u8], offset: usize) -> &T {
         debug_assert!(mem::size_of::<T>() > 0); //Size MUST be positive
         debug_assert!(mem::size_of::<T>() <= input.len().saturating_sub(offset)); //Must fit
 
-        unsafe {
-            &*(input.as_ptr().add(offset) as *const T)
-        }
+        unsafe { &*(input.as_ptr().add(offset) as *const T) }
     }
 
     #[allow(unused)]
@@ -186,9 +184,7 @@ pub(crate) mod utils {
         debug_assert!(mem::size_of::<T>() > 0); //Size MUST be positive
         debug_assert!(mem::size_of::<T>() <= input.len().saturating_sub(offset)); //Must fit
 
-        unsafe {
-            ptr::read_unaligned(input.as_ptr().add(offset) as *const T)
-        }
+        unsafe { ptr::read_unaligned(input.as_ptr().add(offset) as *const T) }
     }
 
     #[derive(Debug)]
@@ -221,17 +217,24 @@ pub mod xxh3 {
     //!Provides `Hasher` only for 64bit as 128bit variant would not be much different due to trait
     //!being limited to `u64` outputs.
 
-    use core::{ptr, mem, slice, hash};
+    use core::{hash, mem, ptr, slice};
 
+    use super::utils::{get_aligned_chunk_ref, get_unaligned_chunk, Buffer};
     use super::xxh32_common as xxh32;
-    use super::xxh64_common as xxh64;
     use super::xxh3_common::*;
-    use super::utils::{Buffer, get_unaligned_chunk, get_aligned_chunk_ref};
+    use super::xxh64_common as xxh64;
 
     // Code is as close to original C implementation as possible
     // It does make it look ugly, but it is fast and easy to update once xxhash gets new version.
 
-    #[cfg(all(any(target_feature = "sse2", target_feature = "neon", all(target_family = "wasm", target_feature = "simd128")), not(target_feature = "avx2")))]
+    #[cfg(all(
+        any(
+            target_feature = "sse2",
+            target_feature = "neon",
+            all(target_family = "wasm", target_feature = "simd128")
+        ),
+        not(target_feature = "avx2")
+    ))]
     #[repr(align(16))]
     #[derive(Clone)]
     struct Acc([u64; ACC_NB]);
@@ -239,31 +242,56 @@ pub mod xxh3 {
     #[repr(align(32))]
     #[derive(Clone)]
     struct Acc([u64; ACC_NB]);
-    #[cfg(not(any(target_feature = "avx2", target_feature = "neon", all(target_family = "wasm", target_feature = "simd128"), target_feature = "sse2")))]
+    #[cfg(not(any(
+        target_feature = "avx2",
+        target_feature = "neon",
+        all(target_family = "wasm", target_feature = "simd128"),
+        target_feature = "sse2"
+    )))]
     #[repr(align(8))]
     #[derive(Clone)]
     struct Acc([u64; ACC_NB]);
 
     const INITIAL_ACC: Acc = Acc([
-        xxh32::PRIME_3 as u64, xxh64::PRIME_1, xxh64::PRIME_2, xxh64::PRIME_3,
-        xxh64::PRIME_4, xxh32::PRIME_2 as u64, xxh64::PRIME_5, xxh32::PRIME_1 as u64
+        xxh32::PRIME_3 as u64,
+        xxh64::PRIME_1,
+        xxh64::PRIME_2,
+        xxh64::PRIME_3,
+        xxh64::PRIME_4,
+        xxh32::PRIME_2 as u64,
+        xxh64::PRIME_5,
+        xxh32::PRIME_1 as u64,
     ]);
 
     type LongHashFn = fn(&[u8], u64, &[u8]) -> u64;
     type LongHashFn128 = fn(&[u8], u64, &[u8]) -> u128;
 
     #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
-    type StripeLanes = [[u8; mem::size_of::<core::arch::wasm32::v128>()]; STRIPE_LEN / mem::size_of::<core::arch::wasm32::v128>()];
+    type StripeLanes = [[u8; mem::size_of::<core::arch::wasm32::v128>()];
+        STRIPE_LEN / mem::size_of::<core::arch::wasm32::v128>()];
     #[cfg(all(target_arch = "x86", target_feature = "avx2"))]
-    type StripeLanes = [[u8; mem::size_of::<core::arch::x86::__m256i>()]; STRIPE_LEN / mem::size_of::<core::arch::x86::__m256i>()];
+    type StripeLanes = [[u8; mem::size_of::<core::arch::x86::__m256i>()];
+        STRIPE_LEN / mem::size_of::<core::arch::x86::__m256i>()];
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-    type StripeLanes = [[u8; mem::size_of::<core::arch::x86_64::__m256i>()]; STRIPE_LEN / mem::size_of::<core::arch::x86_64::__m256i>()];
-    #[cfg(all(target_arch = "x86", target_feature = "sse2", not(target_feature = "avx2")))]
-    type StripeLanes = [[u8; mem::size_of::<core::arch::x86::__m128i>()]; STRIPE_LEN / mem::size_of::<core::arch::x86::__m128i>()];
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(target_feature = "avx2")))]
-    type StripeLanes = [[u8; mem::size_of::<core::arch::x86_64::__m128i>()]; STRIPE_LEN / mem::size_of::<core::arch::x86_64::__m128i>()];
+    type StripeLanes = [[u8; mem::size_of::<core::arch::x86_64::__m256i>()];
+        STRIPE_LEN / mem::size_of::<core::arch::x86_64::__m256i>()];
+    #[cfg(all(
+        target_arch = "x86",
+        target_feature = "sse2",
+        not(target_feature = "avx2")
+    ))]
+    type StripeLanes = [[u8; mem::size_of::<core::arch::x86::__m128i>()];
+        STRIPE_LEN / mem::size_of::<core::arch::x86::__m128i>()];
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "sse2",
+        not(target_feature = "avx2")
+    ))]
+    type StripeLanes = [[u8; mem::size_of::<core::arch::x86_64::__m128i>()];
+        STRIPE_LEN / mem::size_of::<core::arch::x86_64::__m128i>()];
     #[cfg(target_feature = "neon")]
-    type StripeLanes = [[u8; mem::size_of::<core::arch::aarch64::uint8x16_t>()]; STRIPE_LEN / mem::size_of::<core::arch::aarch64::uint8x16_t>()];
+    type StripeLanes = [[u8; mem::size_of::<core::arch::aarch64::uint8x16_t>()];
+        STRIPE_LEN / mem::size_of::<core::arch::aarch64::uint8x16_t>()];
 
     #[cfg(any(target_feature = "sse2", target_feature = "avx2"))]
     #[inline]
@@ -290,23 +318,23 @@ pub mod xxh3 {
     //}
 
     macro_rules! to_u128 {
-    ($lo:expr, $hi:expr) => {
-        ($lo) as u128 | ((($hi) as u128) << 64)
-    };
-}
+        ($lo:expr, $hi:expr) => {
+            ($lo) as u128 | ((($hi) as u128) << 64)
+        };
+    }
 
     macro_rules! slice_offset_ptr {
-    ($slice:expr, $offset:expr) => {{
-        let slice = $slice;
-        let offset = $offset;
-        debug_assert!(slice.len() >= offset);
+        ($slice:expr, $offset:expr) => {{
+            let slice = $slice;
+            let offset = $offset;
+            debug_assert!(slice.len() >= offset);
 
-        #[allow(unused_unsafe)]
-        unsafe {
-            (slice.as_ptr() as *const u8).add(offset)
-        }
-    }}
-}
+            #[allow(unused_unsafe)]
+            unsafe {
+                (slice.as_ptr() as *const u8).add(offset)
+            }
+        }};
+    }
 
     #[inline(always)]
     fn read_32le_unaligned(data: &[u8], offset: usize) -> u32 {
@@ -320,17 +348,19 @@ pub mod xxh3 {
 
     #[inline(always)]
     fn mix_two_accs(acc: &mut Acc, offset: usize, secret: &[[u8; 8]; 2]) -> u64 {
-        mul128_fold64(acc.0[offset] ^ u64::from_ne_bytes(secret[0]).to_le(),
-                      acc.0[offset + 1] ^ u64::from_ne_bytes(secret[1]).to_le())
+        mul128_fold64(
+            acc.0[offset] ^ u64::from_ne_bytes(secret[0]).to_le(),
+            acc.0[offset + 1] ^ u64::from_ne_bytes(secret[1]).to_le(),
+        )
     }
 
     #[inline]
     fn merge_accs(acc: &mut Acc, secret: &[[[u8; 8]; 2]; 4], mut result: u64) -> u64 {
         macro_rules! mix_two_accs {
-        ($idx:literal) => {
-            result = result.wrapping_add(mix_two_accs(acc, $idx * 2, &secret[$idx]))
+            ($idx:literal) => {
+                result = result.wrapping_add(mix_two_accs(acc, $idx * 2, &secret[$idx]))
+            };
         }
-    }
 
         mix_two_accs!(0);
         mix_two_accs!(1);
@@ -354,12 +384,23 @@ pub mod xxh3 {
     #[inline(always)]
     //Inputs are two chunks of unaligned u64
     //Secret are two chunks of unaligned (u64, u64)
-    fn mix32_b(lo: &mut u64, hi: &mut u64, input_1: &[[u8; 8]; 2], input_2: &[[u8; 8]; 2], secret: &[[[u8; 8]; 2]; 2], seed: u64) {
+    fn mix32_b(
+        lo: &mut u64,
+        hi: &mut u64,
+        input_1: &[[u8; 8]; 2],
+        input_2: &[[u8; 8]; 2],
+        secret: &[[[u8; 8]; 2]; 2],
+        seed: u64,
+    ) {
         *lo = lo.wrapping_add(mix16_b(input_1, &secret[0], seed));
-        *lo ^= u64::from_ne_bytes(input_2[0]).to_le().wrapping_add(u64::from_ne_bytes(input_2[1]).to_le());
+        *lo ^= u64::from_ne_bytes(input_2[0])
+            .to_le()
+            .wrapping_add(u64::from_ne_bytes(input_2[1]).to_le());
 
         *hi = hi.wrapping_add(mix16_b(input_2, &secret[1], seed));
-        *hi ^= u64::from_ne_bytes(input_1[0]).to_le().wrapping_add(u64::from_ne_bytes(input_1[1]).to_le());
+        *hi ^= u64::from_ne_bytes(input_1[0])
+            .to_le()
+            .wrapping_add(u64::from_ne_bytes(input_1[1]).to_le());
     }
 
     #[inline(always)]
@@ -369,24 +410,28 @@ pub mod xxh3 {
         let nb_rounds = DEFAULT_SECRET_SIZE / 16;
 
         for idx in 0..nb_rounds {
-            let low = get_unaligned_chunk::<u64>(&DEFAULT_SECRET, idx * 16).to_le().wrapping_add(seed);
-            let hi = get_unaligned_chunk::<u64>(&DEFAULT_SECRET, idx * 16 + 8).to_le().wrapping_sub(seed);
+            let low = get_unaligned_chunk::<u64>(&DEFAULT_SECRET, idx * 16)
+                .to_le()
+                .wrapping_add(seed);
+            let hi = get_unaligned_chunk::<u64>(&DEFAULT_SECRET, idx * 16 + 8)
+                .to_le()
+                .wrapping_sub(seed);
 
             Buffer {
                 ptr: result.as_mut_ptr() as *mut u8,
                 len: DEFAULT_SECRET_SIZE,
                 offset: idx * 16,
-            }.copy_from_slice(&low.to_le_bytes());
+            }
+            .copy_from_slice(&low.to_le_bytes());
             Buffer {
                 ptr: result.as_mut_ptr() as *mut u8,
                 len: DEFAULT_SECRET_SIZE,
                 offset: idx * 16 + 8,
-            }.copy_from_slice(&hi.to_le_bytes());
+            }
+            .copy_from_slice(&hi.to_le_bytes());
         }
 
-        unsafe {
-            result.assume_init()
-        }
+        unsafe { result.assume_init() }
     }
 
     #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
@@ -422,7 +467,8 @@ pub mod xxh3 {
                 let sum_2 = i64x2_add(prod_2, data_swap_2);
 
                 xacc.add(idx).write(i64x2_add(sum_1, *xacc.add(idx)));
-                xacc.add(idx.wrapping_add(1)).write(i64x2_add(sum_2, *xacc.add(idx.wrapping_add(1))));
+                xacc.add(idx.wrapping_add(1))
+                    .write(i64x2_add(sum_2, *xacc.add(idx.wrapping_add(1))));
 
                 idx = idx.wrapping_add(2);
             }
@@ -431,19 +477,18 @@ pub mod xxh3 {
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
     macro_rules! vld1q_u8 {
-    ($ptr:expr) => {
-        core::arch::aarch64::vld1q_u8($ptr)
-
+        ($ptr:expr) => {
+            core::arch::aarch64::vld1q_u8($ptr)
+        };
     }
-}
 
     //For some dumb reasons vld1q_u8 is unstable for arm
     #[cfg(all(target_arch = "arm", target_feature = "neon"))]
     macro_rules! vld1q_u8 {
-    ($ptr:expr) => {
-        core::ptr::read_unaligned($ptr as *const core::arch::arm::uint8x16_t)
+        ($ptr:expr) => {
+            core::ptr::read_unaligned($ptr as *const core::arch::arm::uint8x16_t)
+        };
     }
-}
 
     #[cfg(target_feature = "neon")]
     fn accumulate_512_neon(acc: &mut Acc, input: &StripeLanes, secret: &StripeLanes) {
@@ -451,10 +496,10 @@ pub mod xxh3 {
         const NEON_LANES: usize = ACC_NB;
 
         unsafe {
-            #[cfg(target_arch = "arm")]
-            use core::arch::arm::*;
             #[cfg(target_arch = "aarch64")]
             use core::arch::aarch64::*;
+            #[cfg(target_arch = "arm")]
+            use core::arch::arm::*;
 
             let mut idx = 0usize;
             let xacc = acc.0.as_mut_ptr() as *mut uint64x2_t;
@@ -462,10 +507,12 @@ pub mod xxh3 {
             while idx.wrapping_add(1) < NEON_LANES / 2 {
                 /* data_vec = xinput[i]; */
                 let data_vec_1 = vreinterpretq_u64_u8(vld1q_u8!(input[idx].as_ptr()));
-                let data_vec_2 = vreinterpretq_u64_u8(vld1q_u8!(input[idx.wrapping_add(1)].as_ptr()));
+                let data_vec_2 =
+                    vreinterpretq_u64_u8(vld1q_u8!(input[idx.wrapping_add(1)].as_ptr()));
                 /* key_vec  = xsecret[i];  */
-                let key_vec_1  = vreinterpretq_u64_u8(vld1q_u8!(secret[idx].as_ptr()));
-                let key_vec_2  = vreinterpretq_u64_u8(vld1q_u8!(secret[idx.wrapping_add(1)].as_ptr()));
+                let key_vec_1 = vreinterpretq_u64_u8(vld1q_u8!(secret[idx].as_ptr()));
+                let key_vec_2 =
+                    vreinterpretq_u64_u8(vld1q_u8!(secret[idx.wrapping_add(1)].as_ptr()));
                 /* data_swap = swap(data_vec) */
                 let data_swap_1 = vextq_u64(data_vec_1, data_vec_1, 1);
                 let data_swap_2 = vextq_u64(data_vec_2, data_vec_2, 1);
@@ -475,7 +522,7 @@ pub mod xxh3 {
 
                 let unzipped = vuzpq_u32(
                     vreinterpretq_u32_u64(data_key_1),
-                    vreinterpretq_u32_u64(data_key_2)
+                    vreinterpretq_u32_u64(data_key_2),
                 );
                 /* data_key_lo = data_key & 0xFFFFFFFF */
                 let data_key_lo = unzipped.0;
@@ -483,14 +530,23 @@ pub mod xxh3 {
                 let data_key_hi = unzipped.1;
 
                 //xxhash does it with inline assembly, but idk if I want to embed it here
-                let sum_1 = vmlal_u32(data_swap_1, vget_low_u32(data_key_lo), vget_low_u32(data_key_hi));
+                let sum_1 = vmlal_u32(
+                    data_swap_1,
+                    vget_low_u32(data_key_lo),
+                    vget_low_u32(data_key_hi),
+                );
                 #[cfg(target_arch = "aarch64")]
                 let sum_2 = vmlal_high_u32(data_swap_2, data_key_lo, data_key_hi);
                 #[cfg(target_arch = "arm")]
-                let sum_2 = vmlal_u32(data_swap_2, vget_high_u32(data_key_lo), vget_high_u32(data_key_hi));
+                let sum_2 = vmlal_u32(
+                    data_swap_2,
+                    vget_high_u32(data_key_lo),
+                    vget_high_u32(data_key_hi),
+                );
 
                 xacc.add(idx).write(vaddq_u64(*xacc.add(idx), sum_1));
-                xacc.add(idx.wrapping_add(1)).write(vaddq_u64(*xacc.add(idx.wrapping_add(1)), sum_2));
+                xacc.add(idx.wrapping_add(1))
+                    .write(vaddq_u64(*xacc.add(idx.wrapping_add(1)), sum_2));
 
                 idx = idx.wrapping_add(2);
             }
@@ -515,7 +571,7 @@ pub mod xxh3 {
                 let data_key_lo = _mm_shuffle_epi32(data_key, _mm_shuffle(0, 3, 0, 1));
                 let product = _mm_mul_epu32(data_key, data_key_lo);
 
-                let data_swap = _mm_shuffle_epi32(data_vec, _mm_shuffle(1,0,3,2));
+                let data_swap = _mm_shuffle_epi32(data_vec, _mm_shuffle(1, 0, 3, 2));
                 let sum = _mm_add_epi64(*xacc.add(idx), data_swap);
                 xacc.add(idx).write(_mm_add_epi64(product, sum));
             }
@@ -540,34 +596,47 @@ pub mod xxh3 {
                 let data_key_lo = _mm256_srli_epi64(data_key, 32);
                 let product = _mm256_mul_epu32(data_key, data_key_lo);
 
-                let data_swap = _mm256_shuffle_epi32(data_vec, _mm_shuffle(1,0,3,2));
+                let data_swap = _mm256_shuffle_epi32(data_vec, _mm_shuffle(1, 0, 3, 2));
                 let sum = _mm256_add_epi64(*xacc.add(idx), data_swap);
                 xacc.add(idx).write(_mm256_add_epi64(product, sum));
             }
         }
     }
 
-    #[cfg(not(any(target_feature = "avx2", target_feature = "sse2", target_feature = "neon", all(target_family = "wasm", target_feature = "simd128"))))]
+    #[cfg(not(any(
+        target_feature = "avx2",
+        target_feature = "sse2",
+        target_feature = "neon",
+        all(target_family = "wasm", target_feature = "simd128")
+    )))]
     fn accumulate_512_scalar(acc: &mut Acc, input: &[[u8; 8]; ACC_NB], secret: &[[u8; 8]; ACC_NB]) {
         for idx in 0..ACC_NB {
             let data_val = u64::from_ne_bytes(input[idx]).to_le();
             let data_key = data_val ^ u64::from_ne_bytes(secret[idx]).to_le();
 
             acc.0[idx ^ 1] = acc.0[idx ^ 1].wrapping_add(data_val);
-            acc.0[idx] = acc.0[idx].wrapping_add(mult32_to64((data_key & 0xFFFFFFFF) as u32, (data_key >> 32) as u32));
+            acc.0[idx] = acc.0[idx].wrapping_add(mult32_to64(
+                (data_key & 0xFFFFFFFF) as u32,
+                (data_key >> 32) as u32,
+            ));
         }
     }
 
-    #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
-    use accumulate_512_wasm as accumulate_512;
-    #[cfg(target_feature = "neon")]
-    use accumulate_512_neon as accumulate_512;
-    #[cfg(all(target_feature = "sse2", not(target_feature = "avx2")))]
-    use accumulate_512_sse2 as accumulate_512;
     #[cfg(target_feature = "avx2")]
     use accumulate_512_avx2 as accumulate_512;
-    #[cfg(not(any(target_feature = "avx2", target_feature = "sse2", target_feature = "neon", all(target_family = "wasm", target_feature = "simd128"))))]
+    #[cfg(target_feature = "neon")]
+    use accumulate_512_neon as accumulate_512;
+    #[cfg(not(any(
+        target_feature = "avx2",
+        target_feature = "sse2",
+        target_feature = "neon",
+        all(target_family = "wasm", target_feature = "simd128")
+    )))]
     use accumulate_512_scalar as accumulate_512;
+    #[cfg(all(target_feature = "sse2", not(target_feature = "avx2")))]
+    use accumulate_512_sse2 as accumulate_512;
+    #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
+    use accumulate_512_wasm as accumulate_512;
 
     #[cfg(all(target_family = "wasm", target_feature = "simd128"))]
     fn scramble_acc_wasm(acc: &mut Acc, secret: &StripeLanes) {
@@ -592,10 +661,10 @@ pub mod xxh3 {
     fn scramble_acc_neon(acc: &mut Acc, secret: &StripeLanes) {
         //Full Neon version from xxhash source
         unsafe {
-            #[cfg(target_arch = "arm")]
-            use core::arch::arm::*;
             #[cfg(target_arch = "aarch64")]
             use core::arch::aarch64::*;
+            #[cfg(target_arch = "arm")]
+            use core::arch::arm::*;
 
             let xacc = acc.0.as_mut_ptr() as *mut uint64x2_t;
 
@@ -604,19 +673,23 @@ pub mod xxh3 {
 
             for idx in 0..secret.len() {
                 /* xacc[i] ^= (xacc[i] >> 47); */
-                let acc_vec  = *xacc.add(idx);
-                let shifted  = vshrq_n_u64(acc_vec, 47);
+                let acc_vec = *xacc.add(idx);
+                let shifted = vshrq_n_u64(acc_vec, 47);
                 let data_vec = veorq_u64(acc_vec, shifted);
 
                 /* xacc[i] ^= xsecret[i]; */
                 //According to xxhash sources you can do unaligned read here
                 //but since Rust is kinda retarded about unaligned reads I'll avoid it for now
-                let key_vec  = vreinterpretq_u64_u8(vld1q_u8!(secret[idx].as_ptr()));
+                let key_vec = vreinterpretq_u64_u8(vld1q_u8!(secret[idx].as_ptr()));
                 let data_key = veorq_u64(data_vec, key_vec);
 
                 let prod_hi = vmulq_u32(vreinterpretq_u32_u64(data_key), prime_hi);
                 let data_key_lo = vmovn_u64(data_key);
-                xacc.add(idx).write(vmlal_u32(vreinterpretq_u64_u32(prod_hi), data_key_lo, prime_low));
+                xacc.add(idx).write(vmlal_u32(
+                    vreinterpretq_u64_u32(prod_hi),
+                    data_key_lo,
+                    prime_low,
+                ));
             }
         }
     }
@@ -644,7 +717,8 @@ pub mod xxh3 {
                 let data_key_hi = _mm_shuffle_epi32(data_key, _mm_shuffle(0, 3, 0, 1));
                 let prod_lo = _mm_mul_epu32(data_key, prime32);
                 let prod_hi = _mm_mul_epu32(data_key_hi, prime32);
-                xacc.add(idx).write(_mm_add_epi64(prod_lo, _mm_slli_epi64(prod_hi, 32)));
+                xacc.add(idx)
+                    .write(_mm_add_epi64(prod_lo, _mm_slli_epi64(prod_hi, 32)));
             }
         }
     }
@@ -671,12 +745,18 @@ pub mod xxh3 {
                 let data_key_hi = _mm256_srli_epi64(data_key, 32);
                 let prod_lo = _mm256_mul_epu32(data_key, prime32);
                 let prod_hi = _mm256_mul_epu32(data_key_hi, prime32);
-                xacc.add(idx).write(_mm256_add_epi64(prod_lo, _mm256_slli_epi64(prod_hi, 32)));
+                xacc.add(idx)
+                    .write(_mm256_add_epi64(prod_lo, _mm256_slli_epi64(prod_hi, 32)));
             }
         }
     }
 
-    #[cfg(not(any(target_feature = "avx2", target_feature = "sse2", target_feature = "neon", all(target_family = "wasm", target_feature = "simd128"))))]
+    #[cfg(not(any(
+        target_feature = "avx2",
+        target_feature = "sse2",
+        target_feature = "neon",
+        all(target_family = "wasm", target_feature = "simd128")
+    )))]
     fn scramble_acc_scalar(acc: &mut Acc, secret: &[[u8; 8]; ACC_NB]) {
         for idx in 0..secret.len() {
             let key = u64::from_ne_bytes(secret[idx]).to_le();
@@ -698,7 +778,12 @@ pub mod xxh3 {
     #[cfg(target_feature = "avx2")]
     use scramble_acc_avx2 as scramble_acc;
 
-    #[cfg(not(any(target_feature = "avx2", target_feature = "sse2", target_feature = "neon", all(target_family = "wasm", target_feature = "simd128"))))]
+    #[cfg(not(any(
+        target_feature = "avx2",
+        target_feature = "sse2",
+        target_feature = "neon",
+        all(target_family = "wasm", target_feature = "simd128")
+    )))]
     use scramble_acc_scalar as scramble_acc;
 
     #[inline(always)]
@@ -709,9 +794,10 @@ pub mod xxh3 {
                 //Miri complains about it for dumb reason so for not turn off prefetch
                 //_mm_prefetch(input as _, 320);
 
-                accumulate_512(acc,
-                               &*(input as *const _),
-                               &*(secret.add(idx * SECRET_CONSUME_RATE) as *const _)
+                accumulate_512(
+                    acc,
+                    &*(input as *const _),
+                    &*(secret.add(idx * SECRET_CONSUME_RATE) as *const _),
                 );
             }
         }
@@ -724,8 +810,16 @@ pub mod xxh3 {
         let nb_blocks = (input.len() - 1) / block_len;
 
         for idx in 0..nb_blocks {
-            accumulate_loop(acc, slice_offset_ptr!(input, idx * block_len), secret.as_ptr(), nb_stripes);
-            scramble_acc(acc, get_aligned_chunk_ref(secret, secret.len() - STRIPE_LEN));
+            accumulate_loop(
+                acc,
+                slice_offset_ptr!(input, idx * block_len),
+                secret.as_ptr(),
+                nb_stripes,
+            );
+            scramble_acc(
+                acc,
+                get_aligned_chunk_ref(secret, secret.len() - STRIPE_LEN),
+            );
         }
 
         //last partial block
@@ -733,23 +827,36 @@ pub mod xxh3 {
 
         let nb_stripes = ((input.len() - 1) - (block_len * nb_blocks)) / STRIPE_LEN;
         debug_assert!(nb_stripes <= (secret.len() / SECRET_CONSUME_RATE));
-        accumulate_loop(acc, slice_offset_ptr!(input, nb_blocks * block_len), secret.as_ptr(), nb_stripes);
+        accumulate_loop(
+            acc,
+            slice_offset_ptr!(input, nb_blocks * block_len),
+            secret.as_ptr(),
+            nb_stripes,
+        );
 
         //last stripe
-        accumulate_512(acc, get_aligned_chunk_ref(input, input.len() - STRIPE_LEN), get_aligned_chunk_ref(secret, secret.len() - STRIPE_LEN - SECRET_LASTACC_START));
+        accumulate_512(
+            acc,
+            get_aligned_chunk_ref(input, input.len() - STRIPE_LEN),
+            get_aligned_chunk_ref(secret, secret.len() - STRIPE_LEN - SECRET_LASTACC_START),
+        );
     }
 
     #[inline(always)]
     fn xxh3_64_1to3(input: &[u8], seed: u64, secret: &[u8]) -> u64 {
-        let c1; let c2; let c3;
+        let c1;
+        let c2;
+        let c3;
         unsafe {
             c1 = *input.get_unchecked(0);
             c2 = *input.get_unchecked(input.len() >> 1);
             c3 = *input.get_unchecked(input.len() - 1);
         };
 
-        let combo = (c1 as u32) << 16 | (c2 as u32) << 24 | (c3 as u32) << 0 | (input.len() as u32) << 8;
-        let flip = ((read_32le_unaligned(secret, 0) ^ read_32le_unaligned(secret, 4)) as u64).wrapping_add(seed);
+        let combo =
+            (c1 as u32) << 16 | (c2 as u32) << 24 | (c3 as u32) << 0 | (input.len() as u32) << 8;
+        let flip = ((read_32le_unaligned(secret, 0) ^ read_32le_unaligned(secret, 4)) as u64)
+            .wrapping_add(seed);
         xxh64::avalanche((combo as u64) ^ flip)
     }
 
@@ -762,7 +869,8 @@ pub mod xxh3 {
         let input1 = read_32le_unaligned(input, 0);
         let input2 = read_32le_unaligned(input, input.len() - 4);
 
-        let flip = (read_64le_unaligned(secret, 8) ^ read_64le_unaligned(secret, 16)).wrapping_sub(seed);
+        let flip =
+            (read_64le_unaligned(secret, 8) ^ read_64le_unaligned(secret, 16)).wrapping_sub(seed);
         let input64 = (input2 as u64).wrapping_add((input1 as u64) << 32);
         let keyed = input64 ^ flip;
 
@@ -773,13 +881,16 @@ pub mod xxh3 {
     fn xxh3_64_9to16(input: &[u8], seed: u64, secret: &[u8]) -> u64 {
         debug_assert!(input.len() >= 9 && input.len() <= 16);
 
-        let flip1 = (read_64le_unaligned(secret, 24) ^ read_64le_unaligned(secret, 32)).wrapping_add(seed);
-        let flip2 = (read_64le_unaligned(secret, 40) ^ read_64le_unaligned(secret, 48)).wrapping_sub(seed);
+        let flip1 =
+            (read_64le_unaligned(secret, 24) ^ read_64le_unaligned(secret, 32)).wrapping_add(seed);
+        let flip2 =
+            (read_64le_unaligned(secret, 40) ^ read_64le_unaligned(secret, 48)).wrapping_sub(seed);
 
         let input_lo = read_64le_unaligned(input, 0) ^ flip1;
         let input_hi = read_64le_unaligned(input, input.len() - 8) ^ flip2;
 
-        let acc = (input.len() as u64).wrapping_add(input_lo.swap_bytes())
+        let acc = (input.len() as u64)
+            .wrapping_add(input_lo.swap_bytes())
             .wrapping_add(input_hi)
             .wrapping_add(mul128_fold64(input_lo, input_hi));
 
@@ -795,7 +906,9 @@ pub mod xxh3 {
         } else if input.len() > 0 {
             xxh3_64_1to3(input, seed, secret)
         } else {
-            xxh64::avalanche(seed ^ (read_64le_unaligned(secret, 56) ^ read_64le_unaligned(secret, 64)))
+            xxh64::avalanche(
+                seed ^ (read_64le_unaligned(secret, 56) ^ read_64le_unaligned(secret, 64)),
+            )
         }
     }
 
@@ -809,48 +922,48 @@ pub mod xxh3 {
                     acc = acc.wrapping_add(mix16_b(
                         get_aligned_chunk_ref(input, 48),
                         get_aligned_chunk_ref(secret, 96),
-                        seed
+                        seed,
                     ));
                     acc = acc.wrapping_add(mix16_b(
                         get_aligned_chunk_ref(input, input.len() - 64),
                         get_aligned_chunk_ref(secret, 112),
-                        seed
+                        seed,
                     ));
                 }
 
                 acc = acc.wrapping_add(mix16_b(
                     get_aligned_chunk_ref(input, 32),
                     get_aligned_chunk_ref(secret, 64),
-                    seed
+                    seed,
                 ));
                 acc = acc.wrapping_add(mix16_b(
                     get_aligned_chunk_ref(input, input.len() - 48),
                     get_aligned_chunk_ref(secret, 80),
-                    seed
+                    seed,
                 ));
             }
 
             acc = acc.wrapping_add(mix16_b(
                 get_aligned_chunk_ref(input, 16),
                 get_aligned_chunk_ref(secret, 32),
-                seed
+                seed,
             ));
             acc = acc.wrapping_add(mix16_b(
                 get_aligned_chunk_ref(input, input.len() - 32),
                 get_aligned_chunk_ref(secret, 48),
-                seed
+                seed,
             ));
         }
 
         acc = acc.wrapping_add(mix16_b(
             get_aligned_chunk_ref(input, 0),
             get_aligned_chunk_ref(secret, 0),
-            seed
+            seed,
         ));
         acc = acc.wrapping_add(mix16_b(
             get_aligned_chunk_ref(input, input.len() - 16),
             get_aligned_chunk_ref(secret, 16),
-            seed
+            seed,
         ));
 
         avalanche(acc)
@@ -867,35 +980,29 @@ pub mod xxh3 {
 
         let mut idx = 0;
         while idx < 8 {
-            acc = acc.wrapping_add(
-                mix16_b(
-                    get_aligned_chunk_ref(input, 16*idx),
-                    get_aligned_chunk_ref(secret, 16*idx),
-                    seed
-                )
-            );
+            acc = acc.wrapping_add(mix16_b(
+                get_aligned_chunk_ref(input, 16 * idx),
+                get_aligned_chunk_ref(secret, 16 * idx),
+                seed,
+            ));
             idx = idx.wrapping_add(1);
         }
         acc = avalanche(acc);
 
         while idx < nb_rounds {
-            acc = acc.wrapping_add(
-                mix16_b(
-                    get_aligned_chunk_ref(input, 16*idx),
-                    get_aligned_chunk_ref(secret, 16*(idx-8) + START_OFFSET),
-                    seed
-                )
-            );
+            acc = acc.wrapping_add(mix16_b(
+                get_aligned_chunk_ref(input, 16 * idx),
+                get_aligned_chunk_ref(secret, 16 * (idx - 8) + START_OFFSET),
+                seed,
+            ));
             idx = idx.wrapping_add(1);
         }
 
-        acc = acc.wrapping_add(
-            mix16_b(
-                get_aligned_chunk_ref(input, input.len()-16),
-                get_aligned_chunk_ref(secret, SECRET_SIZE_MIN-LAST_OFFSET),
-                seed
-            )
-        );
+        acc = acc.wrapping_add(mix16_b(
+            get_aligned_chunk_ref(input, input.len() - 16),
+            get_aligned_chunk_ref(secret, SECRET_SIZE_MIN - LAST_OFFSET),
+            seed,
+        ));
 
         avalanche(acc)
     }
@@ -921,7 +1028,11 @@ pub mod xxh3 {
 
         hash_long_internal_loop(&mut acc, input, secret);
 
-        merge_accs(&mut acc, get_aligned_chunk_ref(secret, SECRET_MERGEACCS_START), (input.len() as u64).wrapping_mul(xxh64::PRIME_1))
+        merge_accs(
+            &mut acc,
+            get_aligned_chunk_ref(secret, SECRET_MERGEACCS_START),
+            (input.len() as u64).wrapping_mul(xxh64::PRIME_1),
+        )
     }
 
     #[inline(never)]
@@ -973,17 +1084,41 @@ pub mod xxh3 {
 
     #[inline]
     //Internal function shared between Xxh3 and Xxh3Default
-    fn xxh3_stateful_consume_stripes(acc: &mut Acc, nb_stripes: usize, nb_stripes_acc: usize, input: *const u8, secret: &[u8; DEFAULT_SECRET_SIZE]) -> usize {
+    fn xxh3_stateful_consume_stripes(
+        acc: &mut Acc,
+        nb_stripes: usize,
+        nb_stripes_acc: usize,
+        input: *const u8,
+        secret: &[u8; DEFAULT_SECRET_SIZE],
+    ) -> usize {
         if (STRIPES_PER_BLOCK - nb_stripes_acc) <= nb_stripes {
             let stripes_to_end = STRIPES_PER_BLOCK - nb_stripes_acc;
             let stripes_after_end = nb_stripes - stripes_to_end;
 
-            accumulate_loop(acc, input, slice_offset_ptr!(secret, nb_stripes_acc * SECRET_CONSUME_RATE), stripes_to_end);
-            scramble_acc(acc, get_aligned_chunk_ref(secret, DEFAULT_SECRET_SIZE - STRIPE_LEN));
-            accumulate_loop(acc, unsafe { input.add(stripes_to_end * STRIPE_LEN) }, secret.as_ptr(), stripes_after_end);
+            accumulate_loop(
+                acc,
+                input,
+                slice_offset_ptr!(secret, nb_stripes_acc * SECRET_CONSUME_RATE),
+                stripes_to_end,
+            );
+            scramble_acc(
+                acc,
+                get_aligned_chunk_ref(secret, DEFAULT_SECRET_SIZE - STRIPE_LEN),
+            );
+            accumulate_loop(
+                acc,
+                unsafe { input.add(stripes_to_end * STRIPE_LEN) },
+                secret.as_ptr(),
+                stripes_after_end,
+            );
             stripes_after_end
         } else {
-            accumulate_loop(acc, input, slice_offset_ptr!(secret, nb_stripes_acc * SECRET_CONSUME_RATE), nb_stripes);
+            accumulate_loop(
+                acc,
+                input,
+                slice_offset_ptr!(secret, nb_stripes_acc * SECRET_CONSUME_RATE),
+                nb_stripes,
+            );
             nb_stripes_acc.wrapping_add(nb_stripes)
         }
     }
@@ -994,9 +1129,10 @@ pub mod xxh3 {
         input: &[u8],
         total_len: &mut u64,
         acc: &mut Acc,
-        buffer: &mut Aligned64<[mem::MaybeUninit<u8>; INTERNAL_BUFFER_SIZE]>, buffered_size: &mut u16,
+        buffer: &mut Aligned64<[mem::MaybeUninit<u8>; INTERNAL_BUFFER_SIZE]>,
+        buffered_size: &mut u16,
         nb_stripes_acc: &mut usize,
-        secret: &Aligned64<[u8; DEFAULT_SECRET_SIZE]>
+        secret: &Aligned64<[u8; DEFAULT_SECRET_SIZE]>,
     ) {
         const INTERNAL_BUFFER_STRIPES: usize = INTERNAL_BUFFER_SIZE / STRIPE_LEN;
 
@@ -1006,7 +1142,11 @@ pub mod xxh3 {
 
         if (input_len + *buffered_size as usize) <= INTERNAL_BUFFER_SIZE {
             unsafe {
-                ptr::copy_nonoverlapping(input_ptr, (buffer.0.as_mut_ptr() as *mut u8).offset(*buffered_size as isize), input_len)
+                ptr::copy_nonoverlapping(
+                    input_ptr,
+                    (buffer.0.as_mut_ptr() as *mut u8).offset(*buffered_size as isize),
+                    input_len,
+                )
             }
             *buffered_size += input_len as u16;
             return;
@@ -1016,12 +1156,22 @@ pub mod xxh3 {
             let fill_len = INTERNAL_BUFFER_SIZE - *buffered_size as usize;
 
             unsafe {
-                ptr::copy_nonoverlapping(input_ptr, (buffer.0.as_mut_ptr() as *mut u8).offset(*buffered_size as isize), fill_len);
+                ptr::copy_nonoverlapping(
+                    input_ptr,
+                    (buffer.0.as_mut_ptr() as *mut u8).offset(*buffered_size as isize),
+                    fill_len,
+                );
                 input_ptr = input_ptr.add(fill_len);
                 input_len -= fill_len;
             }
 
-            *nb_stripes_acc = xxh3_stateful_consume_stripes(acc, INTERNAL_BUFFER_STRIPES, *nb_stripes_acc, buffer.0.as_ptr() as *const u8, &secret.0);
+            *nb_stripes_acc = xxh3_stateful_consume_stripes(
+                acc,
+                INTERNAL_BUFFER_STRIPES,
+                *nb_stripes_acc,
+                buffer.0.as_ptr() as *const u8,
+                &secret.0,
+            );
 
             *buffered_size = 0;
         }
@@ -1029,10 +1179,14 @@ pub mod xxh3 {
         debug_assert_ne!(input_len, 0);
         if input_len > INTERNAL_BUFFER_SIZE {
             loop {
-                *nb_stripes_acc = xxh3_stateful_consume_stripes(acc, INTERNAL_BUFFER_STRIPES, *nb_stripes_acc, input_ptr, &secret.0);
-                input_ptr = unsafe {
-                    input_ptr.add(INTERNAL_BUFFER_SIZE)
-                };
+                *nb_stripes_acc = xxh3_stateful_consume_stripes(
+                    acc,
+                    INTERNAL_BUFFER_STRIPES,
+                    *nb_stripes_acc,
+                    input_ptr,
+                    &secret.0,
+                );
+                input_ptr = unsafe { input_ptr.add(INTERNAL_BUFFER_SIZE) };
                 input_len = input_len - INTERNAL_BUFFER_SIZE;
 
                 if input_len <= INTERNAL_BUFFER_SIZE {
@@ -1041,28 +1195,46 @@ pub mod xxh3 {
             }
 
             unsafe {
-                ptr::copy_nonoverlapping(input_ptr.offset(-(STRIPE_LEN as isize)), (buffer.0.as_mut_ptr() as *mut u8).add(buffer.0.len() - STRIPE_LEN), STRIPE_LEN)
+                ptr::copy_nonoverlapping(
+                    input_ptr.offset(-(STRIPE_LEN as isize)),
+                    (buffer.0.as_mut_ptr() as *mut u8).add(buffer.0.len() - STRIPE_LEN),
+                    STRIPE_LEN,
+                )
             }
         }
 
         debug_assert_ne!(input_len, 0);
         debug_assert_eq!(*buffered_size, 0);
-        unsafe {
-            ptr::copy_nonoverlapping(input_ptr, buffer.0.as_mut_ptr() as *mut u8, input_len)
-        }
+        unsafe { ptr::copy_nonoverlapping(input_ptr, buffer.0.as_mut_ptr() as *mut u8, input_len) }
         *buffered_size = input_len as u16;
     }
 
     #[inline(always)]
     //Internal function shared between Xxh3 and Xxh3Default
-    fn xxh3_stateful_digest_internal(acc: &mut Acc, nb_stripes_acc: usize, buffer: &[u8], old_buffer: &[mem::MaybeUninit<u8>], secret: &Aligned64<[u8; DEFAULT_SECRET_SIZE]>) {
+    fn xxh3_stateful_digest_internal(
+        acc: &mut Acc,
+        nb_stripes_acc: usize,
+        buffer: &[u8],
+        old_buffer: &[mem::MaybeUninit<u8>],
+        secret: &Aligned64<[u8; DEFAULT_SECRET_SIZE]>,
+    ) {
         if buffer.len() >= STRIPE_LEN {
             let nb_stripes = (buffer.len() - 1) / STRIPE_LEN;
-            xxh3_stateful_consume_stripes(acc, nb_stripes, nb_stripes_acc, buffer.as_ptr(), &secret.0);
+            xxh3_stateful_consume_stripes(
+                acc,
+                nb_stripes,
+                nb_stripes_acc,
+                buffer.as_ptr(),
+                &secret.0,
+            );
 
-            accumulate_512(acc,
-                           get_aligned_chunk_ref(buffer, buffer.len() - STRIPE_LEN),
-                           get_aligned_chunk_ref(&secret.0, DEFAULT_SECRET_SIZE - STRIPE_LEN - SECRET_LASTACC_START)
+            accumulate_512(
+                acc,
+                get_aligned_chunk_ref(buffer, buffer.len() - STRIPE_LEN),
+                get_aligned_chunk_ref(
+                    &secret.0,
+                    DEFAULT_SECRET_SIZE - STRIPE_LEN - SECRET_LASTACC_START,
+                ),
             );
         } else {
             let mut last_stripe = mem::MaybeUninit::<[u8; STRIPE_LEN]>::uninit();
@@ -1070,12 +1242,31 @@ pub mod xxh3 {
             debug_assert!(buffer.len() > 0);
 
             let last_stripe = unsafe {
-                ptr::copy_nonoverlapping((old_buffer.as_ptr() as *const u8).add(INTERNAL_BUFFER_SIZE - buffer.len() - catchup_size), last_stripe.as_mut_ptr() as _, catchup_size);
-                ptr::copy_nonoverlapping(buffer.as_ptr(), (last_stripe.as_mut_ptr() as *mut u8).add(catchup_size), buffer.len());
-                slice::from_raw_parts(last_stripe.as_ptr() as *const u8, buffer.len() + catchup_size)
+                ptr::copy_nonoverlapping(
+                    (old_buffer.as_ptr() as *const u8)
+                        .add(INTERNAL_BUFFER_SIZE - buffer.len() - catchup_size),
+                    last_stripe.as_mut_ptr() as _,
+                    catchup_size,
+                );
+                ptr::copy_nonoverlapping(
+                    buffer.as_ptr(),
+                    (last_stripe.as_mut_ptr() as *mut u8).add(catchup_size),
+                    buffer.len(),
+                );
+                slice::from_raw_parts(
+                    last_stripe.as_ptr() as *const u8,
+                    buffer.len() + catchup_size,
+                )
             };
 
-            accumulate_512(acc, get_aligned_chunk_ref(&last_stripe, 0), get_aligned_chunk_ref(&secret.0, DEFAULT_SECRET_SIZE - STRIPE_LEN - SECRET_LASTACC_START));
+            accumulate_512(
+                acc,
+                get_aligned_chunk_ref(&last_stripe, 0),
+                get_aligned_chunk_ref(
+                    &secret.0,
+                    DEFAULT_SECRET_SIZE - STRIPE_LEN - SECRET_LASTACC_START,
+                ),
+            );
         }
     }
 
@@ -1120,44 +1311,76 @@ pub mod xxh3 {
         #[inline(always)]
         fn buffered_input(&self) -> &[u8] {
             let ptr = self.buffer.0.as_ptr();
-            unsafe {
-                slice::from_raw_parts(ptr as *const u8, self.buffered_size as usize)
-            }
+            unsafe { slice::from_raw_parts(ptr as *const u8, self.buffered_size as usize) }
         }
 
         #[inline(always)]
         fn processed_buffer(&self) -> &[mem::MaybeUninit<u8>] {
             let ptr = self.buffer.0.as_ptr();
             unsafe {
-                slice::from_raw_parts(ptr.add(self.buffered_size as usize), self.buffer.0.len() - self.buffered_size as usize)
+                slice::from_raw_parts(
+                    ptr.add(self.buffered_size as usize),
+                    self.buffer.0.len() - self.buffered_size as usize,
+                )
             }
         }
 
         #[inline(always)]
         ///Hashes provided chunk
         pub fn update(&mut self, input: &[u8]) {
-            xxh3_stateful_update(input, &mut self.total_len, &mut self.acc, &mut self.buffer, &mut self.buffered_size, &mut self.nb_stripes_acc, &Self::DEFAULT_SECRET);
+            xxh3_stateful_update(
+                input,
+                &mut self.total_len,
+                &mut self.acc,
+                &mut self.buffer,
+                &mut self.buffered_size,
+                &mut self.nb_stripes_acc,
+                &Self::DEFAULT_SECRET,
+            );
         }
 
         #[inline(never)]
         fn digest_mid_sized(&self) -> u64 {
             let mut acc = self.acc.clone();
-            xxh3_stateful_digest_internal(&mut acc, self.nb_stripes_acc, self.buffered_input(), self.processed_buffer(), &Self::DEFAULT_SECRET);
+            xxh3_stateful_digest_internal(
+                &mut acc,
+                self.nb_stripes_acc,
+                self.buffered_input(),
+                self.processed_buffer(),
+                &Self::DEFAULT_SECRET,
+            );
 
-            merge_accs(&mut acc, get_aligned_chunk_ref(&Self::DEFAULT_SECRET.0, SECRET_MERGEACCS_START),
-                       self.total_len.wrapping_mul(xxh64::PRIME_1))
+            merge_accs(
+                &mut acc,
+                get_aligned_chunk_ref(&Self::DEFAULT_SECRET.0, SECRET_MERGEACCS_START),
+                self.total_len.wrapping_mul(xxh64::PRIME_1),
+            )
         }
 
         #[inline(never)]
         fn digest_mid_sized_128(&self) -> u128 {
             let mut acc = self.acc.clone();
-            xxh3_stateful_digest_internal(&mut acc, self.nb_stripes_acc, self.buffered_input(), self.processed_buffer(), &Self::DEFAULT_SECRET);
+            xxh3_stateful_digest_internal(
+                &mut acc,
+                self.nb_stripes_acc,
+                self.buffered_input(),
+                self.processed_buffer(),
+                &Self::DEFAULT_SECRET,
+            );
 
-            let low = merge_accs(&mut acc, get_aligned_chunk_ref(&Self::DEFAULT_SECRET.0, SECRET_MERGEACCS_START),
-                                 self.total_len.wrapping_mul(xxh64::PRIME_1));
-            let high = merge_accs(&mut acc, get_aligned_chunk_ref(&Self::DEFAULT_SECRET.0,
-                                                                  DEFAULT_SECRET_SIZE - mem::size_of_val(&self.acc) - SECRET_MERGEACCS_START),
-                                  !self.total_len.wrapping_mul(xxh64::PRIME_2));
+            let low = merge_accs(
+                &mut acc,
+                get_aligned_chunk_ref(&Self::DEFAULT_SECRET.0, SECRET_MERGEACCS_START),
+                self.total_len.wrapping_mul(xxh64::PRIME_1),
+            );
+            let high = merge_accs(
+                &mut acc,
+                get_aligned_chunk_ref(
+                    &Self::DEFAULT_SECRET.0,
+                    DEFAULT_SECRET_SIZE - mem::size_of_val(&self.acc) - SECRET_MERGEACCS_START,
+                ),
+                !self.total_len.wrapping_mul(xxh64::PRIME_2),
+            );
             ((high as u128) << 64) | (low as u128)
         }
 
@@ -1168,7 +1391,12 @@ pub mod xxh3 {
             if self.total_len > MID_SIZE_MAX as u64 {
                 self.digest_mid_sized()
             } else {
-                xxh3_64_internal(self.buffered_input(), 0, &Self::DEFAULT_SECRET.0, xxh3_64_long_default)
+                xxh3_64_internal(
+                    self.buffered_input(),
+                    0,
+                    &Self::DEFAULT_SECRET.0,
+                    xxh3_64_long_default,
+                )
             }
         }
 
@@ -1179,7 +1407,12 @@ pub mod xxh3 {
             if self.total_len > MID_SIZE_MAX as u64 {
                 self.digest_mid_sized_128()
             } else {
-                xxh3_128_internal(self.buffered_input(), 0, &Self::DEFAULT_SECRET.0, xxh3_128_long_default)
+                xxh3_128_internal(
+                    self.buffered_input(),
+                    0,
+                    &Self::DEFAULT_SECRET.0,
+                    xxh3_128_long_default,
+                )
             }
         }
     }
@@ -1190,7 +1423,6 @@ pub mod xxh3 {
             Self::new()
         }
     }
-
 
     impl hash::Hasher for Xxh3Default {
         #[inline(always)]
@@ -1281,41 +1513,78 @@ pub mod xxh3 {
         #[inline(always)]
         fn buffered_input(&self) -> &[u8] {
             let ptr = self.buffer.0.as_ptr();
-            unsafe {
-                slice::from_raw_parts(ptr as *const u8, self.buffered_size as usize)
-            }
+            unsafe { slice::from_raw_parts(ptr as *const u8, self.buffered_size as usize) }
         }
 
         #[inline(always)]
         fn processed_buffer(&self) -> &[mem::MaybeUninit<u8>] {
             let ptr = self.buffer.0.as_ptr();
             unsafe {
-                slice::from_raw_parts(ptr.add(self.buffered_size as usize), self.buffer.0.len() - self.buffered_size as usize)
+                slice::from_raw_parts(
+                    ptr.add(self.buffered_size as usize),
+                    self.buffer.0.len() - self.buffered_size as usize,
+                )
             }
         }
 
         #[inline]
         ///Hashes provided chunk
         pub fn update(&mut self, input: &[u8]) {
-            xxh3_stateful_update(input, &mut self.total_len, &mut self.acc, &mut self.buffer, &mut self.buffered_size, &mut self.nb_stripes_acc, &self.custom_secret);
+            xxh3_stateful_update(
+                input,
+                &mut self.total_len,
+                &mut self.acc,
+                &mut self.buffer,
+                &mut self.buffered_size,
+                &mut self.nb_stripes_acc,
+                &self.custom_secret,
+            );
         }
 
         #[inline(never)]
         fn digest_mid_sized(&self) -> u64 {
             let mut acc = self.acc.clone();
-            xxh3_stateful_digest_internal(&mut acc, self.nb_stripes_acc, self.buffered_input(), self.processed_buffer(), &self.custom_secret);
+            xxh3_stateful_digest_internal(
+                &mut acc,
+                self.nb_stripes_acc,
+                self.buffered_input(),
+                self.processed_buffer(),
+                &self.custom_secret,
+            );
 
-            merge_accs(&mut acc, get_aligned_chunk_ref(&self.custom_secret.0, SECRET_MERGEACCS_START),
-                       self.total_len.wrapping_mul(xxh64::PRIME_1))
+            merge_accs(
+                &mut acc,
+                get_aligned_chunk_ref(&self.custom_secret.0, SECRET_MERGEACCS_START),
+                self.total_len.wrapping_mul(xxh64::PRIME_1),
+            )
         }
 
         #[inline(never)]
         fn digest_mid_sized_128(&self) -> u128 {
             let mut acc = self.acc.clone();
-            xxh3_stateful_digest_internal(&mut acc, self.nb_stripes_acc, self.buffered_input(), self.processed_buffer(), &self.custom_secret);
+            xxh3_stateful_digest_internal(
+                &mut acc,
+                self.nb_stripes_acc,
+                self.buffered_input(),
+                self.processed_buffer(),
+                &self.custom_secret,
+            );
 
-            let low = merge_accs(&mut acc, get_aligned_chunk_ref(&self.custom_secret.0, SECRET_MERGEACCS_START), self.total_len.wrapping_mul(xxh64::PRIME_1));
-            let high = merge_accs(&mut acc, get_aligned_chunk_ref(&self.custom_secret.0, self.custom_secret.0.len() - mem::size_of_val(&self.acc) - SECRET_MERGEACCS_START), !self.total_len.wrapping_mul(xxh64::PRIME_2));
+            let low = merge_accs(
+                &mut acc,
+                get_aligned_chunk_ref(&self.custom_secret.0, SECRET_MERGEACCS_START),
+                self.total_len.wrapping_mul(xxh64::PRIME_1),
+            );
+            let high = merge_accs(
+                &mut acc,
+                get_aligned_chunk_ref(
+                    &self.custom_secret.0,
+                    self.custom_secret.0.len()
+                        - mem::size_of_val(&self.acc)
+                        - SECRET_MERGEACCS_START,
+                ),
+                !self.total_len.wrapping_mul(xxh64::PRIME_2),
+            );
             ((high as u128) << 64) | (low as u128)
         }
 
@@ -1328,9 +1597,19 @@ pub mod xxh3 {
             } else if self.seed > 0 {
                 //Technically we should not need to use it.
                 //But in all actuality original xxh3 implementation uses default secret for input with size less or equal to MID_SIZE_MAX
-                xxh3_64_internal(self.buffered_input(), self.seed, &DEFAULT_SECRET, xxh3_64_long_with_seed)
+                xxh3_64_internal(
+                    self.buffered_input(),
+                    self.seed,
+                    &DEFAULT_SECRET,
+                    xxh3_64_long_with_seed,
+                )
             } else {
-                xxh3_64_internal(self.buffered_input(), self.seed, &self.custom_secret.0, xxh3_64_long_with_secret)
+                xxh3_64_internal(
+                    self.buffered_input(),
+                    self.seed,
+                    &self.custom_secret.0,
+                    xxh3_64_long_with_secret,
+                )
             }
         }
 
@@ -1343,9 +1622,19 @@ pub mod xxh3 {
             } else if self.seed > 0 {
                 //Technically we should not need to use it.
                 //But in all actuality original xxh3 implementation uses default secret for input with size less or equal to MID_SIZE_MAX
-                xxh3_128_internal(self.buffered_input(), self.seed, &DEFAULT_SECRET, xxh3_128_long_with_seed)
+                xxh3_128_internal(
+                    self.buffered_input(),
+                    self.seed,
+                    &DEFAULT_SECRET,
+                    xxh3_128_long_with_seed,
+                )
             } else {
-                xxh3_128_internal(self.buffered_input(), self.seed, &self.custom_secret.0, xxh3_128_long_with_secret)
+                xxh3_128_internal(
+                    self.buffered_input(),
+                    self.seed,
+                    &self.custom_secret.0,
+                    xxh3_128_long_with_secret,
+                )
             }
         }
     }
@@ -1381,95 +1670,95 @@ pub mod xxh3 {
             Ok(())
         }
     }
-/*
-    #[derive(Clone, Copy)]
-    ///Hash builder for `Xxh3`
-    pub struct Xxh3Builder {
-        seed: u64,
-        secret: [u8; DEFAULT_SECRET_SIZE],
-    }
+    /*
+        #[derive(Clone, Copy)]
+        ///Hash builder for `Xxh3`
+        pub struct Xxh3Builder {
+            seed: u64,
+            secret: [u8; DEFAULT_SECRET_SIZE],
+        }
 
-    impl Xxh3Builder {
-        #[inline(always)]
-        ///Creates new instance with default params.
-        pub const fn new() -> Self {
-            Self {
-                seed: 0,
-                secret: DEFAULT_SECRET,
+        impl Xxh3Builder {
+            #[inline(always)]
+            ///Creates new instance with default params.
+            pub const fn new() -> Self {
+                Self {
+                    seed: 0,
+                    secret: DEFAULT_SECRET,
+                }
+            }
+
+            #[inline(always)]
+            ///Sets `seed` for `xxh3` algorithm
+            pub const fn with_seed(mut self, seed: u64) -> Self {
+                self.seed = seed;
+                self
+            }
+
+            #[inline(always)]
+            ///Sets custom `secret` for `xxh3` algorithm
+            pub const fn with_secret(mut self, secret: [u8; DEFAULT_SECRET_SIZE]) -> Self {
+                self.secret = secret;
+                self
+            }
+
+            #[inline(always)]
+            ///Creates `Xxh3` instance
+            pub const fn build(self) -> Xxh3 {
+                Xxh3::with_custom_ops(self.seed, self.secret)
             }
         }
 
-        #[inline(always)]
-        ///Sets `seed` for `xxh3` algorithm
-        pub const fn with_seed(mut self, seed: u64) -> Self {
-            self.seed = seed;
-            self
+        impl core::hash::BuildHasher for Xxh3Builder {
+            type Hasher = Xxh3;
+
+            #[inline(always)]
+            fn build_hasher(&self) -> Self::Hasher {
+                self.build()
+            }
         }
 
-        #[inline(always)]
-        ///Sets custom `secret` for `xxh3` algorithm
-        pub const fn with_secret(mut self, secret: [u8; DEFAULT_SECRET_SIZE]) -> Self {
-            self.secret = secret;
-            self
+        impl Default for Xxh3Builder {
+            #[inline(always)]
+            fn default() -> Self {
+                Self::new()
+            }
         }
 
-        #[inline(always)]
-        ///Creates `Xxh3` instance
-        pub const fn build(self) -> Xxh3 {
-            Xxh3::with_custom_ops(self.seed, self.secret)
-        }
-    }
+        #[derive(Clone, Copy)]
+        ///Hash builder for `Xxh3Default`
+        pub struct Xxh3DefaultBuilder;
 
-    impl core::hash::BuildHasher for Xxh3Builder {
-        type Hasher = Xxh3;
+        impl Xxh3DefaultBuilder {
+            #[inline(always)]
+            ///Creates new instance with default params.
+            pub const fn new() -> Self {
+                Self
+            }
 
-        #[inline(always)]
-        fn build_hasher(&self) -> Self::Hasher {
-            self.build()
-        }
-    }
-
-    impl Default for Xxh3Builder {
-        #[inline(always)]
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    #[derive(Clone, Copy)]
-    ///Hash builder for `Xxh3Default`
-    pub struct Xxh3DefaultBuilder;
-
-    impl Xxh3DefaultBuilder {
-        #[inline(always)]
-        ///Creates new instance with default params.
-        pub const fn new() -> Self {
-            Self
+            #[inline(always)]
+            ///Creates `Xxh3` instance
+            pub const fn build(self) -> Xxh3Default {
+                Xxh3Default::new()
+            }
         }
 
-        #[inline(always)]
-        ///Creates `Xxh3` instance
-        pub const fn build(self) -> Xxh3Default {
-            Xxh3Default::new()
-        }
-    }
+        impl core::hash::BuildHasher for Xxh3DefaultBuilder {
+            type Hasher = Xxh3Default;
 
-    impl core::hash::BuildHasher for Xxh3DefaultBuilder {
-        type Hasher = Xxh3Default;
-
-        #[inline(always)]
-        fn build_hasher(&self) -> Self::Hasher {
-            self.build()
+            #[inline(always)]
+            fn build_hasher(&self) -> Self::Hasher {
+                self.build()
+            }
         }
-    }
 
-    impl Default for Xxh3DefaultBuilder {
-        #[inline(always)]
-        fn default() -> Self {
-            Self::new()
+        impl Default for Xxh3DefaultBuilder {
+            #[inline(always)]
+            fn default() -> Self {
+                Self::new()
+            }
         }
-    }
-*/
+    */
     //
     //128bit
     //
@@ -1481,35 +1770,44 @@ pub mod xxh3 {
         hash_long_internal_loop(&mut acc, input, secret);
 
         debug_assert!(secret.len() >= mem::size_of::<Acc>() + SECRET_MERGEACCS_START);
-        let lo = merge_accs(&mut acc, get_aligned_chunk_ref(secret, SECRET_MERGEACCS_START), (input.len() as u64).wrapping_mul(xxh64::PRIME_1));
-        let hi = merge_accs(&mut acc,
-                            get_aligned_chunk_ref(secret, secret.len() - mem::size_of::<Acc>() - SECRET_MERGEACCS_START),
-                            !(input.len() as u64).wrapping_mul(xxh64::PRIME_2));
+        let lo = merge_accs(
+            &mut acc,
+            get_aligned_chunk_ref(secret, SECRET_MERGEACCS_START),
+            (input.len() as u64).wrapping_mul(xxh64::PRIME_1),
+        );
+        let hi = merge_accs(
+            &mut acc,
+            get_aligned_chunk_ref(
+                secret,
+                secret.len() - mem::size_of::<Acc>() - SECRET_MERGEACCS_START,
+            ),
+            !(input.len() as u64).wrapping_mul(xxh64::PRIME_2),
+        );
 
         lo as u128 | (hi as u128) << 64
     }
 
     #[inline(always)]
     fn xxh3_128_9to16(input: &[u8], seed: u64, secret: &[u8]) -> u128 {
-        let flip_lo = (read_64le_unaligned(secret, 32) ^ read_64le_unaligned(secret, 40)).wrapping_sub(seed);
-        let flip_hi = (read_64le_unaligned(secret, 48) ^ read_64le_unaligned(secret, 56)).wrapping_add(seed);
+        let flip_lo =
+            (read_64le_unaligned(secret, 32) ^ read_64le_unaligned(secret, 40)).wrapping_sub(seed);
+        let flip_hi =
+            (read_64le_unaligned(secret, 48) ^ read_64le_unaligned(secret, 56)).wrapping_add(seed);
         let input_lo = read_64le_unaligned(input, 0);
         let mut input_hi = read_64le_unaligned(input, input.len() - 8);
 
-        let (mut mul_low, mut mul_high) = mul64_to128(input_lo ^ input_hi ^ flip_lo, xxh64::PRIME_1);
+        let (mut mul_low, mut mul_high) =
+            mul64_to128(input_lo ^ input_hi ^ flip_lo, xxh64::PRIME_1);
 
         mul_low = mul_low.wrapping_add((input.len() as u64 - 1) << 54);
         input_hi ^= flip_hi;
-        mul_high = mul_high.wrapping_add(
-            input_hi.wrapping_add(mult32_to64(input_hi as u32, xxh32::PRIME_2 - 1))
-        );
+        mul_high = mul_high
+            .wrapping_add(input_hi.wrapping_add(mult32_to64(input_hi as u32, xxh32::PRIME_2 - 1)));
 
         mul_low ^= mul_high.swap_bytes();
 
         let (result_low, mut result_hi) = mul64_to128(mul_low, xxh64::PRIME_2);
-        result_hi = result_hi.wrapping_add(
-            mul_high.wrapping_mul(xxh64::PRIME_2)
-        );
+        result_hi = result_hi.wrapping_add(mul_high.wrapping_mul(xxh64::PRIME_2));
 
         to_u128!(avalanche(result_low), avalanche(result_hi))
     }
@@ -1522,10 +1820,14 @@ pub mod xxh3 {
         let hi = read_32le_unaligned(input, input.len() - 4);
         let input_64 = (lo as u64).wrapping_add((hi as u64) << 32);
 
-        let flip = (read_64le_unaligned(secret, 16) ^ read_64le_unaligned(secret, 24)).wrapping_add(seed);
+        let flip =
+            (read_64le_unaligned(secret, 16) ^ read_64le_unaligned(secret, 24)).wrapping_add(seed);
         let keyed = input_64 ^ flip;
 
-        let (mut lo, mut hi) = mul64_to128(keyed, xxh64::PRIME_1.wrapping_add((input.len() as u64) << 2));
+        let (mut lo, mut hi) = mul64_to128(
+            keyed,
+            xxh64::PRIME_1.wrapping_add((input.len() as u64) << 2),
+        );
 
         hi = hi.wrapping_add(lo << 1);
         lo ^= hi >> 3;
@@ -1539,17 +1841,24 @@ pub mod xxh3 {
 
     #[inline(always)]
     fn xxh3_128_1to3(input: &[u8], seed: u64, secret: &[u8]) -> u128 {
-        let c1; let c2; let c3;
+        let c1;
+        let c2;
+        let c3;
         unsafe {
             c1 = *input.get_unchecked(0);
             c2 = *input.get_unchecked(input.len() >> 1);
             c3 = *input.get_unchecked(input.len() - 1);
         };
-        let input_lo = (c1 as u32) << 16 | (c2 as u32) << 24 | (c3 as u32) << 0 | (input.len() as u32) << 8;
+        let input_lo =
+            (c1 as u32) << 16 | (c2 as u32) << 24 | (c3 as u32) << 0 | (input.len() as u32) << 8;
         let input_hi = input_lo.swap_bytes().rotate_left(13);
 
-        let flip_lo = (read_32le_unaligned(secret, 0) as u64 ^ read_32le_unaligned(secret, 4) as u64).wrapping_add(seed);
-        let flip_hi = (read_32le_unaligned(secret, 8) as u64 ^ read_32le_unaligned(secret, 12) as u64).wrapping_sub(seed);
+        let flip_lo = (read_32le_unaligned(secret, 0) as u64
+            ^ read_32le_unaligned(secret, 4) as u64)
+            .wrapping_add(seed);
+        let flip_hi = (read_32le_unaligned(secret, 8) as u64
+            ^ read_32le_unaligned(secret, 12) as u64)
+            .wrapping_sub(seed);
         let keyed_lo = input_lo as u64 ^ flip_lo;
         let keyed_hi = input_hi as u64 ^ flip_hi;
 
@@ -1567,7 +1876,8 @@ pub mod xxh3 {
         } else {
             let flip_lo = read_64le_unaligned(secret, 64) ^ read_64le_unaligned(secret, 72);
             let flip_hi = read_64le_unaligned(secret, 80) ^ read_64le_unaligned(secret, 88);
-            xxh64::avalanche(seed ^ flip_lo) as u128 | (xxh64::avalanche(seed ^ flip_hi) as u128) << 64
+            xxh64::avalanche(seed ^ flip_lo) as u128
+                | (xxh64::avalanche(seed ^ flip_hi) as u128) << 64
         }
     }
 
@@ -1579,50 +1889,57 @@ pub mod xxh3 {
         if input.len() > 32 {
             if input.len() > 64 {
                 if input.len() > 96 {
-
-                    mix32_b(&mut lo, &mut hi,
-                            get_aligned_chunk_ref(input, 48),
-                            get_aligned_chunk_ref(input, input.len() - 64),
-                            get_aligned_chunk_ref(secret, 96),
-                            seed
+                    mix32_b(
+                        &mut lo,
+                        &mut hi,
+                        get_aligned_chunk_ref(input, 48),
+                        get_aligned_chunk_ref(input, input.len() - 64),
+                        get_aligned_chunk_ref(secret, 96),
+                        seed,
                     );
                 }
 
-                mix32_b(&mut lo, &mut hi,
-                        get_aligned_chunk_ref(input, 32),
-                        get_aligned_chunk_ref(input, input.len() - 48),
-                        get_aligned_chunk_ref(secret, 64),
-                        seed
+                mix32_b(
+                    &mut lo,
+                    &mut hi,
+                    get_aligned_chunk_ref(input, 32),
+                    get_aligned_chunk_ref(input, input.len() - 48),
+                    get_aligned_chunk_ref(secret, 64),
+                    seed,
                 );
             }
 
-            mix32_b(&mut lo, &mut hi,
-                    get_aligned_chunk_ref(input, 16),
-                    get_aligned_chunk_ref(input, input.len() - 32),
-                    get_aligned_chunk_ref(secret, 32),
-                    seed
+            mix32_b(
+                &mut lo,
+                &mut hi,
+                get_aligned_chunk_ref(input, 16),
+                get_aligned_chunk_ref(input, input.len() - 32),
+                get_aligned_chunk_ref(secret, 32),
+                seed,
             );
         }
 
-        mix32_b(&mut lo, &mut hi,
-                get_aligned_chunk_ref(input, 0),
-                get_aligned_chunk_ref(input, input.len() - 16),
-                get_aligned_chunk_ref(secret, 0),
-                seed
+        mix32_b(
+            &mut lo,
+            &mut hi,
+            get_aligned_chunk_ref(input, 0),
+            get_aligned_chunk_ref(input, input.len() - 16),
+            get_aligned_chunk_ref(secret, 0),
+            seed,
         );
 
         to_u128!(
-        avalanche(
-            lo.wrapping_add(hi)
-        ),
-        0u64.wrapping_sub(
-            avalanche(
+            avalanche(lo.wrapping_add(hi)),
+            0u64.wrapping_sub(avalanche(
                 lo.wrapping_mul(xxh64::PRIME_1)
-                  .wrapping_add(hi.wrapping_mul(xxh64::PRIME_4))
-                  .wrapping_add((input.len() as u64).wrapping_sub(seed).wrapping_mul(xxh64::PRIME_2))
-            )
+                    .wrapping_add(hi.wrapping_mul(xxh64::PRIME_4))
+                    .wrapping_add(
+                        (input.len() as u64)
+                            .wrapping_sub(seed)
+                            .wrapping_mul(xxh64::PRIME_2)
+                    )
+            ))
         )
-    )
     }
 
     #[inline(never)]
@@ -1638,11 +1955,13 @@ pub mod xxh3 {
         let mut idx = 0;
         while idx < 4 {
             let offset_idx = 32 * idx;
-            mix32_b(&mut lo, &mut hi,
-                    get_aligned_chunk_ref(input, offset_idx),
-                    get_aligned_chunk_ref(input, offset_idx + 16),
-                    get_aligned_chunk_ref(secret, offset_idx),
-                    seed
+            mix32_b(
+                &mut lo,
+                &mut hi,
+                get_aligned_chunk_ref(input, offset_idx),
+                get_aligned_chunk_ref(input, offset_idx + 16),
+                get_aligned_chunk_ref(secret, offset_idx),
+                seed,
             );
             idx = idx.wrapping_add(1);
         }
@@ -1651,38 +1970,47 @@ pub mod xxh3 {
         hi = avalanche(hi);
 
         while idx < nb_rounds {
-            mix32_b(&mut lo, &mut hi,
-                    get_aligned_chunk_ref(input, 32 * idx),
-                    get_aligned_chunk_ref(input, (32 * idx) + 16),
-                    get_aligned_chunk_ref(secret, START_OFFSET.wrapping_add(32 * (idx - 4))),
-                    seed
+            mix32_b(
+                &mut lo,
+                &mut hi,
+                get_aligned_chunk_ref(input, 32 * idx),
+                get_aligned_chunk_ref(input, (32 * idx) + 16),
+                get_aligned_chunk_ref(secret, START_OFFSET.wrapping_add(32 * (idx - 4))),
+                seed,
             );
             idx = idx.wrapping_add(1);
         }
 
-        mix32_b(&mut lo, &mut hi,
-                get_aligned_chunk_ref(input, input.len() - 16),
-                get_aligned_chunk_ref(input, input.len() - 32),
-                get_aligned_chunk_ref(secret, SECRET_SIZE_MIN - LAST_OFFSET - 16),
-                0u64.wrapping_sub(seed)
+        mix32_b(
+            &mut lo,
+            &mut hi,
+            get_aligned_chunk_ref(input, input.len() - 16),
+            get_aligned_chunk_ref(input, input.len() - 32),
+            get_aligned_chunk_ref(secret, SECRET_SIZE_MIN - LAST_OFFSET - 16),
+            0u64.wrapping_sub(seed),
         );
 
         to_u128!(
-        avalanche(
-            lo.wrapping_add(hi)
-        ),
-        0u64.wrapping_sub(
-            avalanche(
+            avalanche(lo.wrapping_add(hi)),
+            0u64.wrapping_sub(avalanche(
                 lo.wrapping_mul(xxh64::PRIME_1)
-                  .wrapping_add(hi.wrapping_mul(xxh64::PRIME_4))
-                  .wrapping_add((input.len() as u64).wrapping_sub(seed).wrapping_mul(xxh64::PRIME_2))
-            )
+                    .wrapping_add(hi.wrapping_mul(xxh64::PRIME_4))
+                    .wrapping_add(
+                        (input.len() as u64)
+                            .wrapping_sub(seed)
+                            .wrapping_mul(xxh64::PRIME_2)
+                    )
+            ))
         )
-    )
     }
 
     #[inline(always)]
-    fn xxh3_128_internal(input: &[u8], seed: u64, secret: &[u8], long_hash_fn: LongHashFn128) -> u128 {
+    fn xxh3_128_internal(
+        input: &[u8],
+        seed: u64,
+        secret: &[u8],
+        long_hash_fn: LongHashFn128,
+    ) -> u128 {
         debug_assert!(secret.len() >= SECRET_SIZE_MIN);
 
         if input.len() <= 16 {
@@ -1739,7 +2067,7 @@ pub mod xxh3 {
 
 pub enum NoatunHasher {
     Heap(Vec<u8>),
-    Stack(usize,[u8;32])
+    Stack(usize, [u8; 32]),
 }
 impl Default for NoatunHasher {
     fn default() -> Self {
@@ -1748,19 +2076,21 @@ impl Default for NoatunHasher {
 }
 
 impl NoatunHasher {
-    pub fn new() -> Self  {
+    pub fn new() -> Self {
         Self::default()
     }
     pub fn clear(&mut self) {
         match self {
-            NoatunHasher::Heap(v) => {v.clear()}
-            NoatunHasher::Stack(l, _) => {*l = 0;}
+            NoatunHasher::Heap(v) => v.clear(),
+            NoatunHasher::Stack(l, _) => {
+                *l = 0;
+            }
         }
     }
     pub fn get(&self) -> &[u8] {
         match self {
-            NoatunHasher::Heap(v) => {v}
-            NoatunHasher::Stack(l, b) => {&b[..*l]}
+            NoatunHasher::Heap(v) => v,
+            NoatunHasher::Stack(l, b) => &b[..*l],
         }
     }
 }
@@ -1777,7 +2107,7 @@ impl Hasher for NoatunHasher {
                 let self_free = self_data.len() - *self_cur;
                 let a_len = a_bytes.len();
                 if self_free >= a_bytes.len() {
-                    self_data[*self_cur.. *self_cur + a_len].copy_from_slice(a_bytes);
+                    self_data[*self_cur..*self_cur + a_len].copy_from_slice(a_bytes);
                     *self_cur += a_len;
                 } else {
                     let mut self_v = Vec::with_capacity(*self_cur + a_len);
@@ -1792,8 +2122,8 @@ impl Hasher for NoatunHasher {
 
 #[cfg(test)]
 mod xxh3_tests {
-    use std::hash::Hasher;
     use crate::xxh3_vendored::NoatunHasher;
+    use std::hash::Hasher;
 
     #[test]
     fn test_hasher() {
@@ -1815,5 +2145,6 @@ mod xxh3_tests {
         assert_eq!(result, 14901654952795293208);
         let result = crate::xxh3_vendored::xxh3::xxh3_64(b"5678 (Nyctereutes procyonoides) ar ett hunddjur som placeras som ensam art i slaktet Nyctereutes. Den har sitt ursprungliga utbredningsomrade");
         println!("{:?}", result);
-        assert_eq!(result, 3210988261660606264);    }
+        assert_eq!(result, 3210988261660606264);
+    }
 }

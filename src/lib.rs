@@ -17,7 +17,7 @@
 #![allow(clippy::expect_fun_call)]
 #![allow(clippy::needless_late_init)]
 
-use crate::data_types::{NoatunCell};
+use crate::data_types::NoatunCell;
 use crate::sequence_nr::SequenceNr;
 use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -68,7 +68,6 @@ pub(crate) mod disk_access;
 mod sha2_helper;
 mod xxh3_vendored;
 
-
 /// SAFETY requirements:
 /// * Type must not have Drop impl
 /// * Type must have repr(C) or repr(transparent)
@@ -82,8 +81,8 @@ mod xxh3_vendored;
 ///
 /// Note that type is allowed to have padding.
 /// Type is also allowed to contain indices inside the database file (ThinPtr/FatPtr).
-pub unsafe trait NoatunStorable : Sized + 'static {
-    fn zeroed<T:NoatunStorable>() -> T {
+pub unsafe trait NoatunStorable: Sized + 'static {
+    fn zeroed<T: NoatunStorable>() -> T {
         unsafe { MaybeUninit::<T>::zeroed().assume_init() }
     }
     fn copy_from(&mut self, source: &Self) {
@@ -102,10 +101,10 @@ pub unsafe trait NoatunStorable : Sized + 'static {
 
 mod noatun_storable_impls {
     use super::NoatunStorable;
-    macro_rules! make_noatun_storable{
+    macro_rules! make_noatun_storable {
         ($t: ident) => {
             unsafe impl NoatunStorable for $t {}
-        }
+        };
     }
 
     make_noatun_storable!(u8);
@@ -121,8 +120,7 @@ mod noatun_storable_impls {
     make_noatun_storable!(isize);
     make_noatun_storable!(usize);
 
-    unsafe impl<T:NoatunStorable, const N:usize> NoatunStorable for [T;N] {}
-
+    unsafe impl<T: NoatunStorable, const N: usize> NoatunStorable for [T; N] {}
 }
 
 // TODO: Make sure there's no way for the user to safely get at an unpinned instance
@@ -142,12 +140,12 @@ pub struct NoatunContext;
 fn get_context_mut_ptr() -> *mut DatabaseContextData {
     let context_ptr = CONTEXT.get();
     if context_ptr.is_null() {
-        panic!("No NoatunContext is presently available on this thread. The noatun-database \
-               may only be accessed from within Message apply, and from `with_root`-methods.");
+        panic!(
+            "No NoatunContext is presently available on this thread. The noatun-database \
+               may only be accessed from within Message apply, and from `with_root`-methods."
+        );
     }
-    unsafe {
-        (*context_ptr).assert_mutable()
-    }
+    unsafe { (*context_ptr).assert_mutable() }
     context_ptr
 }
 
@@ -261,28 +259,28 @@ impl NoatunContext {
         unsafe { (*context_ptr).allocate_obj() }
     }
 
-    pub unsafe fn access_thin<'a, T:?Sized>(&self, ptr: ThinPtr) -> &'a T {
+    pub unsafe fn access_thin<'a, T: ?Sized>(&self, ptr: ThinPtr) -> &'a T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             panic!("No NoatunContext available");
         }
         unsafe { (*context_ptr).access_thin::<T>(ptr) }
     }
-    pub unsafe fn access_thin_mut<'a, T:?Sized>(&self, ptr: ThinPtr) -> &'a mut T {
+    pub unsafe fn access_thin_mut<'a, T: ?Sized>(&self, ptr: ThinPtr) -> &'a mut T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             panic!("No NoatunContext available");
         }
         unsafe { (*context_ptr).access_thin_mut::<T>(ptr) }
     }
-    pub unsafe fn access_fat<'a, T:?Sized>(&self, ptr: FatPtr) -> &'a T {
+    pub unsafe fn access_fat<'a, T: ?Sized>(&self, ptr: FatPtr) -> &'a T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             panic!("No NoatunContext available");
         }
         unsafe { (*context_ptr).access_fat::<T>(ptr) }
     }
-    pub unsafe fn access_fat_mut<'a, T:?Sized>(&self, ptr: FatPtr) -> &'a mut T {
+    pub unsafe fn access_fat_mut<'a, T: ?Sized>(&self, ptr: FatPtr) -> &'a mut T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             panic!("No NoatunContext available");
@@ -309,7 +307,6 @@ pub struct MessageId {
 }
 
 unsafe impl NoatunStorable for MessageId {}
-
 
 const ASSURE_SUPPORTED_USIZE: () = const {
     if size_of::<usize>() != 8 {
@@ -656,17 +653,13 @@ impl Object for DummyUnitObject {
 
     fn detach(&self) -> Self::DetachedType {}
 
-    fn clear(self: Pin<&mut Self>) {
-
-    }
+    fn clear(self: Pin<&mut Self>) {}
 
     fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {}
 
     unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         unsafe { Pin::new_unchecked(&mut *(1usize as *mut DummyUnitObject)) }
     }
-
-
 }
 
 pub enum GenPtr {
@@ -683,13 +676,12 @@ struct SerializableGenPtr {
 
 unsafe impl NoatunStorable for SerializableGenPtr {}
 
-
 impl From<SerializableGenPtr> for GenPtr {
     fn from(value: SerializableGenPtr) -> Self {
         if value.count == usize::MAX {
             GenPtr::Thin(ThinPtr(value.ptr))
         } else {
-            GenPtr::Fat(FatPtr{
+            GenPtr::Fat(FatPtr {
                 start: value.ptr,
                 count: value.count,
             })
@@ -699,22 +691,17 @@ impl From<SerializableGenPtr> for GenPtr {
 impl From<GenPtr> for SerializableGenPtr {
     fn from(ptr: GenPtr) -> Self {
         match ptr {
-            GenPtr::Thin(t) => {
-                Self {
-                    ptr: t.0,
-                    count: usize::MAX,
-                }
-            }
-            GenPtr::Fat(f) => {
-                Self {
-                    ptr: f.start,
-                    count: f.count,
-                }
-            }
+            GenPtr::Thin(t) => Self {
+                ptr: t.0,
+                count: usize::MAX,
+            },
+            GenPtr::Fat(f) => Self {
+                ptr: f.start,
+                count: f.count,
+            },
         }
     }
 }
-
 
 pub trait Pointer: NoatunStorable + Copy + Debug + 'static {
     fn start(self) -> usize;
@@ -722,8 +709,8 @@ pub trait Pointer: NoatunStorable + Copy + Debug + 'static {
     fn as_generic(&self) -> GenPtr;
     fn is_null(&self) -> bool;
 
-    unsafe fn access<'a, T:?Sized>(&self) -> &'a T;
-    unsafe fn access_mut<'a, T:?Sized>(&self) -> Pin<&'a mut T>;
+    unsafe fn access<'a, T: ?Sized>(&self) -> &'a T;
+    unsafe fn access_mut<'a, T: ?Sized>(&self) -> Pin<&'a mut T>;
 }
 
 pub fn from_bytes<T: NoatunStorable>(s: &[u8]) -> &T {
@@ -745,15 +732,13 @@ pub fn from_bytes_mut<T: NoatunStorable>(s: &mut [u8]) -> &mut T {
     }
 }
 
-pub fn cast_storable<I:NoatunStorable,O:NoatunStorable>(i:I) -> O {
+pub fn cast_storable<I: NoatunStorable, O: NoatunStorable>(i: I) -> O {
     const {
         if size_of::<I>() != size_of::<O>() {
             panic!("Source and destination size must be the same");
         }
     }
-    unsafe {
-        transmute_copy::<I,O>(&i)
-    }
+    unsafe { transmute_copy::<I, O>(&i) }
 }
 
 pub fn bytes_of<T: NoatunStorable>(t: &T) -> &[u8] {
@@ -771,7 +756,6 @@ pub fn bytes_of_mut<T: NoatunStorable>(t: &mut T) -> &mut [u8] {
     unsafe { slice::from_raw_parts_mut(t as *mut _ as *mut u8, size_of::<T>()) }
 }
 pub fn bytes_of_mut_uninit<T: NoatunStorable>(t: &mut MaybeUninit<T>) -> &mut [u8] {
-
     unsafe { magic_initialize_ptr(t as *mut MaybeUninit<T>) };
     // # Safety
     // NoatunStorable instances can always be viewed as a set of by tes
@@ -779,59 +763,47 @@ pub fn bytes_of_mut_uninit<T: NoatunStorable>(t: &mut MaybeUninit<T>) -> &mut [u
     // Just copying uninitialized values is ok, and that's all we'll end up doing.
     unsafe { slice::from_raw_parts_mut(t as *mut _ as *mut u8, size_of::<T>()) }
 }
-pub fn cast_slice_mut<I:NoatunStorable,O:NoatunStorable>(s: &mut [I]) -> &mut [O] {
+pub fn cast_slice_mut<I: NoatunStorable, O: NoatunStorable>(s: &mut [I]) -> &mut [O] {
     const {
         assert!(align_of::<O>() <= align_of::<I>());
     }
     let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
-    assert_eq!(tot_size_i, size_of::<O>()*count_o);
-    unsafe {
-        slice::from_raw_parts_mut(s.as_mut_ptr() as *mut O, count_o)
-    }
+    assert_eq!(tot_size_i, size_of::<O>() * count_o);
+    unsafe { slice::from_raw_parts_mut(s.as_mut_ptr() as *mut O, count_o) }
 }
-pub fn cast_slice<I:NoatunStorable,O:NoatunStorable>(s: &[I]) -> &[O] {
+pub fn cast_slice<I: NoatunStorable, O: NoatunStorable>(s: &[I]) -> &[O] {
     const {
         assert!(align_of::<O>() <= align_of::<I>());
     }
     let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
-    assert_eq!(tot_size_i, size_of::<O>()*count_o);
-    unsafe {
-        slice::from_raw_parts(s.as_ptr() as *const O, count_o)
-    }
+    assert_eq!(tot_size_i, size_of::<O>() * count_o);
+    unsafe { slice::from_raw_parts(s.as_ptr() as *const O, count_o) }
 }
 
 /// Requires alignment to be correct at runtime, panics otherwise
-pub fn dyn_cast_slice<I:NoatunStorable,O:NoatunStorable>(s: &[I]) -> &[O] {
-
+pub fn dyn_cast_slice<I: NoatunStorable, O: NoatunStorable>(s: &[I]) -> &[O] {
     assert!((s.as_ptr() as *mut O).is_aligned());
 
     let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
-    assert_eq!(tot_size_i, size_of::<O>()*count_o);
-    unsafe {
-        slice::from_raw_parts(s.as_ptr() as *const O, count_o)
-    }
+    assert_eq!(tot_size_i, size_of::<O>() * count_o);
+    unsafe { slice::from_raw_parts(s.as_ptr() as *const O, count_o) }
 }
 /// Requires alignment to be correct at runtime, panics otherwise
-pub fn dyn_cast_slice_mut<I:NoatunStorable,O:NoatunStorable>(s: &mut [I]) -> &mut [O] {
+pub fn dyn_cast_slice_mut<I: NoatunStorable, O: NoatunStorable>(s: &mut [I]) -> &mut [O] {
     assert!((s.as_ptr() as *mut O).is_aligned());
     let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
-    assert_eq!(tot_size_i, size_of::<O>()*count_o);
-    unsafe {
-        slice::from_raw_parts_mut(s.as_mut_ptr() as *mut O, count_o)
-    }
+    assert_eq!(tot_size_i, size_of::<O>() * count_o);
+    unsafe { slice::from_raw_parts_mut(s.as_mut_ptr() as *mut O, count_o) }
 }
 
 pub fn read_unaligned<T>(data: &[u8]) -> T {
     let raw = data as *const [u8] as *const T;
-    unsafe {
-        raw.read_unaligned()
-    }
+    unsafe { raw.read_unaligned() }
 }
-
 
 /// # Safety
 /// To implement this safely:
@@ -896,8 +868,6 @@ pub trait Object {
     /// The only cases where some other implementation is required is when 'Self' does
     /// not have a fixed size.
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self>;
-
-
 }
 
 #[macro_export]
@@ -1076,7 +1046,7 @@ macro_rules! noatun_object {
 }
 
 /// Get bytes of object that may contain padding bytes
-pub(crate) fn bytes_of_uninit<T:NoatunStorable>(t: &T) -> &[MaybeUninit<u8>] {
+pub(crate) fn bytes_of_uninit<T: NoatunStorable>(t: &T) -> &[MaybeUninit<u8>] {
     let ptr = t as *const _ as *const MaybeUninit<u8>;
     // SAFETY:
     // Pointer is known to point to valid object. There may be padding bytes
@@ -1085,7 +1055,7 @@ pub(crate) fn bytes_of_uninit<T:NoatunStorable>(t: &T) -> &[MaybeUninit<u8>] {
 }
 
 /// Get bytes of object that may be uninitialized.
-pub(crate) fn bytes_of_maybe_uninit<T:NoatunStorable>(t: &MaybeUninit<T>) -> &[MaybeUninit<u8>] {
+pub(crate) fn bytes_of_maybe_uninit<T: NoatunStorable>(t: &MaybeUninit<T>) -> &[MaybeUninit<u8>] {
     let ptr = t as *const _ as *const MaybeUninit<u8>;
     // SAFETY:
     // Pointer is known to point to valid object. There may be padding bytes
@@ -1095,13 +1065,13 @@ pub(crate) fn bytes_of_maybe_uninit<T:NoatunStorable>(t: &MaybeUninit<T>) -> &[M
 pub(crate) fn uninit_slice(slice: &[u8]) -> &[MaybeUninit<u8>] {
     // SAFETY:
     // MaybeUninit[u8] has exact same layout as u8
-    unsafe {
-        std::mem::transmute::<&[u8], &[MaybeUninit<u8>]>(slice)
-    }
+    unsafe { std::mem::transmute::<&[u8], &[MaybeUninit<u8>]>(slice) }
 }
 
-pub trait FixedSizeObject: Object<Ptr = ThinPtr> + NoatunStorable + Sized + 'static where <Self as Object>::DetachedOwnedType : Sized {
-
+pub trait FixedSizeObject: Object<Ptr = ThinPtr> + NoatunStorable + Sized + 'static
+where
+    <Self as Object>::DetachedOwnedType: Sized,
+{
 }
 
 impl<T: Object<Ptr = ThinPtr> + NoatunStorable + 'static> FixedSizeObject for T {}
@@ -1119,9 +1089,7 @@ pub trait Application: FixedSizeObject {
     /// Note that this present isn't actually persisted. So if later versions of
     /// the software initialize the database differently, this can affect the
     /// materialization of the database.
-    fn initialize_root(_root: Pin<&mut Self>, _params: &Self::Params)
-    {
-    }
+    fn initialize_root(_root: Pin<&mut Self>, _params: &Self::Params) {}
 }
 #[derive(Debug)]
 #[repr(C)]
@@ -1150,7 +1118,6 @@ pub struct ThinPtr(pub usize);
 unsafe impl NoatunStorable for ThinPtr {}
 unsafe impl NoatunStorable for FatPtr {}
 
-
 impl Pointer for ThinPtr {
     fn start(self) -> usize {
         self.0
@@ -1169,11 +1136,11 @@ impl Pointer for ThinPtr {
         self.0 == 0
     }
 
-    unsafe fn access<'a, T:?Sized>(&self) -> &'a T {
+    unsafe fn access<'a, T: ?Sized>(&self) -> &'a T {
         NoatunContext.access_thin::<T>(*self)
     }
 
-    unsafe fn access_mut<'a, T:?Sized>(&self) -> Pin<&'a mut T> {
+    unsafe fn access_mut<'a, T: ?Sized>(&self) -> Pin<&'a mut T> {
         Pin::new_unchecked(NoatunContext.access_thin_mut::<T>(*self))
     }
 }
@@ -1209,12 +1176,12 @@ impl Pointer for FatPtr {
         self.start == 0
     }
 
-    unsafe fn access<'a, T:?Sized>(&self) -> &'a T {
+    unsafe fn access<'a, T: ?Sized>(&self) -> &'a T {
         NoatunContext.access_fat::<T>(*self)
     }
 
-    unsafe fn access_mut<'a, T:?Sized>(&self) -> Pin<&'a mut T> {
-        Pin::new_unchecked(NoatunContext.access_fat_mut::< T>(*self))
+    unsafe fn access_mut<'a, T: ?Sized>(&self) -> Pin<&'a mut T> {
+        Pin::new_unchecked(NoatunContext.access_fat_mut::<T>(*self))
     }
 }
 
@@ -1231,7 +1198,7 @@ where
     }
 
     fn clear(self: Pin<&mut Self>) {
-        let tself = unsafe {self.get_unchecked_mut()};
+        let tself = unsafe { self.get_unchecked_mut() };
         for item in tself {
             unsafe { Pin::new_unchecked(item).clear() };
         }
@@ -1255,8 +1222,6 @@ where
         }
         Pin::new_unchecked(slice)
     }
-
-
 }
 
 #[derive(Clone, Copy)]
@@ -1346,8 +1311,8 @@ impl Drop for ContextGuardMut {
     }
 }
 
-pub use paste::paste;
 use crate::undo_store::magic_initialize_ptr;
+pub use paste::paste;
 
 noatun_object!(
         struct Kalle {
@@ -1384,4 +1349,3 @@ pub fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(
 
 #[cfg(test)]
 mod tests;
-

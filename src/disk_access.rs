@@ -214,8 +214,7 @@ impl FileAccessor {
             slice::from_raw_parts_mut(
                 self.ptr
                     .wrapping_add(Self::HEADER_SIZE)
-                    .wrapping_add(self.seek_pos)
-                    as *mut MaybeUninit<u8>,
+                    .wrapping_add(self.seek_pos) as *mut MaybeUninit<u8>,
                 buf.len(),
             )
         };
@@ -312,9 +311,14 @@ impl FileAccessor {
     /// committed_len
     pub(crate) fn set_used_space(&self, new_value: usize) {
         if self.committed_size == 0 {
-            dbg!(new_value,Self::HEADER_SIZE, self.committed_size);
+            dbg!(new_value, Self::HEADER_SIZE, self.committed_size);
         }
-        assert!(new_value.checked_add(Self::HEADER_SIZE).expect("arithmetic overflow") <= self.committed_size);
+        assert!(
+            new_value
+                .checked_add(Self::HEADER_SIZE)
+                .expect("arithmetic overflow")
+                <= self.committed_size
+        );
         unsafe {
             *(self.mapping.ptr() as *mut usize) = new_value;
         }
@@ -349,7 +353,12 @@ impl FileAccessor {
     }
 
     pub(crate) fn map_all_raw(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.ptr.wrapping_add(Self::HEADER_SIZE), self.committed_size.saturating_sub(Self::HEADER_SIZE)) }
+        unsafe {
+            slice::from_raw_parts(
+                self.ptr.wrapping_add(Self::HEADER_SIZE),
+                self.committed_size.saturating_sub(Self::HEADER_SIZE),
+            )
+        }
     }
 
     pub(crate) fn map(&self) -> &[u8] {

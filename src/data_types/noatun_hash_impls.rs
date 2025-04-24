@@ -1,15 +1,15 @@
+use crate::data_types::{NoatunKey, NoatunString};
 use std::hash::Hasher;
 use std::pin::Pin;
-use crate::data_types::{NoatunKey, NoatunString};
 
-macro_rules! noatun_hash_primitive{
+macro_rules! noatun_hash_primitive {
     ($t: ident, $tm: ident) => {
         impl NoatunKey for $t {
             type DetachedType = $t;
             type DetachedOwnedType = $t;
             fn hash<H>(tself: &Self::DetachedType, state: &mut H)
             where
-                H: Hasher
+                H: Hasher,
             {
                 state.$tm(*tself);
             }
@@ -27,7 +27,7 @@ macro_rules! noatun_hash_primitive{
                 a == b
             }
         }
-    }
+    };
 }
 
 noatun_hash_primitive!(usize, write_usize);
@@ -49,7 +49,7 @@ impl NoatunKey for NoatunString {
 
     fn hash<H>(tself: &Self::DetachedType, state: &mut H)
     where
-        H: Hasher
+        H: Hasher,
     {
         state.write_usize(tself.len());
         state.write(tself.as_bytes());
@@ -70,6 +70,4 @@ impl NoatunKey for NoatunString {
         let tself = unsafe { self.get_unchecked_mut() };
         tself.assign_untracked(detached);
     }
-
 }
-

@@ -3,9 +3,10 @@ use crate::communication::{
     DatabaseCommunication, DatabaseCommunicationConfig,
 };
 use crate::cutoff::{CutOffDuration, CutoffHash};
+use crate::database::DatabaseSettings;
 use crate::distributor::Status;
-use crate::{Persistence, Savefile};
 use crate::{Application, Database, Message, NoatunTime, Object};
+use crate::{Persistence, Savefile};
 use arcshift::ArcShift;
 use bytes::BufMut;
 use chrono::DateTime;
@@ -19,12 +20,11 @@ use rand::SeedableRng;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::io::Write;
-use std::ops::{Add};
+use std::ops::Add;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::info;
-use crate::database::DatabaseSettings;
 
 thread_local! {
     pub static MY_THREAD_RNG: RefCell<Option<SmallRng>> = const { RefCell::new(None) };
@@ -42,7 +42,7 @@ noatun_object!(
 pub struct SyncMessage {
     value: u32,
     reset: bool,
-    persist: bool
+    persist: bool,
 }
 
 impl Message for SyncMessage {
@@ -140,8 +140,7 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
             if driver_inner.loss <= random(0.0..1.0) {
                 item.send((self.0 /*src*/, data.clone()))
                     .await
-                    .map_err(|e| std::io::Error::other( format!("simulated net failed {:?}",e)))
-                    ?;
+                    .map_err(|e| std::io::Error::other(format!("simulated net failed {:?}", e)))?;
             } else {
                 //info!("== SIMULATOR CAUSED PACKET LOSS ==");
             }
@@ -198,7 +197,7 @@ async fn create_app(driver: &mut TestDriver) -> DatabaseCommunication<SyncApp> {
             projection_time_limit: None,
             ..DatabaseSettings::default()
         },
-        ()
+        (),
     )
     .unwrap();
 
@@ -276,7 +275,8 @@ fn old_local_messages_without_effect_are_removed0() {
         .unwrap();
     println!("Add msg1 {:?}", msg1.id);
     println!("Cutoff-hash: {:?}", db.current_cutoff_state().unwrap());
-    db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into()).unwrap();
+    db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into())
+        .unwrap();
     let _msg2 = db
         .append_local(SyncMessage {
             persist: true,
@@ -285,7 +285,8 @@ fn old_local_messages_without_effect_are_removed0() {
         })
         .unwrap();
     println!("Add msg2 {:?}", msg1.id);
-    db.set_mock_time(datetime!(2020-01-02 00:00:00 Z).into()).unwrap();
+    db.set_mock_time(datetime!(2020-01-02 00:00:00 Z).into())
+        .unwrap();
     assert_eq!(db.get_all_messages().unwrap().len(), 2);
 
     db.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
@@ -327,7 +328,8 @@ fn old_transmitted_messages_without_effect_are_removed1() {
     db.mark_transmitted(msg1.id).unwrap();
     println!("Add msg1 {:?}", msg1.id);
     //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
-    db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into()).unwrap();
+    db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into())
+        .unwrap();
     let msg2 = db
         .append_local(SyncMessage {
             persist: true,
@@ -376,7 +378,8 @@ fn old_transmitted_messages_without_effect_are_removed2() {
     db.mark_transmitted(msg1.id).unwrap();
     println!("Add msg1 {:?}", msg1.id);
     //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
-    db.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into()).unwrap();
+    db.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into())
+        .unwrap();
     let msg2 = db
         .append_local(SyncMessage {
             persist: true,
@@ -486,13 +489,12 @@ async fn all_up_gradual_update_sync_test() {
     app2.close().await.unwrap();
 }
 
-
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_old_messages() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed,7200, true, usize::MAX).await;
+        all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX).await;
     }
 }
 
@@ -501,7 +503,7 @@ async fn all_up_general_update_sync_test_newer_messages_persist() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed,10, true, usize::MAX).await;
+        all_up_general_update_sync_test_impl(seed, 10, true, usize::MAX).await;
     }
 }
 
@@ -510,7 +512,7 @@ async fn all_up_general_update_sync_test_mid_age_messages_persist() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed,900, true, usize::MAX).await;
+        all_up_general_update_sync_test_impl(seed, 900, true, usize::MAX).await;
     }
 }
 
@@ -519,7 +521,7 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed,10, false, usize::MAX).await;
+        all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX).await;
     }
 }
 
@@ -528,7 +530,7 @@ async fn all_up_general_update_sync_test_mid_age_messages_no_persist() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed,900, false, usize::MAX).await;
+        all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX).await;
     }
 }
 
@@ -537,17 +539,17 @@ async fn all_up_special_seed() {
     super::setup_tracing();
     for seed in 0..50 {
         /* Notes:
-        on 1:
-The problem now seems to be:
+                on 1:
+        The problem now seems to be:
 
-0-0-0 is written, and is followed by 3-0-0 which depends on 0-0-0
-0-0-0 is thus not deleted
-2-0-0 then comes in, deleting 3-0-0.
-At this point, since 3-0-0 no longer exists, we should reproject 0-0-0, and could then delete it.
+        0-0-0 is written, and is followed by 3-0-0 which depends on 0-0-0
+        0-0-0 is thus not deleted
+        2-0-0 then comes in, deleting 3-0-0.
+        At this point, since 3-0-0 no longer exists, we should reproject 0-0-0, and could then delete it.
 
-How would we know to travel to 0-0-0 to delete it?
+        How would we know to travel to 0-0-0 to delete it?
 
-         */
+                 */
         println!("Seed = {}", seed);
         all_up_general_update_sync_test_impl(seed, 15, false, 10).await;
     }
@@ -561,7 +563,12 @@ More all-up synch tests:\
 
 */
 
-async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds: u64, persist: bool,maxlen: usize) {
+async fn all_up_general_update_sync_test_impl(
+    seed: u64,
+    max_message_age_seconds: u64,
+    persist: bool,
+    maxlen: usize,
+) {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(seed)));
 
     let mut driver = TestDriver::default();
@@ -572,7 +579,10 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
     let start_instant = tokio::time::Instant::now();
 
     driver.set_loss(0.15);
-    for i in 0..MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_range(1..20)).min(maxlen) {
+    for i in 0..MY_THREAD_RNG
+        .with(|x| x.borrow_mut().as_mut().unwrap().gen_range(1..20))
+        .min(maxlen)
+    {
         info!("==== write {} =====", i);
         let time_now = noatun_start_time + start_instant.elapsed();
         app1.set_mock_time(time_now);
@@ -597,12 +607,12 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
                 time_now - (Duration::from_secs(random(0..max_message_age_seconds))),
                 SyncMessage {
                     value: 0,
-                    reset: MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
+                    reset: MY_THREAD_RNG.with(|x| x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
                     persist,
                 },
             )
-                .await
-                .unwrap();
+            .await
+            .unwrap();
         }
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
         {
@@ -613,11 +623,11 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
                 SyncMessage {
                     value: 2,
                     persist,
-                    reset: MY_THREAD_RNG.with(|x|x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
+                    reset: MY_THREAD_RNG.with(|x| x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
                 },
             )
-                .await
-                .unwrap();
+            .await
+            .unwrap();
         }
     }
     info!(" -------------- NETWORK HEALED -----------------");
@@ -653,13 +663,13 @@ async fn all_up_general_update_sync_test_impl(seed: u64, max_message_age_seconds
     assert_eq!(app1.get_status().await.unwrap(), Status::Nominal);
     assert_eq!(app2.get_status().await.unwrap(), Status::Nominal);
     /*app1.add_message(SyncMessage {
-        value: 1,
-        reset: false,
-        persist,
-    })
-    .await
-    .unwrap();
-*/
+            value: 1,
+            reset: false,
+            persist,
+        })
+        .await
+        .unwrap();
+    */
     info!("Test case done");
     app1.close().await.unwrap();
     app2.close().await.unwrap();

@@ -1,12 +1,12 @@
 use crate::cutoff::CutOffDuration;
 use crate::data_types::NoatunVec;
+use crate::database::DatabaseSettings;
 use crate::{msg_deserialize, msg_serialize};
 use crate::{Application, Database, Message, NoatunTime};
 use datetime_literal::datetime;
 use savefile_derive::Savefile;
 use std::io::Write;
 use std::pin::Pin;
-use crate::database::DatabaseSettings;
 
 noatun_object!(
     struct Customer {
@@ -57,7 +57,6 @@ impl Message for BankMessage {
 impl Application for Bank {
     type Message = BankMessage;
     type Params = ();
-
 }
 
 #[test]

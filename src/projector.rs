@@ -3,7 +3,10 @@ use crate::disk_abstraction::Disk;
 use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{Application, ContextGuardMut, DatabaseContextData, MessageFrame, MessageHeader, MessageId, Message, NoatunContext, NoatunTime, Persistence, Target};
+use crate::{
+    Application, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader,
+    MessageId, NoatunContext, NoatunTime, Persistence, Target,
+};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::marker::PhantomData;
@@ -17,9 +20,7 @@ pub(crate) struct Projector<APP: Application> {
     cut_off_config: CutOffConfig,
 }
 
-
 impl<APP: Application> Projector<APP> {
-
     pub(crate) fn disable_filesystem_sync(&mut self) {
         self.messages.disable_filesystem_sync()
     }
@@ -82,7 +83,8 @@ impl<APP: Application> Projector<APP> {
         self.messages.set_cutoff_hash(cutoff_state)?;
 
         println!("Advance cutoff batch: {:?}", process_now);
-        let must_remove = context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?;
+        let must_remove =
+            context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?;
         for index in must_remove {
             self.messages
                 .mark_deleted_by_index(index, &mut self.head_tracker)?;
@@ -201,17 +203,17 @@ impl<APP: Application> Projector<APP> {
         message: MessageFrame<APP::Message>,
         local: bool,
     ) -> Result<bool> {
-        self.push_sorted_messages(context, std::iter::once(message), local)
+        self.push_sorted_messages(context, std::iter::once(&message), local)
     }
 
     /// Returns true if any of the messages were not previously present
-    pub(crate) fn push_messages(
+    pub(crate) fn push_messages<'a>(
         &mut self,
         context: &mut DatabaseContextData,
-        message: impl Iterator<Item = MessageFrame<APP::Message>>,
+        message: impl Iterator<Item = &'a MessageFrame<APP::Message>>,
         local: bool,
     ) -> Result<bool> {
-        let mut messages: Vec<MessageFrame<APP::Message>> = message.collect();
+        let mut messages: Vec<&MessageFrame<APP::Message>> = message.collect();
         messages.sort_unstable_by_key(|x| x.id());
         messages.dedup_by_key(|x| x.id());
         trace!("Deduped list to insert: {:?}", messages);
@@ -219,16 +221,22 @@ impl<APP: Application> Projector<APP> {
         let cutoff_time = self.messages.current_cutoff_time()?;
         for message in messages.iter_mut() {
             if message.header.id.timestamp() < cutoff_time {
-                message.header.parents.clear();
+                #[cfg(debug_assertions)]
+                {
+                    if !message.header.parents.is_empty() {
+                        println!("oops");
+                    }
+                }
+                assert!(message.header.parents.is_empty());
             }
         }
 
         self.push_sorted_messages(context, messages.into_iter(), local)
     }
-    pub(crate) fn push_sorted_messages(
+    pub(crate) fn push_sorted_messages<'a>(
         &mut self,
         context: &mut DatabaseContextData,
-        messages: impl ExactSizeIterator<Item = MessageFrame<APP::Message>>,
+        messages: impl ExactSizeIterator<Item = &'a MessageFrame<APP::Message>>,
         local: bool,
     ) -> Result<bool> {
         //debug_assert_eq!(self.messages.count_messages()?, context.next_seqnr().try_index().unwrap_or(0));
@@ -259,7 +267,11 @@ impl<APP: Application> Projector<APP> {
             Ok(false)
         }
     }
-    pub(crate) fn rewind(&mut self, context: &mut DatabaseContextData, point: SequenceNr) -> Result<()> {
+    pub(crate) fn rewind(
+        &mut self,
+        context: &mut DatabaseContextData,
+        point: SequenceNr,
+    ) -> Result<()> {
         context.rewind(point);
         Ok(())
     }
@@ -270,11 +282,10 @@ impl<APP: Application> Projector<APP> {
         msg: &MessageFrame<APP::Message>,
         seqnr: SequenceNr,
     ) {
-
         if context.next_seqnr() != seqnr {
             context.set_next_seqnr(seqnr); //TODO: Maybe we can optimize this somehow?
         }
-        match msg.payload.persistence(){
+        match msg.payload.persistence() {
             Persistence::UntilOverwritten => {
                 context.clear_tainted();
             }
@@ -366,19 +377,23 @@ impl<APP: Application> Projector<APP> {
         fn remove_stale_messages<APP: Application>(
             tself: &mut Projector<APP>,
             context: &mut DatabaseContextData,
-        ) -> Result<Option<SequenceNr/*minimum deleted*/>> {
+        ) -> Result<Option<SequenceNr /*minimum deleted*/>> {
             let must_remove = context.calculate_stale_messages(&mut tself.messages)?;
             let mut earliest_deleted = None;
             for index in must_remove {
                 let rev: Vec<_> = context.read_reverse_dependency(index).collect();
-                info!("Deleting stale msg {:?}, its reverse dep: {:?}",index, rev);
+                info!("Deleting stale msg {:?}, its reverse dep: {:?}", index, rev);
                 let dep: Vec<_> = context.read_dependency(index).collect();
-                info!("Deleting stale msg {:?}, its dep: {:?}",index, dep);
+                info!("Deleting stale msg {:?}, its dep: {:?}", index, dep);
                 let was_deleted = tself
                     .messages
                     .mark_deleted_by_index(index, &mut tself.head_tracker)?;
                 if was_deleted {
-                    earliest_deleted = Some(earliest_deleted.map(|x:SequenceNr|x.min(index)).unwrap_or(index));
+                    earliest_deleted = Some(
+                        earliest_deleted
+                            .map(|x: SequenceNr| x.min(index))
+                            .unwrap_or(index),
+                    );
                 }
                 //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
             }

@@ -1,10 +1,10 @@
-use std::arch::asm;
 use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::{bytes_of, read_unaligned, Target};
 use anyhow::Result;
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
+use std::arch::asm;
 use std::io::{Seek, SeekFrom, Write};
 
 #[derive(Debug)]
@@ -47,7 +47,6 @@ pub enum HowToProceed {
     PopAndContinue,
     Error,
 }
-
 
 /// Magically initialize all padding bytes of T to some concrete, but unspecified value.
 ///
@@ -213,7 +212,6 @@ impl UndoLog {
             }*/
             UndoLogEntry::RestorePod { start, data } => {
                 let data_len = data.len();
-
 
                 let all_zero;
                 #[cfg(not(miri))]

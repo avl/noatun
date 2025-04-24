@@ -67,7 +67,6 @@ impl CutoffHash {
     }*/
     pub fn from_msg(msg: MessageId) -> CutoffHash {
         cast_storable(msg)
-
     }
     fn xor_with(&mut self, other: CutoffHash) {
         self.values[0] ^= other.values[0];
@@ -160,7 +159,6 @@ pub struct CutOffHashPos {
 
 unsafe impl NoatunStorable for CutOffHashPos {}
 
-
 #[derive(Clone, Copy, Debug, Savefile)]
 #[repr(C)]
 pub struct CutOffState {
@@ -169,7 +167,6 @@ pub struct CutOffState {
 }
 
 unsafe impl NoatunStorable for CutOffState {}
-
 
 pub enum Acceptability {
     /// The hashes are identical. This is the nominal case

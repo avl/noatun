@@ -1,5 +1,5 @@
-use std::fmt::{Debug, Display, Formatter};
 use crate::NoatunStorable;
+use std::fmt::{Debug, Display, Formatter};
 
 #[derive(Copy, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(C)]

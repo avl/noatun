@@ -1,5 +1,5 @@
 use crate::cutoff::{Acceptability, CutOffHashPos};
-use crate::{Application, Database, MessageFrame, MessageHeader, MessageId, Message, NoatunTime};
+use crate::{Application, Database, Message, MessageFrame, MessageHeader, MessageId, NoatunTime};
 use anyhow::Result;
 use arrayvec::ArrayString;
 use indexmap::{IndexMap, IndexSet};
@@ -492,7 +492,7 @@ impl Distributor {
     ) -> Result<()> {
         while let Some(msg) = message_list.pop() {
             let msg = match database.load_message(msg) {
-                Ok(msg) => {msg}
+                Ok(msg) => msg,
                 Err(err) => {
                     tracing::warn!("could not find requested message {:?}: {:?}", msg, err);
                     continue;
@@ -553,7 +553,7 @@ impl Distributor {
         }
 
         let mut to_ack = vec![];
-        let messages = chosen_messages
+        let messages: Vec<_> = chosen_messages
             .into_values()
             .map(|(x, need_ack)| (x.to_message(), need_ack))
             .filter_map(|(x, need_ack)| match x {
@@ -570,9 +570,10 @@ impl Distributor {
             })
             .inspect(|x| {
                 debug!("Append received message: {:?}", x);
-            });
+            })
+            .collect();
 
-        database.append_many(messages, false, false)?;
+        database.append_many(messages.iter(), false, false)?;
         if !to_ack.is_empty() {
             output.push(DistributorMessage::SyncAllAck(to_ack));
         }

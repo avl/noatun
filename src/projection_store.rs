@@ -4,7 +4,10 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{bytes_of_mut, bytes_of_mut_uninit, from_bytes, from_bytes_mut, FatPtr, GenPtr, Message, NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
+use crate::{
+    bytes_of_mut, bytes_of_mut_uninit, from_bytes, from_bytes_mut, FatPtr, GenPtr, Message,
+    NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr,
+};
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
@@ -19,12 +22,11 @@ use tracing::{debug, error, info, trace};
 
 mod registrar_info {
 
-
+    use crate::sequence_nr::SequenceNr;
+    use crate::{DatabaseContextData, NoatunStorable};
     use std::fmt::{Debug, Formatter};
     use std::pin::Pin;
     use tracing::debug;
-    use crate::sequence_nr::SequenceNr;
-    use crate::{DatabaseContextData, NoatunStorable};
 
     #[derive(Clone, Copy, Default)]
     #[repr(C)]
@@ -50,7 +52,7 @@ mod registrar_info {
             if self.get_use() >= 0x7FFF_FFFF {
                 return;
             }
-            //TODO: We could have a special "increment 1" noatun primitive.
+            //TODO(future): We could have a special "increment 1" noatun primitive.
             context.write_storable(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
         pub fn decrease_use(&mut self, context: &mut DatabaseContextData, tainted: bool) {
@@ -67,8 +69,11 @@ mod registrar_info {
             }
             raw_uses -= 1;
             if tainted {
-                debug!("mark tainted (raw use={}, ptr = {:x?})", self.uses, &self.uses as *const u32);
-                raw_uses|=0x8000_0000;
+                debug!(
+                    "mark tainted (raw use={}, ptr = {:x?})",
+                    self.uses, &self.uses as *const u32
+                );
+                raw_uses |= 0x8000_0000;
             }
             // TODO: We could have a special "decrement 1" noatun primitive.
 
@@ -137,7 +142,7 @@ pub struct MainDbHeader {
     /// since the last access. This only affects recovery after the db has been left in a
     /// dirty state.
     last_boot: [u8; 16],
-    root_ptr: SerializableGenPtr
+    root_ptr: SerializableGenPtr,
 }
 
 unsafe impl NoatunStorable for MainDbHeader {}
@@ -228,7 +233,6 @@ pub(crate) struct ReverseDepTrackLinkedListEntry {
 
 unsafe impl NoatunStorable for ReverseDepTrackLinkedListEntry {}
 
-
 impl DatabaseContextData {
     pub fn clear_tainted(&mut self) {
         self.tainted = false;
@@ -242,16 +246,22 @@ impl DatabaseContextData {
     }
     pub fn assert_mutable(&self) {
         if !self.is_mutable {
-            panic!("Error: Attempt to modify database from outside of Message apply! \
+            panic!(
+                "Error: Attempt to modify database from outside of Message apply! \
                 It is not permissible to modify data in any other case except from \
-                the apply method in a Message.");
+                the apply method in a Message."
+            );
         }
     }
     fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr) {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
         self.tainted = true;
-        trace!("Recording dependency observer: {:?} observing {:?}", observer,observee);
+        trace!(
+            "Recording dependency observer: {:?} observing {:?}",
+            observer,
+            observee
+        );
         // #Safety:
         // No code holds this reference while calling other code that does.
         // Generally, it is not long held. DatabaseContext is neither Sync nor Send.
@@ -313,11 +323,14 @@ impl DatabaseContextData {
         self.write_storable(new_entry_index, key_place);
     }
 
-    pub(crate) fn read_dependency(&self, observee: SequenceNr) -> impl Iterator<Item = SequenceNr> + '_ {
+    pub(crate) fn read_dependency(
+        &self,
+        observee: SequenceNr,
+    ) -> impl Iterator<Item = SequenceNr> + '_ {
         let keys: &RawDatabaseVec<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observee.index() < keys.len() {
-            unsafe { keys.get_mut(self, observee.index()).dep  }
+            unsafe { keys.get_mut(self, observee.index()).dep }
         } else {
             ThinPtr(0)
         };
@@ -600,7 +613,8 @@ impl DatabaseContextData {
             }
             UndoLogEntry::ZeroOut { start, len } => {
                 unsafe {
-                    Self::mut_byte_slice(self.main_db_mmap.map_mut_ptr(), start..start + len).fill(0)
+                    Self::mut_byte_slice(self.main_db_mmap.map_mut_ptr(), start..start + len)
+                        .fill(0)
                 };
                 HowToProceed::PopAndContinue
             }
@@ -675,9 +689,11 @@ impl DatabaseContextData {
 
     pub fn get_root_ptr<Ptr: Pointer + Any + 'static>(&self) -> Ptr {
         let root_ptr = unsafe {
-            *(self.main_db_mmap.map_mut_ptr().wrapping_add(
-                offset_of!(MainDbHeader, root_ptr),
-            ) as *mut SerializableGenPtr)
+            *(self
+                .main_db_mmap
+                .map_mut_ptr()
+                .wrapping_add(offset_of!(MainDbHeader, root_ptr))
+                as *mut SerializableGenPtr)
         };
         if root_ptr.ptr == 0 {
             panic!("Invalid root pointer!");
@@ -722,7 +738,6 @@ impl DatabaseContextData {
     }
     pub fn copy_bytes(&mut self, source: FatPtr, dest_index: ThinPtr) {
         unsafe {
-
             self.undo_log.record(UndoLogEntry::RestorePod {
                 start: dest_index.0,
                 data: self.access_slice_mut(FatPtr::from_idx_count(dest_index.0, source.count)),
@@ -777,12 +792,13 @@ impl DatabaseContextData {
         let main_db_ptr = self.main_db_mmap.map_mut_ptr();
         // Ensure that main_db_ptr is always 16 bytes offset from a 256-byte alignment boundary.
         // This is so that we're sure that process restarts won't destroy alignment
-        debug_assert_eq!((main_db_ptr as usize-16)%256, 0);
+        debug_assert_eq!((main_db_ptr as usize - 16) % 256, 0);
 
         // Calculate real address in memory. This is the address that must respect
         // the alignment request.
         let raw_ptr_usize = main_db_ptr as usize + self.pointer();
-        let alignment_adjusted_usize = index_rounded_up_to_custom_align(raw_ptr_usize, align).unwrap();
+        let alignment_adjusted_usize =
+            index_rounded_up_to_custom_align(raw_ptr_usize, align).unwrap();
         let alignment_adjusted = alignment_adjusted_usize - (main_db_ptr as usize);
         self.undo_log
             .record(UndoLogEntry::SetPointer(self.pointer()));
@@ -791,8 +807,7 @@ impl DatabaseContextData {
         self.main_db_mmap
             .grow(new_pointer)
             .expect("Failed to allocate memory");
-        main_db_ptr
-            .wrapping_add(alignment_adjusted)
+        main_db_ptr.wrapping_add(alignment_adjusted)
     }
     pub fn allocate_array<const N: usize, const ALIGN: usize>(&mut self) -> &mut [u8; N] {
         self.allocate_slice(N, ALIGN).try_into().unwrap()
@@ -839,7 +854,7 @@ impl DatabaseContextData {
     /// The returned range must not overlap any mutable reference
     /// Alignment must be right.
     pub unsafe fn access_slice<'a, T: NoatunStorable>(&self, range: FatPtr) -> &'a [T] {
-        assert!(range.start + range.count*size_of::<T>() <= self.main_db_mmap.used_space());
+        assert!(range.start + range.count * size_of::<T>() <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts(
                 self.main_db_mmap.map_const_ptr().wrapping_add(range.start) as *const T,
@@ -852,7 +867,7 @@ impl DatabaseContextData {
     /// The returned range must not overlap any other reference
     /// Alignment must be right.
     pub unsafe fn access_slice_mut<'a, T: NoatunStorable>(&self, range: FatPtr) -> &'a mut [T] {
-        assert!(range.start + range.count*size_of::<T>() <= self.main_db_mmap.used_space());
+        assert!(range.start + range.count * size_of::<T>() <= self.main_db_mmap.used_space());
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.main_db_mmap.map_mut_ptr().wrapping_add(range.start) as *mut T,
@@ -860,7 +875,6 @@ impl DatabaseContextData {
             )
         }
     }
-
 
     /// # Safety
     /// The given range must point to valid memory, and must not overlap any other reference
@@ -892,11 +906,9 @@ impl DatabaseContextData {
     /// # Safety
     /// Caller must ensure no mutable reference exists to the requested object
     #[inline]
-    pub unsafe fn access_thin<'a, T:?Sized>(&self, ptr: ThinPtr) -> &'a T {
+    pub unsafe fn access_thin<'a, T: ?Sized>(&self, ptr: ThinPtr) -> &'a T {
         assert_eq!(size_of::<&T>(), size_of::<*const u8>());
-        let ret = unsafe {
-            transmute_copy(&self.main_db_mmap.map_const_ptr().wrapping_add(ptr.0))
-        };
+        let ret = unsafe { transmute_copy(&self.main_db_mmap.map_const_ptr().wrapping_add(ptr.0)) };
 
         // Note: If the below fails, there has already been UB (because we'd already have produced
         // a reference that overlaps invalid memory. However, this check can be best-effort,
@@ -915,11 +927,10 @@ impl DatabaseContextData {
     /// # Safety
     /// Caller must ensure no mutable or shared reference exists to the requested object
     #[inline]
-    pub unsafe fn access_thin_mut<'a, T:?Sized>(&self, ptr: ThinPtr) -> &'a mut T {
+    pub unsafe fn access_thin_mut<'a, T: ?Sized>(&self, ptr: ThinPtr) -> &'a mut T {
         assert_eq!(size_of::<&mut T>(), size_of::<*const u8>());
-        let ret: &mut _ = unsafe {
-            transmute_copy(&self.main_db_mmap.map_mut_ptr().wrapping_add(ptr.0))
-        };
+        let ret: &mut _ =
+            unsafe { transmute_copy(&self.main_db_mmap.map_mut_ptr().wrapping_add(ptr.0)) };
 
         // Note: If the below fails, there has already been UB (because we'd already have produced
         // a reference that overlaps invalid memory. However, this check can be best-effort,
@@ -938,17 +949,15 @@ impl DatabaseContextData {
     /// # Safety
     /// Caller must ensure no mutable reference exists to the requested object
     #[inline]
-    pub unsafe fn access_fat<'a, T:?Sized>(&self, ptr: FatPtr) -> &'a T {
-        assert_eq!(size_of::<&T>(), 2*size_of::<*const u8>());
+    pub unsafe fn access_fat<'a, T: ?Sized>(&self, ptr: FatPtr) -> &'a T {
+        assert_eq!(size_of::<&T>(), 2 * size_of::<*const u8>());
         let raw = RawFatPtr {
             data: self.main_db_mmap.map_const_ptr().wrapping_add(ptr.start),
-            size: ptr.count
+            size: ptr.count,
         };
-        let ret = unsafe {
-            transmute_copy(&raw)
-        };
+        let ret = unsafe { transmute_copy(&raw) };
 
-        println!("Raw: {:#?}: {:#?}", ptr,raw);
+        println!("Raw: {:#?}: {:#?}", ptr, raw);
         println!("size-of: {}", size_of_val(ret));
         println!("T: {}", std::any::type_name::<T>());
 
@@ -967,19 +976,16 @@ impl DatabaseContextData {
         ret
     }
 
-
     /// # Safety
     /// Caller must ensure no mutable reference exists to the requested object
     #[inline]
-    pub unsafe fn access_fat_mut<'a, T:?Sized>(&self, ptr: FatPtr) -> &'a mut T {
-        assert_eq!(size_of::<&T>(), 2*size_of::<*const u8>());
+    pub unsafe fn access_fat_mut<'a, T: ?Sized>(&self, ptr: FatPtr) -> &'a mut T {
+        assert_eq!(size_of::<&T>(), 2 * size_of::<*const u8>());
         let raw = RawFatPtr {
             data: self.main_db_mmap.map_mut_ptr().wrapping_add(ptr.start),
-            size: ptr.count
+            size: ptr.count,
         };
-        let ret: &mut _ = unsafe {
-            transmute_copy(&raw)
-        };
+        let ret: &mut _ = unsafe { transmute_copy(&raw) };
 
         // Note: If the below fails, there has already been UB (because we'd already have produced
         // a reference that overlaps invalid memory. However, this check can be best-effort,
@@ -998,7 +1004,10 @@ impl DatabaseContextData {
 
     /// # Safety
     /// Caller must ensure no references exists to the requested object
-    pub unsafe fn access_storable_mut<'a, T: NoatunStorable>(&self, index: ThinPtr) -> Pin<&'a mut T> {
+    pub unsafe fn access_storable_mut<'a, T: NoatunStorable>(
+        &self,
+        index: ThinPtr,
+    ) -> Pin<&'a mut T> {
         if index
             .0
             .checked_add(size_of::<T>())
@@ -1085,7 +1094,12 @@ impl DatabaseContextData {
         self.write_storable(current_registrar, Pin::new(registrar_point))
     }
 
-    pub fn update_registrar_ptr_impl(&mut self, registrar_point: *mut SequenceNr, actor: SequenceNr, actor_tainted: bool) {
+    pub fn update_registrar_ptr_impl(
+        &mut self,
+        registrar_point: *mut SequenceNr,
+        actor: SequenceNr,
+        actor_tainted: bool,
+    ) {
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
         let current_registrar = actor;
         if current_registrar == registrar_point_value {
@@ -1136,7 +1150,11 @@ impl DatabaseContextData {
         if uses.len() <= message_id.index() {
             // This is a bit of a special case. This is a message
             // that did not actually modify any state at all during its projection.
-            trace!("Message modified nothing: {:?} (tainted: {})", message_id, self.tainted);
+            trace!(
+                "Message modified nothing: {:?} (tainted: {})",
+                message_id,
+                self.tainted
+            );
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
@@ -1149,7 +1167,11 @@ impl DatabaseContextData {
         if track.get_use() == 0 {
             // Same special case as above - message is not in use, even immediately
             // after having been projected.
-            trace!("Message modified nothing2: {:?} (tainted: {})", message_id, self.tainted);
+            trace!(
+                "Message modified nothing2: {:?} (tainted: {})",
+                message_id,
+                self.tainted
+            );
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
@@ -1200,39 +1222,44 @@ impl DatabaseContextData {
         debug!("Calculating staleness, cutoff: {:?}", before_cutoff);
         #[cfg(debug_assertions)]
         {
-            debug!("Total message-list: {:#?}", messages.get_all_messages_with_children().unwrap());
+            debug!(
+                "Total message-list: {:#?}",
+                messages.get_all_messages_with_children().unwrap()
+            );
         }
         'outer: while let Some(msg) = unused_messages.pop() {
             let msgobj = messages.read_message_header_and_children_by_index(msg.seq);
-            debug!("considering {:?} = {:?} for deletion",
-                msgobj,
-                msg);
-            info!("unconditionally overwritten: {:?}", msg.unconditionally_overwritten);
-            if !messages.may_have_been_transmitted(msg.seq)? || before_cutoff || msg.unconditionally_overwritten != 0 {
-
+            debug!("considering {:?} = {:?} for deletion", msgobj, msg);
+            info!(
+                "unconditionally overwritten: {:?}",
+                msg.unconditionally_overwritten
+            );
+            if !messages.may_have_been_transmitted(msg.seq)?
+                || before_cutoff
+                || msg.unconditionally_overwritten != 0
+            {
                 for observer in self.read_dependency(msg.seq) {
                     debug!("considered its observer {:?}", observer);
                     if !deleted.contains(&observer) {
                         // 'msg' can't be deleted, because it's observed by
                         // 'observer' - i.e a later message that has not been deleted.
-                        debug!("can't delete {:?}/{:?} because of observer {:?}", msgobj.map(|x2|x2.map(|x|x.0.id)), msg, observer);
+                        debug!(
+                            "can't delete {:?}/{:?} because of observer {:?}",
+                            msgobj.map(|x2| x2.map(|x| x.0.id)),
+                            msg,
+                            observer
+                        );
 
                         // The things 'deferred' are carried out at the end of this function (i.e, quickly)
                         deferred.push(move |tself: &mut DatabaseContextData| {
                             // Remember
-                            tself.record_reverse_dependency(
-                                msg.seq,
-                                observer,
-                                msg.last_overwriter,
-                            );
+                            tself.record_reverse_dependency(msg.seq, observer, msg.last_overwriter);
                         });
 
                         continue 'outer;
                     }
                 }
-
             } else {
-
                 debug!("can't delete {:?}{:?} yet because it's been transmitted and is after cutoff: {:?} and not unconditionally overwritten", msgobj.map(|x2|x2.map(|x|x.0.id)), msg, before_cutoff);
                 //unused_list.push_untracked(self, msg);
                 new_unused_list.push(msg);
@@ -1292,11 +1319,20 @@ impl DatabaseContextData {
         }
         let mut info = unsafe { uses.get_mut(self, registrar.index()) };
         info.increase_use(self);
-        trace!("increased use of {:?} to {} (tainted:{})", registrar, info.get_use(), info.tainted());
-
+        trace!(
+            "increased use of {:?} to {} (tainted:{})",
+            registrar,
+            info.get_use(),
+            info.tainted()
+        );
     }
 
-    pub(crate) fn rt_decrease_use(&mut self, registrar: SequenceNr, overwriter: SequenceNr, overwriter_tainted: bool) {
+    pub(crate) fn rt_decrease_use(
+        &mut self,
+        registrar: SequenceNr,
+        overwriter: SequenceNr,
+        overwriter_tainted: bool,
+    ) {
         let uses = unsafe { self.get_uses() };
         let mut cur = unsafe { uses.get_mut(self, registrar.index()) };
         let cur_use = cur.get_use();
@@ -1304,11 +1340,27 @@ impl DatabaseContextData {
             panic!("Corrupt use count for sequence nr {:?}", registrar);
         }
 
-        unsafe { cur.as_mut().get_unchecked_mut().decrease_use(self, overwriter_tainted) };
-        trace!("decreased use of {:?} is {} (taint:{}) (because overwriter: {:?}(tainted:{}))", registrar, cur.get_use(), cur.tainted(), overwriter, overwriter_tainted);
+        unsafe {
+            cur.as_mut()
+                .get_unchecked_mut()
+                .decrease_use(self, overwriter_tainted)
+        };
+        trace!(
+            "decreased use of {:?} is {} (taint:{}) (because overwriter: {:?}(tainted:{}))",
+            registrar,
+            cur.get_use(),
+            cur.tainted(),
+            overwriter,
+            overwriter_tainted
+        );
         if cur.get_use() == 0 {
             // This is the normal way messages end up in 'unused_messages'
-            trace!("Adding {:?} as unused (overwriter.tainted: {}, registrar tainted: {})", registrar, overwriter_tainted, cur.tainted());
+            trace!(
+                "Adding {:?} as unused (overwriter.tainted: {}, registrar tainted: {})",
+                registrar,
+                overwriter_tainted,
+                cur.tainted()
+            );
             self.unused_messages.push(UnusedInfo {
                 seq: registrar,
                 //opaque: cur.get_opaque() as u32,

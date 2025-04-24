@@ -2,18 +2,21 @@ use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
-use crate::{Application, ContextGuard, ContextGuardMut, DatabaseContextData, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target};
+use crate::{
+    Application, ContextGuard, ContextGuardMut, DatabaseContextData, MessageFrame, MessageHeader,
+    MessageId, NoatunContext, NoatunTime, Object, Pointer, Target,
+};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use tracing::info;
 
-#[derive(Debug,Clone,Copy,PartialEq,Eq,Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LoadingStatus {
     NewDatabase,
     CleanLoad,
-    RecoveryPerformed
+    RecoveryPerformed,
 }
 
 /// If thread execution is halted while a mutable Database-operation is running,
@@ -62,9 +65,7 @@ impl Default for DatabaseSettings {
     }
 }
 
-
 impl<APP: Application> Database<APP> {
-
     fn assert_not_dirty(&self) -> Result<()> {
         if self.context.is_dirty() {
             bail!("Database is in a corrupted state. Call Self::recovery, or restart the application, to recover");
@@ -107,7 +108,6 @@ impl<APP: Application> Database<APP> {
         }
         Ok(())
     }
-
 
     /// Explicitly check if enough time has passed to be able to auto_delete some messages.
     ///
@@ -189,7 +189,9 @@ impl<APP: Application> Database<APP> {
     pub(crate) fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
         self.message_store.current_cutoff_hash()
     }
-
+    pub(crate) fn current_cutoff_time(&self) -> Result<NoatunTime> {
+        self.message_store.current_cutoff_time()
+    }
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
         self.assert_not_dirty()?;
         self.message_store.get_all_message_ids()
@@ -225,8 +227,7 @@ impl<APP: Application> Database<APP> {
             .apply_preview(time, root.as_mut(), preview)?;
         let ret = f(&*root);
         drop(guard);
-        self.message_store
-            .rewind(&mut self.context, current)?;
+        self.message_store.rewind(&mut self.context, current)?;
 
         self.mark_clean()?;
         Ok(ret)
@@ -280,7 +281,8 @@ impl<APP: Application> Database<APP> {
         self.mark_dirty()?;
 
         let index = self.message_store.get_index_of_time(limit)?;
-        self.message_store.rewind(&mut self.context, SequenceNr::from_index(index))?;
+        self.message_store
+            .rewind(&mut self.context, SequenceNr::from_index(index))?;
 
         self.projection_time_limit = Some(limit);
 
@@ -294,7 +296,7 @@ impl<APP: Application> Database<APP> {
             &mut self.context,
             unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
-            self.auto_delete
+            self.auto_delete,
         )?;
 
         self.mark_clean()?;
@@ -314,7 +316,6 @@ impl<APP: Application> Database<APP> {
     }
     /// Returns earliest seq deleted (if any)
     fn reproject_from(&mut self, index: SequenceNr) -> Result<Option<SequenceNr>> {
-
         self.message_store.rewind(&mut self.context, index)?;
 
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
@@ -326,7 +327,7 @@ impl<APP: Application> Database<APP> {
             &mut self.context,
             unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
-            self.auto_delete
+            self.auto_delete,
         )?;
 
         Ok(any_deletes)
@@ -362,7 +363,7 @@ impl<APP: Application> Database<APP> {
             context,
             unsafe { root.get_unchecked_mut() },
             settings.projection_time_limit,
-            settings.auto_delete
+            settings.auto_delete,
         )?;
 
         Ok(())
@@ -373,8 +374,7 @@ impl<APP: Application> Database<APP> {
     /// archiving noatun files, since the cache files can always be recreated from the
     /// data files.
     pub fn remove_caches(path: impl AsRef<Path>) -> Result<()> {
-
-        let path : PathBuf = path.as_ref().to_path_buf();
+        let path: PathBuf = path.as_ref().to_path_buf();
         fn remove_if_exists(path: impl AsRef<Path>) -> Result<()> {
             if std::fs::metadata(path.as_ref()).is_ok() {
                 std::fs::remove_file(path)?;
@@ -431,7 +431,11 @@ impl<APP: Application> Database<APP> {
 
     /// Local is true if this message has been locally created. I.e, it isn't a message that
     /// has been received from some other node.
-    pub fn append_single(&mut self, message: MessageFrame<APP::Message>, local: bool) -> Result<()> {
+    pub fn append_single(
+        &mut self,
+        message: &MessageFrame<APP::Message>,
+        local: bool,
+    ) -> Result<()> {
         self.append_many(std::iter::once(message), local, true)
     }
 
@@ -454,6 +458,7 @@ impl<APP: Application> Database<APP> {
         self.message_store.mark_transmitted(message_id)
     }
 
+    #[inline]
     pub fn append_local(&mut self, message: APP::Message) -> Result<MessageHeader> {
         self.append_local_opt(None, message)
     }
@@ -473,11 +478,21 @@ impl<APP: Application> Database<APP> {
     ) -> Result<MessageHeader> {
         self.append_local_opt(Some(time), message)
     }
-    pub fn append_local_opt(
+
+    pub fn create_message_frame(
         &mut self,
         time: Option<NoatunTime>,
         message: APP::Message,
-    ) -> Result<MessageHeader> {
+    ) -> Result<MessageFrame<APP::Message>> {
+        self.create_message_frame_impl(time, message, self.message_store.current_cutoff_time()?)
+    }
+
+    fn create_message_frame_impl(
+        &mut self,
+        time: Option<NoatunTime>,
+        message: APP::Message,
+        cutoff_time: NoatunTime,
+    ) -> Result<MessageFrame<APP::Message>> {
         let time = time.unwrap_or_else(|| self.noatun_now());
         let new_id;
 
@@ -492,32 +507,38 @@ impl<APP: Application> Database<APP> {
             new_id = MessageId::generate_for_time(time)?;
         }
         self.prev_local = Some(new_id);
-        /*println!(
-            "At {:?}/#{} Appending {:?}",
-            time,
-            self.context.next_seqnr(),
-            message
-        );*/
 
         let t = MessageFrame::new(
             new_id,
-            self.get_update_heads()
-                .iter()
-                .copied()
-                .filter(|x| *x < new_id)
-                .collect(),
+            if new_id.timestamp() >= cutoff_time {
+                self.get_update_heads()
+                    .iter()
+                    .copied()
+                    .filter(|x| *x < new_id)
+                    .collect()
+            } else {
+                vec![]
+            },
             message,
         );
-        //TODO: Find a way to avoid the following clone!
+
+        Ok(t)
+    }
+    pub fn append_local_opt(
+        &mut self,
+        time: Option<NoatunTime>,
+        message: APP::Message,
+    ) -> Result<MessageHeader> {
+        let t = self.create_message_frame(time, message)?;
         let header = t.header.clone();
-        self.append_single(t, true)?;
+        self.append_single(&t, true)?;
         Ok(header)
     }
 
     /// For messages before the cutoff-time, all parents are removed.
-    pub fn append_many(
+    pub fn append_many<'a>(
         &mut self,
-        messages: impl Iterator<Item = MessageFrame<APP::Message>>,
+        messages: impl Iterator<Item = &'a MessageFrame<APP::Message>>,
         local: bool,
         allow_cutoff_advance: bool,
     ) -> Result<()> {
@@ -530,8 +551,6 @@ impl<APP: Application> Database<APP> {
         self.message_store
             .push_messages(&mut self.context, messages, local)?;
 
-
-
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { root_ptr.access_mut::<APP>() };
@@ -541,7 +560,7 @@ impl<APP: Application> Database<APP> {
             &mut self.context,
             unsafe { root.get_unchecked_mut() },
             self.projection_time_limit,
-            self.auto_delete
+            self.auto_delete,
         )?;
 
         while let Some(cur_earliest_deleted) = earliest_deleted {
@@ -569,12 +588,7 @@ impl<APP: Application> Database<APP> {
             .context("creating database in memory")?;
         let mut message_store = Projector::new(&mut disk, &target, max_size, cutoff_interval)?;
 
-        Self::recover_impl(
-            &mut ctx,
-            &mut message_store,
-            &settings,
-            &params,
-        )?;
+        Self::recover_impl(&mut ctx, &mut message_store, &settings, &params)?;
         ctx.mark_clean()?;
 
         Ok(Database {
@@ -585,7 +599,7 @@ impl<APP: Application> Database<APP> {
             projection_time_limit: settings.projection_time_limit,
             params,
             load_status: LoadingStatus::NewDatabase,
-            auto_delete: settings.auto_delete
+            auto_delete: settings.auto_delete,
         })
     }
 

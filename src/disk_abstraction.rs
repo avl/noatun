@@ -134,7 +134,6 @@ impl Disk for InMemoryDisk {
         _min_size: usize,
         max_size: usize,
     ) -> anyhow::Result<FileAccessor> {
-
         let create = target.create();
         let data = if !create {
             panic!("Open-use case not supported for in-memory db");

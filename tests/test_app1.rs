@@ -1,7 +1,10 @@
 use datetime_literal::datetime;
-use noatun::data_types::{NoatunCell, NoatunBox, NoatunVec};
+use noatun::data_types::{NoatunBox, NoatunCell, NoatunVec};
 use noatun::database::{Database, DatabaseSettings};
-use noatun::{Application, CutOffDuration, MessageFrame, MessageHeader, MessageId, Message, NoatunContext, NoatunStorable, NoatunTime, Object, ThinPtr};
+use noatun::{
+    Application, CutOffDuration, Message, MessageFrame, MessageHeader, MessageId, NoatunContext,
+    NoatunStorable, NoatunTime, Object, ThinPtr,
+};
 use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::pin::Pin;
@@ -12,8 +15,7 @@ struct CounterObject {
     counter2: NoatunVec<NoatunBox<[NoatunCell<u8>]>>,
 }
 
-unsafe impl NoatunStorable for CounterObject{}
-
+unsafe impl NoatunStorable for CounterObject {}
 
 impl Object for CounterObject {
     type Ptr = ThinPtr;
@@ -37,8 +39,6 @@ impl Object for CounterObject {
         this.as_mut().init_from_detached(detached);
         this
     }
-
-
 }
 
 #[derive(Debug, Savefile)]
@@ -86,7 +86,6 @@ impl Message for CounterMessage {
 impl Application for CounterObject {
     type Message = CounterMessage;
     type Params = ();
-
 }
 
 #[test]
@@ -103,7 +102,7 @@ fn test_counter_object_miri() {
     .unwrap();
 
     db.append_single(
-        MessageFrame {
+        &MessageFrame {
             header: MessageHeader {
                 id: MessageId::new_debug(2),
                 parents: vec![],
@@ -123,7 +122,7 @@ fn test_counter_object_miri() {
     });
 
     db.append_single(
-        MessageFrame {
+        &MessageFrame {
             header: MessageHeader {
                 id: MessageId::new_debug(1),
                 parents: vec![],

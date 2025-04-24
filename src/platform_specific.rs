@@ -89,9 +89,7 @@ mod unix {
                     null_mut(),
                     max_size,
                     libc::PROT_NONE,
-                    libc::MAP_ANONYMOUS
-                        | libc::MAP_PRIVATE
-                        | libc::MAP_NORESERVE,
+                    libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
                     -1,
                     0,
                 )
@@ -182,10 +180,7 @@ mod unix {
                     self.base_ptr.wrapping_add(new_size) as *mut _,
                     shrink_by,
                     libc::PROT_NONE,
-                    libc::MAP_FIXED
-                        | libc::MAP_ANONYMOUS
-                        | libc::MAP_PRIVATE
-                        | libc::MAP_NORESERVE,
+                    libc::MAP_FIXED | libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
                     -1,
                     0,
                 )

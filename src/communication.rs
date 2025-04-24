@@ -1,7 +1,7 @@
 use crate::distributor::{Distributor, DistributorMessage, SerializedMessage, Status};
 
 use crate::communication::udp::TokioUdpDriver;
-use crate::{Application, Database, MessageFrame, MessageId, Message, NoatunTime};
+use crate::{Application, Database, MessageFrame, MessageId, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
@@ -105,7 +105,9 @@ pub mod udp {
                     //udp_receive.set_only_v6(true)?;
                     println!("Joining multicastgroup for scope {}", bind_ipv6.scope_id());
                     println!("binding receive socket to {:?}", multicast_group);
-                    udp_receive.bind(&multicast_group.into()).context("binding multicast group")?;
+                    udp_receive
+                        .bind(&multicast_group.into())
+                        .context("binding multicast group")?;
                     udp_receive.join_multicast_v6(&multicast_ipv6, bind_ipv6.scope_id())?;
 
                     receive_socket = UdpSocket::from_std(udp_receive.into())?;
@@ -966,20 +968,17 @@ where
                         }
                         Cmd::AddMessage(time, msg,result) => {
                             let mut database = self.database.lock().unwrap();
-                            let mut temp = vec![];
-                            msg.serialize(&mut temp)?; //TODO: get rid of this serialization
-                            let res = database.append_local_opt(time, msg);
+                            let msg = database.create_message_frame(time, msg)
+                                .and_then(|msg|{
+                                    database.append_single(&msg, true)?;
+                                    Ok(msg)
+                                });
 
-                            match res {
-
-                                Ok(res) => {
-                                    let msg: APP::Message = APP::Message::deserialize(&temp).unwrap();
+                            match msg {
+                                Ok(msg) => {
                                     self.outbuf.push_back(
                                         DistributorMessage::Message(SerializedMessage::new(
-                                            MessageFrame {
-                                                header: res.clone(),
-                                                payload: msg
-                                            }
+                                            msg
                                         )?, false)
                                     );
                                     _ = result.send(Ok(()));
@@ -1164,7 +1163,7 @@ where
             sender_rx,
             config.bandwidth_limit_bytes_per_second,
             quit_rx,
-            config.mtu
+            config.mtu,
         )
         .await?;
         let node = sender_loop.bind_address.to_string();
@@ -1242,8 +1241,8 @@ mod tests {
 
     use crate::communication::udp::TokioUdpDriver;
     use crate::communication::{MulticasterSenderLoop, ReceiveTrack};
-    use tokio::spawn;
     use crate::tests::setup_tracing;
+    use tokio::spawn;
 
     #[test]
     fn reconstruct_seq_logic() {
@@ -1262,7 +1261,7 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused=true)]
+    #[tokio::test(start_paused = true)]
     async fn test_sender_ipv4() {
         let (sender_tx1, sender_rx1) = tokio::sync::mpsc::channel(1000);
         let (_quit_tx1, quit_rx1) = tokio::sync::oneshot::channel();
@@ -1319,7 +1318,6 @@ mod tests {
         jh2.await.unwrap().unwrap();
     }
 
-
     #[tokio::test]
     async fn test_sender_ipv6() {
         setup_tracing();
@@ -1337,8 +1335,8 @@ mod tests {
             quit_rx1,
             200,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         let (sender_tx2, sender_rx2) = tokio::sync::mpsc::channel(1000);
         let (_quit_tx2, quit_rx2) = tokio::sync::oneshot::channel();
@@ -1354,16 +1352,13 @@ mod tests {
             quit_rx2,
             200,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         let jh1 = spawn(mloop1.run());
         let jh2 = spawn(mloop2.run());
 
-        for packet in [
-            vec![1u8; 1],
-            vec![2u8; 10],
-        ] {
+        for packet in [vec![1u8; 1], vec![2u8; 10]] {
             sender_tx1.send(packet.clone()).await.unwrap();
 
             let got = receiver_rx2.recv().await.unwrap();
@@ -1374,5 +1369,4 @@ mod tests {
         jh1.await.unwrap().unwrap();
         jh2.await.unwrap().unwrap();
     }
-
 }
