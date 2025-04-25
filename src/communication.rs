@@ -28,80 +28,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 
 pub mod udp;
-
-pub mod size_limit_vec_deque {
-    use std::collections::VecDeque;
-
-    pub trait MeasurableSize {
-        fn size_bytes(&self) -> usize;
-    }
-
-    /// A vector limited in size.
-    ///
-    /// The total size of all stored items is always less than the limit.
-    pub struct SizeLimitVecDeque<T> {
-        inner: VecDeque<T>,
-        size_limit: usize,
-        accum_size: usize,
-    }
-
-    impl<T:MeasurableSize> SizeLimitVecDeque<T> {
-
-        pub fn new(limit_bytes: usize) -> SizeLimitVecDeque<T> {
-            Self {
-                inner: VecDeque::new(),
-                size_limit: limit_bytes,
-                accum_size: 0,
-            }
-        }
-
-        /// Push the given value. Old values are removed until the item can fit.
-        ///
-        /// If the item still doesn't fit, the collection will be empty.
-        pub fn push(&mut self, value: T) {
-            let size = value.size_bytes();
-            while self.accum_size + size > self.size_limit {
-                let Some(prev) =  self.inner.pop_front() else {
-                    return;
-                };
-                self.accum_size -= prev.size_bytes();
-            }
-            self.accum_size += size;
-            self.inner.push_back(value);
-        }
-
-        /// Push the given value. Old values are removed until the item can fit.
-        ///
-        /// If the item still doesn't fit, the collection will be empty. If the insert point
-        /// is popped off, the value is not inserted.
-        pub fn insert(&mut self, mut insert_point: usize, value: T) {
-            let size = value.size_bytes();
-            while self.accum_size + size > self.size_limit {
-                if insert_point == 0 {
-                    return;
-                }
-                let Some(prev) =  self.inner.pop_front() else {
-                    return;
-                };
-                insert_point = insert_point - 1;
-                self.accum_size -= prev.size_bytes();
-            }
-            self.accum_size += size;
-            self.inner.insert(insert_point, value);
-        }
-        pub fn remove(&mut self, index: usize) -> Option<T> {
-            let item = self.inner.remove(index)?;
-            self.accum_size -= item.size_bytes();
-            Some(item)
-        }
-        pub fn binary_search_by_key<'a, B, F>(&'a self, b: &B, f: F) -> Result<usize, usize>
-        where
-            F: FnMut(&'a T) -> B,
-            B: Ord {
-            self.inner.binary_search_by_key(b, f)
-        }
-    }
-}
+pub mod size_limit_vec_deque;
 
 #[derive(Savefile, Debug)]
 enum NetworkPacket<Endpoint> {
@@ -1238,7 +1165,7 @@ mod tests {
             quit_rx1,
             200,
             Duration::from_secs_f32(1.0),
-            100
+            1000_000
         )
         .await
         .unwrap();
@@ -1257,7 +1184,7 @@ mod tests {
             quit_rx2,
             200,
             Duration::from_secs_f32(1.0),
-            100
+            1000_000
         )
         .await
         .unwrap();
