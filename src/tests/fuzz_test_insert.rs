@@ -121,6 +121,7 @@ fn test() {
         msgs.shuffle(&mut rand::thread_rng());
 
         let then = fake_time;
+        let mut db = db.begin_session_mut().unwrap();
         for msg in msgs.iter() {
             let at = then + Duration::from_secs(msg.insert as u64);
             db.append_local_at(at, msg.clone()).unwrap();

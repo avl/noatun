@@ -210,7 +210,7 @@ async fn create_app(driver: &mut TestDriver) -> DatabaseCommunication<SyncApp> {
             mtu: 1500,
             bandwidth_limit_bytes_per_second: 1000,
             retransmit_interval_seconds: 1.0,
-            retransmit_buffer_size_bytes: 1000_000,
+            retransmit_buffer_size_bytes: 1_000_000,
         },
     )
     .await
@@ -268,7 +268,8 @@ fn old_local_messages_without_effect_are_removed0() {
         (),
     )
     .unwrap();
-    let msg1 = db
+    let mut sess = db.begin_session_mut().unwrap();
+    let msg1 = sess
         .append_local(SyncMessage {
             persist: true,
             value: 1,
@@ -276,10 +277,10 @@ fn old_local_messages_without_effect_are_removed0() {
         })
         .unwrap();
     println!("Add msg1 {:?}", msg1.id);
-    println!("Cutoff-hash: {:?}", db.current_cutoff_state().unwrap());
-    db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into())
+    println!("Cutoff-hash: {:?}", sess.current_cutoff_state().unwrap());
+    sess.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into())
         .unwrap();
-    let _msg2 = db
+    let _msg2 = sess
         .append_local(SyncMessage {
             persist: true,
             value: 2,
@@ -287,12 +288,12 @@ fn old_local_messages_without_effect_are_removed0() {
         })
         .unwrap();
     println!("Add msg2 {:?}", msg1.id);
-    db.set_mock_time(datetime!(2020-01-02 00:00:00 Z).into())
+    sess.set_mock_time(datetime!(2020-01-02 00:00:00 Z).into())
         .unwrap();
-    assert_eq!(db.get_all_messages().unwrap().len(), 2);
+    assert_eq!(sess.get_all_messages().unwrap().len(), 2);
 
-    db.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
-    let last = db
+    sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
+    let last = sess
         .append_local(SyncMessage {
             persist: true,
             value: 0,
@@ -301,10 +302,10 @@ fn old_local_messages_without_effect_are_removed0() {
         .unwrap();
     println!("Add msg3 {:?}", last.id);
 
-    let all_msgs = db.get_all_messages().unwrap();
+    let all_msgs = sess.get_all_messages().unwrap();
     assert_eq!(all_msgs.len(), 1);
     assert_eq!(all_msgs[0].header.id, last.id);
-    println!("Cutoff-hash: {:?}", db.current_cutoff_state().unwrap());
+    println!("Cutoff-hash: {:?}", sess.current_cutoff_state().unwrap());
 }
 
 #[test]
@@ -320,39 +321,40 @@ fn old_transmitted_messages_without_effect_are_removed1() {
         (),
     )
     .unwrap();
-    let msg1 = db
+    let mut sess = db.begin_session_mut().unwrap();
+    let msg1 = sess
         .append_local(SyncMessage {
             persist: true,
             value: 1,
             reset: false,
         })
         .unwrap();
-    db.mark_transmitted(msg1.id).unwrap();
+    sess.mark_transmitted(msg1.id).unwrap();
     println!("Add msg1 {:?}", msg1.id);
     //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
-    db.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into())
+    sess.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into())
         .unwrap();
-    let msg2 = db
+    let msg2 = sess
         .append_local(SyncMessage {
             persist: true,
             value: 0,
             reset: true,
         })
         .unwrap();
-    db.mark_transmitted(msg2.id).unwrap();
+    sess.mark_transmitted(msg2.id).unwrap();
     println!("Add msg2 {:?}", msg2.id);
-    assert_eq!(db.get_all_messages().unwrap().len(), 2);
+    assert_eq!(sess.get_all_messages().unwrap().len(), 2);
 
     //println!("Advancing time to 2024");
-    db.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
-    db.maybe_advance_cutoff().unwrap();
+    sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
+    sess.maybe_advance_cutoff().unwrap();
 
-    let all_msgs = db.get_all_messages().unwrap();
+    let all_msgs = sess.get_all_messages().unwrap();
     assert_eq!(all_msgs.len(), 1);
     assert_eq!(all_msgs[0].header.id, msg2.id);
-    println!("Cutoff-hash: {:?}", db.current_cutoff_state().unwrap());
+    println!("Cutoff-hash: {:?}", sess.current_cutoff_state().unwrap());
     assert_eq!(
-        db.current_cutoff_state().unwrap().hash,
+        sess.current_cutoff_state().unwrap().hash,
         CutoffHash::from_msg(msg2.id)
     );
 }
@@ -369,40 +371,41 @@ fn old_transmitted_messages_without_effect_are_removed2() {
         (),
     )
     .unwrap();
+    let mut sess = db.begin_session_mut().unwrap();
 
-    let msg1 = db
+    let msg1 = sess
         .append_local(SyncMessage {
             persist: true,
             value: 1,
             reset: false,
         })
         .unwrap();
-    db.mark_transmitted(msg1.id).unwrap();
+    sess.mark_transmitted(msg1.id).unwrap();
     println!("Add msg1 {:?}", msg1.id);
     //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
-    db.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into())
+    sess.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into())
         .unwrap();
-    let msg2 = db
+    let msg2 = sess
         .append_local(SyncMessage {
             persist: true,
             value: 0,
             reset: true,
         })
         .unwrap();
-    db.mark_transmitted(msg2.id).unwrap();
+    sess.mark_transmitted(msg2.id).unwrap();
     println!("Add msg2 {:?}", msg2.id);
-    assert_eq!(db.get_all_messages().unwrap().len(), 2);
+    assert_eq!(sess.get_all_messages().unwrap().len(), 2);
 
     //println!("Advancing time to 2024");
-    db.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
-    db.maybe_advance_cutoff().unwrap();
+    sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
+    sess.maybe_advance_cutoff().unwrap();
 
-    let all_msgs = db.get_all_messages().unwrap();
+    let all_msgs = sess.get_all_messages().unwrap();
     assert_eq!(all_msgs.len(), 1);
     assert_eq!(all_msgs[0].header.id, msg2.id);
-    println!("Cutoff-hash: {:?}", db.current_cutoff_state().unwrap());
+    println!("Cutoff-hash: {:?}", sess.current_cutoff_state().unwrap());
     assert_eq!(
-        db.current_cutoff_state().unwrap().hash,
+        sess.current_cutoff_state().unwrap().hash,
         CutoffHash::from_msg(msg2.id)
     );
 }
@@ -422,11 +425,11 @@ async fn all_up_gradual_update_sync_test() {
         //println!("I = {}", i);
         //println!("Msgs1: {:#?}", app1.get_all_messages().unwrap());
         assert!(app1
-            .inner_database().get_all_messages()
+            .inner_database().begin_session().unwrap().get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         assert!(app2
-            .inner_database().get_all_messages()
+            .inner_database().begin_session().unwrap().get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
@@ -466,8 +469,8 @@ async fn all_up_gradual_update_sync_test() {
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
 
-    let msgs1 = app1.inner_database().get_all_messages().unwrap();
-    let msgs2 = app2.inner_database().get_all_messages().unwrap();
+    let msgs1 = app1.inner_database().begin_session().unwrap().get_all_messages().unwrap();
+    let msgs2 = app2.inner_database().begin_session().unwrap().get_all_messages().unwrap();
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
     //println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
@@ -591,16 +594,18 @@ async fn all_up_general_update_sync_test_impl(
     {
         info!("==== write {} =====", i);
         let time_now = noatun_start_time + start_instant.elapsed();
-        app1.set_mock_time(time_now);
-        app2.set_mock_time(time_now);
+        app1.set_mock_time(time_now).unwrap();
+        app2.set_mock_time(time_now).unwrap();
 
         assert!(app1
             .inner_database()
+            .begin_session().unwrap()
             .get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         assert!(app2
             .inner_database()
+            .begin_session().unwrap()
             .get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
@@ -646,8 +651,8 @@ async fn all_up_general_update_sync_test_impl(
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
 
-    let msgs1 = app1.inner_database().get_all_messages().unwrap();
-    let msgs2 = app2.inner_database().get_all_messages().unwrap();
+    let msgs1 = app1.inner_database().begin_session().unwrap().get_all_messages().unwrap();
+    let msgs2 = app2.inner_database().begin_session().unwrap().get_all_messages().unwrap();
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
     /*let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
@@ -689,8 +694,8 @@ async fn all_up_general_update_sync_test_impl(
     */
     info!("Test case done");
 
-    app1.inner_database().recover().unwrap();
-    app2.inner_database().recover().unwrap();
+    /*app1.inner_database().do_recovery().unwrap();
+    app2.inner_database().do_recovery().unwrap();*/
 
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());

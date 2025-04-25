@@ -28,9 +28,11 @@ fn create_app<'a>(
         (),
     )
     .unwrap();
+    let mut sess = db.begin_session_mut().unwrap();
+
     for (id, parents, inc1, set1, local) in msgs {
         let id: NoatunTime = id.into();
-        db.append_single(
+        sess.append_single(
             &CounterMessage {
                 id: MessageId::from_parts_for_test(id, 0),
                 parent: parents
@@ -41,12 +43,13 @@ fn create_app<'a>(
                 inc1,
                 set1,
             }
-            .wrap(db.current_cutoff_time().unwrap()),
+            .wrap(sess.current_cutoff_time().unwrap()),
             local,
         )
         .unwrap();
     }
     //println!("Messages present: {:?}", db.get_all_message_ids());
+    drop(sess);
     db
 }
 
@@ -64,7 +67,8 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
         .collect();
     let mut ether = vec![];
     for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
-        let mut sent = distr.get_periodic_message(db).unwrap();
+        let sess = db.begin_session().unwrap();
+        let mut sent = distr.get_periodic_message(&sess).unwrap();
         assert_eq!(sent.len(), 1, "no resync is active");
         let sent = sent.pop().unwrap();
 
@@ -95,9 +99,9 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
         next_ether.clear();
     }
 
-    let first_set: Vec<_> = dbs[0].1.get_all_message_ids().unwrap();
+    let first_set: Vec<_> = dbs[0].1.begin_session().unwrap().get_all_message_ids().unwrap();
     for (_distr, db) in dbs.iter().skip(1) {
-        assert_eq!(first_set, db.get_all_message_ids().unwrap());
+        assert_eq!(first_set, db.begin_session().unwrap().get_all_message_ids().unwrap());
     }
     report
 }
@@ -178,7 +182,8 @@ fn test_distributor() {
     let mut dist1 = crate::distributor::Distributor::new("1");
     let mut dist2 = crate::distributor::Distributor::new("2");
 
-    let mut msg1 = dist1.get_periodic_message(&app1).unwrap();
+    let sess1 = app1.begin_session().unwrap();
+    let mut msg1 = dist1.get_periodic_message(&sess1).unwrap();
     assert_eq!(msg1.len(), 1, "no resync is in progress");
     let msg1 = msg1.pop().unwrap();
 
@@ -213,9 +218,10 @@ fn test_distributor() {
     let _result = dist2
         .receive_message(&mut app2, once(result.pop().unwrap()))
         .unwrap();
-    println!("App2 all msgs: {:?}", app2.get_all_message_ids().unwrap());
-    println!("App2 update heads: {:?}", app2.get_update_heads());
+    let sess2 = app2.begin_session().unwrap();
+    println!("App2 all msgs: {:?}", sess2.get_all_message_ids().unwrap());
+    println!("App2 update heads: {:?}", sess2.get_update_heads());
 
-    insta::assert_debug_snapshot!(app2.get_all_message_ids().unwrap());
-    insta::assert_debug_snapshot!(app2.get_update_heads());
+    insta::assert_debug_snapshot!(sess2.get_all_message_ids().unwrap());
+    insta::assert_debug_snapshot!(sess2.get_update_heads());
 }

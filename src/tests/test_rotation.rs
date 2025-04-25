@@ -60,6 +60,7 @@ fn test_rotation1() {
         (),
     )
     .unwrap();
+    let mut db = db.begin_session_mut().unwrap();
     for _ in 0..5 {
         for _ in 0..10 {
             db.append_local(RotMessage {
@@ -95,6 +96,7 @@ fn test_rotation_big1() {
         (),
     )
     .unwrap();
+    let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
     for _ in 0..200 {
         for _ in 0..50 {

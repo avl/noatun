@@ -411,6 +411,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
     /// SAFETY requirements:
     /// This method gives out mutable references from shared references.
     /// You must make sure to only access every element mutably at most once concurrently.
+    #[allow(clippy::mut_from_ref)]
     pub(crate) unsafe fn get_mut(&self, ctx: &DatabaseContextData, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
@@ -2269,6 +2270,7 @@ mod tests {
                 (),
             )
             .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
             let map = unsafe { map.get_unchecked_mut() };
             assert_eq!(map.0.len(), 0);
@@ -2296,6 +2298,7 @@ mod tests {
                 (),
             )
             .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|mut map| {
             map.0.insert("hello", &42);
             assert_eq!(map.0.get("hello").unwrap().value, 42);
@@ -2317,6 +2320,7 @@ mod tests {
                 (),
             )
             .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|mut map| {
             map.0.insert("hello", &42);
 
@@ -2338,6 +2342,7 @@ mod tests {
                 (),
             )
             .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
             let mut map = map.inner_mut();
             map.insert("hello", &42);
@@ -2368,6 +2373,7 @@ mod tests {
                 (),
             )
             .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|mut map| {
             map.0.insert("hello", "world");
 
@@ -2392,6 +2398,7 @@ mod tests {
                 (),
             )
             .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
             let map = unsafe { map.get_unchecked_mut() };
             assert_eq!(map.0.len(), 0);
@@ -2430,6 +2437,7 @@ mod tests {
                 (),
             )
             .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
             let map = unsafe { map.get_unchecked_mut() };
             assert_eq!(map.0.len(), 0);
@@ -2466,6 +2474,7 @@ mod tests {
                 (),
             )
             .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
             let map = unsafe { map.get_unchecked_mut() };
             assert_eq!(map.0.len(), 0);
@@ -2493,6 +2502,7 @@ mod tests {
                 (),
             )
             .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
             let map = unsafe { map.get_unchecked_mut() };
             assert_eq!(map.0.len(), 0);
@@ -2540,6 +2550,7 @@ mod tests {
                 (),
             )
             .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
             let mut noatun_box = map.inner_mut();
 

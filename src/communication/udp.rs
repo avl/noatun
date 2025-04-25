@@ -8,7 +8,7 @@ use tokio::net::UdpSocket;
 use tracing::info;
 
 impl CommunicationDriver for TokioUdpDriver {
-    type Receiver = tokio::net::UdpSocket;
+    type Receiver = UdpSocket;
     type Sender = CommunicationUdpSendSocket;
     type Endpoint = SocketAddr;
 

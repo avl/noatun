@@ -75,7 +75,7 @@ mod registrar_info {
                 );
                 raw_uses |= 0x8000_0000;
             }
-            // TODO: We could have a special "decrement 1" noatun primitive.
+            // TODO(future): We could have a special "decrement 1" noatun primitive.
 
             context.write_storable(raw_uses, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
@@ -99,7 +99,7 @@ mod registrar_info {
         /// so that we can prune messages for the long-term pre-cutoff-life.
         pub last_overwriter: SequenceNr,
         /// The message that is no longer used (to be deleted, possibly)
-        /// This is sometimes known as a 'registrar' (TODO: Better naming? The word 'registrar'
+        /// This is sometimes known as a 'registrar'
         /// is strange here).
         pub seq: SequenceNr,
         /// None of the overwriters were tainted (i.e, all of them did the overwrite without
@@ -439,13 +439,11 @@ impl DatabaseContextData {
         Ok(was_clean)
     }
     #[inline]
-    pub fn mark_clean(&mut self) -> Result<()> {
+    pub fn mark_clean(&mut self) {
         let header: &mut MainDbHeader =
             unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
 
         header.status = MainDbStatus(MAIN_DB_STATUS_CLEAN);
-
-        Ok(())
     }
     pub(crate) fn disable_filesystem_sync(&mut self) {
         self.filesystem_sync_disabled = true;

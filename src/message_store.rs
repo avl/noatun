@@ -341,9 +341,6 @@ impl FileOffset {
         (self.0 != u64::MAX).then_some(self.0 >> 1)
     }
 
-    // TODO: Consider changing u64 almost everywhere here to usize.
-    // We absolutely _don't_ support files larger than usize (because we're memory-mapping, and
-    // on 32-bit systems virtual memory is still smaller than usize range).
     fn file_and_offset(self) -> Option<(U1, u64)> {
         (self.0 != u64::MAX).then(|| {
             (
@@ -1216,7 +1213,6 @@ impl<M> OnDiskMessageStore<M> {
             Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
 
         let Some(entry) = message_index.get_mut(delete_index.index()) else {
-            //TODO: Trace log
             trace!("message delete_index not found: {}", delete_index);
             return Ok(false);
         };
@@ -1611,13 +1607,10 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message,
     {
-        //dbg!(new_parents, new_children);
-        // TODO: Maybe add fast path, where caller can supply index
         let Some((mut msg, mut children)) = self.read_message_and_children(id)? else {
             return Ok(());
         };
 
-        // TODO: Maybe create an optimized header_and_index_mut that has a fast path
         let (_header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
         for new_child in new_children {
             if !children.contains(new_child) {
@@ -2120,7 +2113,6 @@ impl<M> OnDiskMessageStore<M> {
             })
         });
 
-        //TODO: Use array `try_map` once stabilized
         let data_files: [DataFileInfo; 2] = data_files
             .into_iter()
             .collect::<Result<Vec<DataFileInfo>>>()?

@@ -155,7 +155,6 @@ impl<APP: Application> Projector<APP> {
         self.messages.get_all_message_ids()
     }
     pub fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
-        //TODO: Return iterator instead of Vec, for perf
         self.messages.get_children_of(msg)
     }
     pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
@@ -283,7 +282,7 @@ impl<APP: Application> Projector<APP> {
         seqnr: SequenceNr,
     ) {
         if context.next_seqnr() != seqnr {
-            context.set_next_seqnr(seqnr); //TODO: Maybe we can optimize this somehow?
+            context.set_next_seqnr(seqnr);
         }
         match msg.payload.persistence() {
             Persistence::UntilOverwritten => {

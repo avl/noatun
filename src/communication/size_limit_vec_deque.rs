@@ -51,7 +51,7 @@ impl<T:MeasurableSize> SizeLimitVecDeque<T> {
             let Some(prev) =  self.inner.pop_front() else {
                 return;
             };
-            insert_point = insert_point - 1;
+            insert_point -= 1;
             self.accum_size -= prev.size_bytes();
         }
         self.accum_size += size;
@@ -127,5 +127,4 @@ mod tests {
         v.insert(3, TestItem(10));
         assert_eq!(v.inner(), &[TestItem(10)]);
     }
-
 }

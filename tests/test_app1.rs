@@ -100,6 +100,7 @@ fn test_counter_object_miri() {
         (),
     )
     .unwrap();
+    let mut db = db.begin_session_mut().unwrap();
 
     db.append_single(
         &MessageFrame {

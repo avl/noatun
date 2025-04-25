@@ -66,6 +66,7 @@ fn test_vec1() {
         (),
     )
     .unwrap();
+    let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
 
     for i in 0..3 {
@@ -99,6 +100,7 @@ fn test_vec2() {
         (),
     )
     .unwrap();
+    let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
 
     for _i in 0..2 {

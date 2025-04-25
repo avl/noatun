@@ -289,6 +289,7 @@ impl FileAccessor {
     /// SAFETY:
     /// Care must be taken to not create multiple overlapping mutable references.
     /// Also, references must be aligned.
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn access_pod_mut<R: NoatunStorable>(&self, offset: usize) -> Result<&mut R> {
         if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");

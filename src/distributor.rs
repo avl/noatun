@@ -7,6 +7,7 @@ use savefile_derive::Savefile;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use tracing::{debug, error, info, warn};
+use crate::database::{DatabaseSession, DatabaseSessionMut};
 // Principle
 // The node that is 'most ahead' (highest MessageId) has responsibility.
 // If knows all the heads of other node, just sends perfect updates.
@@ -152,7 +153,7 @@ pub fn truncate_to_arraystring(name: &str) -> ArrayString<10> {
 
 impl Distributor {
     const BATCH_SIZE: usize = 20;
-    pub fn new(node_name: &str) -> Distributor {
+    pub(crate)  fn new(node_name: &str) -> Distributor {
         Self {
             sync_all_inprogress: SyncAllState::NotActive,
             distributor_state: DistributorStatus::default(),
@@ -160,7 +161,7 @@ impl Distributor {
         }
     }
 
-    pub fn get_status(&self, now: NoatunTime) -> Status {
+    pub(crate) fn get_status(&self, now: NoatunTime) -> Status {
         for drift in self.distributor_state.most_recent_clockdrift.values() {
             if drift.elapsed_ms_since(now) < 60000
             /*TODO: Make configurable?*/
@@ -187,9 +188,9 @@ impl Distributor {
     }
 
     /// Call this to retrieve a message that should be sent periodically
-    pub fn get_periodic_message<APP: Application>(
+    pub(crate) fn get_periodic_message<APP: Application>(
         &mut self,
-        database: &Database<APP>,
+        database: &DatabaseSession<APP>,
     ) -> Result<Vec<DistributorMessage>> {
         let mut temp = vec![DistributorMessage::ReportHeads(
             database.current_cutoff_state()?,
@@ -223,11 +224,12 @@ impl Distributor {
         Ok(temp)
     }
 
-    pub fn receive_message<APP: Application>(
+    pub(crate) fn receive_message<APP: Application>(
         &mut self,
         database: &mut Database<APP>,
         input: impl Iterator<Item = DistributorMessage>,
     ) -> Result<Vec<DistributorMessage>> {
+        let mut database = database.begin_session_mut()?;
         let mut accumulated_heads: IndexSet<MessageId> = IndexSet::new();
         let mut accumulated_upstream_queries = IndexMap::new();
         let mut accumulated_responses = IndexMap::new();
@@ -314,28 +316,28 @@ impl Distributor {
         }
         let mut output = Vec::new();
 
-        self.process_reported_heads(database, accumulated_heads, &mut output)?;
+        self.process_reported_heads(&mut database, accumulated_heads, &mut output)?;
 
         // TODO: Consider if this is the best solution.
         // process_request_upstream presently requires sorted input. But should it?
         accumulated_upstream_queries.sort_keys();
 
-        self.process_request_upstream(database, accumulated_upstream_queries, &mut output)?;
-        self.process_upstream_response(database, accumulated_responses, &mut output)?;
+        self.process_request_upstream(&mut database, accumulated_upstream_queries, &mut output)?;
+        self.process_upstream_response(&mut database, accumulated_responses, &mut output)?;
         self.process_send_message_all_descendants(
-            database,
+            &mut database,
             accumulated_send_msg_and_descendants,
             &mut output,
         )?;
-        self.process_received_messages(database, accumulated_serialized, &mut output)?;
-        self.process_sync_all_queries(database, accumulated_sync_all_queries, &mut output)?;
-        self.process_sync_all_requests(database, accumulated_sync_all_requests, &mut output)?;
+        self.process_received_messages(&mut database, accumulated_serialized, &mut output)?;
+        self.process_sync_all_queries(&mut database, accumulated_sync_all_queries, &mut output)?;
+        self.process_sync_all_requests(&mut database, accumulated_sync_all_requests, &mut output)?;
         Ok(output)
     }
 
     fn process_sync_all_queries<APP: Application>(
         &self,
-        database: &mut Database<APP>,
+        database: &mut DatabaseSessionMut<APP>,
         accumulated_sync_all_queries: IndexSet<MessageId>,
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
@@ -359,7 +361,7 @@ impl Distributor {
 
     fn process_sync_all_requests<APP: Application>(
         &self,
-        database: &mut Database<APP>,
+        database: &mut DatabaseSessionMut<APP>,
         accumulated_sync_all_requests: IndexSet<MessageId>,
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
@@ -384,7 +386,7 @@ impl Distributor {
 
     fn process_reported_heads<APP: Application>(
         &mut self,
-        database: &mut Database<APP>,
+        database: &mut DatabaseSessionMut<APP>,
         accumulated_heads: IndexSet<MessageId>,
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
@@ -407,7 +409,7 @@ impl Distributor {
     }
     fn process_request_upstream<APP: Application>(
         &self,
-        database: &mut Database<APP>,
+        database: &mut DatabaseSessionMut<APP>,
         accumulated_heads: IndexMap<MessageId, usize>,
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
@@ -426,7 +428,7 @@ impl Distributor {
     }
     fn process_upstream_response<APP: Application>(
         &self,
-        database: &mut Database<APP>,
+        database: &mut DatabaseSessionMut<APP>,
         upstream_response: IndexMap<MessageId, /*parents*/ MessageSubGraphNodeValue>,
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
@@ -486,7 +488,7 @@ impl Distributor {
     }
     fn process_send_message_all_descendants<APP: Application>(
         &self,
-        database: &mut Database<APP>,
+        database: &mut DatabaseSessionMut<APP>,
         mut message_list: IndexSet<MessageId>,
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {
@@ -527,7 +529,7 @@ impl Distributor {
 
     fn process_received_messages<APP: Application>(
         &self,
-        database: &mut Database<APP>,
+        database: &mut DatabaseSessionMut<APP>,
         mut message_list: Vec<(SerializedMessage, /*need ack*/ bool)>,
         output: &mut Vec<DistributorMessage>,
     ) -> Result<()> {

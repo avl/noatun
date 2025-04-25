@@ -78,23 +78,24 @@ fn test_nominal_load_without_recovery() {
     )
     .unwrap();
 
-    db.append_local(KeyValMessage {
+    let mut sess = db.begin_session_mut().unwrap();
+    sess.append_local(KeyValMessage {
         key: "Fruit1".to_string(),
         val: "Banana".to_string(),
     })
     .unwrap();
-    db.append_local(KeyValMessage {
+    sess.append_local(KeyValMessage {
         key: "Fruit2".to_string(),
         val: "Orange".to_string(),
     })
     .unwrap();
-    db.append_local(KeyValMessage {
+    sess.append_local(KeyValMessage {
         key: "Fruit1".to_string(),
         val: "Apple".to_string(),
     })
     .unwrap();
 
-    db.with_root(|root| {
+    sess.with_root(|root| {
         assert_eq!(
             root.keyval.detach(),
             vec![
@@ -109,6 +110,7 @@ fn test_nominal_load_without_recovery() {
             ]
         );
     });
+    drop(sess);
     drop(db);
 
     let db: Database<KeyValStore> = Database::create_new(
@@ -150,26 +152,27 @@ fn test_recovery_simple() {
         (),
     )
     .unwrap();
-    db.disable_filesystem_sync().unwrap();
+    let mut sess = db.begin_session_mut().unwrap();
+    sess.disable_filesystem_sync().unwrap();
 
-    db.append_local(KeyValMessage {
+    sess.append_local(KeyValMessage {
         key: "Fruit1".to_string(),
         val: "Banana".to_string(),
     })
     .unwrap();
-    db.append_local(KeyValMessage {
+    sess.append_local(KeyValMessage {
         key: "Fruit2".to_string(),
         val: "Orange".to_string(),
     })
     .unwrap();
-    db.append_local(KeyValMessage {
+    sess.append_local(KeyValMessage {
         key: "Fruit1".to_string(),
         val: "Apple".to_string(),
     })
     .unwrap();
 
-    assert_eq!(db.get_all_message_ids().unwrap().len(), 3);
-    db.with_root(|root| {
+    assert_eq!(sess.get_all_message_ids().unwrap().len(), 3);
+    sess.with_root(|root| {
         assert_eq!(
             root.keyval.detach(),
             vec![
@@ -184,7 +187,8 @@ fn test_recovery_simple() {
             ]
         );
     });
-    assert_eq!(db.get_all_message_ids().unwrap().len(), 3);
+    assert_eq!(sess.get_all_message_ids().unwrap().len(), 3);
+    drop(sess);
     drop(db);
 
     Database::<KeyValStore>::remove_caches("test/test_recover2").unwrap();
@@ -216,7 +220,7 @@ fn test_recovery_simple() {
         );
     });
 
-    assert_eq!(db.get_all_message_ids().unwrap().len(), 3);
+    assert_eq!(db.begin_session().unwrap().get_all_message_ids().unwrap().len(), 3);
 }
 
 #[test]
@@ -230,25 +234,25 @@ fn test_recovery_corrupted_file() {
         (),
     )
     .unwrap();
-
-    db.append_local(KeyValMessage {
+    let mut sess = db.begin_session_mut().unwrap();
+    sess.append_local(KeyValMessage {
         key: "Fruit1".to_string(),
         val: "Banana".to_string(),
     })
     .unwrap();
-    db.append_local(KeyValMessage {
+    sess.append_local(KeyValMessage {
         key: "Fruit2".to_string(),
         val: "Orange".to_string(),
     })
     .unwrap();
-    db.append_local(KeyValMessage {
+    sess.append_local(KeyValMessage {
         key: "Fruit1".to_string(),
         val: "Apple".to_string(),
     })
     .unwrap();
 
-    assert_eq!(db.get_all_message_ids().unwrap().len(), 3);
-    db.with_root(|root| {
+    assert_eq!(sess.get_all_message_ids().unwrap().len(), 3);
+    sess.with_root(|root| {
         assert_eq!(
             root.keyval.detach(),
             vec![
@@ -263,6 +267,8 @@ fn test_recovery_corrupted_file() {
             ]
         );
     });
+
+    drop(sess);
     drop(db);
 
     Database::<KeyValStore>::remove_caches("test/test_recover3").unwrap();
@@ -293,7 +299,7 @@ fn test_recovery_corrupted_file() {
             }]
         );
     });
-
+    let db = db.begin_session().unwrap();
     let all_ids = db.get_all_message_ids().unwrap();
     assert_eq!(all_ids.len(), 2);
     for (msg, children) in db.get_all_messages_with_children().unwrap() {
@@ -314,26 +320,27 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
         (),
     )
     .unwrap();
-    db.disable_filesystem_sync().unwrap();
+    let mut sess = db.begin_session_mut().unwrap();
+    sess.disable_filesystem_sync().unwrap();
 
-    db.append_local(KeyValMessage {
+    sess.append_local(KeyValMessage {
         key: "Fruit1".to_string(),
         val: "Banana".to_string(),
     })
     .unwrap();
-    db.append_local(KeyValMessage {
+    sess.append_local(KeyValMessage {
         key: "Fruit2".to_string(),
         val: "Orange".to_string(),
     })
     .unwrap();
-    db.append_local(KeyValMessage {
+    sess.append_local(KeyValMessage {
         key: "Fruit1".to_string(),
         val: "Apple".to_string(),
     })
     .unwrap();
 
-    assert_eq!(db.get_all_message_ids().unwrap().len(), 3);
-    db.with_root(|root| {
+    assert_eq!(sess.get_all_message_ids().unwrap().len(), 3);
+    sess.with_root(|root| {
         assert_eq!(
             root.keyval.detach(),
             vec![
@@ -348,6 +355,7 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
             ]
         );
     });
+    drop(sess);
     drop(db);
 
     Database::<KeyValStore>::remove_caches("test/test_recover4").unwrap();
@@ -374,6 +382,7 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     .unwrap();
     assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
 
+    let db = db.begin_session().unwrap();
     let all_ids = db.get_all_message_ids().unwrap();
     assert!(all_ids.len() >= 2);
     assert!(all_ids.len() <= 3);

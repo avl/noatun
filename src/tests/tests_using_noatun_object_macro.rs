@@ -71,7 +71,7 @@ fn init_bank_miri() {
         (),
     )
     .unwrap();
-
+    let mut db = db.begin_session_mut().unwrap();
     db.append_local(BankMessage::AddCustomerAndMoney {
         money: 10,
         customer: 10,

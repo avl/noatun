@@ -9,6 +9,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::pin::Pin;
 use tracing::info;
 
@@ -65,16 +66,311 @@ impl Default for DatabaseSettings {
     }
 }
 
+pub struct DatabaseSessionMut<'a, APP: Application> {
+    db: &'a mut Database<APP>,
+}
+
+pub struct DatabaseSession<'a, APP: Application> {
+    db: &'a Database<APP>,
+}
+
+impl<'a, APP: Application> Drop for DatabaseSessionMut<'a,APP> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.db.mark_clean();
+        }
+    }
+}
+
+impl<'a, APP:Application> DatabaseSession<'a, APP> {
+    pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
+        self.db.contains_message(message_id)
+    }
+
+    pub(crate) fn get_upstream_of(
+        &self,
+        message_id: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
+    ) -> Result<impl Iterator<Item = (MessageHeader, /*query count*/ usize)> + '_> {
+        self.db.get_upstream_of(message_id)
+    }
+
+    pub fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<APP::Message>> {
+        self.db.load_message(message_id)
+    }
+
+    pub(crate) fn get_update_heads(&self) -> &[MessageId] {
+        self.db.get_update_heads()
+    }
+
+    pub(crate) fn get_messages_at_or_after(
+        &self,
+        message: MessageId,
+        count: usize,
+    ) -> Result<Vec<MessageId>> {
+        self.db.get_messages_at_or_after(message, count)
+    }
+
+    pub(crate) fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
+        self.db.is_acceptable_cutoff_hash(hash)
+    }
+    pub(crate) fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
+        self.db.current_cutoff_state()
+    }
+    pub(crate) fn current_cutoff_time(&self) -> Result<NoatunTime> {
+        self.db.current_cutoff_time()
+    }
+    pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
+        self.db.get_all_message_ids()
+    }
+    pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
+        self.db.get_message_children(msg)
+    }
+    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
+        self.db.get_all_messages()
+    }
+    pub(crate) fn get_all_messages_with_children(
+        &self,
+    ) -> Result<Vec<(MessageFrame<APP::Message>, Vec<MessageId>)>> {
+        self.db.get_all_messages_with_children()
+    }
+
+    /// Note, this method offer very little overhead, but this means it also does not validate
+    /// the database before executing. This should always be safe, but it means that recovery
+    /// will not occur if the database has been corrupted by a previous operation.
+    ///
+    /// In normal operation, the database is never corrupted. However, if it somehow is
+    /// (by a thread being killed, for example), this method could produce a root object that
+    /// is in a state of a message being half-applied, for example.
+    pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
+        self.db.with_root(f)
+    }
+
+    pub fn noatun_now(&self) -> NoatunTime {
+        self.db.noatun_now()
+    }
+
+
+    /// This method returns 0 on error.
+    pub fn count_messages(&self) -> usize {
+        self.db.count_messages()
+    }
+}
+
+impl<'a, APP: Application> DatabaseSessionMut<'a, APP> {
+
+    pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
+        self.db.contains_message(message_id)
+    }
+
+    pub(crate) fn get_upstream_of(
+        &self,
+        message_id: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
+    ) -> Result<impl Iterator<Item = (MessageHeader, /*query count*/ usize)> + '_> {
+        self.db.get_upstream_of(message_id)
+    }
+
+    pub fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<APP::Message>> {
+        self.db.load_message(message_id)
+    }
+
+    pub(crate) fn get_update_heads(&self) -> &[MessageId] {
+        self.db.get_update_heads()
+    }
+
+    pub(crate) fn get_messages_at_or_after(
+        &self,
+        message: MessageId,
+        count: usize,
+    ) -> Result<Vec<MessageId>> {
+        self.db.get_messages_at_or_after(message, count)
+    }
+
+    pub(crate) fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
+        self.db.is_acceptable_cutoff_hash(hash)
+    }
+    pub(crate) fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
+        self.db.current_cutoff_state()
+    }
+    pub(crate) fn current_cutoff_time(&self) -> Result<NoatunTime> {
+        self.db.current_cutoff_time()
+    }
+    pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
+        self.db.get_all_message_ids()
+    }
+    pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
+        self.db.get_message_children(msg)
+    }
+    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
+        self.db.get_all_messages()
+    }
+    pub(crate) fn get_all_messages_with_children(
+        &self,
+    ) -> Result<Vec<(MessageFrame<APP::Message>, Vec<MessageId>)>> {
+        self.db.get_all_messages_with_children()
+    }
+
+    /// Note, this method offer very little overhead, but this means it also does not validate
+    /// the database before executing. This should always be safe, but it means that recovery
+    /// will not occur if the database has been corrupted by a previous operation.
+    ///
+    /// In normal operation, the database is never corrupted. However, if it somehow is
+    /// (by a thread being killed, for example), this method could produce a root object that
+    /// is in a state of a message being half-applied, for example.
+    pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
+        self.db.with_root(f)
+    }
+
+    pub fn noatun_now(&self) -> NoatunTime {
+        self.db.noatun_now()
+    }
+
+
+    /// This method returns 0 on error.
+    pub fn count_messages(&self) -> usize {
+        self.db.count_messages()
+    }
+
+    pub(crate) fn maybe_advance_cutoff(&mut self) -> Result<()> {
+        self.db.maybe_advance_cutoff()
+    }
+
+    /// This disables filesystem write back. Write-back will still occur, but a power-cut
+    /// or unclean operating system shut down can cause newly written messages to be lost,
+    /// even though the call that added them returned an Ok result.
+    pub fn disable_filesystem_sync(&mut self) -> Result<()> {
+        self.db.disable_filesystem_sync()
+    }
+
+    pub(crate) fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
+        self.db.advance_cutoff(new_cutoff)
+    }
+
+    // Only intended for internal tests
+    #[cfg(test)]
+    pub(crate) fn force_rewind(&mut self, index: SequenceNr) {
+        self.db.force_rewind(index);
+    }
+
+    pub fn with_root_preview<R>(
+        &mut self,
+        time: DateTime<Utc>,
+        preview: impl Iterator<Item = APP::Message>,
+        f: impl FnOnce(&APP) -> R,
+    ) -> Result<R> {
+        self.db.with_root_preview(time, preview, f)
+    }
+
+
+
+    #[cfg(test)]
+    pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
+        self.db.with_root_mut(f)
+    }
+
+    pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
+        self.db.set_projection_time_limit(limit)
+    }
+
+    /// Force a complete rewind and re-application of all messages.
+    ///
+    /// You should never need this, but it remains publicly visible to ease in
+    /// debugging. Since this re-runs all message-applies, it can be used during debugging
+    /// of [`crate::Message::apply`].
+    pub fn reproject(&mut self) -> Result<()> {
+        self.db.reproject()
+    }
+
+    /// Set the current time to the given value.
+    /// This does not update the system time, it only affects the time for Noatun.
+    ///
+    /// This does not trigger any rewinding of the database, current time is only used
+    /// when automatically advancing the cutoff frontier. This only happens during recovery
+    /// (initialization) and when adding more messages.
+    pub fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
+        self.db.set_mock_time(time)
+    }
+
+    /// Returns true if the message still exists.
+    /// If this returns false, the message has been deleted, and *MUST* not *BE* transmitted.
+    pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<bool> {
+        self.db.mark_transmitted(message_id)
+    }
+
+    #[inline]
+    pub fn append_local(&mut self, message: APP::Message) -> Result<MessageHeader> {
+        self.db.append_local(message)
+    }
+
+    pub(crate) fn compact(&mut self) -> Result<()> {
+        self.db.compact()
+    }
+
+    pub fn append_local_at(
+        &mut self,
+        time: NoatunTime,
+        message: APP::Message,
+    ) -> Result<MessageHeader> {
+        self.db.append_local_at(time, message)
+    }
+
+    pub fn create_message_frame(
+        &mut self,
+        time: Option<NoatunTime>,
+        message: APP::Message,
+    ) -> Result<MessageFrame<APP::Message>> {
+        self.db.create_message_frame(time, message)
+    }
+
+
+    pub fn append_single(
+        &mut self,
+        message: &MessageFrame<APP::Message>,
+        local: bool,
+    ) -> Result<()> {
+        self.db.append_single(message, local)
+    }
+
+    pub fn append_local_opt(
+        &mut self,
+        time: Option<NoatunTime>,
+        message: APP::Message,
+    ) -> Result<MessageHeader> {
+        self.db.append_local_opt(time, message)
+    }
+
+    /// For messages before the cutoff-time, all parents are removed.
+    pub fn append_many<'b>(
+        &mut self,
+        messages: impl Iterator<Item = &'b MessageFrame<APP::Message>>,
+        local: bool,
+        allow_cutoff_advance: bool,
+    ) -> Result<()> {
+
+        self.db.append_many(messages, local, allow_cutoff_advance)
+    }
+}
+
 impl<APP: Application> Database<APP> {
+
+    pub fn begin_session_mut(&mut self) -> Result<DatabaseSessionMut<APP>> {
+        self.mark_dirty()?;
+        Ok(DatabaseSessionMut { db: self })
+    }
+
+    pub fn begin_session(&self) -> Result<DatabaseSession<APP>> {
+        self.assert_not_dirty()?;
+        Ok(DatabaseSession { db: self })
+    }
+
     fn assert_not_dirty(&self) -> Result<()> {
         if self.context.is_dirty() {
-            bail!("Database is in a corrupted state. Call Self::recovery, or restart the application, to recover");
+            bail!("Database is in a corrupted state. Call Database::recovery, or restart the application, to recover");
         }
         Ok(())
     }
 
     #[inline]
-    fn mark_clean(&mut self) -> Result<()> {
+    fn mark_clean(&mut self) {
         self.context.mark_clean()
     }
     fn mark_dirty(&mut self) -> Result<()> {
@@ -85,7 +381,7 @@ impl<APP: Application> Database<APP> {
         Ok(())
     }
     #[inline(never)]
-    fn do_recovery(&mut self) -> Result<()> {
+    pub(crate) fn do_recovery(&mut self) -> Result<()> {
         let now = self.noatun_now();
         Self::recover_impl(
             &mut self.context,
@@ -103,10 +399,10 @@ impl<APP: Application> Database<APP> {
 
     /// Recover database if in corrupted state.
     /// This method is very fast in the case where the database is not corrupted.
-    pub fn recover(&mut self) -> Result<()> {
+    fn recover(&mut self) -> Result<()> {
         if self.context.is_dirty() {
             self.do_recovery()?;
-            self.mark_clean()?;
+            self.mark_clean();
         }
         Ok(())
     }
@@ -119,32 +415,28 @@ impl<APP: Application> Database<APP> {
     ///
     /// This means that messages that have no current visible effects, can be considered
     /// definitely stale and can be removed. This method will delete messages if possible.
-    pub(crate) fn maybe_advance_cutoff(&mut self) -> Result<()> {
+    fn maybe_advance_cutoff(&mut self) -> Result<()> {
         if !self.auto_delete {
             return Ok(());
         }
-        // TODO: Do we need to check for dirty here? Probably not, but then we should
-        // stop checking for dirty in things like append_many. It should be enough to
-        // check on construction, right?
         let now = self.noatun_now();
         let nominal_cutoff_time = self.message_store.nominal_cutoff_time(now);
         let current_cutoff = self.message_store.current_cutoff_hash()?;
         if nominal_cutoff_time > current_cutoff.before_time {
-            self.advance_cutoff(nominal_cutoff_time)?;
+            self.advance_cutoff_impl(nominal_cutoff_time)?;
         }
         Ok(())
     }
 
     /// This disables filesystem write back. Write-back will still occur, but a power-cut
-    /// or unclean operating system shut down can cause newly written messages to be lost.
-    pub fn disable_filesystem_sync(&mut self) -> Result<()> {
-        self.recover()?;
+    /// or unclean operating system shut down can cause newly written messages to be lost,
+    /// even though the call that added them returned an Ok result.
+    fn disable_filesystem_sync(&mut self) -> Result<()> {
         self.message_store.disable_filesystem_sync();
         self.context.disable_filesystem_sync();
         Ok(())
     }
-
-    pub(crate) fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
+    fn advance_cutoff_impl(&mut self, new_cutoff: CutOffTime) -> Result<()> {
         if !self.auto_delete {
             return Ok(());
         }
@@ -152,32 +444,37 @@ impl<APP: Application> Database<APP> {
             .advance_cutoff(new_cutoff, &mut self.context)
     }
 
-    pub(crate) fn force_rewind(&mut self, index: SequenceNr) {
+
+    fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
+        self.advance_cutoff_impl(new_cutoff)
+    }
+
+    // Only intended for internal tests
+    #[cfg(test)]
+    fn force_rewind(&mut self, index: SequenceNr) {
         self.context.rewind(index)
     }
 
-    pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
-        self.assert_not_dirty()?;
+    fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.message_store.contains_message(message_id)
     }
 
-    pub(crate) fn get_upstream_of(
+    fn get_upstream_of(
         &self,
         message_id: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
     ) -> Result<impl Iterator<Item = (MessageHeader, /*query count*/ usize)> + '_> {
         self.message_store.get_upstream_of(message_id)
     }
 
-    pub fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<APP::Message>> {
-        self.assert_not_dirty()?;
+    fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<APP::Message>> {
         self.message_store.load_message(message_id)
     }
 
-    pub(crate) fn get_update_heads(&self) -> &[MessageId] {
+    fn get_update_heads(&self) -> &[MessageId] {
         self.message_store.get_update_heads()
     }
 
-    pub(crate) fn get_messages_at_or_after(
+    fn get_messages_at_or_after(
         &self,
         message: MessageId,
         count: usize,
@@ -185,54 +482,50 @@ impl<APP: Application> Database<APP> {
         self.message_store.get_messages_after(message, count)
     }
 
-    pub(crate) fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
+    fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
         self.message_store.is_acceptable_cutoff_hash(hash)
     }
-    pub(crate) fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
+    fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
         self.message_store.current_cutoff_hash()
     }
-    pub(crate) fn current_cutoff_time(&self) -> Result<NoatunTime> {
+    fn current_cutoff_time(&self) -> Result<NoatunTime> {
         self.message_store.current_cutoff_time()
     }
-    pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
-        self.assert_not_dirty()?;
+    fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
         self.message_store.get_all_message_ids()
     }
-    pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
+    fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.message_store.get_message_children(msg)
     }
-    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
-        self.assert_not_dirty()?;
+    fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
         self.message_store.get_all_messages()
     }
-    pub(crate) fn get_all_messages_with_children(
+    fn get_all_messages_with_children(
         &self,
     ) -> Result<Vec<(MessageFrame<APP::Message>, Vec<MessageId>)>> {
         self.message_store.get_all_messages_with_children()
     }
 
-    pub fn with_root_preview<R>(
+    fn with_root_preview<R>(
         &mut self,
         time: DateTime<Utc>,
         preview: impl Iterator<Item = APP::Message>,
         f: impl FnOnce(&APP) -> R,
     ) -> Result<R> {
-        self.with_dirty(|tself|{
 
-            let current = tself.context.next_seqnr();
+        let current = self.context.next_seqnr();
 
-            tself.context.set_next_seqnr(current.successor());
-            let root_ptr = tself.context.get_root_ptr::<<APP as Object>::Ptr>();
-            let guard = ContextGuardMut::new(&mut tself.context);
-            let mut root = unsafe { root_ptr.access_mut::<APP>() };
-            tself.message_store
-                .apply_preview(time, root.as_mut(), preview)?;
-            let ret = f(&*root);
-            drop(guard);
-            tself.message_store.rewind(&mut tself.context, current)?;
+        self.context.set_next_seqnr(current.successor());
+        let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
+        let guard = ContextGuardMut::new(&mut self.context);
+        let mut root = unsafe { root_ptr.access_mut::<APP>() };
+        self.message_store
+            .apply_preview(time, root.as_mut(), preview)?;
+        let ret = f(&*root);
+        drop(guard);
+        self.message_store.rewind(&mut self.context, current)?;
 
-            Ok(ret)
-        })?
+        Ok(ret)
     }
 
     /// Note, this method offer very little overhead, but this means it also does not validate
@@ -242,51 +535,39 @@ impl<APP: Application> Database<APP> {
     /// In normal operation, the database is never corrupted. However, if it somehow is
     /// (by a thread being killed, for example), this method could produce a root object that
     /// is in a state of a message being half-applied, for example.
-    pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
+    pub(crate) fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let _guard = ContextGuard::new(&self.context);
         let root = unsafe { root_ptr.access::<APP>() };
         f(root)
     }
 
-    pub(crate) fn noatun_now(&self) -> NoatunTime {
+    pub fn noatun_now(&self) -> NoatunTime {
         self.time_override.unwrap_or_else(NoatunTime::now)
     }
 
-    fn with_dirty<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> Result<R> {
-        self.mark_dirty()?;
 
-        let ret = f(self);
-
-        self.mark_clean()?;
-        Ok(ret)
-    }
-
-
-
-    pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
+    #[cfg(test)]
+    fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
 
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { root_ptr.access_mut::<APP>() };
         let t = f(root);
         drop(guard);
-        self.context.mark_clean()?;
 
         Ok(t)
     }
 
-    pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
-        self.with_dirty(|tself|{
-            let index = tself.message_store.get_index_of_time(limit)?;
-            tself.message_store
-                .rewind(&mut tself.context, SequenceNr::from_index(index))?;
+    fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
+        let index = self.message_store.get_index_of_time(limit)?;
+        self.message_store
+            .rewind(&mut self.context, SequenceNr::from_index(index))?;
 
-            tself.projection_time_limit = Some(limit);
+        self.projection_time_limit = Some(limit);
 
-            tself.do_apply_missing()?;
-            Ok(())
-        })?
+        self.do_apply_missing()?;
+        Ok(())
     }
 
     /// Force a complete rewind and re-application of all messages.
@@ -294,11 +575,9 @@ impl<APP: Application> Database<APP> {
     /// You should never need this, but it remains publicly visible to ease in
     /// debugging. Since this re-runs all message-applies, it can be used during debugging
     /// of [`crate::Message::apply`].
-    pub fn reproject(&mut self) -> Result<()> {
-        self.with_dirty(|tself| {
-            tself.reproject_from(SequenceNr::from_index(0))?;
-            Ok(())
-        })?
+    fn reproject(&mut self) -> Result<()> {
+        self.reproject_from(SequenceNr::from_index(0))?;
+        Ok(())
     }
     /// Returns earliest seq deleted (if any)
     fn reproject_from(&mut self, index: SequenceNr) -> Result<Option<SequenceNr>> {
@@ -416,7 +695,7 @@ impl<APP: Application> Database<APP> {
 
     /// Local is true if this message has been locally created. I.e, it isn't a message that
     /// has been received from some other node.
-    pub fn append_single(
+    fn append_single(
         &mut self,
         message: &MessageFrame<APP::Message>,
         local: bool,
@@ -430,33 +709,32 @@ impl<APP: Application> Database<APP> {
     /// This does not trigger any rewinding of the database, current time is only used
     /// when automatically advancing the cutoff frontier. This only happens during recovery
     /// (initialization) and when adding more messages.
-    pub fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
-        self.recover()?;
+    fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
         self.time_override = Some(time);
         Ok(())
     }
 
     /// Returns true if the message still exists.
     /// If this returns false, the message has been deleted, and *MUST* not *BE* transmitted.
-    pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<bool> {
-        self.recover()?;
+    fn mark_transmitted(&mut self, message_id: MessageId) -> Result<bool> {
         self.message_store.mark_transmitted(message_id)
     }
 
     #[inline]
-    pub fn append_local(&mut self, message: APP::Message) -> Result<MessageHeader> {
+    fn append_local(&mut self, message: APP::Message) -> Result<MessageHeader> {
         self.append_local_opt(None, message)
     }
 
-    pub fn count_messages(&self) -> usize {
+    /// This method returns 0 on error.
+    fn count_messages(&self) -> usize {
         self.message_store.count_messages()
     }
 
-    pub(crate) fn compact(&mut self) -> Result<()> {
-        self.recover()?;
+    fn compact(&mut self) -> Result<()> {
         self.message_store.compact()
     }
-    pub fn append_local_at(
+
+    fn append_local_at(
         &mut self,
         time: NoatunTime,
         message: APP::Message,
@@ -464,12 +742,11 @@ impl<APP: Application> Database<APP> {
         self.append_local_opt(Some(time), message)
     }
 
-    pub fn create_message_frame(
+    fn create_message_frame(
         &mut self,
         time: Option<NoatunTime>,
         message: APP::Message,
     ) -> Result<MessageFrame<APP::Message>> {
-        self.recover()?;
         self.create_message_frame_impl(time, message, self.message_store.current_cutoff_time()?)
     }
 
@@ -509,31 +786,27 @@ impl<APP: Application> Database<APP> {
 
         Ok(t)
     }
-    pub fn append_local_opt(
+    fn append_local_opt(
         &mut self,
         time: Option<NoatunTime>,
         message: APP::Message,
     ) -> Result<MessageHeader> {
-        self.with_dirty(|tself|{
-            let cutoff_time = tself.message_store.current_cutoff_time()?;
-            let t = tself.create_message_frame_impl(time, message, cutoff_time)?;
-            let header = t.header.clone();
-            tself.append_many_impl(std::iter::once(&t), true, true)?;
-            Ok(header)
-        })?
+        let cutoff_time = self.message_store.current_cutoff_time()?;
+        let t = self.create_message_frame_impl(time, message, cutoff_time)?;
+        let header = t.header.clone();
+        self.append_many_impl(std::iter::once(&t), true, true)?;
+        Ok(header)
     }
 
     /// For messages before the cutoff-time, all parents are removed.
-    pub fn append_many<'a>(
+    fn append_many<'a>(
         &mut self,
         messages: impl Iterator<Item = &'a MessageFrame<APP::Message>>,
         local: bool,
         allow_cutoff_advance: bool,
     ) -> Result<()> {
 
-        self.with_dirty(|tself|{
-            tself.append_many_impl(messages, local, allow_cutoff_advance)
-        })?
+        self.append_many_impl(messages, local, allow_cutoff_advance)
     }
     /// For messages before the cutoff-time, all parents are removed.
     fn append_many_impl<'a>(
@@ -570,7 +843,7 @@ impl<APP: Application> Database<APP> {
         let mut message_store = Projector::new(&mut disk, &target, max_size, cutoff_interval)?;
 
         Self::recover_impl(&mut ctx, &mut message_store, &settings, &params)?;
-        ctx.mark_clean()?;
+        ctx.mark_clean();
 
         let mut db = Database {
             prev_local: None,
@@ -616,7 +889,7 @@ impl<APP: Application> Database<APP> {
                 },
                 &params,
             )?;
-            ctx.mark_clean()?;
+            ctx.mark_clean();
             if !message_store.loaded_existing_db() {
                 load_status = LoadingStatus::NewDatabase;
             } else {

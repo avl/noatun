@@ -438,7 +438,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             retransmit_interval,
         })
     }
-    pub fn send_buf(
+    pub(crate) fn send_buf(
         queue: &mut VecDeque<SortableTransmittedEntity>,
         max_payload_per_packet: usize,
         next_send_seq: &mut u64,
@@ -506,7 +506,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
         }
         Ok(())
     }
-    pub fn queue_retransmits(&mut self, what: &[u64]) {
+    pub(crate) fn queue_retransmits(&mut self, what: &[u64]) {
         for what in what {
             let Ok(index) = self
                 .history
@@ -749,7 +749,9 @@ where
     }
     fn process_messages(&mut self) -> Result<()> {
         let mut database = self.database.lock().unwrap();
-        let new_msgs = self
+
+        let new_msgs =
+            self
             .distributor
             .receive_message(&mut *database, self.buffered_incoming_messages.drain(..))?;
         drop(database);
@@ -757,7 +759,7 @@ where
         Ok(())
     }
 
-    pub async fn run(self, senderloop_quit_tx: oneshot::Sender<()>) -> Result<()> {
+    pub(crate) async fn run(self, senderloop_quit_tx: oneshot::Sender<()>) -> Result<()> {
         let result = self.run2().await;
         _ = senderloop_quit_tx.send(());
         info!("Communication terminated: {:?}", result);
@@ -771,19 +773,21 @@ where
         }
     }
     #[instrument(skip(self), fields(node=?self.node))]
-    pub async fn run2(mut self) -> Result<Option<tokio::sync::oneshot::Sender<()>>> {
+    pub(crate) async fn run2(mut self) -> Result<Option<tokio::sync::oneshot::Sender<()>>> {
         self.nextsend.clear();
+        let mut buffer_timer_instant = None;
         loop {
             // For buffered incoming messages
             let buffer_len = self.buffered_incoming_messages.len();
             let buffer_life_start = self.buffer_life_start;
+
             let buffering_timer = async move {
                 if buffer_len > 0 {
                     if buffer_len > 1000 || buffer_life_start.elapsed() > Duration::from_secs(2) {
                     } else {
                         info!("Sleeping 10ms, waiting for buffer to fill");
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                        //TODO: Longer sleep, maybe configurable?
+                        let sleep_target = buffer_timer_instant.get_or_insert_with(||Instant::now()+Duration::from_millis(10));
+                        tokio::time::sleep_until(*sleep_target).await;
                     }
                 } else {
                     std::future::pending().await
@@ -805,7 +809,8 @@ where
                             .database
                             .lock()
                             .map_err(|e| anyhow!("mutex lock failed: {:?}", e))?;
-                        if !db.mark_transmitted(nextsend_id)? {
+                        let mut sess = db.begin_session_mut()?;
+                        if !sess.mark_transmitted(nextsend_id)? {
                             self.nextsend_id = None;
                             self.nextsend.clear();
                             return Ok::<(), anyhow::Error>(());
@@ -825,11 +830,13 @@ where
                     res?;
                 }
                 _process_incoming = buffering_timer => {
+                    buffer_timer_instant = None;
                     self.process_messages()?;
                 }
                 _periodic = tokio::time::sleep_until(self.next_periodic) => {
                     let database = self.database.lock().unwrap();
-                    let msgs = self.distributor.get_periodic_message(&*database)?;
+                    let session = database.begin_session()?;
+                    let msgs = self.distributor.get_periodic_message(&session)?;
                     info!("Time for periodic messages: {:?}", msgs);
                     self.outbuf.extend(msgs);
                     self.next_periodic += Self::PERIODIC_MSG_INTERVAL;
@@ -852,9 +859,10 @@ where
                         }
                         Cmd::AddMessage(time, msg,result) => {
                             let mut database = self.database.lock().unwrap();
-                            let msg = database.create_message_frame(time, msg)
+                            let mut sess = database.begin_session_mut()?;
+                            let msg = sess.create_message_frame(time, msg)
                                 .and_then(|msg|{
-                                    database.append_single(&msg, true)?;
+                                    sess.append_single(&msg, true)?;
                                     Ok(msg)
                                 });
 
@@ -999,22 +1007,23 @@ where
     }
 
     #[instrument(skip(self),fields(node=?self.node))]
-    pub fn set_mock_time(&mut self, time: NoatunTime) {
+    pub fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
         let mut db = self.database.lock().unwrap();
-        db.set_mock_time(time).unwrap();
-        db.maybe_advance_cutoff().unwrap();
+        let mut sess = db.begin_session_mut()?;
+
+        sess.set_mock_time(time).unwrap();
+        sess.maybe_advance_cutoff().unwrap();
+        Ok(())
     }
-    pub fn get_update_heads(&self) -> Vec<crate::MessageId> {
-        self.database.lock().unwrap().get_update_heads().to_vec()
+    pub fn get_update_heads(&self) -> Result<Vec<crate::MessageId>> {
+        let db = self.database.lock().unwrap();
+        let sess = db.begin_session()?;
+        Ok(sess.get_update_heads().to_vec())
     }
     pub fn get_cutoff_time(&self) -> Result<NoatunTime> {
-        Ok(self
-            .database
-            .lock()
-            .unwrap()
-            .current_cutoff_state()?
-            .before_time
-            .to_noatun_time())
+        let db = self.database.lock().unwrap();
+        let sess = db.begin_session()?;
+        sess.current_cutoff_time()
     }
     pub fn with_root_preview<R>(
         &self,
@@ -1023,13 +1032,14 @@ where
         f: impl FnOnce(&APP) -> R,
     ) -> Result<R> {
         let mut db = self.database.lock().unwrap();
-
-        db.with_root_preview(time, preview, f)
+        let mut sess = db.begin_session_mut()?;
+        sess.with_root_preview(time, preview, f)
     }
 
     pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
         let mut db = self.database.lock().unwrap();
-        db.set_projection_time_limit(limit)
+        let mut sess = db.begin_session_mut()?;
+        sess.set_projection_time_limit(limit)
     }
 
     /// Spawns the communication system as a future on the current tokio runtime.

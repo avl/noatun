@@ -59,7 +59,7 @@ mod test_types_rewind {
         }
 
         let clean_snapshot = db.with_root(snapshotter);
-
+        let mut db = db.begin_session_mut().unwrap();
         db.append_single(
             &MessageFrame::new(
                 MessageId::from_parts_for_test(datetime!(2020-01-02 Z).into(), 0),
@@ -464,6 +464,7 @@ fn test1() {
     )
     .unwrap();
 
+    let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|counter| unsafe {
         let counter = counter.get_unchecked_mut();
         assert_eq!(counter.counter.get(), 0);
@@ -531,7 +532,7 @@ fn test_projection_time_limit() {
         (),
     )
     .unwrap();
-
+    let mut db = db.begin_session_mut().unwrap();
     db.append_single(
         &CounterMessage {
             parent: vec![],
@@ -608,6 +609,7 @@ fn test_msg_store_real() {
     )
     .unwrap();
 
+    let mut db = db.begin_session_mut().unwrap();
     db.append_single(
         &CounterMessage {
             parent: vec![],
@@ -667,6 +669,7 @@ fn test_msg_store_inmem_miri() {
     )
     .unwrap();
 
+    let mut db = db.begin_session_mut().unwrap();
     db.append_single(
         &CounterMessage {
             parent: vec![],
@@ -726,6 +729,7 @@ fn test_msg_store_after_cutoff_inmem_miri() {
     .unwrap();
 
     let m1 = MessageId::from_parts(datetime!(2024-01-01 Z).into(), [0u8; 10]).unwrap();
+    let mut db = db.begin_session_mut().unwrap();
     db.append_single(
         &CounterMessage {
             parent: vec![],
@@ -786,6 +790,7 @@ fn test_cutoff_handling() {
     )
     .unwrap();
 
+    let mut db = db.begin_session_mut().unwrap();
     db.append_single(
         &CounterMessage {
             id: MessageId::new_debug(0x100),
@@ -896,7 +901,7 @@ fn test_noatun_box_miri() {
     db.with_root(|handle| {
         assert_eq!(handle.get_inner().get(), 43);
     });
-
+    let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|root| {
         let a1 = root.get_inner_mut();
         assert_eq!(a1.get(), 43);
@@ -929,6 +934,8 @@ fn test_string0() {
         (),
     )
     .unwrap();
+
+    let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|mut test_str| {
         assert_eq!(test_str.len(), 5);
         assert_eq!(test_str.get(), "hello");
@@ -953,6 +960,8 @@ fn test_vec0() {
         (),
     )
     .unwrap();
+
+    let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|mut counter_vec| {
         unsafe {
             assert_eq!(counter_vec.len(), 0);
@@ -994,6 +1003,8 @@ fn test_vec_miri0() {
         (),
     )
     .unwrap();
+
+    let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|mut counter_vec| {
         assert_eq!(counter_vec.len(), 0);
 
@@ -1050,6 +1061,8 @@ fn test_vec_undo() {
     .unwrap();
 
     {
+
+        let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|mut counter_vec| {
             NoatunContext.set_next_seqnr(SequenceNr::from_index(1));
             assert_eq!(counter_vec.len(), 0);
@@ -1073,6 +1086,7 @@ fn test_vec_undo() {
         .unwrap();
     }
 
+    let mut db = db.begin_session_mut().unwrap();
     {
         db.with_root_mut(|counter_vec| {
             let mut counter = counter_vec.get_index_mut(0);
