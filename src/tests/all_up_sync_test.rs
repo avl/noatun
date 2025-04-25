@@ -209,6 +209,8 @@ async fn create_app(driver: &mut TestDriver) -> DatabaseCommunication<SyncApp> {
             multicast_address: "dummy".to_string(),
             mtu: 1500,
             bandwidth_limit_bytes_per_second: 1000,
+            retransmit_interval_seconds: 1.0,
+            retransmit_buffer_size_bytes: 1000_000,
         },
     )
     .await
@@ -420,11 +422,11 @@ async fn all_up_gradual_update_sync_test() {
         //println!("I = {}", i);
         //println!("Msgs1: {:#?}", app1.get_all_messages().unwrap());
         assert!(app1
-            .get_all_messages()
+            .inner_database().get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         assert!(app2
-            .get_all_messages()
+            .inner_database().get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
@@ -464,8 +466,8 @@ async fn all_up_gradual_update_sync_test() {
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
 
-    let msgs1 = app1.get_all_messages().unwrap();
-    let msgs2 = app2.get_all_messages().unwrap();
+    let msgs1 = app1.inner_database().get_all_messages().unwrap();
+    let msgs2 = app2.inner_database().get_all_messages().unwrap();
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
     //println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
@@ -494,7 +496,7 @@ async fn all_up_general_update_sync_test_old_messages() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX).await;
+        all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
     }
 }
 
@@ -503,7 +505,7 @@ async fn all_up_general_update_sync_test_newer_messages_persist() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed, 10, true, usize::MAX).await;
+        all_up_general_update_sync_test_impl(seed, 10, true, usize::MAX, true).await;
     }
 }
 
@@ -512,7 +514,7 @@ async fn all_up_general_update_sync_test_mid_age_messages_persist() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed, 900, true, usize::MAX).await;
+        all_up_general_update_sync_test_impl(seed, 900, true, usize::MAX, true).await;
     }
 }
 
@@ -521,7 +523,16 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX).await;
+        all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, true).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn all_up_general_update_sync_test_newer_messages_no_persist_no_reset() {
+    //setup_tracing();
+    for seed in 0..100 {
+        println!("Seed = {}", seed);
+        all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, false).await;
     }
 }
 
@@ -530,7 +541,7 @@ async fn all_up_general_update_sync_test_mid_age_messages_no_persist() {
     //setup_tracing();
     for seed in 0..100 {
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX).await;
+        all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX, true).await;
     }
 }
 
@@ -539,7 +550,7 @@ async fn all_up_special_seed() {
     super::setup_tracing();
     for seed in 0..50 {
         /* Notes:
-                on 1:
+        on 1:
         The problem now seems to be:
 
         0-0-0 is written, and is followed by 3-0-0 which depends on 0-0-0
@@ -549,25 +560,18 @@ async fn all_up_special_seed() {
 
         How would we know to travel to 0-0-0 to delete it?
 
-                 */
+        */
         println!("Seed = {}", seed);
-        all_up_general_update_sync_test_impl(seed, 15, false, 10).await;
+        all_up_general_update_sync_test_impl(seed, 15, false, 10, true).await;
     }
 }
-
-/* TODO:
-More all-up synch tests:\
-1: With most action _after_ cutoff
-2: With no reset, so we can easily know expected value
-3: With _recovery_!
-
-*/
 
 async fn all_up_general_update_sync_test_impl(
     seed: u64,
     max_message_age_seconds: u64,
     persist: bool,
     maxlen: usize,
+    allow_reset: bool,
 ) {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(seed)));
 
@@ -577,6 +581,8 @@ async fn all_up_general_update_sync_test_impl(
 
     let noatun_start_time: NoatunTime = START_TIME.into();
     let start_instant = tokio::time::Instant::now();
+    let mut total_count = 0;
+    let mut total_added = 0;
 
     driver.set_loss(0.15);
     for i in 0..MY_THREAD_RNG
@@ -588,13 +594,13 @@ async fn all_up_general_update_sync_test_impl(
         app1.set_mock_time(time_now);
         app2.set_mock_time(time_now);
 
-        //println!("I = {}", i);
-        //println!("Msgs: {:#?}", app1.get_all_messages().unwrap());
         assert!(app1
+            .inner_database()
             .get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         assert!(app2
+            .inner_database()
             .get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
@@ -607,12 +613,13 @@ async fn all_up_general_update_sync_test_impl(
                 time_now - (Duration::from_secs(random(0..max_message_age_seconds))),
                 SyncMessage {
                     value: 0,
-                    reset: MY_THREAD_RNG.with(|x| x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
+                    reset: if allow_reset {MY_THREAD_RNG.with(|x| x.borrow_mut().as_mut().unwrap().gen_bool(0.3))} else {false},
                     persist,
                 },
             )
             .await
             .unwrap();
+            total_count += 1;
         }
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
         {
@@ -623,11 +630,13 @@ async fn all_up_general_update_sync_test_impl(
                 SyncMessage {
                     value: 2,
                     persist,
-                    reset: MY_THREAD_RNG.with(|x| x.borrow_mut().as_mut().unwrap().gen_bool(0.3)),
+                    reset: if allow_reset {MY_THREAD_RNG.with(|x| x.borrow_mut().as_mut().unwrap().gen_bool(0.3))} else {false},
                 },
             )
             .await
             .unwrap();
+            total_added += 2;
+            total_count += 1;
         }
     }
     info!(" -------------- NETWORK HEALED -----------------");
@@ -637,8 +646,8 @@ async fn all_up_general_update_sync_test_impl(
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
 
-    let msgs1 = app1.get_all_messages().unwrap();
-    let msgs2 = app2.get_all_messages().unwrap();
+    let msgs1 = app1.inner_database().get_all_messages().unwrap();
+    let msgs2 = app2.inner_database().get_all_messages().unwrap();
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
     /*let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
@@ -656,9 +665,17 @@ async fn all_up_general_update_sync_test_impl(
     assert!(root2.sum >= 1);
     assert!(root1.counter >= 1);
     assert!(root2.counter >= 1);
+    if !allow_reset {
+        assert_eq!(root1.sum, total_added);
+        assert_eq!(root2.sum, total_added);
+        assert_eq!(root1.counter, total_count);
+        assert_eq!(root2.counter, total_count);
+    }
     assert_eq!(root1, root2);
-    println!("Roots: {:?} {:?}", root1, root2);
-    println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
+    //println!("Roots: {:?} {:?}", root1, root2);
+    //println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
+
+    let correct_root = root1;
 
     assert_eq!(app1.get_status().await.unwrap(), Status::Nominal);
     assert_eq!(app2.get_status().await.unwrap(), Status::Nominal);
@@ -671,6 +688,16 @@ async fn all_up_general_update_sync_test_impl(
         .unwrap();
     */
     info!("Test case done");
+
+    app1.inner_database().recover().unwrap();
+    app2.inner_database().recover().unwrap();
+
+    let root1 = app1.with_root(|root| root.detach());
+    let root2 = app2.with_root(|root| root.detach());
+
+    assert_eq!(root1, correct_root);
+    assert_eq!(root2, correct_root);
+
     app1.close().await.unwrap();
     app2.close().await.unwrap();
 }

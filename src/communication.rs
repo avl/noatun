@@ -1,7 +1,7 @@
 use crate::distributor::{Distributor, DistributorMessage, SerializedMessage, Status};
 
 use crate::communication::udp::TokioUdpDriver;
-use crate::{Application, Database, MessageFrame, MessageId, NoatunTime};
+use crate::{Application, Database, MessageId, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::{io, thread};
 use tokio::runtime::Runtime;
@@ -25,138 +25,80 @@ use tokio::time::error::Elapsed;
 use tokio::time::Instant;
 use tokio::{select, spawn};
 use tracing::{debug, error, info, instrument, trace, warn};
+use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 
-pub mod udp {
+pub mod udp;
 
-    use crate::communication::{
-        CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
-    };
-    use anyhow::{bail, Context};
-    use socket2::{Domain, Protocol, Type};
-    use std::net::{IpAddr, SocketAddr};
-    use tokio::net::UdpSocket;
-    use tracing::info;
+pub mod size_limit_vec_deque {
+    use std::collections::VecDeque;
 
-    impl CommunicationDriver for TokioUdpDriver {
-        type Receiver = tokio::net::UdpSocket;
-        type Sender = CommunicationUdpSendSocket;
-        type Endpoint = SocketAddr;
-
-        async fn initialize(
-            &mut self,
-            bind_address: &str,
-            multicast_group: &str,
-            mtu: usize,
-        ) -> anyhow::Result<(Self::Sender, Self::Receiver)> {
-            let multicast_group: SocketAddr = multicast_group
-                .parse()
-                .context(format!("parsing multicast group {}", multicast_group))?;
-            let bind_address: SocketAddr = bind_address
-                .parse()
-                .context(format!("parsing listening/bind address {}", bind_address))?;
-            let send_socket = UdpSocket::bind(bind_address).await?;
-            let domain;
-            match (multicast_group.ip(), bind_address.ip()) {
-                (IpAddr::V4(multicast_ipv4), IpAddr::V4(bind_ipv4)) => {
-                    info!(
-                        "Joining multicast group {} on if {}",
-                        multicast_ipv4, bind_ipv4
-                    );
-                    domain = Domain::IPV4;
-                }
-                (IpAddr::V6(multicast_ipv6), IpAddr::V6(bind_ipv6)) => {
-                    info!(
-                        "Joining multicast group {} on if {}",
-                        multicast_ipv6, bind_ipv6
-                    );
-                    domain = Domain::IPV6
-                }
-                _ => {
-                    panic!(
-                        "Bind address and multicast group used different address family. They must both be ipv4 or both ipv6."
-                    );
-                }
-            }
-
-            let udp_receive = socket2::Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
-            if mtu >= u16::MAX as usize {
-                bail!("Maximum MTU supported by noatun is 65534");
-            }
-            //udp.set_multicast_loop_v4(true)?;
-            info!("Binding to group {:?}", multicast_group);
-            let receive_socket;
-            match (multicast_group.ip(), bind_address) {
-                (IpAddr::V4(multicast_ipv4), SocketAddr::V4(bind_ipv4)) => {
-                    udp_receive.set_reuse_address(true)?;
-                    udp_receive.set_nonblocking(true)?;
-                    udp_receive.bind(&multicast_group.into())?;
-                    receive_socket = UdpSocket::from_std(udp_receive.into())?;
-                    receive_socket.join_multicast_v4(multicast_ipv4, *bind_ipv4.ip())?;
-                    receive_socket.set_multicast_loop_v4(true)?;
-                }
-                (IpAddr::V6(multicast_ipv6), SocketAddr::V6(bind_ipv6)) => {
-                    udp_receive.set_reuse_address(true)?;
-                    udp_receive.set_nonblocking(true)?;
-                    udp_receive.set_multicast_loop_v6(true)?;
-                    //udp_receive.bind(&multicast_group.into()).context("binding ipv6 multicast group")?;
-                    /*udp_receive.bind(&SockAddr::from(
-                        SocketAddr::V6(SocketAddrV6::new(multicast_group, bind_address.port(), 0 ,0))
-                    ))?;*/
-                    //udp_receive.set_only_v6(true)?;
-                    println!("Joining multicastgroup for scope {}", bind_ipv6.scope_id());
-                    println!("binding receive socket to {:?}", multicast_group);
-                    udp_receive
-                        .bind(&multicast_group.into())
-                        .context("binding multicast group")?;
-                    udp_receive.join_multicast_v6(&multicast_ipv6, bind_ipv6.scope_id())?;
-
-                    receive_socket = UdpSocket::from_std(udp_receive.into())?;
-                }
-                _ => {
-                    unreachable!()
-                }
-            }
-
-            Ok((
-                CommunicationUdpSendSocket {
-                    socket: send_socket,
-                    multicast_addr: multicast_group,
-                },
-                receive_socket,
-            ))
-        }
-
-        fn parse_endpoint(s: &str) -> anyhow::Result<Self::Endpoint> {
-            Ok(s.parse().context(format!("couldn't parse {:?}", s))?)
-        }
-    }
-    pub struct TokioUdpDriver;
-    pub struct CommunicationUdpSendSocket {
-        multicast_addr: SocketAddr,
-        socket: UdpSocket,
-    }
-    impl CommunicationSendSocket<SocketAddr> for CommunicationUdpSendSocket {
-        fn local_addr(&self) -> anyhow::Result<SocketAddr> {
-            Ok(self.socket.local_addr()?)
-        }
-
-        async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            println!("Sending to {:?}", self.multicast_addr);
-            let res = UdpSocket::send_to(&self.socket, buf, self.multicast_addr).await;
-            println!("Res: {:?}", res);
-            res
-        }
+    pub trait MeasurableSize {
+        fn size_bytes(&self) -> usize;
     }
 
-    impl CommunicationReceiveSocket<SocketAddr> for tokio::net::UdpSocket {
-        async fn recv_buf_from<B: bytes::BufMut + Send>(
-            &mut self,
-            buf: &mut B,
-        ) -> std::io::Result<(usize, SocketAddr)> {
-            println!("About to receive from udp socket");
-            let ret = UdpSocket::recv_buf_from(self, buf).await;
-            println!("Udp receive: {:?}", ret);
-            ret
+    /// A vector limited in size.
+    ///
+    /// The total size of all stored items is always less than the limit.
+    pub struct SizeLimitVecDeque<T> {
+        inner: VecDeque<T>,
+        size_limit: usize,
+        accum_size: usize,
+    }
+
+    impl<T:MeasurableSize> SizeLimitVecDeque<T> {
+
+        pub fn new(limit_bytes: usize) -> SizeLimitVecDeque<T> {
+            Self {
+                inner: VecDeque::new(),
+                size_limit: limit_bytes,
+                accum_size: 0,
+            }
+        }
+
+        /// Push the given value. Old values are removed until the item can fit.
+        ///
+        /// If the item still doesn't fit, the collection will be empty.
+        pub fn push(&mut self, value: T) {
+            let size = value.size_bytes();
+            while self.accum_size + size > self.size_limit {
+                let Some(prev) =  self.inner.pop_front() else {
+                    return;
+                };
+                self.accum_size -= prev.size_bytes();
+            }
+            self.accum_size += size;
+            self.inner.push_back(value);
+        }
+
+        /// Push the given value. Old values are removed until the item can fit.
+        ///
+        /// If the item still doesn't fit, the collection will be empty. If the insert point
+        /// is popped off, the value is not inserted.
+        pub fn insert(&mut self, mut insert_point: usize, value: T) {
+            let size = value.size_bytes();
+            while self.accum_size + size > self.size_limit {
+                if insert_point == 0 {
+                    return;
+                }
+                let Some(prev) =  self.inner.pop_front() else {
+                    return;
+                };
+                insert_point = insert_point - 1;
+                self.accum_size -= prev.size_bytes();
+            }
+            self.accum_size += size;
+            self.inner.insert(insert_point, value);
+        }
+        pub fn remove(&mut self, index: usize) -> Option<T> {
+            let item = self.inner.remove(index)?;
+            self.accum_size -= item.size_bytes();
+            Some(item)
+        }
+        pub fn binary_search_by_key<'a, B, F>(&'a self, b: &B, f: F) -> Result<usize, usize>
+        where
+            F: FnMut(&'a T) -> B,
+            B: Ord {
+            self.inner.binary_search_by_key(b, f)
         }
     }
 }
@@ -290,13 +232,19 @@ struct SortableTransmittedEntity {
     entity: TransmittedEntitySortable,
 }
 
-#[derive(Default)]
+impl MeasurableSize for SortableTransmittedEntity {
+    fn size_bytes(&self) -> usize {
+        self.entity.data.len() + size_of_val(&self.reconstructed_seq) + size_of_val(&self.entity)
+    }
+}
+
+
 struct ReceiveTrack {
     accum: VecDeque<u8>,
     expected_next: u64,
     sorted_packets: VecDeque<SortableTransmittedEntity>,
+    retransmit_interval: Duration
 }
-
 impl ReceiveTrack {
     /// How long are packets kept in the retransmit window.
     /// I.e, after this has passed, they're lost forever.
@@ -306,6 +254,15 @@ impl ReceiveTrack {
     } else {
         Self::RETRANSMIT_WINDOW as u16
     };
+
+    pub(crate) fn new(retransmit_interval: Duration) -> Self {
+        ReceiveTrack {
+            accum: Default::default(),
+            expected_next: 0,
+            sorted_packets: Default::default(),
+            retransmit_interval
+        }
+    }
 
     pub(crate) fn reconstruct_seq(&self, seq: u16) -> u64 {
         Self::reconstruct_seq_impl(self.expected_next, seq)
@@ -333,13 +290,7 @@ impl ReceiveTrack {
         push: bool,
     ) -> Result<()> {
         let reconstructed_seq = self.reconstruct_seq(packet.seq);
-        /*if let Some(info) = retransmit_requests.get_mut(&packet_source) {
-            info.items.swap_remove(&reconstructed_seq);
-            if info.items.is_empty() {
-                retransmit_requests.swap_remove(&packet_source);
-            }
-        };
-         */
+
         let packet = SortableTransmittedEntity {
             reconstructed_seq,
             entity: packet,
@@ -384,8 +335,7 @@ impl ReceiveTrack {
                         accum.items.insert(x);
                     }
                     if !push {
-                        accum.wait_until = Instant::now() + Duration::from_secs(1);
-                        //TODO: Dynamic? Or configurable?
+                        accum.wait_until = Instant::now() + self.retransmit_interval;
                     }
                     let mut cur = first.reconstructed_seq;
                     'loop1: for key in &self.sorted_packets {
@@ -458,7 +408,8 @@ struct MulticasterSenderLoop<Socket: CommunicationDriver> {
     send_socket: Socket::Sender,
     receive_socket: Socket::Receiver,
     bind_address: Socket::Endpoint,
-    history: VecDeque<SortableTransmittedEntity>,
+    /// Transmitted messages kept in out queue, to allow retransmitting
+    history: SizeLimitVecDeque<SortableTransmittedEntity>,
     queue: VecDeque<SortableTransmittedEntity>,
     outgoing_retransmit_requests: IndexMap<Socket::Endpoint, RetransmitInfo>,
     receive_track: IndexMap<Socket::Endpoint, ReceiveTrack>,
@@ -473,6 +424,8 @@ struct MulticasterSenderLoop<Socket: CommunicationDriver> {
     max_payload_per_packet: usize,
     next_send_seq: u64,
     limiter: BwLimiter,
+    /// The timeout before a retransmit is initiated
+    retransmit_interval: Duration,
 }
 impl<Socket: CommunicationDriver> Drop for MulticasterSenderLoop<Socket> {
     fn drop(&mut self) {
@@ -517,7 +470,7 @@ impl BwLimiter {
 }
 
 impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
-    pub async fn new(
+    pub(crate) async fn new(
         driver: &mut Socket,
         bind_address: &str,
         multicast_group: &str,
@@ -526,6 +479,8 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
         bandwidth_bytes_per_second: u64,
         quit_rx: tokio::sync::oneshot::Receiver<()>,
         mtu: usize,
+        retransmit_interval: Duration,
+        retransmit_buffer_size_bytes: usize,
     ) -> Result<MulticasterSenderLoop<Socket>> {
         let (send_socket, receive_socket) = driver
             .initialize(bind_address, multicast_group, mtu)
@@ -541,7 +496,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             bind_address: send_socket.local_addr()?,
             send_socket,
             receive_socket,
-            history: Default::default(),
+            history: SizeLimitVecDeque::new(retransmit_buffer_size_bytes),
             queue: Default::default(),
             outgoing_retransmit_requests: Default::default(),
             receive_track: Default::default(),
@@ -553,6 +508,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
             recvbuf: Vec::with_capacity(mtu),
             max_payload_per_packet,
             next_send_seq: 0,
+            retransmit_interval,
         })
     }
     pub fn send_buf(
@@ -688,10 +644,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                             .history
                             .binary_search_by_key(&x.reconstructed_seq, |x| x.reconstructed_seq);
                         self.history.insert(insert_point, x);
-                        if self.history.len() > 100 {
-                            //TODO: Is this default always enough?
-                            self.history.pop_front();
-                        }
+
                         temp
                     });
                 }
@@ -769,7 +722,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
                         match packet {
                             NetworkPacket::Data(push, entity) => {
 
-                                match self.receive_track.entry(src_addr).or_default()
+                                match self.receive_track.entry(src_addr).or_insert_with(||ReceiveTrack::new(self.retransmit_interval))
                                     .process(entity, src_addr, &mut self.message_tx, &mut self.outgoing_retransmit_requests, push).await {
                                         Ok(()) => {}
                                         Err(err) => {
@@ -836,6 +789,8 @@ pub struct DatabaseCommunicationConfig {
     pub multicast_address: String,
     pub mtu: usize,
     pub bandwidth_limit_bytes_per_second: u64,
+    pub retransmit_interval_seconds: f32,
+    pub retransmit_buffer_size_bytes: usize,
 }
 
 impl Default for DatabaseCommunicationConfig {
@@ -845,6 +800,8 @@ impl Default for DatabaseCommunicationConfig {
             multicast_address: "230.230.230.230:7777".to_string(),
             mtu: 1000,
             bandwidth_limit_bytes_per_second: 1000,
+            retransmit_interval_seconds: 1.0,
+            retransmit_buffer_size_bytes: 10000000,
         }
     }
 }
@@ -1028,6 +985,16 @@ where
             }
         }
     }
+
+    /// Return a reference to the inner noatun database.
+    ///
+    /// Warning! Adding or deleting messages directly to the inner database is not advised. Such
+    /// messages will not be immediately picked up by the communication, causing inefficiency.
+    /// Instead, use [`Self::add_message`] and similar methods on [`DatabaseCommunication`].
+    pub fn inner_database(&self) -> MutexGuard<Database<APP>> {
+        self.database.lock().unwrap()
+    }
+
     pub async fn close(self) -> Result<()> {
         let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
         debug!("Sending quit");
@@ -1110,9 +1077,6 @@ where
         db.set_mock_time(time).unwrap();
         db.maybe_advance_cutoff().unwrap();
     }
-    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
-        self.database.lock().unwrap().get_all_messages()
-    }
     pub fn get_update_heads(&self) -> Vec<crate::MessageId> {
         self.database.lock().unwrap().get_update_heads().to_vec()
     }
@@ -1124,11 +1088,6 @@ where
             .current_cutoff_state()?
             .before_time
             .to_noatun_time())
-    }
-    /// TODO: Probably remove this before release, it should never be necessary
-    pub fn reproject(&mut self) -> Result<()> {
-        self.database.lock().unwrap().reproject()?;
-        Ok(())
     }
     pub fn with_root_preview<R>(
         &self,
@@ -1164,6 +1123,8 @@ where
             config.bandwidth_limit_bytes_per_second,
             quit_rx,
             config.mtu,
+            Duration::from_secs_f32(config.retransmit_interval_seconds),
+            config.retransmit_buffer_size_bytes
         )
         .await?;
         let node = sender_loop.bind_address.to_string();
@@ -1238,7 +1199,7 @@ where
 
 #[cfg(test)]
 mod tests {
-
+    use std::time::Duration;
     use crate::communication::udp::TokioUdpDriver;
     use crate::communication::{MulticasterSenderLoop, ReceiveTrack};
     use crate::tests::setup_tracing;
@@ -1276,6 +1237,8 @@ mod tests {
             10000,
             quit_rx1,
             200,
+            Duration::from_secs_f32(1.0),
+            100
         )
         .await
         .unwrap();
@@ -1293,6 +1256,8 @@ mod tests {
             10000,
             quit_rx2,
             200,
+            Duration::from_secs_f32(1.0),
+            100
         )
         .await
         .unwrap();
@@ -1334,6 +1299,8 @@ mod tests {
             10000,
             quit_rx1,
             200,
+            Duration::from_secs_f32(1.0),
+            100
         )
         .await
         .unwrap();
@@ -1351,6 +1318,8 @@ mod tests {
             10000,
             quit_rx2,
             200,
+            Duration::from_secs_f32(1.0),
+            100
         )
         .await
         .unwrap();

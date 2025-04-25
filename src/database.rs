@@ -276,8 +276,6 @@ impl<APP: Application> Database<APP> {
         Ok(t)
     }
 
-    compile_error!("verify things still work, then keep going through todos")
-
     pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
         self.with_dirty(|tself|{
             let index = tself.message_store.get_index_of_time(limit)?;
