@@ -10,8 +10,8 @@ use std::slice;
 
 pub trait FileBackend {
     fn page_size(&self) -> usize;
-    fn flush_all(&self) -> Result<()>;
-    fn flush_range(&self, start: usize, len: usize) -> Result<()>;
+    fn sync_all(&self) -> Result<()>;
+    fn sync_range(&self, start: usize, len: usize) -> Result<()>;
 
     fn ptr(&self) -> *mut u8;
 
@@ -560,19 +560,19 @@ impl FileAccessor {
         Ok(())
     }
 
-    pub(crate) fn flush_range(&self, offset: usize, len: usize) -> Result<()> {
+    pub(crate) fn sync_range(&self, offset: usize, len: usize) -> Result<()> {
         if offset < self.mapping.page_size() {
             self.mapping
-                .flush_range(0, offset + Self::HEADER_SIZE + len)?;
+                .sync_range(0, offset + Self::HEADER_SIZE + len)?;
         } else {
-            self.mapping.flush_range(offset + Self::HEADER_SIZE, len)?;
-            self.mapping.flush_range(0, Self::HEADER_SIZE)?;
+            self.mapping.sync_range(offset + Self::HEADER_SIZE, len)?;
+            self.mapping.sync_range(0, Self::HEADER_SIZE)?;
         }
         Ok(())
     }
 
-    pub(crate) fn flush_all(&self) -> Result<()> {
-        self.mapping.flush_all()?;
+    pub(crate) fn sync_all(&self) -> Result<()> {
+        self.mapping.sync_all()?;
         Ok(())
     }
 

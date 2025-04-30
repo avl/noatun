@@ -121,10 +121,10 @@ mod unix {
         fn page_size(&self) -> usize {
             Self::page_size()
         }
-        fn flush_all(&self) -> Result<()> {
-            self.flush_range(0, self.committed_size)
+        fn sync_all(&self) -> Result<()> {
+            self.sync_range(0, self.committed_size)
         }
-        fn flush_range(&self, start: usize, len: usize) -> Result<()> {
+        fn sync_range(&self, start: usize, len: usize) -> Result<()> {
             unsafe {
                 let start_rounded_down = if start % Self::page_size() == 0 {
                     start
@@ -213,8 +213,10 @@ mod unix {
             }
 
             self.file.set_len(new_size as u64)?;
-            // TODO: Figure out if the following serves a purpose:
-            // self.file.sync_all().context("fsync")?;
+            // We should sync, because otherwise the metadata change (to file length)
+            // might not be persisted even though file contents are, which  seems like something
+            // we don't want to deal with.
+            self.file.sync_all().context("fsync")?;
 
             let ptr = unsafe {
                 libc::mmap(

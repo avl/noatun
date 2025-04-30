@@ -9,6 +9,10 @@ pub(crate) struct UpdateHeadTracker {
 }
 
 impl UpdateHeadTracker {
+    pub(crate) fn sync_all(&mut self) -> Result<()> {
+        self.file.sync_all()?;
+        Ok(())
+    }
     pub(crate) fn remove_update_head(&mut self, message_id: MessageId) -> Result<()> {
         let mapping = self.file.map_mut();
         let id_mapping: &mut [MessageId] = dyn_cast_slice_mut(mapping);

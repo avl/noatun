@@ -334,7 +334,7 @@ fn test_mmap_helper() {
     mmap.seek(SeekFrom::Start(3_000_000)).unwrap();
     assert_eq!(mmap.read_u8().unwrap(), 1);
 
-    mmap.flush_all().unwrap();
+    mmap.sync_all().unwrap();
 
     mmap.truncate(0).unwrap();
     mmap.seek(SeekFrom::Start(0)).unwrap();

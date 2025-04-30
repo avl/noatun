@@ -12,12 +12,11 @@
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::let_and_return)]
 #![allow(clippy::collapsible_else_if)]
-// TODO: Maybe use arg-struct in some places
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::expect_fun_call)]
 #![allow(clippy::needless_late_init)]
 
-use crate::data_types::NoatunCell;
+pub use crate::data_types::NoatunCell;
 use crate::sequence_nr::SequenceNr;
 use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -536,13 +535,13 @@ impl NoatunTime {
         ms
     }
 
-    pub fn next_multiple_of(self, other: NoatunTime) -> NoatunTime {
+    pub fn next_multiple_of(self, other: NoatunTime) -> Option<NoatunTime> {
         //TODO: Checked arithmetic
-        NoatunTime(self.0.next_multiple_of(other.0))
+        Some(NoatunTime(self.0.checked_next_multiple_of(other.0)?))
     }
-    pub fn prev_multiple_of(self, other: NoatunTime) -> NoatunTime {
+    pub fn prev_multiple_of(self, other: NoatunTime) -> Option<NoatunTime> {
         //TODO: Checked arithmetic
-        NoatunTime(self.0.next_multiple_of(other.0) - other.0)
+        Some(NoatunTime(self.0.checked_next_multiple_of(other.0)? - other.0))
     }
     pub fn successor(&self) -> NoatunTime {
         NoatunTime(self.0 + 1)

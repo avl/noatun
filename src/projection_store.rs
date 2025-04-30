@@ -113,7 +113,13 @@ mod registrar_info {
 
 const DEFAULT_SIZE: usize = 10000;
 
-const MAIN_DB_STATUS_CLEAN: u8 = 1;
+// The state was clean in memory, and then a complete sync occurred.
+const MAIN_DB_STATUS_FULLY_CLEAN: u8 = 1;
+
+// The database was in a consistent state in memory.
+// As long as the machine hasn't been rebooted, the state is clean.
+const MAIN_DB_STATUS_HOT_CLEAN: u8 = 1;
+// The database state is not clean. Recovery is needed.
 const MAIN_DB_STATUS_DIRTY: u8 = 0;
 
 #[derive(Debug, Clone, Copy)]
@@ -143,6 +149,13 @@ pub struct MainDbHeader {
     /// dirty state.
     last_boot: [u8; 16],
     root_ptr: SerializableGenPtr,
+}
+
+impl MainDbHeader {
+    pub fn is_clean(&self) -> bool {
+        self.status.0 == MAIN_DB_STATUS_FULLY_CLEAN
+            || (get_boot_checksum() == self.last_boot  && self.status.0 == MAIN_DB_STATUS_HOT_CLEAN)
+    }
 }
 
 unsafe impl NoatunStorable for MainDbHeader {}
@@ -234,6 +247,10 @@ pub(crate) struct ReverseDepTrackLinkedListEntry {
 unsafe impl NoatunStorable for ReverseDepTrackLinkedListEntry {}
 
 impl DatabaseContextData {
+    pub fn sync_all(&mut self) -> Result<()> {
+        self.main_db_mmap.sync_all()?;
+        Ok(())
+    }
     pub fn clear_tainted(&mut self) {
         self.tainted = false;
     }
@@ -428,22 +445,34 @@ impl DatabaseContextData {
         let header: &mut MainDbHeader =
             unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
 
-        let was_clean = header.status.0 == MAIN_DB_STATUS_CLEAN;
+        let was_clean = header.is_clean();
         header.status = MainDbStatus(MAIN_DB_STATUS_DIRTY);
 
         if !self.filesystem_sync_disabled {
             self.main_db_mmap
-                .flush_range(0, std::mem::size_of::<MainDbHeader>())?;
+                .sync_range(0, std::mem::size_of::<MainDbHeader>())?;
         }
 
         Ok(was_clean)
     }
+
+
+    /// Db is clean in memory
     #[inline]
-    pub fn mark_clean(&mut self) {
+    pub fn mark_hot_clean(&mut self) {
         let header: &mut MainDbHeader =
             unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
 
-        header.status = MainDbStatus(MAIN_DB_STATUS_CLEAN);
+        header.status = MainDbStatus(MAIN_DB_STATUS_HOT_CLEAN);
+    }
+    #[inline]
+    pub fn mark_fully_clean(&mut self) -> Result<()> {
+        let header: &mut MainDbHeader =
+            unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
+
+        header.status = MainDbStatus(MAIN_DB_STATUS_FULLY_CLEAN);
+        self.main_db_mmap.sync_range(0, std::mem::size_of::<MainDbHeader>())?;
+        Ok(())
     }
     pub(crate) fn disable_filesystem_sync(&mut self) {
         self.filesystem_sync_disabled = true;
@@ -454,7 +483,7 @@ impl DatabaseContextData {
         let header: &MainDbHeader =
             unsafe { &*(self.main_db_mmap.map_mut_ptr() as *const MainDbHeader) };
 
-        header.status.0 != MAIN_DB_STATUS_CLEAN
+        !header.is_clean()
     }
     pub fn clear(&mut self) -> Result<()> {
         self.main_db_mmap.truncate(0)?;
@@ -643,8 +672,7 @@ impl DatabaseContextData {
                     );
 
                     panic!(
-                        "Couldn't rewind time to {}, ended up back at {}",
-                        new_time, time
+                        "Couldn't rewind time to {new_time}, ended up back at {time}"
                     );
                 }
             }

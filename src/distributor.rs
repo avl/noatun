@@ -151,6 +151,7 @@ pub fn truncate_to_arraystring(name: &str) -> ArrayString<10> {
     "?".try_into().unwrap()
 }
 
+
 impl Distributor {
     const BATCH_SIZE: usize = 20;
     pub(crate)  fn new(node_name: &str) -> Distributor {
@@ -161,19 +162,20 @@ impl Distributor {
         }
     }
 
+    /// Returns the current status of the system with respect to clock drift.
+    ///
+    /// If clock drift has been observed with the last 60 seconds, it will be reported
+    /// by this method.
     pub(crate) fn get_status(&self, now: NoatunTime) -> Status {
         for drift in self.distributor_state.most_recent_clockdrift.values() {
             if drift.elapsed_ms_since(now) < 60000
-            /*TODO: Make configurable?*/
             {
                 return Status::BadClocksDetected;
             }
         }
         for unsync in self.distributor_state.most_recent_unsynced.values() {
             let unsync_t = unsync.elapsed_ms_since(now);
-            println!("Unsync time: {} ms", unsync_t);
             if unsync_t < 60000
-            /*TODO: Make configurable?*/
             {
                 return Status::OutOfSync;
             }
@@ -249,29 +251,41 @@ impl Distributor {
 
                 DistributorMessage::ReportHeads(cutoff_hash, heads, src) => {
                     accumulated_heads.extend(heads);
-                    match database.is_acceptable_cutoff_hash(cutoff_hash)? {
-                        Acceptability::Nominal => {
-                            info!("Acceptability: Nominal");
-                            self.distributor_state.most_recent_unsynced.remove(&src);
-                            self.distributor_state.most_recent_clockdrift.remove(&src);
-                        }
-                        Acceptability::Unacceptable => {
-                            info!("Acceptability: Unacceptable");
-                            self.distributor_state
-                                .most_recent_unsynced
-                                .insert(src, database.noatun_now());
-                            self.sync_all_inprogress = SyncAllState::Starting;
-                        }
-                        Acceptability::Undecided(advance) => {
-                            info!("Acceptability: Undecided");
-                            database.advance_cutoff(advance)?;
-                            //TODO: Are we done here? Or do we need to do some analysis to see if the advance helped?
-                        }
-                        Acceptability::UnacceptablePeerClockDrift => {
-                            info!("Acceptability: Clockdrift");
-                            self.distributor_state
-                                .most_recent_clockdrift
-                                .insert(src, database.noatun_now());
+                    for pass in 0..2 {
+                        match database.is_acceptable_cutoff_hash(cutoff_hash)? {
+                            Acceptability::Nominal => {
+                                info!("Acceptability: Nominal");
+                                self.distributor_state.most_recent_unsynced.remove(&src);
+                                self.distributor_state.most_recent_clockdrift.remove(&src);
+                                break;
+                            }
+                            Acceptability::Unacceptable => {
+                                info!("Acceptability: Unacceptable");
+                                self.distributor_state
+                                    .most_recent_unsynced
+                                    .insert(src, database.noatun_now());
+                                self.sync_all_inprogress = SyncAllState::Starting;
+                                break;
+                            }
+                            Acceptability::Undecided(advance) => {
+                                info!("Acceptability: Undecided");
+                                // We know this won't advance too far, because is_acceptable_cutoff_hash
+                                // never advances far
+                                database.advance_cutoff(advance)?;
+                                if pass == 1 {
+                                    // If we get here, in pass 1, it means we apparently didn't
+                                    // advance to the correct place in the first pass. This is
+                                    // not expected.
+                                    error!("unexpected case, cutoff hash considered undecided twice")
+                                }
+                            }
+                            Acceptability::UnacceptablePeerClockDrift => {
+                                info!("Acceptability: Clockdrift");
+                                self.distributor_state
+                                    .most_recent_clockdrift
+                                    .insert(src, database.noatun_now());
+                                break;
+                            }
                         }
                     }
                 }
@@ -318,8 +332,6 @@ impl Distributor {
 
         self.process_reported_heads(&mut database, accumulated_heads, &mut output)?;
 
-        // TODO: Consider if this is the best solution.
-        // process_request_upstream presently requires sorted input. But should it?
         accumulated_upstream_queries.sort_keys();
 
         self.process_request_upstream(&mut database, accumulated_upstream_queries, &mut output)?;
@@ -536,11 +548,12 @@ impl Distributor {
         database.maybe_advance_cutoff()?;
 
         message_list.sort_by_key(|x| x.0.id);
+
         let mut chosen_messages = IndexMap::new();
         'msg_iter: for (msg, need_ack) in message_list.into_iter() {
             for parent in msg.parents.iter() {
                 if database.contains_message(*parent)? == false
-                    && !chosen_messages.contains_key(parent)
+                    && !chosen_messages.contains_key(parent) // message_list is sorted by id (i.e, also by time), so parent should be found here
                 {
                     // TODO: Does this still happen?
                     // There is an edge-case, where a message is removed immediately after having been

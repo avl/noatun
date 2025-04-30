@@ -466,6 +466,10 @@ fn dedup_slice<T: PartialEq + Copy>(slice: &mut [T]) -> usize {
 }
 
 impl<M> OnDiskMessageStore<M> {
+    pub fn sync_all(&mut self) -> Result<()> {
+        self.index_mmap.sync_all()?;
+        Ok(())
+    }
     pub fn get_upstream_of(
         &self,
         message_ids: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
@@ -577,7 +581,7 @@ impl<M> OnDiskMessageStore<M> {
         let new_file_size = (new_entries) * (size_of::<IndexEntry>()) + (size_of::<StoreHeader>());
 
         map.grow(new_file_size)
-            .with_context(|| format!("resizing index file to {}", new_file_size))?;
+            .with_context(|| format!("resizing index file to {new_file_size}"))?;
 
         Ok(())
     }
@@ -1684,7 +1688,7 @@ impl<M> OnDiskMessageStore<M> {
         M: Message + Debug + 'a,
     {
         let mut prev = None;
-        // TODO: Remove this perhaps, below?
+
         let mut messages = messages.inspect(|test| {
             trace!("Inspecting for insert: {:?}", test);
             if prev.is_none() {
@@ -1894,7 +1898,7 @@ impl<M> OnDiskMessageStore<M> {
         let final_file_position = info.file.stream_position()?;
         if !self.filesystem_sync_disabled {
             info.file
-                .flush_range(
+                .sync_range(
                     initial_file_position as usize,
                     (final_file_position - initial_file_position) as usize,
                 )
@@ -1902,9 +1906,13 @@ impl<M> OnDiskMessageStore<M> {
         }
         //let data_file = &mut index_header.data_files[self.active_file.index()];
 
+        let Ok(cur_index_u32) = cur_index.try_into() else {
+            bail!("max message count exceeded - database full");
+        };
+
         index_header.entries = index_header
             .entries
-            .max(cur_index.try_into().expect("max message count exceeded")); //TODO: Fail better when hitting hard size limit
+            .max(cur_index_u32);
 
         //Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
         debug_assert!(mmap_index[0..index_header.entries as usize].is_sorted_by_key(|x| x.message));
@@ -2015,14 +2023,14 @@ impl<M> OnDiskMessageStore<M> {
             let src_position = src_file_entry.compaction_pointer;
             if src_file_entry.compaction_pointer >= src_file_entry.nominal_size {
                 if !self.filesystem_sync_disabled {
-                    dst_file_info.file.flush_all()?;
+                    dst_file_info.file.sync_all()?;
                 }
 
                 src_file_entry.nominal_size = 0;
                 src_file_entry.bytes_used = 0;
                 src_file_entry.compaction_pointer = 0;
                 if !self.filesystem_sync_disabled {
-                    src_file_info.file.flush_all()?;
+                    src_file_info.file.sync_all()?;
                 }
                 src_file_info.file.seek_to(0)?;
                 src_file_info.file.set_used_space(0);
@@ -2091,7 +2099,7 @@ impl<M> OnDiskMessageStore<M> {
         let mut db_existed = false;
 
         let data_files: [Result<DataFileInfo>; 2] = [0, 1].map(|file_number| {
-            let file_name = format!("data{}", file_number);
+            let file_name = format!("data{file_number}");
             let data_file = d
                 .open_file(target, &file_name, 0, max_file_size)
                 .context("Opening data-file")?;
@@ -2119,7 +2127,6 @@ impl<M> OnDiskMessageStore<M> {
             .try_into()
             .unwrap_or_else(|_| unreachable!());
 
-        //let overwrite = target.overwrite(); //TODO: use?
 
         let mut index_file = d
             .open_file(target, "index", size_of::<StoreHeader>(), max_file_size)
@@ -2128,7 +2135,6 @@ impl<M> OnDiskMessageStore<M> {
             .try_lock_exclusive()
             .context("While obtaining lock on index-file")?;
 
-        //let len = index_file.used_space();
 
         let index = Self::header(&mut index_file)?;
 
@@ -2211,9 +2217,10 @@ impl<M> OnDiskMessageStore<M> {
         &self,
         hash: CutOffHashPos,
         cutoff_config: &CutOffConfig,
+        now: NoatunTime,
     ) -> Result<Acceptability> {
         let (header, _index) = self.header_and_index()?;
-        Ok(header.cutoff.is_acceptable_cutoff_hash(hash, cutoff_config))
+        Ok(header.cutoff.is_acceptable_cutoff_hash(hash, cutoff_config, now))
     }
 }
 
@@ -2546,7 +2553,7 @@ mod tests {
             count += 1;
         }
         println!("Time to iterate: {:?}", start.elapsed());
-        println!("Count: {} (sum: {})", count, sum);
+        println!("Count: {count} (sum: {sum})");
     }
     #[test]
     fn test_create_disk_store_in_memory() {
@@ -2590,7 +2597,7 @@ mod tests {
             count += 1;
         }
         println!("Time to iterate: {:?}", start.elapsed());
-        println!("Count: {} (sum: {})", count, sum);
+        println!("Count: {count} (sum: {sum})");
     }
 
     #[test]

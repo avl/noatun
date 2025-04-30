@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::pin::Pin;
-use tracing::info;
+use tracing::{error, info};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LoadingStatus {
@@ -349,12 +349,27 @@ impl<'a, APP: Application> DatabaseSessionMut<'a, APP> {
         self.db.append_many(messages, local, allow_cutoff_advance)
     }
 }
+impl<APP:Application> Drop for Database<APP> {
+    fn drop(&mut self) {
+        if let Err(err) = self.sync_all() {
+            error!("Error while dropping Database: {:?}", err);
+        }
+
+    }
+}
 
 impl<APP: Application> Database<APP> {
 
     pub fn begin_session_mut(&mut self) -> Result<DatabaseSessionMut<APP>> {
         self.mark_dirty()?;
         Ok(DatabaseSessionMut { db: self })
+    }
+
+    pub fn sync_all(&mut self) -> Result<()> {
+        self.message_store.sync_all()?;
+        self.context.sync_all()?;
+        self.mark_fully_clean()?;
+        Ok(())
     }
 
     pub fn begin_session(&self) -> Result<DatabaseSession<APP>> {
@@ -371,8 +386,14 @@ impl<APP: Application> Database<APP> {
 
     #[inline]
     fn mark_clean(&mut self) {
-        self.context.mark_clean()
+        self.context.mark_hot_clean()
     }
+    #[inline]
+    fn mark_fully_clean(&mut self) -> Result<()> {
+        self.context.mark_fully_clean()?;
+        Ok(())
+    }
+
     fn mark_dirty(&mut self) -> Result<()> {
         if !self.context.mark_dirty()? {
             // Recovery needed
@@ -483,7 +504,7 @@ impl<APP: Application> Database<APP> {
     }
 
     fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
-        self.message_store.is_acceptable_cutoff_hash(hash)
+        self.message_store.is_acceptable_cutoff_hash(hash, self.noatun_now())
     }
     fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
         self.message_store.current_cutoff_hash()
@@ -843,7 +864,7 @@ impl<APP: Application> Database<APP> {
         let mut message_store = Projector::new(&mut disk, &target, max_size, cutoff_interval)?;
 
         Self::recover_impl(&mut ctx, &mut message_store, &settings, &params)?;
-        ctx.mark_clean();
+        ctx.mark_hot_clean();
 
         let mut db = Database {
             prev_local: None,
@@ -889,7 +910,7 @@ impl<APP: Application> Database<APP> {
                 },
                 &params,
             )?;
-            ctx.mark_clean();
+            ctx.mark_hot_clean();
             if !message_store.loaded_existing_db() {
                 load_status = LoadingStatus::NewDatabase;
             } else {

@@ -153,6 +153,9 @@ impl CutOffTime {
 pub struct CutOffHashPos {
     pub(crate) hash: CutoffHash,
     /// Era
+    ///
+    /// Everything before this time is considered to be 'before cutoff', and
+    /// every node is assumed to have received every event up to this cutoff time.
     pub(crate) before_time: CutOffTime,
     padding: u32,
 }
@@ -189,12 +192,16 @@ impl CutOffHashPos {
         &self,
         peer_hash: CutOffHashPos,
         config: &CutOffConfig,
+        now: NoatunTime
     ) -> Acceptability {
         if *self == peer_hash {
             return Acceptability::Nominal;
         }
         if self.before_time < peer_hash.before_time {
             if self.before_time < peer_hash.before_time.saturating_sub(config.stride) {
+                return Acceptability::UnacceptablePeerClockDrift;
+            }
+            if self.before_time.to_noatun_time() >= now {
                 return Acceptability::UnacceptablePeerClockDrift;
             }
 

@@ -24,6 +24,11 @@ impl<APP: Application> Projector<APP> {
     pub(crate) fn disable_filesystem_sync(&mut self) {
         self.messages.disable_filesystem_sync()
     }
+    pub(crate) fn sync_all(&mut self) -> Result<()> {
+        self.messages.sync_all()?;
+        self.head_tracker.sync_all()?;
+        Ok(())
+    }
     pub(crate) fn advance_cutoff(
         &mut self,
         new_cutoff_at: CutOffTime,
@@ -126,9 +131,9 @@ impl<APP: Application> Projector<APP> {
             .nominal_cutoff(CutOffTime::from_noatun_time(now))
     }
 
-    pub fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
+    pub fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos, now: NoatunTime) -> Result<Acceptability> {
         self.messages
-            .is_acceptable_cutoff_hash(hash, &self.cut_off_config)
+            .is_acceptable_cutoff_hash(hash, &self.cut_off_config, now)
     }
 
     pub(crate) fn contains_message(&self, id: MessageId) -> Result<bool> {

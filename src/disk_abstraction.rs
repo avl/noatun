@@ -9,14 +9,7 @@ use std::slice;
  a) More synch-tests!
  b) Recovery-test! Panic in middle of access (maybe add support for injecting panics in tests)
 
-5: Add a HashMap-data type (probably be inspired by, or lend code from, HashBrown. Does it support
-custom allocators?)
-
-6: Try building simple apps. Does it appear convenient?
-
 7: Can we do something to the chain-of-dependent updates problem? Main snapshots?
-
-9: Check if we can publish this, or if employer wants it?
 */
 
 /// Use to abstract away the concrete mmap and disk io implementations.
@@ -161,11 +154,11 @@ impl FileBackend for InMemoryGrowableFileMapping {
         2 * 1024 * 1024
     }
 
-    fn flush_all(&self) -> Result<()> {
+    fn sync_all(&self) -> Result<()> {
         Ok(())
     }
 
-    fn flush_range(&self, _start: usize, _len: usize) -> Result<()> {
+    fn sync_range(&self, _start: usize, _len: usize) -> Result<()> {
         Ok(())
     }
 
