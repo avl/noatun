@@ -1175,7 +1175,7 @@ mod tests {
             quit_rx1,
             200,
             Duration::from_secs_f32(1.0),
-            1000_000
+            1_000_000
         )
         .await
         .unwrap();
@@ -1194,7 +1194,7 @@ mod tests {
             quit_rx2,
             200,
             Duration::from_secs_f32(1.0),
-            1000_000
+            1_000_000
         )
         .await
         .unwrap();

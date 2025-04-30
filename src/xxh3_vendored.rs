@@ -2138,13 +2138,13 @@ mod xxh3_tests {
     #[test]
     fn test_xxh3() {
         let result = crate::xxh3_vendored::xxh3::xxh3_64(b"1234");
-        println!("{:?}", result);
+        println!("{result:?}");
         assert_eq!(result, 9777848219803310049);
         let result = crate::xxh3_vendored::xxh3::xxh3_64(b"5678");
-        println!("{:?}", result);
+        println!("{result:?}");
         assert_eq!(result, 14901654952795293208);
         let result = crate::xxh3_vendored::xxh3::xxh3_64(b"5678 (Nyctereutes procyonoides) ar ett hunddjur som placeras som ensam art i slaktet Nyctereutes. Den har sitt ursprungliga utbredningsomrade");
-        println!("{:?}", result);
+        println!("{result:?}");
         assert_eq!(result, 3210988261660606264);
     }
 }

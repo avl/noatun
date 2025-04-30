@@ -617,7 +617,7 @@ impl<M> OnDiskMessageStore<M> {
         map: &mut FileAccessor,
         extra: usize,
     ) -> Result<(&mut StoreHeader, &mut [IndexEntry])> {
-        // TODO: Create a fast-path for the case where we do have enough space, so we can inline
+        // TODO(future): Create a fast-path for the case where we do have enough space, so we can inline
         // this method, and only call into something like `Self::provide_index_map` when needed
         Self::provide_index_map(map, extra)?;
         let slice: &mut [u8] = map.map_mut();
@@ -706,7 +706,7 @@ impl<M> OnDiskMessageStore<M> {
 
                     if header.is_deleted() {
                         if tot_size == 0 {
-                            bail!("Corrupt file"); //TODO: More robust recovery!
+                            bail!("Corrupt file");
                         }
                         file_info.seek(SeekFrom::Start(file_offset + tot_size as u64))?;
                         bail!("Header is deleted");
@@ -934,7 +934,6 @@ impl<M> OnDiskMessageStore<M> {
             ));
         };
 
-        //TODO: We could probably have a way to create a very cheap read-only clone
         let mut file = data_files[file.index()].file.readonly();
         file.seek(SeekFrom::Start(offset))
             .context("Seeking to message data")?;
@@ -971,7 +970,6 @@ impl<M> OnDiskMessageStore<M> {
             ));
         };
 
-        //TODO: We could probably have a way to create a very cheap read-only clone
         let mut file = data_files[file.index()].file.readonly();
         file.seek(SeekFrom::Start(offset))
             .context("Seeking to message data")?;
@@ -1132,7 +1130,7 @@ impl<M> OnDiskMessageStore<M> {
     pub fn get_insertion_point(&self, id: MessageId) -> Result<usize> {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
         if message_index.is_empty() == false && id > message_index.last().unwrap().message {
-            return Ok(message_index.len()); //TODO: This is already done by 'binary_search_by_key'? Remove!
+            return Ok(message_index.len());
         }
         let (Ok(i) | Err(i)) = message_index.binary_search_by_key(&id, |x| x.message);
         Ok(i)
@@ -1230,7 +1228,6 @@ impl<M> OnDiskMessageStore<M> {
             let id = entry.message;
             header.data_files[file.index()].bytes_used -= entry.file_total_size;
 
-            // TODO: Make sure recovery procedure can handle duplicate messages
             Self::delete_msg_from_file(entry, &mut self.data_files)?;
 
             head_tracker.remove_update_head(entry.message)?;
@@ -1253,7 +1250,7 @@ impl<M> OnDiskMessageStore<M> {
     pub fn set_cutoff_hash(&mut self, cutoff: CutOffHashPos) -> Result<()> {
         let (header, _message_index) =
             Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
-        header.cutoff = cutoff; //TODO: Should this really be in the message store?
+        header.cutoff = cutoff;
         Ok(())
     }
 
@@ -1578,10 +1575,12 @@ impl<M> OnDiskMessageStore<M> {
         if let Some((file, offset)) = search_index[index].file_offset.file_and_offset() {
             let file = &mut self.data_files[file.index()].file;
             let header: &FileHeaderEntry = unsafe { file.access_pod(offset as usize)? };
+
             if header.num_parents.free() < new_parents.len()
                 || header.num_children.free() < new_children.len()
             {
-                self.slow_add_parents_and_children(id, new_parents, new_children)?;
+                let local = header.has_been_transmitted == 0;
+                self.slow_add_parents_and_children(id, new_parents, new_children, local)?;
                 return Ok(());
             }
             let mut parents = EmbVecAccessor::new_parents(&mut *file, offset);
@@ -1607,6 +1606,7 @@ impl<M> OnDiskMessageStore<M> {
         id: MessageId,
         new_parents: &[MessageId],
         new_children: &[MessageId],
+        local: bool
     ) -> Result<()>
     where
         M: Message,
@@ -1628,17 +1628,15 @@ impl<M> OnDiskMessageStore<M> {
             }
         }
 
-        // TODO: Preserve 'local' flag in this case!!
         let write_report = Self::do_write_message(
             &mut self.data_files,
             self.active_file,
             &msg,
             &children,
-            false,
+            local,
             None,
         )?;
 
-        // TODO: This can be optimized - we've already looked this up when we did `read_message` above.
         if let Ok(index) = search_index.binary_search_by_key(&msg.header.id, |x| x.message) {
             let index_entry = &mut search_index[index];
             debug_assert!(!index_entry.file_offset.is_deleted());

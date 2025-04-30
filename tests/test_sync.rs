@@ -10,6 +10,7 @@ use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::pin::Pin;
 use std::time::Duration;
+use noatun::database::DatabaseSettings;
 
 #[derive(Savefile, Debug)]
 struct MazeMessage {
@@ -95,11 +96,12 @@ async fn test_sync_app() {
 
             for i in 0..2 {
                 let db: Database<Maze> = Database::create_new(
-                    format!("test/test_sync_app{}.bin", i),
+                    format!("test/test_sync_app{i}.bin"),
                     true,
-                    1_000_000,
-                    CutOffDuration::from_days(1).unwrap(),
-                    Default::default(),
+                    DatabaseSettings {
+                        cutoff_interval: CutOffDuration::from_days(1).unwrap(),
+                        ..Default::default()
+                    },
                     (),
                 )
                 .unwrap();
@@ -122,9 +124,9 @@ async fn test_sync_app() {
                 .unwrap();
             loop {
                 for (i, comm) in comms.iter_mut().enumerate() {
-                    println!("State of db #{}:", i);
+                    println!("State of db #{i}:");
                     comm.with_root(|root| {
-                        println!("Root: {:#?}", root);
+                        println!("Root: {root:#?}");
                     });
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;

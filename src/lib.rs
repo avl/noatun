@@ -33,6 +33,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::io::Write;
 use std::mem::{transmute_copy, MaybeUninit};
 use std::ops::{Add, Sub};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::ptr::null_mut;
@@ -122,12 +123,6 @@ mod noatun_storable_impls {
     unsafe impl<T: NoatunStorable, const N: usize> NoatunStorable for [T; N] {}
 }
 
-// TODO: Make sure there's no way for the user to safely get at an unpinned instance
-// of any Object. Also, make sure there's no way for the user to bring their own
-// pinned objects. I think this means we can never give an user a `&mut Pin<&mut T>`, since
-// I believe they could then maybe use `std::mem::replace` to move in some own `&'static mut T`,
-// not pointing inside the mmap.
-
 thread_local! {
     pub static CONTEXT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
 }
@@ -188,8 +183,7 @@ impl NoatunContext {
         unsafe { (*context_ptr).index_of(t) }
     }
 
-    // This is only used by a single test, we may remove it at some point
-    #[doc(hidden)]
+    // Just used by single test. Consider removing?
     pub(crate) unsafe fn rewind(self, new_time: SequenceNr) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).rewind(new_time) }
@@ -340,7 +334,7 @@ impl Debug for MessageId {
                 self.data[1], self.data[2], self.data[3]
             )
         } else {
-            write!(f, "{}", self)
+            write!(f, "{self}")
         }
     }
 }
@@ -373,7 +367,6 @@ impl MessageId {
     /// Panics if current id is the largest possible.
     /// Note: This *CAN* change the timestamp of the message, though this is unlikely.
     /// Note: The timestamp can at most increase by 1 ms.
-    // TODO: Possibly add test-feature that will randomly change the timestamp, just for testing.
     pub fn successor(&self) -> MessageId {
         let mut temp = *self;
         for element in temp.data.iter_mut().rev() {
@@ -501,7 +494,7 @@ impl Display for NoatunTime {
         let time = chrono::DateTime::from_timestamp_millis(self.0 as i64).unwrap();
 
         let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
-        write!(f, "{}", time_str)
+        write!(f, "{time_str}")
     }
 }
 impl Debug for NoatunTime {
@@ -509,7 +502,7 @@ impl Debug for NoatunTime {
         let time = chrono::DateTime::from_timestamp_millis(self.0 as i64).unwrap();
 
         let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
-        write!(f, "{}", time_str)
+        write!(f, "{time_str}")
     }
 }
 
@@ -536,11 +529,9 @@ impl NoatunTime {
     }
 
     pub fn next_multiple_of(self, other: NoatunTime) -> Option<NoatunTime> {
-        //TODO: Checked arithmetic
         Some(NoatunTime(self.0.checked_next_multiple_of(other.0)?))
     }
     pub fn prev_multiple_of(self, other: NoatunTime) -> Option<NoatunTime> {
-        //TODO: Checked arithmetic
         Some(NoatunTime(self.0.checked_next_multiple_of(other.0)? - other.0))
     }
     pub fn successor(&self) -> NoatunTime {
@@ -565,7 +556,9 @@ impl NoatunTime {
         NoatunTime(self.0.saturating_sub(ms))
     }
     pub fn to_datetime(&self) -> DateTime<Utc> {
-        //TODO: Don't panic here!
+        if self.0 > i64::MAX as u64 {
+            panic!("Noatun time out of range for DateTime<Utc>");
+        }
         DateTime::<Utc>::from_timestamp_millis(self.0 as i64).unwrap()
     }
     pub const fn from_datetime(t: DateTime<Utc>) -> NoatunTime {
@@ -638,6 +631,22 @@ impl<M: Message> MessageFrame<M> {
     }
 }
 
+
+pub(crate) fn catch_and_log(f: impl FnOnce()) {
+    match catch_unwind(AssertUnwindSafe(||{f()}))  {
+        Ok(()) => {}
+        Err(err) => {
+            if let Some(err) = (&*err).downcast_ref::<String>() {
+                warn!("apply method panicked: {:?}", err);
+            } else if let Some(err) = err.downcast_ref::<&'static str>() {
+                warn!("apply method panicked: {:?}", err);
+            } else {
+                warn!("apply method panicked.");
+            }
+        }
+    }
+}
+
 /// A state-less object, mostly useful for testing
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -657,7 +666,7 @@ impl Object for DummyUnitObject {
     fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {}
 
     unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
-        unsafe { Pin::new_unchecked(&mut *(1usize as *mut DummyUnitObject)) }
+        unsafe { Pin::new_unchecked(&mut *std::ptr::dangling_mut::<DummyUnitObject>()) }
     }
 }
 
@@ -1312,6 +1321,7 @@ impl Drop for ContextGuardMut {
 
 use crate::undo_store::magic_initialize_ptr;
 pub use paste::paste;
+use tracing::warn;
 
 noatun_object!(
         struct Kalle {
@@ -1328,7 +1338,6 @@ noatun_object!(
     }
 );
 
-// TODO: Make sure we haven't hardcoded the use of Savefile
 pub fn msg_serialize<T: savefile::Serialize + savefile::Packed>(
     obj: &T,
     mut writer: impl Write,
@@ -1336,7 +1345,6 @@ pub fn msg_serialize<T: savefile::Serialize + savefile::Packed>(
     Ok(savefile::Serializer::bare_serialize(&mut writer, 0, obj)?)
 }
 
-// TODO: Make sure we haven't hardcoded the use of Savefile
 pub fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(
     buf: &[u8],
 ) -> anyhow::Result<T> {

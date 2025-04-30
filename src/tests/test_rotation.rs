@@ -1,6 +1,5 @@
 use crate::database::DatabaseSettings;
 use crate::Application;
-use crate::CutOffDuration;
 use crate::Database;
 use crate::{Message, NoatunTime};
 use savefile_derive::Savefile;
@@ -54,8 +53,6 @@ fn test_rotation1() {
     let mut db: Database<RotationDoc> = Database::create_new(
         "test/test_rotation1",
         true,
-        100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -90,8 +87,6 @@ fn test_rotation_big1() {
     let mut db: Database<RotationDoc> = Database::create_new(
         "test/test_rotation2",
         true,
-        10_000_000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )

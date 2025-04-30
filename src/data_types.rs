@@ -1562,7 +1562,7 @@ impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Iterator
             self.next_position += 1;
             let meta = get_meta(self.metas, BucketNr(pos));
             if meta.populated() {
-                println!("Bucket {} had populated meta: {:?}", pos, meta);
+                println!("Bucket {pos} had populated meta: {meta:?}");
                 let bucket = unsafe { self.hash_buckets[pos].assume_init_ref() };
                 return Some((&bucket.key, &bucket.v));
             }
@@ -1659,7 +1659,7 @@ fn get_meta_mut_and_emptyable(metas: &mut [MetaGroup], bucket: BucketNr) -> Meta
                 debug_assert_ne!(subindex, empty);
                 debug_assert_ne!(subindex, empty - 1);
                 debug_assert!(subindex < empty - 1);
-                println!("Group {}, subindex: {}, empty: {}", group, subindex, empty);
+                println!("Group {group}, subindex: {subindex}, empty: {empty}");
                 group_obj.validate();
                 let [meta, before_empty] =
                     group_obj.0.get_disjoint_mut([subindex, empty - 1]).unwrap();
@@ -2455,7 +2455,7 @@ mod tests {
                 for j in i + 1..N {
                     map.0
                         .get(j)
-                        .expect(&format!("key {} exists after delete of {}", j, i));
+                        .expect(&format!("key {j} exists after delete of {i}"));
                 }
             }
         })

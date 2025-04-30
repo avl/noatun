@@ -455,7 +455,7 @@ impl Distributor {
                 database
                     .contains_message(*x)
                     .map_err(|e| {
-                        eprintln!("Error: {:?}", e);
+                        eprintln!("Error: {e:?}");
                         err = Err(e);
                     })
                     .is_ok_and(|x| x)
@@ -555,9 +555,6 @@ impl Distributor {
                 if database.contains_message(*parent)? == false
                     && !chosen_messages.contains_key(parent) // message_list is sorted by id (i.e, also by time), so parent should be found here
                 {
-                    // TODO: Does this still happen?
-                    // There is an edge-case, where a message is removed immediately after having been
-                    // received, because it's before cutoff and it has no effect.
                     warn!(
                         "Could not apply message {:?} because parent {:?} is not known",
                         msg.id, parent

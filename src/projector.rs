@@ -3,10 +3,7 @@ use crate::disk_abstraction::Disk;
 use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{
-    Application, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader,
-    MessageId, NoatunContext, NoatunTime, Persistence, Target,
-};
+use crate::{catch_and_log, Application, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Persistence, Target};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::marker::PhantomData;
@@ -299,12 +296,15 @@ impl<APP: Application> Projector<APP> {
         }
         let guard = ContextGuardMut::new(context);
 
-        msg.payload.apply(msg.header.id.timestamp(), unsafe {
-            Pin::new_unchecked(root)
-        }); //TODO: Handle panics in apply gracefully
+        catch_and_log(||{
+            msg.payload.apply(msg.header.id.timestamp(), unsafe {
+                Pin::new_unchecked(root)
+            });
+        });
+
         drop(guard);
 
-        context.set_next_seqnr(seqnr.successor()); //TODO: Don't record a snapshot for _every_ message.
+        context.set_next_seqnr(seqnr.successor()); //TODO(future): Don't record a snapshot for _every_ message.
         context.finalize_message(seqnr);
     }
 
@@ -316,9 +316,11 @@ impl<APP: Application> Projector<APP> {
     ) -> Result<()> {
         NoatunContext.clear_unused_tracking();
         let time = NoatunTime(time.timestamp_millis() as u64);
-        for msg in preview {
-            msg.apply(time, root.as_mut());
-        }
+        catch_and_log(||{
+            for msg in preview {
+                msg.apply(time, root.as_mut());
+            }
+        });
 
         Ok(())
     }

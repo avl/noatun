@@ -402,7 +402,7 @@ impl FileAccessor {
 
         create_dir_all(target.path()).context("creating directory for data file")?;
 
-        let path = target.path().join(format!("{}.bin", file));
+        let path = target.path().join(format!("{file}.bin"));
         let mut overwrite = target.overwrite();
         let create = target.create();
 
@@ -415,7 +415,7 @@ impl FileAccessor {
             .create(create)
             .truncate(overwrite)
             .open(&path)
-            .with_context(|| format!("opening file {:?}", path))?;
+            .with_context(|| format!("opening file {path:?}"))?;
 
         let page_size = FileMapping::page_size();
 
@@ -437,7 +437,7 @@ impl FileAccessor {
             (max_size + Self::HEADER_SIZE).next_multiple_of(page_size),
             &filename,
         )
-        .with_context(|| format!("failed to memory map file {}", filename))?;
+        .with_context(|| format!("failed to memory map file {filename}"))?;
 
         let temp = FileAccessor {
             committed_size: mapping.committed_size(),

@@ -55,7 +55,7 @@ mod test_types_rewind {
         )
         .unwrap();
         fn snapshotter<T: std::fmt::Debug>(t: &T) -> String {
-            format!("{:#?}", t)
+            format!("{t:#?}")
         }
 
         let clean_snapshot = db.with_root(snapshotter);
@@ -93,9 +93,9 @@ mod test_types_rewind {
             .unwrap();
         let rewound_clean = db.with_root(snapshotter);
 
-        println!("snap1: {}", snapshot1);
-        println!("rewound-snap1: {}", rewound_snapshot1);
-        println!("snap2: {}", snapshot2);
+        println!("snap1: {snapshot1}");
+        println!("rewound-snap1: {rewound_snapshot1}");
+        println!("snap2: {snapshot2}");
 
         assert_eq!(clean_snapshot, rewound_clean);
         assert_eq!(snapshot1, rewound_snapshot1);
@@ -457,8 +457,6 @@ fn test1() {
     let mut db: Database<CounterObject> = Database::create_new(
         "test/test1.bin",
         true,
-        1000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -523,8 +521,6 @@ fn test_projection_time_limit() {
     let mut db: Database<CounterObject> = Database::create_new(
         "test/msg_store_time_limit.bin",
         true,
-        10000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings {
             projection_time_limit: Some(datetime!(2024-01-02 00:00:00 Z).into()),
             ..Default::default()
@@ -602,8 +598,6 @@ fn test_msg_store_real() {
     let mut db: Database<CounterObject> = Database::create_new(
         "test/msg_store.bin",
         true,
-        10000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -838,8 +832,6 @@ fn test_handle() {
     let db: Database<NoatunBox<NoatunCell<u32>>> = Database::create_new(
         "test/test_handle.bin",
         true,
-        1000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -928,8 +920,6 @@ fn test_string0() {
     let mut db: Database<NoatunString> = Database::create_new(
         "test/test_string0",
         true,
-        10000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -954,8 +944,6 @@ fn test_vec0() {
     let mut db: Database<NoatunVec<CounterObject>> = Database::create_new(
         "test/test_vec0",
         true,
-        10000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -1053,8 +1041,6 @@ fn test_vec_undo() {
     let mut db: Database<NoatunVec<CounterObject>> = Database::create_new(
         "test/vec_undo",
         true,
-        10000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )

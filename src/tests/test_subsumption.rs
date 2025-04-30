@@ -1,7 +1,7 @@
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
 use crate::{
-    msg_deserialize, msg_serialize, Application, CutOffDuration, Database, Message, NoatunCell,
+    msg_deserialize, msg_serialize, Application, Database, Message, NoatunCell,
     NoatunTime,
 };
 use savefile_derive::Savefile;
@@ -60,8 +60,6 @@ fn test_vec1() {
     let mut db: Database<VecDoc> = Database::create_new(
         "test/test_subsumption1",
         true,
-        100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -94,8 +92,6 @@ fn test_vec2() {
     let mut db: Database<VecDoc> = Database::create_new(
         "test/test_subsumption2",
         true,
-        100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )

@@ -1,11 +1,13 @@
 use std::io::Write;
 use std::pin::Pin;
 use savefile_derive::Savefile;
-use noatun::{msg_deserialize, msg_serialize, noatun_object, Application, CutOffDuration, Database, Message, NoatunTime, Object};
+use noatun::{msg_deserialize, msg_serialize, noatun_object, Application, Database, Message, NoatunTime, Object};
 use noatun::data_types::{NoatunString, NoatunVec};
 use noatun::database::DatabaseSettings;
+use anyhow::Result;
 
 noatun_object!(
+    #[derive(PartialEq)]
     struct Employee {
         object name: NoatunString,
         pod salary: u32
@@ -58,10 +60,36 @@ impl Application for ExampleDb {
     type Params = ();
 }
 
-fn main() {
-    //TODO: Add convenience-constructor for create_new, with lots of defaults.
-    let db: Database<ExampleDb> = Database::create_new("test/example1.bin", true, 1000000, CutOffDuration::from_minutes(15), DatabaseSettings::default(), ()).unwrap();
+fn main() -> Result<()> {
+    let mut db: Database<ExampleDb> = Database::create_new("test/example1.bin", true, DatabaseSettings::default(), ()).unwrap();
+
+    let mut s = db.begin_session_mut()?;
+    s.append_local(ExampleMessage {
+        name: "Kalle".to_string(),
+        salary: 25,
+    })?;
+    s.append_local(ExampleMessage {
+        name: "Sven".to_string(),
+        salary: 20,
+    })?;
+
+    let employees = s.with_root(|root|{
+        assert_eq!(root.total_salary_cost.get(), 45);
+        root.employees.detach()
+    });
+    assert_eq!(employees, vec![
+        EmployeeDetached {
+            name: "Kalle".to_string(),
+            salary: 25,
+        },
+        EmployeeDetached {
+            name: "Sven".to_string(),
+            salary: 20,
+        },
+    ]);
+    drop(s);
+    db.sync_all()?;
 
 
-
+    Ok(())
 }

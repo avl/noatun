@@ -140,7 +140,7 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
             if driver_inner.loss <= random(0.0..1.0) {
                 item.send((self.0 /*src*/, data.clone()))
                     .await
-                    .map_err(|e| std::io::Error::other(format!("simulated net failed {:?}", e)))?;
+                    .map_err(|e| std::io::Error::other(format!("simulated net failed {e:?}")))?;
             } else {
                 //info!("== SIMULATOR CAUSED PACKET LOSS ==");
             }
@@ -498,7 +498,7 @@ async fn all_up_gradual_update_sync_test() {
 async fn all_up_general_update_sync_test_old_messages() {
     //setup_tracing();
     for seed in 0..100 {
-        println!("Seed = {}", seed);
+        println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
     }
 }
@@ -507,7 +507,7 @@ async fn all_up_general_update_sync_test_old_messages() {
 async fn all_up_general_update_sync_test_newer_messages_persist() {
     //setup_tracing();
     for seed in 0..100 {
-        println!("Seed = {}", seed);
+        println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 10, true, usize::MAX, true).await;
     }
 }
@@ -516,7 +516,7 @@ async fn all_up_general_update_sync_test_newer_messages_persist() {
 async fn all_up_general_update_sync_test_mid_age_messages_persist() {
     //setup_tracing();
     for seed in 0..100 {
-        println!("Seed = {}", seed);
+        println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 900, true, usize::MAX, true).await;
     }
 }
@@ -525,7 +525,7 @@ async fn all_up_general_update_sync_test_mid_age_messages_persist() {
 async fn all_up_general_update_sync_test_newer_messages_no_persist() {
     //setup_tracing();
     for seed in 0..100 {
-        println!("Seed = {}", seed);
+        println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, true).await;
     }
 }
@@ -534,7 +534,7 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist() {
 async fn all_up_general_update_sync_test_newer_messages_no_persist_no_reset() {
     //setup_tracing();
     for seed in 0..100 {
-        println!("Seed = {}", seed);
+        println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, false).await;
     }
 }
@@ -543,7 +543,7 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist_no_reset() {
 async fn all_up_general_update_sync_test_mid_age_messages_no_persist() {
     //setup_tracing();
     for seed in 0..100 {
-        println!("Seed = {}", seed);
+        println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX, true).await;
     }
 }
@@ -564,7 +564,7 @@ async fn all_up_special_seed() {
         How would we know to travel to 0-0-0 to delete it?
 
         */
-        println!("Seed = {}", seed);
+        println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 15, false, 10, true).await;
     }
 }
@@ -663,7 +663,7 @@ async fn all_up_general_update_sync_test_impl(
     println!("Only in 2: {:?}", smsgs2.sub(&smsgs1));*/
     if persist {
         assert_eq!(msgs1.len(), msgs2.len());
-        assert_eq!(msgs1, msgs2, "Failed for seed {}", seed);
+        assert_eq!(msgs1, msgs2, "Failed for seed {seed}");
     }
 
     assert!(root1.sum >= 1);

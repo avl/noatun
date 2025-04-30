@@ -72,7 +72,7 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
         assert_eq!(sent.len(), 1, "no resync is active");
         let sent = sent.pop().unwrap();
 
-        println!("db: {:?} sent initial {:?}", db_id, sent);
+        println!("db: {db_id:?} sent initial {sent:?}");
         report.num_messages += 1;
         ether.push((db_id, sent));
     }
@@ -89,7 +89,7 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
                 )
                 .unwrap();
             report.num_messages += sent.len();
-            println!("db: {:?} sent {:?}", db_id, sent);
+            println!("db: {db_id:?} sent {sent:?}");
             next_ether.extend(sent.into_iter().map(|x| (db_id, x)));
         }
         if next_ether.is_empty() {
@@ -187,10 +187,10 @@ fn test_distributor() {
     assert_eq!(msg1.len(), 1, "no resync is in progress");
     let msg1 = msg1.pop().unwrap();
 
-    println!("dist1 sent: {:?}", msg1);
+    println!("dist1 sent: {msg1:?}");
     let mut result = dist2.receive_message(&mut app2, once(msg1)).unwrap();
 
-    println!("dist2 sent: {:?}", result);
+    println!("dist2 sent: {result:?}");
 
     insta::assert_debug_snapshot!(result);
     assert_eq!(result.len(), 1);
@@ -198,20 +198,20 @@ fn test_distributor() {
     let mut result = dist1
         .receive_message(&mut app1, once(result.pop().unwrap()))
         .unwrap();
-    println!("dist1 sent: {:?}", result);
+    println!("dist1 sent: {result:?}");
     insta::assert_debug_snapshot!(result);
     assert_eq!(result.len(), 1);
 
     let mut result = dist2
         .receive_message(&mut app2, once(result.pop().unwrap()))
         .unwrap();
-    println!("dist2 sent: {:?}", result);
+    println!("dist2 sent: {result:?}");
     insta::assert_debug_snapshot!(result);
 
     let mut result = dist1
         .receive_message(&mut app1, once(result.pop().unwrap()))
         .unwrap();
-    println!("dist1 sent: {:?}", result);
+    println!("dist1 sent: {result:?}");
     assert!(matches!(&result[0], DistributorMessage::Message(_, false)));
     assert_eq!(result.len(), 1);
 

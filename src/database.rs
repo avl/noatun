@@ -55,6 +55,10 @@ pub struct DatabaseSettings {
     /// Default value is true - automatically delete messages that no longer affect the
     /// state.
     pub auto_delete: bool,
+
+    pub max_file_size: usize,
+    pub cutoff_interval: CutOffDuration,
+
 }
 impl Default for DatabaseSettings {
     fn default() -> Self {
@@ -62,6 +66,8 @@ impl Default for DatabaseSettings {
             mock_time: None,
             projection_time_limit: None,
             auto_delete: true,
+            max_file_size: 1_000_000_000,
+            cutoff_interval: CutOffDuration::from_minutes(15)
         }
     }
 }
@@ -411,6 +417,7 @@ impl<APP: Application> Database<APP> {
                 mock_time: Some(now),
                 projection_time_limit: self.projection_time_limit,
                 auto_delete: self.auto_delete,
+                ..DatabaseSettings::default()
             },
             &self.params,
         )?;
@@ -681,8 +688,6 @@ impl<APP: Application> Database<APP> {
     pub fn create_new(
         path: impl AsRef<Path>,
         overwrite_existing: bool,
-        max_file_size: usize,
-        cutoff_interval: CutOffDuration,
         settings: DatabaseSettings,
         params: APP::Params,
     ) -> Result<Database<APP>> {
@@ -692,23 +697,17 @@ impl<APP: Application> Database<APP> {
             } else {
                 Target::CreateNew(path.as_ref().to_path_buf())
             },
-            max_file_size,
-            cutoff_interval,
             settings,
             params,
         )
     }
     pub fn open(
         path: impl AsRef<Path>,
-        max_file_size: usize,
-        cutoff_interval: CutOffDuration,
         settings: DatabaseSettings,
         params: APP::Params,
     ) -> Result<Database<APP>> {
         Self::create(
             Target::OpenExisting(path.as_ref().to_path_buf()),
-            max_file_size,
-            cutoff_interval,
             settings,
             params,
         )
@@ -883,22 +882,19 @@ impl<APP: Application> Database<APP> {
 
     fn create(
         target: Target,
-        max_file_size: usize,
-        cutoff_interval: CutOffDuration,
         settings: DatabaseSettings,
         params: APP::Params,
     ) -> Result<Database<APP>> {
         let mut disk = StandardDisk;
 
-        let mut ctx = DatabaseContextData::new(&mut disk, &target, max_file_size)
+        let mut ctx = DatabaseContextData::new(&mut disk, &target, settings.max_file_size)
             .context("opening database")?;
 
         let is_dirty = ctx.is_dirty();
 
-        let mut message_store = Projector::new(&mut disk, &target, max_file_size, cutoff_interval)?;
+        let mut message_store = Projector::new(&mut disk, &target, settings.max_file_size, settings.cutoff_interval)?;
         let load_status;
-        //let update_heads = disk.open_file(&target, "update_heads", 0, 128 * 1024 * 1024)?;
-        println!("Load, is dirty: {:?}", is_dirty);
+
         if is_dirty {
             Self::recover_impl(
                 &mut ctx,
@@ -907,6 +903,7 @@ impl<APP: Application> Database<APP> {
                     mock_time: settings.mock_time,
                     projection_time_limit: settings.projection_time_limit,
                     auto_delete: settings.auto_delete,
+                    ..Default::default()
                 },
                 &params,
             )?;

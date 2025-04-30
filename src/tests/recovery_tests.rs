@@ -1,6 +1,6 @@
 use crate::data_types::{NoatunString, NoatunVec};
 use crate::database::{DatabaseSettings, LoadingStatus};
-use crate::{Application, CutOffDuration, Database, Message, NoatunTime, Object};
+use crate::{Application, Database, Message, NoatunTime, Object};
 use chrono::{DateTime, Utc};
 use datetime_literal::datetime;
 use savefile_derive::Savefile;
@@ -71,8 +71,6 @@ fn test_nominal_load_without_recovery() {
     let mut db: Database<KeyValStore> = Database::create_new(
         "test/test_recover1",
         true,
-        100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -116,8 +114,6 @@ fn test_nominal_load_without_recovery() {
     let db: Database<KeyValStore> = Database::create_new(
         "test/test_recover1",
         false,
-        100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -146,8 +142,6 @@ fn test_recovery_simple() {
     let mut db: Database<KeyValStore> = Database::create_new(
         "test/test_recover2",
         true,
-        100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -196,8 +190,6 @@ fn test_recovery_simple() {
     let db: Database<KeyValStore> = Database::create_new(
         "test/test_recover2",
         false,
-        100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -228,8 +220,6 @@ fn test_recovery_corrupted_file() {
     let mut db: Database<KeyValStore> = Database::create_new(
         "test/test_recover3",
         true,
-        100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -282,8 +272,6 @@ fn test_recovery_corrupted_file() {
     let db: Database<KeyValStore> = Database::create_new(
         "test/test_recover3",
         false,
-        100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -314,8 +302,6 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     let mut db: Database<KeyValStore> = Database::create_new(
         "test/test_recover4",
         true,
-        100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -374,8 +360,6 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     let db: Database<KeyValStore> = Database::create_new(
         "test/test_recover4",
         false,
-        100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -397,7 +381,7 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
 #[ignore] //This test is too long running for every-day runs
 fn test_recovery_arbitrary_corruption_long() {
     for i in 0..450 {
-        println!("Corrupting by writing at index {}", i);
+        println!("Corrupting by writing at index {i}");
         test_recovery_arbitrary_corruption_impl(i);
     }
 }
@@ -405,7 +389,7 @@ fn test_recovery_arbitrary_corruption_long() {
 #[test]
 fn test_recovery_arbitrary_corruption() {
     for i in (0..450).step_by(50) {
-        println!("Corrupting by writing at index {}", i);
+        println!("Corrupting by writing at index {i}");
         test_recovery_arbitrary_corruption_impl(i);
     }
 }

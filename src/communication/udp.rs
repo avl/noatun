@@ -20,10 +20,10 @@ impl CommunicationDriver for TokioUdpDriver {
     ) -> anyhow::Result<(Self::Sender, Self::Receiver)> {
         let multicast_group: SocketAddr = multicast_group
             .parse()
-            .context(format!("parsing multicast group {}", multicast_group))?;
+            .context(format!("parsing multicast group {multicast_group}"))?;
         let bind_address: SocketAddr = bind_address
             .parse()
-            .context(format!("parsing listening/bind address {}", bind_address))?;
+            .context(format!("parsing listening/bind address {bind_address}"))?;
         let send_socket = UdpSocket::bind(bind_address).await?;
         let domain;
         match (multicast_group.ip(), bind_address.ip()) {
@@ -74,7 +74,7 @@ impl CommunicationDriver for TokioUdpDriver {
                 ))?;*/
                 //udp_receive.set_only_v6(true)?;
                 println!("Joining multicastgroup for scope {}", bind_ipv6.scope_id());
-                println!("binding receive socket to {:?}", multicast_group);
+                println!("binding receive socket to {multicast_group:?}");
                 udp_receive
                     .bind(&multicast_group.into())
                     .context("binding multicast group")?;
@@ -97,7 +97,7 @@ impl CommunicationDriver for TokioUdpDriver {
     }
 
     fn parse_endpoint(s: &str) -> anyhow::Result<Self::Endpoint> {
-        Ok(s.parse().context(format!("couldn't parse {:?}", s))?)
+        Ok(s.parse().context(format!("couldn't parse {s:?}"))?)
     }
 }
 pub struct TokioUdpDriver;
@@ -113,7 +113,7 @@ impl CommunicationSendSocket<SocketAddr> for CommunicationUdpSendSocket {
     async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         println!("Sending to {:?}", self.multicast_addr);
         let res = UdpSocket::send_to(&self.socket, buf, self.multicast_addr).await;
-        println!("Res: {:?}", res);
+        println!("Res: {res:?}");
         res
     }
 }
@@ -125,7 +125,7 @@ impl CommunicationReceiveSocket<SocketAddr> for tokio::net::UdpSocket {
     ) -> std::io::Result<(usize, SocketAddr)> {
         println!("About to receive from udp socket");
         let ret = UdpSocket::recv_buf_from(self, buf).await;
-        println!("Udp receive: {:?}", ret);
+        println!("Udp receive: {ret:?}");
         ret
     }
 }

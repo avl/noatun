@@ -21,7 +21,7 @@ use std::pin::Pin;
 use tracing::{debug, error, info, trace};
 
 mod registrar_info {
-
+    use std::cmp::Ordering;
     use crate::sequence_nr::SequenceNr;
     use crate::{DatabaseContextData, NoatunStorable};
     use std::fmt::{Debug, Formatter};
@@ -81,8 +81,7 @@ mod registrar_info {
         }
     }
 
-    // TODO: We might want to optimize by only looking at 'seq' in the Ord impl
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     #[repr(C)]
     pub struct UnusedInfo {
         /// The message that finally overwrote the last part of 'seq', meaning
@@ -106,6 +105,17 @@ mod registrar_info {
         /// having read any of the current state of the db, making them immune to changes
         /// caused by earlier (by time) messages not yet present at the current node.
         pub unconditionally_overwritten: u32,
+    }
+
+    impl PartialOrd for UnusedInfo {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.seq.cmp(&other.seq))
+        }
+    }
+    impl Ord for UnusedInfo {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.seq.cmp(&other.seq)
+        }
     }
 
     unsafe impl NoatunStorable for UnusedInfo {}
@@ -326,7 +336,7 @@ impl DatabaseContextData {
 
         let new_entry: &mut ReverseDepTrackLinkedListEntry = self.allocate_internal();
 
-        // TODO: Create more efficient undo-construct for adjacent fields. Can be used
+        // TODO(future): Create more efficient undo-construct for adjacent fields. Can be used
         // here and in other places.
         self.write_storable(*key_place, unsafe {
             Pin::new_unchecked(&mut new_entry.next)
@@ -983,7 +993,7 @@ impl DatabaseContextData {
         };
         let ret = unsafe { transmute_copy(&raw) };
 
-        println!("Raw: {:#?}: {:#?}", ptr, raw);
+        println!("Raw: {ptr:#?}: {raw:#?}");
         println!("size-of: {}", size_of_val(ret));
         println!("T: {}", std::any::type_name::<T>());
 
@@ -1363,7 +1373,7 @@ impl DatabaseContextData {
         let mut cur = unsafe { uses.get_mut(self, registrar.index()) };
         let cur_use = cur.get_use();
         if cur_use == 0 {
-            panic!("Corrupt use count for sequence nr {:?}", registrar);
+            panic!("Corrupt use count for sequence nr {registrar:?}");
         }
 
         unsafe {
