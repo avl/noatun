@@ -711,6 +711,8 @@ fn test_msg_store_inmem_miri() {
 
 #[test]
 fn test_msg_store_after_cutoff_inmem_miri() {
+    compile_error!("Figure out why this doesn't work in miri!")
+    setup_tracing();
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10000,
         CutOffDuration::from_minutes(15),

@@ -637,7 +637,7 @@ impl DatabaseContextData {
         }
 
         info!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
-
+        println!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
         let result = self.undo_log.rewind(|entry| match entry {
             UndoLogEntry::SetPointer(new_pointer) => {
                 let cur = Self::pointer_of(&self.main_db_mmap);
