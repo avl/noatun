@@ -60,7 +60,7 @@ impl Application for ExampleDb {
 
 fn main() {
     //TODO: Add convenience-constructor for create_new, with lots of defaults.
-    let mut db: Database<ExampleDb> = Database::create_new("test/example1.bin", true, 1000000, CutOffDuration::from_minutes(15), DatabaseSettings::default(), ()).unwrap();
+    let db: Database<ExampleDb> = Database::create_new("test/example1.bin", true, 1000000, CutOffDuration::from_minutes(15), DatabaseSettings::default(), ()).unwrap();
 
 
 
