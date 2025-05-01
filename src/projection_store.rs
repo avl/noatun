@@ -21,9 +21,9 @@ use std::pin::Pin;
 use tracing::{debug, error, info, trace};
 
 mod registrar_info {
-    use std::cmp::Ordering;
     use crate::sequence_nr::SequenceNr;
     use crate::{DatabaseContextData, NoatunStorable};
+    use std::cmp::Ordering;
     use std::fmt::{Debug, Formatter};
     use std::pin::Pin;
     use tracing::debug;
@@ -164,7 +164,7 @@ pub struct MainDbHeader {
 impl MainDbHeader {
     pub fn is_clean(&self) -> bool {
         self.status.0 == MAIN_DB_STATUS_FULLY_CLEAN
-            || (get_boot_checksum() == self.last_boot  && self.status.0 == MAIN_DB_STATUS_HOT_CLEAN)
+            || (get_boot_checksum() == self.last_boot && self.status.0 == MAIN_DB_STATUS_HOT_CLEAN)
     }
 }
 
@@ -188,7 +188,11 @@ pub(crate) struct MainDbAuxHeader {
 }
 unsafe impl NoatunStorable for MainDbAuxHeader {}
 
-pub(crate) struct DatabaseContextData {
+// Note, this type is in a private module and isn't nameable from other crates.
+// It has to be public since it's named in methods in the Pointer trait, and the
+// Pointer trait must be public because it's implemented by the object macro.
+#[doc(hidden)]
+pub struct DatabaseContextData {
     main_db_mmap: FileAccessor,
     //root_index: Option<GenPtr>,
     undo_log: UndoLog,
@@ -466,7 +470,6 @@ impl DatabaseContextData {
         Ok(was_clean)
     }
 
-
     /// Db is clean in memory
     #[inline]
     pub fn mark_hot_clean(&mut self) {
@@ -481,7 +484,8 @@ impl DatabaseContextData {
             unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
 
         header.status = MainDbStatus(MAIN_DB_STATUS_FULLY_CLEAN);
-        self.main_db_mmap.sync_range(0, std::mem::size_of::<MainDbHeader>())?;
+        self.main_db_mmap
+            .sync_range(0, std::mem::size_of::<MainDbHeader>())?;
         Ok(())
     }
     pub(crate) fn disable_filesystem_sync(&mut self) {
@@ -681,9 +685,7 @@ impl DatabaseContextData {
                         new_time, time
                     );
 
-                    panic!(
-                        "Couldn't rewind time to {new_time}, ended up back at {time}"
-                    );
+                    panic!("Couldn't rewind time to {new_time}, ended up back at {time}");
                 }
             }
         });

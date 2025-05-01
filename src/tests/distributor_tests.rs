@@ -99,9 +99,17 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
         next_ether.clear();
     }
 
-    let first_set: Vec<_> = dbs[0].1.begin_session().unwrap().get_all_message_ids().unwrap();
+    let first_set: Vec<_> = dbs[0]
+        .1
+        .begin_session()
+        .unwrap()
+        .get_all_message_ids()
+        .unwrap();
     for (_distr, db) in dbs.iter().skip(1) {
-        assert_eq!(first_set, db.begin_session().unwrap().get_all_message_ids().unwrap());
+        assert_eq!(
+            first_set,
+            db.begin_session().unwrap().get_all_message_ids().unwrap()
+        );
     }
     report
 }

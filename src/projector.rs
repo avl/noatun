@@ -3,7 +3,10 @@ use crate::disk_abstraction::Disk;
 use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{catch_and_log, Application, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Persistence, Target};
+use crate::{
+    catch_and_log, Application, ContextGuardMut, DatabaseContextData, Message, MessageFrame,
+    MessageHeader, MessageId, NoatunContext, NoatunTime, Persistence, Target,
+};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::marker::PhantomData;
@@ -128,7 +131,11 @@ impl<APP: Application> Projector<APP> {
             .nominal_cutoff(CutOffTime::from_noatun_time(now))
     }
 
-    pub fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos, now: NoatunTime) -> Result<Acceptability> {
+    pub fn is_acceptable_cutoff_hash(
+        &self,
+        hash: CutOffHashPos,
+        now: NoatunTime,
+    ) -> Result<Acceptability> {
         self.messages
             .is_acceptable_cutoff_hash(hash, &self.cut_off_config, now)
     }
@@ -296,7 +303,7 @@ impl<APP: Application> Projector<APP> {
         }
         let guard = ContextGuardMut::new(context);
 
-        catch_and_log(||{
+        catch_and_log(|| {
             msg.payload.apply(msg.header.id.timestamp(), unsafe {
                 Pin::new_unchecked(root)
             });
@@ -316,7 +323,7 @@ impl<APP: Application> Projector<APP> {
     ) -> Result<()> {
         NoatunContext.clear_unused_tracking();
         let time = NoatunTime(time.timestamp_millis() as u64);
-        catch_and_log(||{
+        catch_and_log(|| {
             for msg in preview {
                 msg.apply(time, root.as_mut());
             }
@@ -336,8 +343,8 @@ impl<APP: Application> Projector<APP> {
 
     pub(crate) fn apply_missing_messages(
         &mut self,
-        context: &mut DatabaseContextData,
         root: &mut APP,
+        context: &mut DatabaseContextData,
         max_project_to: Option<NoatunTime>,
         auto_delete: bool,
     ) -> Result<Option<SequenceNr> /*earliest deleted index*/> {

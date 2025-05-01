@@ -1,10 +1,13 @@
-use std::io::Write;
-use std::pin::Pin;
-use savefile_derive::Savefile;
-use noatun::{msg_deserialize, msg_serialize, noatun_object, Application, Database, Message, NoatunTime, Object};
+use anyhow::Result;
 use noatun::data_types::{NoatunString, NoatunVec};
 use noatun::database::DatabaseSettings;
-use anyhow::Result;
+use noatun::{
+    msg_deserialize, msg_serialize, noatun_object, Application, Database, Message, NoatunTime,
+    Object,
+};
+use savefile_derive::Savefile;
+use std::io::Write;
+use std::pin::Pin;
 
 noatun_object!(
     #[derive(PartialEq)]
@@ -40,12 +43,11 @@ impl Message for ExampleMessage {
             name: self.name.clone(),
             salary: self.salary,
         });
-
     }
 
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
     where
-        Self: Sized
+        Self: Sized,
     {
         msg_deserialize(buf)
     }
@@ -61,7 +63,8 @@ impl Application for ExampleDb {
 }
 
 fn main() -> Result<()> {
-    let mut db: Database<ExampleDb> = Database::create_new("test/example1.bin", true, DatabaseSettings::default(), ()).unwrap();
+    let mut db: Database<ExampleDb> =
+        Database::create_new("test/example1.bin", true, DatabaseSettings::default(), ()).unwrap();
 
     let mut s = db.begin_session_mut()?;
     s.append_local(ExampleMessage {
@@ -73,23 +76,25 @@ fn main() -> Result<()> {
         salary: 20,
     })?;
 
-    let employees = s.with_root(|root|{
+    let employees = s.with_root(|root| {
         assert_eq!(root.total_salary_cost.get(), 45);
         root.employees.detach()
     });
-    assert_eq!(employees, vec![
-        EmployeeDetached {
-            name: "Kalle".to_string(),
-            salary: 25,
-        },
-        EmployeeDetached {
-            name: "Sven".to_string(),
-            salary: 20,
-        },
-    ]);
+    assert_eq!(
+        employees,
+        vec![
+            EmployeeDetached {
+                name: "Kalle".to_string(),
+                salary: 25,
+            },
+            EmployeeDetached {
+                name: "Sven".to_string(),
+                salary: 20,
+            },
+        ]
+    );
     drop(s);
     db.sync_all()?;
-
 
     Ok(())
 }

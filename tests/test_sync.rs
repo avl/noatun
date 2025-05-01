@@ -1,6 +1,7 @@
 use noatun::communication::udp::TokioUdpDriver;
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::NoatunCell;
+use noatun::database::DatabaseSettings;
 use noatun::{
     Application, CutOffDuration, Database, Message, NoatunContext, NoatunStorable, NoatunTime,
     Object, ThinPtr,
@@ -10,7 +11,6 @@ use savefile_derive::Savefile;
 use std::io::{Cursor, Write};
 use std::pin::Pin;
 use std::time::Duration;
-use noatun::database::DatabaseSettings;
 
 #[derive(Savefile, Debug)]
 struct MazeMessage {

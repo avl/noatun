@@ -58,7 +58,6 @@ pub struct DatabaseSettings {
 
     pub max_file_size: usize,
     pub cutoff_interval: CutOffDuration,
-
 }
 impl Default for DatabaseSettings {
     fn default() -> Self {
@@ -67,7 +66,7 @@ impl Default for DatabaseSettings {
             projection_time_limit: None,
             auto_delete: true,
             max_file_size: 1_000_000_000,
-            cutoff_interval: CutOffDuration::from_minutes(15)
+            cutoff_interval: CutOffDuration::from_minutes(15),
         }
     }
 }
@@ -80,7 +79,7 @@ pub struct DatabaseSession<'a, APP: Application> {
     db: &'a Database<APP>,
 }
 
-impl<'a, APP: Application> Drop for DatabaseSessionMut<'a,APP> {
+impl<'a, APP: Application> Drop for DatabaseSessionMut<'a, APP> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
             self.db.mark_clean();
@@ -88,7 +87,7 @@ impl<'a, APP: Application> Drop for DatabaseSessionMut<'a,APP> {
     }
 }
 
-impl<'a, APP:Application> DatabaseSession<'a, APP> {
+impl<'a, APP: Application> DatabaseSession<'a, APP> {
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
     }
@@ -154,7 +153,6 @@ impl<'a, APP:Application> DatabaseSession<'a, APP> {
     pub fn noatun_now(&self) -> NoatunTime {
         self.db.noatun_now()
     }
-
 
     /// This method returns 0 on error.
     pub fn count_messages(&self) -> usize {
@@ -163,7 +161,6 @@ impl<'a, APP:Application> DatabaseSession<'a, APP> {
 }
 
 impl<'a, APP: Application> DatabaseSessionMut<'a, APP> {
-
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
     }
@@ -229,7 +226,6 @@ impl<'a, APP: Application> DatabaseSessionMut<'a, APP> {
     pub fn noatun_now(&self) -> NoatunTime {
         self.db.noatun_now()
     }
-
 
     /// This method returns 0 on error.
     pub fn count_messages(&self) -> usize {
@@ -265,8 +261,6 @@ impl<'a, APP: Application> DatabaseSessionMut<'a, APP> {
     ) -> Result<R> {
         self.db.with_root_preview(time, preview, f)
     }
-
-
 
     #[cfg(test)]
     pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
@@ -327,7 +321,6 @@ impl<'a, APP: Application> DatabaseSessionMut<'a, APP> {
         self.db.create_message_frame(time, message)
     }
 
-
     pub fn append_single(
         &mut self,
         message: &MessageFrame<APP::Message>,
@@ -351,21 +344,18 @@ impl<'a, APP: Application> DatabaseSessionMut<'a, APP> {
         local: bool,
         allow_cutoff_advance: bool,
     ) -> Result<()> {
-
         self.db.append_many(messages, local, allow_cutoff_advance)
     }
 }
-impl<APP:Application> Drop for Database<APP> {
+impl<APP: Application> Drop for Database<APP> {
     fn drop(&mut self) {
         if let Err(err) = self.sync_all() {
             error!("Error while dropping Database: {:?}", err);
         }
-
     }
 }
 
 impl<APP: Application> Database<APP> {
-
     pub fn begin_session_mut(&mut self) -> Result<DatabaseSessionMut<APP>> {
         self.mark_dirty()?;
         Ok(DatabaseSessionMut { db: self })
@@ -472,7 +462,6 @@ impl<APP: Application> Database<APP> {
             .advance_cutoff(new_cutoff, &mut self.context)
     }
 
-
     fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
         self.advance_cutoff_impl(new_cutoff)
     }
@@ -502,16 +491,13 @@ impl<APP: Application> Database<APP> {
         self.message_store.get_update_heads()
     }
 
-    fn get_messages_at_or_after(
-        &self,
-        message: MessageId,
-        count: usize,
-    ) -> Result<Vec<MessageId>> {
+    fn get_messages_at_or_after(&self, message: MessageId, count: usize) -> Result<Vec<MessageId>> {
         self.message_store.get_messages_after(message, count)
     }
 
     fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
-        self.message_store.is_acceptable_cutoff_hash(hash, self.noatun_now())
+        self.message_store
+            .is_acceptable_cutoff_hash(hash, self.noatun_now())
     }
     fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
         self.message_store.current_cutoff_hash()
@@ -540,7 +526,6 @@ impl<APP: Application> Database<APP> {
         preview: impl Iterator<Item = APP::Message>,
         f: impl FnOnce(&APP) -> R,
     ) -> Result<R> {
-
         let current = self.context.next_seqnr();
 
         self.context.set_next_seqnr(current.successor());
@@ -574,10 +559,8 @@ impl<APP: Application> Database<APP> {
         self.time_override.unwrap_or_else(NoatunTime::now)
     }
 
-
     #[cfg(test)]
     fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
-
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context);
         let root = unsafe { root_ptr.access_mut::<APP>() };
@@ -616,26 +599,29 @@ impl<APP: Application> Database<APP> {
 
     fn do_apply_missing(&mut self) -> Result<Option<SequenceNr>> {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
-        let guard = ContextGuardMut::new(&mut self.context);
-        let mut root = unsafe { root_ptr.access_mut::<APP>() };
-        drop(guard);
 
         let mut earliest = None;
 
         while let Some(cur_earliest_deleted) = self.message_store.apply_missing_messages(
-                &mut self.context,
-                unsafe { root.as_mut().get_unchecked_mut() },
-                self.projection_time_limit,
-                self.auto_delete,
-            )? {
-
-            earliest = Some(earliest.unwrap_or(SequenceNr::default()).max(cur_earliest_deleted));
-            info!("Post-apply deletion carried out, rewinding to {}", cur_earliest_deleted);
-            self.message_store.rewind(&mut self.context, cur_earliest_deleted)?;
+            unsafe { root_ptr.access_ctx_mut::<APP>(&mut self.context) },
+            &mut self.context,
+            self.projection_time_limit,
+            self.auto_delete,
+        )? {
+            earliest = Some(
+                earliest
+                    .unwrap_or(SequenceNr::default())
+                    .max(cur_earliest_deleted),
+            );
+            info!(
+                "Post-apply deletion carried out, rewinding to {}",
+                cur_earliest_deleted
+            );
+            self.message_store
+                .rewind(&mut self.context, cur_earliest_deleted)?;
         }
         Ok(earliest)
     }
-
 
     #[inline(never)]
     fn recover_impl(
@@ -656,7 +642,6 @@ impl<APP: Application> Database<APP> {
 
         context.set_root_ptr(root_ptr.as_generic());
         context.set_next_seqnr(SequenceNr::from_index(0));
-
 
         Ok(())
     }
@@ -715,11 +700,7 @@ impl<APP: Application> Database<APP> {
 
     /// Local is true if this message has been locally created. I.e, it isn't a message that
     /// has been received from some other node.
-    fn append_single(
-        &mut self,
-        message: &MessageFrame<APP::Message>,
-        local: bool,
-    ) -> Result<()> {
+    fn append_single(&mut self, message: &MessageFrame<APP::Message>, local: bool) -> Result<()> {
         self.append_many(std::iter::once(message), local, true)
     }
 
@@ -825,7 +806,6 @@ impl<APP: Application> Database<APP> {
         local: bool,
         allow_cutoff_advance: bool,
     ) -> Result<()> {
-
         self.append_many_impl(messages, local, allow_cutoff_advance)
     }
     /// For messages before the cutoff-time, all parents are removed.
@@ -835,7 +815,6 @@ impl<APP: Application> Database<APP> {
         local: bool,
         allow_cutoff_advance: bool,
     ) -> Result<()> {
-
         if allow_cutoff_advance {
             self.maybe_advance_cutoff()?;
         }
@@ -892,7 +871,12 @@ impl<APP: Application> Database<APP> {
 
         let is_dirty = ctx.is_dirty();
 
-        let mut message_store = Projector::new(&mut disk, &target, settings.max_file_size, settings.cutoff_interval)?;
+        let mut message_store = Projector::new(
+            &mut disk,
+            &target,
+            settings.max_file_size,
+            settings.cutoff_interval,
+        )?;
         let load_status;
 
         if is_dirty {

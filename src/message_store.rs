@@ -1606,7 +1606,7 @@ impl<M> OnDiskMessageStore<M> {
         id: MessageId,
         new_parents: &[MessageId],
         new_children: &[MessageId],
-        local: bool
+        local: bool,
     ) -> Result<()>
     where
         M: Message,
@@ -1908,9 +1908,7 @@ impl<M> OnDiskMessageStore<M> {
             bail!("max message count exceeded - database full");
         };
 
-        index_header.entries = index_header
-            .entries
-            .max(cur_index_u32);
+        index_header.entries = index_header.entries.max(cur_index_u32);
 
         //Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
         debug_assert!(mmap_index[0..index_header.entries as usize].is_sorted_by_key(|x| x.message));
@@ -2125,14 +2123,12 @@ impl<M> OnDiskMessageStore<M> {
             .try_into()
             .unwrap_or_else(|_| unreachable!());
 
-
         let mut index_file = d
             .open_file(target, "index", size_of::<StoreHeader>(), max_file_size)
             .context("Opening index-file")?;
         index_file
             .try_lock_exclusive()
             .context("While obtaining lock on index-file")?;
-
 
         let index = Self::header(&mut index_file)?;
 
@@ -2218,7 +2214,9 @@ impl<M> OnDiskMessageStore<M> {
         now: NoatunTime,
     ) -> Result<Acceptability> {
         let (header, _index) = self.header_and_index()?;
-        Ok(header.cutoff.is_acceptable_cutoff_hash(hash, cutoff_config, now))
+        Ok(header
+            .cutoff
+            .is_acceptable_cutoff_hash(hash, cutoff_config, now))
     }
 }
 

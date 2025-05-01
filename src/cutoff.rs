@@ -192,7 +192,7 @@ impl CutOffHashPos {
         &self,
         peer_hash: CutOffHashPos,
         config: &CutOffConfig,
-        now: NoatunTime
+        now: NoatunTime,
     ) -> Acceptability {
         if *self == peer_hash {
             return Acceptability::Nominal;

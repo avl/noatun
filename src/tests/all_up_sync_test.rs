@@ -425,11 +425,17 @@ async fn all_up_gradual_update_sync_test() {
         //println!("I = {}", i);
         //println!("Msgs1: {:#?}", app1.get_all_messages().unwrap());
         assert!(app1
-            .inner_database().begin_session().unwrap().get_all_messages()
+            .inner_database()
+            .begin_session()
+            .unwrap()
+            .get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         assert!(app2
-            .inner_database().begin_session().unwrap().get_all_messages()
+            .inner_database()
+            .begin_session()
+            .unwrap()
+            .get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
@@ -469,8 +475,18 @@ async fn all_up_gradual_update_sync_test() {
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
 
-    let msgs1 = app1.inner_database().begin_session().unwrap().get_all_messages().unwrap();
-    let msgs2 = app2.inner_database().begin_session().unwrap().get_all_messages().unwrap();
+    let msgs1 = app1
+        .inner_database()
+        .begin_session()
+        .unwrap()
+        .get_all_messages()
+        .unwrap();
+    let msgs2 = app2
+        .inner_database()
+        .begin_session()
+        .unwrap()
+        .get_all_messages()
+        .unwrap();
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
     //println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
@@ -599,13 +615,15 @@ async fn all_up_general_update_sync_test_impl(
 
         assert!(app1
             .inner_database()
-            .begin_session().unwrap()
+            .begin_session()
+            .unwrap()
             .get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         assert!(app2
             .inner_database()
-            .begin_session().unwrap()
+            .begin_session()
+            .unwrap()
             .get_all_messages()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
@@ -618,7 +636,11 @@ async fn all_up_general_update_sync_test_impl(
                 time_now - (Duration::from_secs(random(0..max_message_age_seconds))),
                 SyncMessage {
                     value: 0,
-                    reset: if allow_reset {MY_THREAD_RNG.with(|x| x.borrow_mut().as_mut().unwrap().gen_bool(0.3))} else {false},
+                    reset: if allow_reset {
+                        MY_THREAD_RNG.with(|x| x.borrow_mut().as_mut().unwrap().gen_bool(0.3))
+                    } else {
+                        false
+                    },
                     persist,
                 },
             )
@@ -635,7 +657,11 @@ async fn all_up_general_update_sync_test_impl(
                 SyncMessage {
                     value: 2,
                     persist,
-                    reset: if allow_reset {MY_THREAD_RNG.with(|x| x.borrow_mut().as_mut().unwrap().gen_bool(0.3))} else {false},
+                    reset: if allow_reset {
+                        MY_THREAD_RNG.with(|x| x.borrow_mut().as_mut().unwrap().gen_bool(0.3))
+                    } else {
+                        false
+                    },
                 },
             )
             .await
@@ -651,8 +677,18 @@ async fn all_up_general_update_sync_test_impl(
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
 
-    let msgs1 = app1.inner_database().begin_session().unwrap().get_all_messages().unwrap();
-    let msgs2 = app2.inner_database().begin_session().unwrap().get_all_messages().unwrap();
+    let msgs1 = app1
+        .inner_database()
+        .begin_session()
+        .unwrap()
+        .get_all_messages()
+        .unwrap();
+    let msgs2 = app2
+        .inner_database()
+        .begin_session()
+        .unwrap()
+        .get_all_messages()
+        .unwrap();
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
     /*let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();

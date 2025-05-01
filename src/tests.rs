@@ -454,13 +454,8 @@ impl Message for IncrementMessage {
 
 #[test]
 fn test1() {
-    let mut db: Database<CounterObject> = Database::create_new(
-        "test/test1.bin",
-        true,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let mut db: Database<CounterObject> =
+        Database::create_new("test/test1.bin", true, DatabaseSettings::default(), ()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|counter| unsafe {
@@ -486,9 +481,15 @@ struct CounterMessage {
 }
 impl CounterMessage {
     fn wrap(&self, cutoff: NoatunTime) -> MessageFrame<CounterMessage> {
-        MessageFrame::new(self.id,
-                          if self.id.timestamp() >= cutoff {self.parent.clone()} else {vec![]},
-                          self.clone())
+        MessageFrame::new(
+            self.id,
+            if self.id.timestamp() >= cutoff {
+                self.parent.clone()
+            } else {
+                vec![]
+            },
+            self.clone(),
+        )
     }
 }
 impl Message for CounterMessage {
@@ -536,7 +537,7 @@ fn test_projection_time_limit() {
             inc1: 1,
             set1: 0,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -550,7 +551,7 @@ fn test_projection_time_limit() {
             inc1: 1,
             set1: 0,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -561,7 +562,7 @@ fn test_projection_time_limit() {
             inc1: 1, //This is never projected, because of time limit
             set1: 0,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -595,13 +596,8 @@ fn test_projection_time_limit() {
 }
 #[test]
 fn test_msg_store_real() {
-    let mut db: Database<CounterObject> = Database::create_new(
-        "test/msg_store.bin",
-        true,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let mut db: Database<CounterObject> =
+        Database::create_new("test/msg_store.bin", true, DatabaseSettings::default(), ()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.append_single(
@@ -611,7 +607,7 @@ fn test_msg_store_real() {
             inc1: 2,
             set1: 0,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -625,7 +621,7 @@ fn test_msg_store_real() {
             inc1: 0,
             set1: 42,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -636,7 +632,7 @@ fn test_msg_store_real() {
             inc1: 1,
             set1: 0,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -671,7 +667,7 @@ fn test_msg_store_inmem_miri() {
             inc1: 2,
             set1: 0,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -682,7 +678,7 @@ fn test_msg_store_inmem_miri() {
             inc1: 0,
             set1: 42,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -693,7 +689,7 @@ fn test_msg_store_inmem_miri() {
             inc1: 1,
             set1: 0,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -711,7 +707,6 @@ fn test_msg_store_inmem_miri() {
 
 #[test]
 fn test_msg_store_after_cutoff_inmem_miri() {
-    compile_error!("Figure out why this doesn't work in miri!")
     setup_tracing();
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10000,
@@ -733,7 +728,7 @@ fn test_msg_store_after_cutoff_inmem_miri() {
             inc1: 2,
             set1: 0,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -746,7 +741,7 @@ fn test_msg_store_after_cutoff_inmem_miri() {
             inc1: 0,
             set1: 42,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -761,7 +756,7 @@ fn test_msg_store_after_cutoff_inmem_miri() {
             inc1: 1,
             set1: 0,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -794,7 +789,7 @@ fn test_cutoff_handling() {
             inc1: 2,
             set1: 0,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -805,7 +800,7 @@ fn test_cutoff_handling() {
             inc1: 0,
             set1: 42,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -816,7 +811,7 @@ fn test_cutoff_handling() {
             inc1: 1,
             set1: 0,
         }
-            .wrap(db.current_cutoff_time().unwrap()),
+        .wrap(db.current_cutoff_time().unwrap()),
         true,
     )
     .unwrap();
@@ -919,13 +914,8 @@ impl Application for NoatunString {
 
 #[test]
 fn test_string0() {
-    let mut db: Database<NoatunString> = Database::create_new(
-        "test/test_string0",
-        true,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let mut db: Database<NoatunString> =
+        Database::create_new("test/test_string0", true, DatabaseSettings::default(), ()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|mut test_str| {
@@ -943,13 +933,8 @@ fn test_string0() {
 
 #[test]
 fn test_vec0() {
-    let mut db: Database<NoatunVec<CounterObject>> = Database::create_new(
-        "test/test_vec0",
-        true,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let mut db: Database<NoatunVec<CounterObject>> =
+        Database::create_new("test/test_vec0", true, DatabaseSettings::default(), ()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|mut counter_vec| {
@@ -1040,16 +1025,10 @@ fn test_vec_miri0() {
 }
 #[test]
 fn test_vec_undo() {
-    let mut db: Database<NoatunVec<CounterObject>> = Database::create_new(
-        "test/vec_undo",
-        true,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let mut db: Database<NoatunVec<CounterObject>> =
+        Database::create_new("test/vec_undo", true, DatabaseSettings::default(), ()).unwrap();
 
     {
-
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|mut counter_vec| {
             NoatunContext.set_next_seqnr(SequenceNr::from_index(1));

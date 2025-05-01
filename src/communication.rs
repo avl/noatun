@@ -1,5 +1,6 @@
 use crate::distributor::{Distributor, DistributorMessage, SerializedMessage, Status};
 
+use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 use crate::communication::udp::TokioUdpDriver;
 use crate::{Application, Database, MessageId, NoatunTime};
 use anyhow::{anyhow, bail, Result};
@@ -25,10 +26,9 @@ use tokio::time::error::Elapsed;
 use tokio::time::Instant;
 use tokio::{select, spawn};
 use tracing::{debug, error, info, instrument, trace, warn};
-use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 
-pub mod udp;
 pub mod size_limit_vec_deque;
+pub mod udp;
 
 #[derive(Savefile, Debug)]
 enum NetworkPacket<Endpoint> {
@@ -165,12 +165,11 @@ impl MeasurableSize for SortableTransmittedEntity {
     }
 }
 
-
 struct ReceiveTrack {
     accum: VecDeque<u8>,
     expected_next: u64,
     sorted_packets: VecDeque<SortableTransmittedEntity>,
-    retransmit_interval: Duration
+    retransmit_interval: Duration,
 }
 impl ReceiveTrack {
     /// How long are packets kept in the retransmit window.
@@ -187,7 +186,7 @@ impl ReceiveTrack {
             accum: Default::default(),
             expected_next: 0,
             sorted_packets: Default::default(),
-            retransmit_interval
+            retransmit_interval,
         }
     }
 
@@ -750,8 +749,7 @@ where
     fn process_messages(&mut self) -> Result<()> {
         let mut database = self.database.lock().unwrap();
 
-        let new_msgs =
-            self
+        let new_msgs = self
             .distributor
             .receive_message(&mut *database, self.buffered_incoming_messages.drain(..))?;
         drop(database);
@@ -786,7 +784,8 @@ where
                     if buffer_len > 1000 || buffer_life_start.elapsed() > Duration::from_secs(2) {
                     } else {
                         info!("Sleeping 10ms, waiting for buffer to fill");
-                        let sleep_target = buffer_timer_instant.get_or_insert_with(||Instant::now()+Duration::from_millis(10));
+                        let sleep_target = buffer_timer_instant
+                            .get_or_insert_with(|| Instant::now() + Duration::from_millis(10));
                         tokio::time::sleep_until(*sleep_target).await;
                     }
                 } else {
@@ -1061,7 +1060,7 @@ where
             quit_rx,
             config.mtu,
             Duration::from_secs_f32(config.retransmit_interval_seconds),
-            config.retransmit_buffer_size_bytes
+            config.retransmit_buffer_size_bytes,
         )
         .await?;
         let node = sender_loop.bind_address.to_string();
@@ -1136,10 +1135,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
     use crate::communication::udp::TokioUdpDriver;
     use crate::communication::{MulticasterSenderLoop, ReceiveTrack};
     use crate::tests::setup_tracing;
+    use std::time::Duration;
     use tokio::spawn;
 
     #[test]
@@ -1175,7 +1174,7 @@ mod tests {
             quit_rx1,
             200,
             Duration::from_secs_f32(1.0),
-            1_000_000
+            1_000_000,
         )
         .await
         .unwrap();
@@ -1194,7 +1193,7 @@ mod tests {
             quit_rx2,
             200,
             Duration::from_secs_f32(1.0),
-            1_000_000
+            1_000_000,
         )
         .await
         .unwrap();
@@ -1237,7 +1236,7 @@ mod tests {
             quit_rx1,
             200,
             Duration::from_secs_f32(1.0),
-            100
+            100,
         )
         .await
         .unwrap();
@@ -1256,7 +1255,7 @@ mod tests {
             quit_rx2,
             200,
             Duration::from_secs_f32(1.0),
-            100
+            100,
         )
         .await
         .unwrap();

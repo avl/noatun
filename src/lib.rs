@@ -57,6 +57,10 @@ pub mod database;
 mod projector;
 mod update_head_tracker;
 
+mod private {
+    pub trait Sealed {}
+}
+
 struct MessageComponent<const ID: u32, T> {
     value: Option<T>,
 }
@@ -532,7 +536,9 @@ impl NoatunTime {
         Some(NoatunTime(self.0.checked_next_multiple_of(other.0)?))
     }
     pub fn prev_multiple_of(self, other: NoatunTime) -> Option<NoatunTime> {
-        Some(NoatunTime(self.0.checked_next_multiple_of(other.0)? - other.0))
+        Some(NoatunTime(
+            self.0.checked_next_multiple_of(other.0)? - other.0,
+        ))
     }
     pub fn successor(&self) -> NoatunTime {
         NoatunTime(self.0 + 1)
@@ -631,12 +637,11 @@ impl<M: Message> MessageFrame<M> {
     }
 }
 
-
 pub(crate) fn catch_and_log(f: impl FnOnce()) {
-    match catch_unwind(AssertUnwindSafe(||{f()}))  {
+    match catch_unwind(AssertUnwindSafe(|| f())) {
         Ok(()) => {}
         Err(err) => {
-            if let Some(err) = (&*err).downcast_ref::<String>() {
+            if let Some(err) = (*err).downcast_ref::<String>() {
                 warn!("apply method panicked: {:?}", err);
             } else if let Some(err) = err.downcast_ref::<&'static str>() {
                 warn!("apply method panicked: {:?}", err);
@@ -711,7 +716,7 @@ impl From<GenPtr> for SerializableGenPtr {
     }
 }
 
-pub trait Pointer: NoatunStorable + Copy + Debug + 'static {
+pub trait Pointer: NoatunStorable + Sealed + Copy + Debug + 'static {
     fn start(self) -> usize;
     fn create<T: ?Sized>(addr: &T, buffer_start: *const u8) -> Self;
     fn as_generic(&self) -> GenPtr;
@@ -719,6 +724,9 @@ pub trait Pointer: NoatunStorable + Copy + Debug + 'static {
 
     unsafe fn access<'a, T: ?Sized>(&self) -> &'a T;
     unsafe fn access_mut<'a, T: ?Sized>(&self) -> Pin<&'a mut T>;
+
+    unsafe fn access_ctx<'a, T: ?Sized>(&self, context: &DatabaseContextData) -> &'a T;
+    unsafe fn access_ctx_mut<'a, T: ?Sized>(&self, context: &mut DatabaseContextData) -> &'a mut T;
 }
 
 pub fn from_bytes<T: NoatunStorable>(s: &[u8]) -> &T {
@@ -1126,6 +1134,9 @@ pub struct ThinPtr(pub usize);
 unsafe impl NoatunStorable for ThinPtr {}
 unsafe impl NoatunStorable for FatPtr {}
 
+impl Sealed for ThinPtr {}
+impl Sealed for FatPtr {}
+
 impl Pointer for ThinPtr {
     fn start(self) -> usize {
         self.0
@@ -1150,6 +1161,16 @@ impl Pointer for ThinPtr {
 
     unsafe fn access_mut<'a, T: ?Sized>(&self) -> Pin<&'a mut T> {
         Pin::new_unchecked(NoatunContext.access_thin_mut::<T>(*self))
+    }
+
+    #[doc(hidden)]
+    unsafe fn access_ctx<'a, T: ?Sized>(&self, context: &DatabaseContextData) -> &'a T {
+        context.access_thin::<T>(*self)
+    }
+
+    #[doc(hidden)]
+    unsafe fn access_ctx_mut<'a, T: ?Sized>(&self, context: &mut DatabaseContextData) -> &'a mut T {
+        context.access_thin_mut::<T>(*self)
     }
 }
 
@@ -1190,6 +1211,14 @@ impl Pointer for FatPtr {
 
     unsafe fn access_mut<'a, T: ?Sized>(&self) -> Pin<&'a mut T> {
         Pin::new_unchecked(NoatunContext.access_fat_mut::<T>(*self))
+    }
+
+    unsafe fn access_ctx<'a, T: ?Sized>(&self, context: &DatabaseContextData) -> &'a T {
+        context.access_fat::<T>(*self)
+    }
+
+    unsafe fn access_ctx_mut<'a, T: ?Sized>(&self, context: &mut DatabaseContextData) -> &'a mut T {
+        context.access_fat_mut::<T>(*self)
     }
 }
 
@@ -1319,6 +1348,7 @@ impl Drop for ContextGuardMut {
     }
 }
 
+use crate::private::Sealed;
 use crate::undo_store::magic_initialize_ptr;
 pub use paste::paste;
 use tracing::warn;

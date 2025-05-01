@@ -68,13 +68,8 @@ const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
 
 #[test]
 fn test_nominal_load_without_recovery() {
-    let mut db: Database<KeyValStore> = Database::create_new(
-        "test/test_recover1",
-        true,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let mut db: Database<KeyValStore> =
+        Database::create_new("test/test_recover1", true, DatabaseSettings::default(), ()).unwrap();
 
     let mut sess = db.begin_session_mut().unwrap();
     sess.append_local(KeyValMessage {
@@ -111,13 +106,8 @@ fn test_nominal_load_without_recovery() {
     drop(sess);
     drop(db);
 
-    let db: Database<KeyValStore> = Database::create_new(
-        "test/test_recover1",
-        false,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let db: Database<KeyValStore> =
+        Database::create_new("test/test_recover1", false, DatabaseSettings::default(), ()).unwrap();
     assert_eq!(db.load_status(), LoadingStatus::CleanLoad);
     db.with_root(|root| {
         assert_eq!(
@@ -139,13 +129,8 @@ fn test_nominal_load_without_recovery() {
 #[test]
 fn test_recovery_simple() {
     super::setup_tracing();
-    let mut db: Database<KeyValStore> = Database::create_new(
-        "test/test_recover2",
-        true,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let mut db: Database<KeyValStore> =
+        Database::create_new("test/test_recover2", true, DatabaseSettings::default(), ()).unwrap();
     let mut sess = db.begin_session_mut().unwrap();
     sess.disable_filesystem_sync().unwrap();
 
@@ -187,13 +172,8 @@ fn test_recovery_simple() {
 
     Database::<KeyValStore>::remove_caches("test/test_recover2").unwrap();
 
-    let db: Database<KeyValStore> = Database::create_new(
-        "test/test_recover2",
-        false,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let db: Database<KeyValStore> =
+        Database::create_new("test/test_recover2", false, DatabaseSettings::default(), ()).unwrap();
     assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
 
     db.with_root(|root| {
@@ -212,18 +192,20 @@ fn test_recovery_simple() {
         );
     });
 
-    assert_eq!(db.begin_session().unwrap().get_all_message_ids().unwrap().len(), 3);
+    assert_eq!(
+        db.begin_session()
+            .unwrap()
+            .get_all_message_ids()
+            .unwrap()
+            .len(),
+        3
+    );
 }
 
 #[test]
 fn test_recovery_corrupted_file() {
-    let mut db: Database<KeyValStore> = Database::create_new(
-        "test/test_recover3",
-        true,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let mut db: Database<KeyValStore> =
+        Database::create_new("test/test_recover3", true, DatabaseSettings::default(), ()).unwrap();
     let mut sess = db.begin_session_mut().unwrap();
     sess.append_local(KeyValMessage {
         key: "Fruit1".to_string(),
@@ -269,13 +251,8 @@ fn test_recovery_corrupted_file() {
     contents[orange_index..orange_index + 6].copy_from_slice(b"Borang");
     std::fs::write("test/test_recover3/data0.bin", contents).unwrap();
 
-    let db: Database<KeyValStore> = Database::create_new(
-        "test/test_recover3",
-        false,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let db: Database<KeyValStore> =
+        Database::create_new("test/test_recover3", false, DatabaseSettings::default(), ()).unwrap();
     assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
 
     db.with_root(|root| {
@@ -299,13 +276,8 @@ fn test_recovery_corrupted_file() {
 }
 
 fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
-    let mut db: Database<KeyValStore> = Database::create_new(
-        "test/test_recover4",
-        true,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let mut db: Database<KeyValStore> =
+        Database::create_new("test/test_recover4", true, DatabaseSettings::default(), ()).unwrap();
     let mut sess = db.begin_session_mut().unwrap();
     sess.disable_filesystem_sync().unwrap();
 
@@ -357,13 +329,8 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
 
     std::fs::write("test/test_recover4/data0.bin", &contents).unwrap();
 
-    let db: Database<KeyValStore> = Database::create_new(
-        "test/test_recover4",
-        false,
-        DatabaseSettings::default(),
-        (),
-    )
-    .unwrap();
+    let db: Database<KeyValStore> =
+        Database::create_new("test/test_recover4", false, DatabaseSettings::default(), ()).unwrap();
     assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
 
     let db = db.begin_session().unwrap();

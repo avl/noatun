@@ -13,8 +13,7 @@ pub struct SizeLimitVecDeque<T> {
     accum_size: usize,
 }
 
-impl<T:MeasurableSize> SizeLimitVecDeque<T> {
-
+impl<T: MeasurableSize> SizeLimitVecDeque<T> {
     pub fn new(limit_bytes: usize) -> SizeLimitVecDeque<T> {
         Self {
             inner: VecDeque::new(),
@@ -29,7 +28,7 @@ impl<T:MeasurableSize> SizeLimitVecDeque<T> {
     pub fn push(&mut self, value: T) {
         let size = value.size_bytes();
         while self.accum_size + size > self.size_limit {
-            let Some(prev) =  self.inner.pop_front() else {
+            let Some(prev) = self.inner.pop_front() else {
                 return;
             };
             self.accum_size -= prev.size_bytes();
@@ -48,7 +47,7 @@ impl<T:MeasurableSize> SizeLimitVecDeque<T> {
             if insert_point == 0 {
                 return;
             }
-            let Some(prev) =  self.inner.pop_front() else {
+            let Some(prev) = self.inner.pop_front() else {
                 return;
             };
             insert_point -= 1;
@@ -68,7 +67,8 @@ impl<T:MeasurableSize> SizeLimitVecDeque<T> {
     pub fn binary_search_by_key<'a, B, F>(&'a self, b: &B, f: F) -> Result<usize, usize>
     where
         F: FnMut(&'a T) -> B,
-        B: Ord {
+        B: Ord,
+    {
         self.inner.binary_search_by_key(b, f)
     }
 }
@@ -93,13 +93,13 @@ mod tests {
         v.push(TestItem(2));
         assert_eq!(v.inner(), &[TestItem(2)]);
         v.push(TestItem(4));
-        assert_eq!(v.inner(), &[TestItem(2),TestItem(4)]);
+        assert_eq!(v.inner(), &[TestItem(2), TestItem(4)]);
         v.push(TestItem(40));
         assert_eq!(v.inner(), &[]);
 
         v.push(TestItem(1));
         v.push(TestItem(9));
-        assert_eq!(v.inner(), &[TestItem(1),TestItem(9)]);
+        assert_eq!(v.inner(), &[TestItem(1), TestItem(9)]);
         v.remove(0);
         assert_eq!(v.inner(), &[TestItem(9)]);
     }
@@ -110,10 +110,10 @@ mod tests {
         v.insert(0, TestItem(5));
         v.insert(0, TestItem(4));
         v.insert(0, TestItem(1));
-        assert_eq!(v.inner(), &[TestItem(1),TestItem(4), TestItem(5)]);
+        assert_eq!(v.inner(), &[TestItem(1), TestItem(4), TestItem(5)]);
 
         v.insert(2, TestItem(3));
-        assert_eq!(v.inner(), &[TestItem(3),TestItem(5)]);
+        assert_eq!(v.inner(), &[TestItem(3), TestItem(5)]);
     }
 
     #[test]
@@ -122,7 +122,7 @@ mod tests {
         v.push(TestItem(5));
         v.push(TestItem(4));
         v.push(TestItem(1));
-        assert_eq!(v.inner(), &[TestItem(5),TestItem(4), TestItem(1)]);
+        assert_eq!(v.inner(), &[TestItem(5), TestItem(4), TestItem(1)]);
 
         v.insert(3, TestItem(10));
         assert_eq!(v.inner(), &[TestItem(10)]);

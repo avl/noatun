@@ -1,8 +1,7 @@
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
 use crate::{
-    msg_deserialize, msg_serialize, Application, Database, Message, NoatunCell,
-    NoatunTime,
+    msg_deserialize, msg_serialize, Application, Database, Message, NoatunCell, NoatunTime,
 };
 use savefile_derive::Savefile;
 use std::io::Write;

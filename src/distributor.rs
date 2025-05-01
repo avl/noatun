@@ -1,4 +1,5 @@
 use crate::cutoff::{Acceptability, CutOffHashPos};
+use crate::database::{DatabaseSession, DatabaseSessionMut};
 use crate::{Application, Database, Message, MessageFrame, MessageHeader, MessageId, NoatunTime};
 use anyhow::Result;
 use arrayvec::ArrayString;
@@ -7,7 +8,6 @@ use savefile_derive::Savefile;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use tracing::{debug, error, info, warn};
-use crate::database::{DatabaseSession, DatabaseSessionMut};
 // Principle
 // The node that is 'most ahead' (highest MessageId) has responsibility.
 // If knows all the heads of other node, just sends perfect updates.
@@ -151,10 +151,9 @@ pub fn truncate_to_arraystring(name: &str) -> ArrayString<10> {
     "?".try_into().unwrap()
 }
 
-
 impl Distributor {
     const BATCH_SIZE: usize = 20;
-    pub(crate)  fn new(node_name: &str) -> Distributor {
+    pub(crate) fn new(node_name: &str) -> Distributor {
         Self {
             sync_all_inprogress: SyncAllState::NotActive,
             distributor_state: DistributorStatus::default(),
@@ -168,15 +167,13 @@ impl Distributor {
     /// by this method.
     pub(crate) fn get_status(&self, now: NoatunTime) -> Status {
         for drift in self.distributor_state.most_recent_clockdrift.values() {
-            if drift.elapsed_ms_since(now) < 60000
-            {
+            if drift.elapsed_ms_since(now) < 60000 {
                 return Status::BadClocksDetected;
             }
         }
         for unsync in self.distributor_state.most_recent_unsynced.values() {
             let unsync_t = unsync.elapsed_ms_since(now);
-            if unsync_t < 60000
-            {
+            if unsync_t < 60000 {
                 return Status::OutOfSync;
             }
         }
@@ -276,7 +273,9 @@ impl Distributor {
                                     // If we get here, in pass 1, it means we apparently didn't
                                     // advance to the correct place in the first pass. This is
                                     // not expected.
-                                    error!("unexpected case, cutoff hash considered undecided twice")
+                                    error!(
+                                        "unexpected case, cutoff hash considered undecided twice"
+                                    )
                                 }
                             }
                             Acceptability::UnacceptablePeerClockDrift => {
@@ -518,7 +517,6 @@ impl Distributor {
                 false,
             ));
 
-
             let mut children = database.get_message_children(msg_id)?;
             message_list.extend(children.iter().copied());
             #[cfg(debug_assertions)]
@@ -553,7 +551,8 @@ impl Distributor {
         'msg_iter: for (msg, need_ack) in message_list.into_iter() {
             for parent in msg.parents.iter() {
                 if database.contains_message(*parent)? == false
-                    && !chosen_messages.contains_key(parent) // message_list is sorted by id (i.e, also by time), so parent should be found here
+                    && !chosen_messages.contains_key(parent)
+                // message_list is sorted by id (i.e, also by time), so parent should be found here
                 {
                     warn!(
                         "Could not apply message {:?} because parent {:?} is not known",
