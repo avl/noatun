@@ -24,7 +24,7 @@ pub(crate) trait Disk {
         file: &str,
         min_size: usize,
         max_size: usize,
-    ) -> Result<FileAccessor>;
+    ) -> Result<(FileAccessor, bool/*file existed*/)>;
 }
 /*pub trait DiskFile: Seek + Write + Read {
     fn set_len(&mut self, len: u64) -> Result<()>;
@@ -126,7 +126,7 @@ impl Disk for InMemoryDisk {
         _file: &str,
         _min_size: usize,
         max_size: usize,
-    ) -> anyhow::Result<FileAccessor> {
+    ) -> anyhow::Result<(FileAccessor, bool)> {
         let create = target.create();
         let data = if !create {
             panic!("Open-use case not supported for in-memory db");
@@ -145,7 +145,7 @@ impl Disk for InMemoryDisk {
 
         let mapping = InMemoryGrowableFileMapping { backing: data };
 
-        Ok(FileAccessor::from_mapping(mapping))
+        Ok((FileAccessor::from_mapping(mapping), false))
     }
 }
 
@@ -204,7 +204,7 @@ impl Disk for StandardDisk {
         file: &str,
         min_size: usize,
         max_size: usize,
-    ) -> Result<FileAccessor> {
+    ) -> Result<(FileAccessor, bool)> {
         let mapping = FileAccessor::new(target, file, min_size, max_size)?;
         Ok(mapping)
     }

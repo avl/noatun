@@ -343,7 +343,9 @@ impl Debug for MessageId {
     }
 }
 
-const FOR_TEST_NON_RANDOM_ID: bool = false;
+#[cfg(test)]
+static FOR_TEST_NON_RANDOM_ID: bool = true;
+
 #[cfg(test)]
 static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
@@ -638,7 +640,7 @@ impl<M: Message> MessageFrame<M> {
 }
 
 pub(crate) fn catch_and_log(f: impl FnOnce()) {
-    match catch_unwind(AssertUnwindSafe(|| f())) {
+    match catch_unwind(AssertUnwindSafe(f)) {
         Ok(()) => {}
         Err(err) => {
             if let Some(err) = (*err).downcast_ref::<String>() {

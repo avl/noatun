@@ -547,6 +547,7 @@ impl<M> OnDiskMessageStore<M> {
             .filter_map(|(msg, _)| msg))
     }
 
+    #[inline]
     fn provide_index_map(
         map: &mut FileAccessor,
         extra: usize, //items, not bytes
@@ -568,11 +569,17 @@ impl<M> OnDiskMessageStore<M> {
             return Ok(());
         }
 
-        if file_capacity + extra >= u32::MAX as usize {
+
+        Self::do_grow_file(map, file_capacity + extra)
+    }
+
+    #[cold]
+    fn do_grow_file(map: &mut FileAccessor, base_capacity: usize) -> Result<()> {
+
+        if base_capacity >= u32::MAX as usize {
             return Err(anyhow!("Database max-size reached (~2^32 entries)"));
         }
 
-        let base_capacity = file_capacity + extra;
         // Need to realloc
         let mut new_entries = base_capacity.saturating_mul(2);
         if new_entries > (u32::MAX / 2 + u32::MAX / 4) as usize {
@@ -617,8 +624,6 @@ impl<M> OnDiskMessageStore<M> {
         map: &mut FileAccessor,
         extra: usize,
     ) -> Result<(&mut StoreHeader, &mut [IndexEntry])> {
-        // TODO(future): Create a fast-path for the case where we do have enough space, so we can inline
-        // this method, and only call into something like `Self::provide_index_map` when needed
         Self::provide_index_map(map, extra)?;
         let slice: &mut [u8] = map.map_mut();
         let (store_header_bytes, index_bytes) = slice.split_at_mut(size_of::<StoreHeader>());
@@ -2096,13 +2101,11 @@ impl<M> OnDiskMessageStore<M> {
 
         let data_files: [Result<DataFileInfo>; 2] = [0, 1].map(|file_number| {
             let file_name = format!("data{file_number}");
-            let data_file = d
+            let (data_file, existed) = d
                 .open_file(target, &file_name, 0, max_file_size)
                 .context("Opening data-file")?;
 
-            if data_file.on_disk_size() > 0 {
-                db_existed = true;
-            }
+            db_existed = existed;
 
             data_file.try_lock_exclusive().with_context(|| {
                 format!(
@@ -2123,7 +2126,7 @@ impl<M> OnDiskMessageStore<M> {
             .try_into()
             .unwrap_or_else(|_| unreachable!());
 
-        let mut index_file = d
+        let (mut index_file, _existed) = d
             .open_file(target, "index", size_of::<StoreHeader>(), max_file_size)
             .context("Opening index-file")?;
         index_file
@@ -2144,7 +2147,6 @@ impl<M> OnDiskMessageStore<M> {
             .unwrap()
             .0;
 
-        //let update_heads = d.open_file(target, "update_heads", 0, 128 * 1024 * 1024)?;
 
         let this = Self {
             target: target.clone(),

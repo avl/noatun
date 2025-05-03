@@ -576,7 +576,7 @@ impl DatabaseContextData {
     }
 
     pub(crate) fn new<S: Disk>(s: &mut S, name: &Target, max_size: usize) -> Result<Self> {
-        let mut main_db_file = s
+        let (mut main_db_file, _existed) = s
             .open_file(name, "maindb", 0, max_size)
             .context("opening main store file")?;
 
@@ -641,7 +641,7 @@ impl DatabaseContextData {
         }
 
         info!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
-        println!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
+        //println!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
         let result = self.undo_log.rewind(|entry| match entry {
             UndoLogEntry::SetPointer(new_pointer) => {
                 let cur = Self::pointer_of(&self.main_db_mmap);
@@ -1299,12 +1299,7 @@ impl DatabaseContextData {
                 }
             } else {
                 debug!("can't delete {:?}{:?} yet because it's been transmitted and is after cutoff: {:?} and not unconditionally overwritten", msgobj.map(|x2|x2.map(|x|x.0.id)), msg, before_cutoff);
-                //unused_list.push_untracked(self, msg);
                 new_unused_list.push(msg);
-                // TODO:  We could remember that we have an unused item that
-                // we couldn't remove because it was not beyond cutoff.
-                // We could put these on a list of 'waiting' items, that can be deleted
-                // after the cutoff period elapses.
                 continue 'outer;
             }
 

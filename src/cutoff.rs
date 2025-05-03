@@ -1,7 +1,7 @@
 use crate::{cast_slice, cast_storable, MessageId, NoatunStorable, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use savefile_derive::Savefile;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 
 pub(crate) struct CutOffConfig {
     /// The approximate time in history at which all nodes must have been in sync.
@@ -113,6 +113,12 @@ impl CutOffDuration {
 #[repr(C)]
 pub struct CutOffTime(u32 /*minutes since unix epoch*/);
 
+impl Display for CutOffTime {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CutOffTime({})", self.to_noatun_time())
+    }
+}
+
 unsafe impl NoatunStorable for CutOffTime {}
 
 impl Debug for CutOffTime {
@@ -158,6 +164,12 @@ pub struct CutOffHashPos {
     /// every node is assumed to have received every event up to this cutoff time.
     pub(crate) before_time: CutOffTime,
     padding: u32,
+}
+
+impl Display for CutOffHashPos {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CutOffHashPos({:?}, cutoff_time={}", &self.hash, &self.before_time)
+    }
 }
 
 unsafe impl NoatunStorable for CutOffHashPos {}

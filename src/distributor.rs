@@ -5,9 +5,10 @@ use anyhow::Result;
 use arrayvec::ArrayString;
 use indexmap::{IndexMap, IndexSet};
 use savefile_derive::Savefile;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor;
 use tracing::{debug, error, info, warn};
+use crate::communication::QueryableOutbuffer;
 // Principle
 // The node that is 'most ahead' (highest MessageId) has responsibility.
 // If knows all the heads of other node, just sends perfect updates.
@@ -27,6 +28,16 @@ impl SerializedMessage {
             header: MessageHeader {
                 id: self.id,
                 parents: self.parents,
+            },
+            payload: M::deserialize(&self.data[reader.position() as usize..])?,
+        })
+    }
+    pub fn to_message_from_ref<M: Message>(&self) -> Result<MessageFrame<M>> {
+        let reader = Cursor::new(&self.data);
+        Ok(MessageFrame {
+            header: MessageHeader {
+                id: self.id,
+                parents: self.parents.clone(),
             },
             payload: M::deserialize(&self.data[reader.position() as usize..])?,
         })
@@ -57,8 +68,8 @@ pub struct MessageSubGraphNodeValue {
 #[derive(Debug, Savefile, Clone)]
 pub enum DistributorMessage {
     /// Report all update heads for the sender
-    ReportHeads(CutOffHashPos, Vec<MessageId>, ArrayString<10>),
-    /// A query if the listed messages are known.
+    ReportHeads(CutOffHashPos, Vec<MessageId>, /*sender name*/ArrayString<10>),
+    /// A query to tell if the listed messages are known.
     /// If they are, they should be requested by SyncAllRequest.
     /// The id of this query is the xor of all these message ids
     SyncAllQuery(Vec<MessageId>),
@@ -75,7 +86,7 @@ pub enum DistributorMessage {
     UpstreamResponse {
         messages: Vec<MessageSubGraphNode>,
     },
-    /// Command the recipient to send all descendants of the given message
+    /// Command the recipient to send all descendants of the given messages
     SendMessageAndAllDescendants {
         message_id: Vec<MessageId>,
     },
@@ -151,6 +162,40 @@ pub fn truncate_to_arraystring(name: &str) -> ArrayString<10> {
     "?".try_into().unwrap()
 }
 
+
+
+impl QueryableOutbuffer {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.outbuf.is_empty()
+    }
+    pub(crate) fn pop_front(&mut self) -> Option<DistributorMessage> {
+        let msg = self.outbuf.pop_front();
+        if let Some(msg) = &msg {
+            self.recent_sent.push_back(msg.clone());
+        }
+        msg
+    }
+    pub(crate) fn push_back(&mut self, msg: DistributorMessage)  {
+        self.outbuf.push_back(msg);
+    }
+
+    pub(crate) fn extend<I: IntoIterator<Item = DistributorMessage>>(&mut self, items: I) {
+        self.outbuf.extend(items);
+    }
+    pub(crate) fn has_request_for(&mut self, message: MessageId) -> bool {
+        self.outbuf.iter().chain(self.recent_sent.iter()).any(|x|
+            {
+                println!("has-request-for checking: {:?}", x);
+                if let DistributorMessage::RequestUpstream { query } = x {
+                    query.iter().any(|x| x.0 == message)
+                } else {
+                    false
+                }
+            }
+        )
+    }
+}
+
 impl Distributor {
     const BATCH_SIZE: usize = 20;
     pub(crate) fn new(node_name: &str) -> Distributor {
@@ -191,9 +236,11 @@ impl Distributor {
         &mut self,
         database: &DatabaseSession<APP>,
     ) -> Result<Vec<DistributorMessage>> {
+        let mut heads =  database.get_update_heads().to_vec();
+        heads.sort();
         let mut temp = vec![DistributorMessage::ReportHeads(
             database.current_cutoff_state()?,
-            database.get_update_heads().to_vec(),
+            heads,
             self.own_name,
         )];
         let sync_from = match &self.sync_all_inprogress {
@@ -222,12 +269,24 @@ impl Distributor {
 
         Ok(temp)
     }
+    pub(crate) fn receive_message2<APP: Application>(
+        &mut self,
+        database: &mut Database<APP>,
+        input: impl Iterator<Item = DistributorMessage>,
+    ) -> Result<Vec<DistributorMessage>> {
+        let mut buf = QueryableOutbuffer    ::default();
+        self.receive_message(database, input, &mut buf)?;
+        Ok(buf.outbuf.into_iter().collect())
+    }
 
     pub(crate) fn receive_message<APP: Application>(
         &mut self,
         database: &mut Database<APP>,
         input: impl Iterator<Item = DistributorMessage>,
-    ) -> Result<Vec<DistributorMessage>> {
+        outbuf: &mut QueryableOutbuffer
+    ) -> Result<()> {
+
+
         let mut database = database.begin_session_mut()?;
         let mut accumulated_heads: IndexSet<MessageId> = IndexSet::new();
         let mut accumulated_upstream_queries = IndexMap::new();
@@ -327,30 +386,31 @@ impl Distributor {
                 },
             }
         }
-        let mut output = Vec::new();
 
-        self.process_reported_heads(&mut database, accumulated_heads, &mut output)?;
+
+
+        self.process_reported_heads(&mut database, accumulated_heads, outbuf)?;
 
         accumulated_upstream_queries.sort_keys();
 
-        self.process_request_upstream(&mut database, accumulated_upstream_queries, &mut output)?;
-        self.process_upstream_response(&mut database, accumulated_responses, &mut output)?;
+        self.process_request_upstream(&mut database, accumulated_upstream_queries, outbuf)?;
+        self.process_upstream_response(&mut database, accumulated_responses, outbuf)?;
         self.process_send_message_all_descendants(
             &mut database,
             accumulated_send_msg_and_descendants,
-            &mut output,
+            outbuf
         )?;
-        self.process_received_messages(&mut database, accumulated_serialized, &mut output)?;
-        self.process_sync_all_queries(&mut database, accumulated_sync_all_queries, &mut output)?;
-        self.process_sync_all_requests(&mut database, accumulated_sync_all_requests, &mut output)?;
-        Ok(output)
+        self.process_received_messages(&mut database, accumulated_serialized, outbuf)?;
+        self.process_sync_all_queries(&mut database, accumulated_sync_all_queries, outbuf)?;
+        self.process_sync_all_requests(&mut database, accumulated_sync_all_requests,outbuf)?;
+        Ok(())
     }
 
     fn process_sync_all_queries<APP: Application>(
         &self,
         database: &mut DatabaseSessionMut<APP>,
         accumulated_sync_all_queries: IndexSet<MessageId>,
-        output: &mut Vec<DistributorMessage>,
+        output: &mut QueryableOutbuffer
     ) -> Result<()> {
         let mut request = vec![];
         let mut acks = vec![];
@@ -362,10 +422,10 @@ impl Distributor {
             }
         }
         if !request.is_empty() {
-            output.push(DistributorMessage::SyncAllRequest(request));
+            output.push_back(DistributorMessage::SyncAllRequest(request));
         }
         if !acks.is_empty() {
-            output.push(DistributorMessage::SyncAllAck(acks));
+            output.push_back(DistributorMessage::SyncAllAck(acks));
         }
         Ok(())
     }
@@ -374,12 +434,12 @@ impl Distributor {
         &self,
         database: &mut DatabaseSessionMut<APP>,
         accumulated_sync_all_requests: IndexSet<MessageId>,
-        output: &mut Vec<DistributorMessage>,
+        output: &mut QueryableOutbuffer
     ) -> Result<()> {
         for request in accumulated_sync_all_requests {
             match database.load_message(request) {
                 Ok(msg) => {
-                    output.push(DistributorMessage::Message(
+                    output.push_back(DistributorMessage::Message(
                         SerializedMessage::new(msg)?,
                         true,
                     ));
@@ -399,17 +459,27 @@ impl Distributor {
         &mut self,
         database: &mut DatabaseSessionMut<APP>,
         accumulated_heads: IndexSet<MessageId>,
-        output: &mut Vec<DistributorMessage>,
+        existing_outbuf: &mut QueryableOutbuffer
     ) -> Result<()> {
         let mut messages_to_request = vec![];
+        println!("Start loop");
         for message in accumulated_heads {
             if database.contains_message(message)? {
                 continue;
             }
+            if existing_outbuf.has_request_for(message) {
+                continue;
+            }
+            if messages_to_request.iter().any(|x:&(MessageId, usize)|x.0 == message) {
+                continue;
+            }
+            println!("REQUEST_UPSTREAM inner (from within process__reporteD_heads");
             messages_to_request.push((message, 4));
         }
         if !messages_to_request.is_empty() {
-            output.push(DistributorMessage::RequestUpstream {
+            println!("REQUEST_UPSTREAM (from within process__reporteD_heads");
+
+            existing_outbuf.push_back(DistributorMessage::RequestUpstream {
                 query: messages_to_request,
             });
             self.distributor_state.nominal = false;
@@ -422,7 +492,7 @@ impl Distributor {
         &self,
         database: &mut DatabaseSessionMut<APP>,
         accumulated_heads: IndexMap<MessageId, usize>,
-        output: &mut Vec<DistributorMessage>,
+        output: &mut QueryableOutbuffer
     ) -> Result<()> {
         let messages: Vec<MessageSubGraphNode> = database
             .get_upstream_of(accumulated_heads.into_iter())?
@@ -433,7 +503,7 @@ impl Distributor {
             })
             .collect();
         if !messages.is_empty() {
-            output.push(DistributorMessage::UpstreamResponse { messages });
+            output.push_back(DistributorMessage::UpstreamResponse { messages });
         }
         Ok(())
     }
@@ -441,7 +511,7 @@ impl Distributor {
         &self,
         database: &mut DatabaseSessionMut<APP>,
         upstream_response: IndexMap<MessageId, /*parents*/ MessageSubGraphNodeValue>,
-        output: &mut Vec<DistributorMessage>,
+        queryable_outbuffer: &mut QueryableOutbuffer
     ) -> Result<()> {
         let mut unknowns: HashSet<(MessageId, usize)> = HashSet::new();
         let mut send_cmds = vec![];
@@ -480,17 +550,21 @@ impl Distributor {
                     msg_value
                         .parents
                         .iter()
+                        .filter(|x|{
+                            !queryable_outbuffer.has_request_for(**x)
+                        })
                         .map(|x| (*x, msg_value.query_count)),
                 );
             }
         }
         if send_cmds.is_empty() == false {
-            output.push(DistributorMessage::SendMessageAndAllDescendants {
+            queryable_outbuffer.push_back(DistributorMessage::SendMessageAndAllDescendants {
                 message_id: send_cmds,
             });
         }
         if unknowns.is_empty() == false {
-            output.push(DistributorMessage::RequestUpstream {
+            println!("REQUEST_UPSTREAM (from within process_upstream_response");
+            queryable_outbuffer.push_back(DistributorMessage::RequestUpstream {
                 query: unknowns.into_iter().collect(),
             });
         }
@@ -501,7 +575,7 @@ impl Distributor {
         &self,
         database: &mut DatabaseSessionMut<APP>,
         mut message_list: IndexSet<MessageId>,
-        output: &mut Vec<DistributorMessage>,
+        output: &mut QueryableOutbuffer
     ) -> Result<()> {
         while let Some(msg) = message_list.pop() {
             let msg = match database.load_message(msg) {
@@ -512,7 +586,7 @@ impl Distributor {
                 }
             };
             let msg_id = msg.id();
-            output.push(DistributorMessage::Message(
+            output.push_back(DistributorMessage::Message(
                 SerializedMessage::new(msg)?,
                 false,
             ));
@@ -541,7 +615,7 @@ impl Distributor {
         &self,
         database: &mut DatabaseSessionMut<APP>,
         mut message_list: Vec<(SerializedMessage, /*need ack*/ bool)>,
-        output: &mut Vec<DistributorMessage>,
+        output: &mut QueryableOutbuffer
     ) -> Result<()> {
         database.maybe_advance_cutoff()?;
 
@@ -587,7 +661,7 @@ impl Distributor {
 
         database.append_many(messages.iter(), false, false)?;
         if !to_ack.is_empty() {
-            output.push(DistributorMessage::SyncAllAck(to_ack));
+            output.push_back(DistributorMessage::SyncAllAck(to_ack));
         }
         Ok(())
     }

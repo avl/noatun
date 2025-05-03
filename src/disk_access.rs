@@ -387,7 +387,7 @@ impl FileAccessor {
         file: &str,
         initial_size: usize,
         max_size: usize,
-    ) -> Result<Self> {
+    ) -> Result<(Self, bool)> {
         if max_size == 0 {
             bail!("max_size must not be 0");
         }
@@ -406,9 +406,12 @@ impl FileAccessor {
         let mut overwrite = target.overwrite();
         let create = target.create();
 
-        if std::fs::metadata(&path).is_err() {
+        let existed = if std::fs::metadata(&path).is_err() {
             overwrite = true;
-        }
+            false
+        } else {
+            true
+        };
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -448,7 +451,7 @@ impl FileAccessor {
         let claimed_used_size = temp.used_space();
         let new_used_size = claimed_used_size.min(len.saturating_sub(Self::HEADER_SIZE));
         temp.set_used_space(new_used_size);
-        Ok(temp)
+        Ok((temp, existed))
     }
 }
 

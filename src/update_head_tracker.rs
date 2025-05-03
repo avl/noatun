@@ -105,7 +105,7 @@ impl UpdateHeadTracker {
     }
     pub(crate) fn new<D: Disk>(disk: &mut D, target: &crate::Target) -> Result<UpdateHeadTracker> {
         Ok(Self {
-            file: disk.open_file(target, "update_head", 0, 10 * 1024 * 1024)?,
+            file: disk.open_file(target, "update_head", 0, 10 * 1024 * 1024)?.0,
         })
     }
 }

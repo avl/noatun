@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use crate::cutoff::CutOffDuration;
 use crate::database::DatabaseSettings;
 use crate::distributor::{Distributor, DistributorMessage};
@@ -6,6 +7,7 @@ use crate::{Database, MessageId, NoatunTime};
 use datetime_literal::datetime;
 use std::iter::once;
 use std::mem::swap;
+use crate::communication::QueryableOutbuffer;
 
 fn create_app<'a>(
     msgs: impl IntoIterator<
@@ -79,18 +81,20 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
     let mut next_ether = vec![];
     loop {
         for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
-            let sent = distr
+            let mut sent = QueryableOutbuffer::default();
+                distr
                 .receive_message(
                     db,
                     ether
                         .iter()
                         .filter(|(x_src_id, _msg)| *x_src_id != db_id)
                         .map(|(_src, x)| x.clone()),
+                    &mut sent
                 )
                 .unwrap();
             report.num_messages += sent.len();
             println!("db: {db_id:?} sent {sent:?}");
-            next_ether.extend(sent.into_iter().map(|x| (db_id, x)));
+            next_ether.extend(sent.outbuf.into_iter().map(|x| (db_id, x)));
         }
         if next_ether.is_empty() {
             break;
@@ -196,7 +200,7 @@ fn test_distributor() {
     let msg1 = msg1.pop().unwrap();
 
     println!("dist1 sent: {msg1:?}");
-    let mut result = dist2.receive_message(&mut app2, once(msg1)).unwrap();
+    let mut result = dist2.receive_message2(&mut app2, once(msg1)).unwrap();
 
     println!("dist2 sent: {result:?}");
 
@@ -204,27 +208,27 @@ fn test_distributor() {
     assert_eq!(result.len(), 1);
 
     let mut result = dist1
-        .receive_message(&mut app1, once(result.pop().unwrap()))
+        .receive_message2(&mut app1, once(result.pop().unwrap()))
         .unwrap();
     println!("dist1 sent: {result:?}");
     insta::assert_debug_snapshot!(result);
     assert_eq!(result.len(), 1);
 
     let mut result = dist2
-        .receive_message(&mut app2, once(result.pop().unwrap()))
+        .receive_message2(&mut app2, once(result.pop().unwrap()))
         .unwrap();
     println!("dist2 sent: {result:?}");
     insta::assert_debug_snapshot!(result);
 
     let mut result = dist1
-        .receive_message(&mut app1, once(result.pop().unwrap()))
+        .receive_message2(&mut app1, once(result.pop().unwrap()))
         .unwrap();
     println!("dist1 sent: {result:?}");
     assert!(matches!(&result[0], DistributorMessage::Message(_, false)));
     assert_eq!(result.len(), 1);
 
     let _result = dist2
-        .receive_message(&mut app2, once(result.pop().unwrap()))
+        .receive_message2(&mut app2, once(result.pop().unwrap()))
         .unwrap();
     let sess2 = app2.begin_session().unwrap();
     println!("App2 all msgs: {:?}", sess2.get_all_message_ids().unwrap());

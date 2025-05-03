@@ -1,7 +1,4 @@
-use crate::communication::{
-    CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
-    DatabaseCommunication, DatabaseCommunicationConfig,
-};
+use crate::communication::{CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket, DatabaseCommunication, DatabaseCommunicationConfig, DebugEvent};
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
 use crate::distributor::Status;
@@ -25,6 +22,10 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::info;
+use std::sync::Arc;
+use std::sync::Mutex;
+use insta::assert_snapshot;
+use tokio::time::Instant;
 
 thread_local! {
     pub static MY_THREAD_RNG: RefCell<Option<SmallRng>> = const { RefCell::new(None) };
@@ -92,9 +93,24 @@ struct TestDriverInner {
 }
 
 struct TestDriver {
+    driver_start: Instant,
     senders: ArcShift<TestDriverInner>,
+    debug_events: Arc<Mutex<Vec<DebugEvent>>>,
 }
 impl TestDriver {
+    pub fn messages_snapshot(&self) -> String {
+        let mut ret = String::new();
+
+        let mut evs = self.debug_events.lock().unwrap();
+        evs.sort_by_key(|x|x.time);
+        for ev in &*evs {
+            use std::fmt::Write;
+            let elapsed = ev.time.duration_since(self.driver_start);
+            write!(&mut ret, "{elapsed:>10?}: #{}: {:?}\n", ev.node, ev.msg).unwrap();
+        }
+
+        ret
+    }
     pub fn set_loss(&mut self, loss: f32) {
         self.senders.rcu(|item| {
             let mut cloned = item.clone();
@@ -106,7 +122,9 @@ impl TestDriver {
 impl Default for TestDriver {
     fn default() -> Self {
         TestDriver {
+            driver_start: Instant::now(),
             senders: ArcShift::new(TestDriverInner::default()),
+            debug_events: Arc::new(Mutex::new(vec![])),
         }
     }
 }
@@ -201,7 +219,7 @@ async fn create_app(driver: &mut TestDriver) -> DatabaseCommunication<SyncApp> {
     )
     .unwrap();
 
-    DatabaseCommunication::async_tokio_new(
+    let comm = DatabaseCommunication::async_tokio_new(
         driver,
         db,
         DatabaseCommunicationConfig {
@@ -214,7 +232,13 @@ async fn create_app(driver: &mut TestDriver) -> DatabaseCommunication<SyncApp> {
         },
     )
     .await
-    .unwrap()
+    .unwrap();
+    let log = driver.debug_events.clone();
+    comm.install_debug_logger(move |ev|{
+        let mut log = log.lock().unwrap();
+        log.push(ev);
+    }).await.unwrap();
+    comm
 }
 
 #[tokio::test(start_paused = true)]
@@ -250,6 +274,9 @@ async fn all_up_simple_sync_test() {
     assert_eq!(root1.counter, 2);
     assert_eq!(root2.counter, 2);
     assert_eq!(root1, root2);
+
+    assert_snapshot!(driver.messages_snapshot());
+
 }
 
 fn random<T: SampleUniform + PartialOrd>(range: std::ops::Range<T>) -> T {
@@ -412,11 +439,11 @@ fn old_transmitted_messages_without_effect_are_removed2() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_gradual_update_sync_test() {
+    MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
     let app1 = create_app(&mut driver).await;
     let app2 = create_app(&mut driver).await;
 
-    MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
 
     driver.set_loss(0.5);
     let mut correct_count = 0;
@@ -508,6 +535,8 @@ async fn all_up_gradual_update_sync_test() {
     .unwrap();
     app1.close().await.unwrap();
     app2.close().await.unwrap();
+    assert_snapshot!(driver.messages_snapshot());
+
 }
 
 #[tokio::test(start_paused = true)]

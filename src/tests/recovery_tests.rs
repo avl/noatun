@@ -204,8 +204,11 @@ fn test_recovery_simple() {
 
 #[test]
 fn test_recovery_corrupted_file() {
+    Database::<KeyValStore>::remove_db_files("test/test_recover3").unwrap();
     let mut db: Database<KeyValStore> =
         Database::create_new("test/test_recover3", true, DatabaseSettings::default(), ()).unwrap();
+    assert_eq!(db.load_status(), LoadingStatus::NewDatabase);
+
     let mut sess = db.begin_session_mut().unwrap();
     sess.append_local(KeyValMessage {
         key: "Fruit1".to_string(),
@@ -319,10 +322,6 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     Database::<KeyValStore>::remove_caches("test/test_recover4").unwrap();
 
     let mut contents = std::fs::read("test/test_recover4/data0.bin").unwrap();
-    // Corrupt the file, replace Orange with Banana
-    /*for i in 0..20 {
-        contents[i] = 0x43;
-    }*/
     contents[corrupt_at_index] = contents[corrupt_at_index].wrapping_sub(20);
 
     //println!("\n ========= Corrupted {} file at {}\n", contents.len(), corrupt_at_index);

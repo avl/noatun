@@ -23,15 +23,15 @@ impl Object for CounterObject {
     type DetachedOwnedType = ();
 
     fn detach(&self) -> Self::DetachedOwnedType {
-        todo!()
+        unimplemented!()
     }
 
     fn clear(self: Pin<&mut Self>) {
-        todo!()
+        unimplemented!()
     }
 
     fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {
-        todo!()
+        unimplemented!()
     }
 
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {

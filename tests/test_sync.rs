@@ -33,11 +33,11 @@ impl Object for Maze {
     type DetachedOwnedType = (u32, u32);
 
     fn detach(&self) -> Self::DetachedOwnedType {
-        todo!()
+        unimplemented!()
     }
 
     fn clear(self: Pin<&mut Self>) {
-        todo!()
+        unimplemented!()
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {

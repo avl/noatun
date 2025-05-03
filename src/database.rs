@@ -651,6 +651,18 @@ impl<APP: Application> Database<APP> {
     /// archiving noatun files, since the cache files can always be recreated from the
     /// data files.
     pub fn remove_caches(path: impl AsRef<Path>) -> Result<()> {
+        Self::remove_db_files_impl(path, true)
+    }
+    /// Remove all database files for a database at the given path
+    ///
+    /// Succeeds if the database was removed, or if it didn't even exist.
+    pub fn remove_db_files(path: impl AsRef<Path>) -> Result<()> {
+        Self::remove_db_files_impl(path, false)
+    }
+    /// Remove all database files for a database at the given path
+    ///
+    /// Succeeds if the database was removed, or if it didn't even exist.
+    fn remove_db_files_impl(path: impl AsRef<Path>, only_caches: bool) -> Result<()> {
         let path: PathBuf = path.as_ref().to_path_buf();
         fn remove_if_exists(path: impl AsRef<Path>) -> Result<()> {
             if std::fs::metadata(path.as_ref()).is_ok() {
@@ -662,11 +674,16 @@ impl<APP: Application> Database<APP> {
         remove_if_exists(path.join("index.bin"))?;
         remove_if_exists(path.join("maindb.bin"))?;
         remove_if_exists(path.join("undo.bin"))?;
+        remove_if_exists(path.join("undo.bin"))?;
         remove_if_exists(path.join("update_head.bin"))?;
+
+        if !only_caches {
+            remove_if_exists(path.join("data0.bin"))?;
+            remove_if_exists(path.join("data1.bin"))?;
+        }
 
         Ok(())
     }
-
     /// Note: You can set max_file_size to something very large, like 100_000_000_000.
     /// The max-size is reserved in the process' address space, but not actually allocated
     /// until needed.

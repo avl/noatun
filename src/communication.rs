@@ -2,7 +2,7 @@ use crate::distributor::{Distributor, DistributorMessage, SerializedMessage, Sta
 
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 use crate::communication::udp::TokioUdpDriver;
-use crate::{Application, Database, MessageId, NoatunTime};
+use crate::{Application, Database, MessageFrame, MessageId, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
@@ -13,12 +13,13 @@ use savefile::{
 };
 use savefile_derive::Savefile;
 use std::collections::VecDeque;
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::{io, thread};
+use arrayvec::ArrayString;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
@@ -330,7 +331,7 @@ impl Default for RetransmitInfo {
     }
 }
 
-struct MulticasterSenderLoop<Socket: CommunicationDriver> {
+struct MulticastSenderLoop<Socket: CommunicationDriver> {
     send_socket: Socket::Sender,
     receive_socket: Socket::Receiver,
     bind_address: Socket::Endpoint,
@@ -353,9 +354,9 @@ struct MulticasterSenderLoop<Socket: CommunicationDriver> {
     /// The timeout before a retransmit is initiated
     retransmit_interval: Duration,
 }
-impl<Socket: CommunicationDriver> Drop for MulticasterSenderLoop<Socket> {
+impl<Socket: CommunicationDriver> Drop for MulticastSenderLoop<Socket> {
     fn drop(&mut self) {
-        info!("Dropping MulticasterSenderLoop loop");
+        info!("Dropping MulticastSenderLoop loop");
     }
 }
 
@@ -395,7 +396,7 @@ impl BwLimiter {
     }
 }
 
-impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
+impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
     pub(crate) async fn new(
         driver: &mut Socket,
         bind_address: &str,
@@ -407,7 +408,7 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
         mtu: usize,
         retransmit_interval: Duration,
         retransmit_buffer_size_bytes: usize,
-    ) -> Result<MulticasterSenderLoop<Socket>> {
+    ) -> Result<MulticastSenderLoop<Socket>> {
         let (send_socket, receive_socket) = driver
             .initialize(bind_address, multicast_group, mtu)
             .await?;
@@ -668,6 +669,27 @@ impl<Socket: CommunicationDriver> MulticasterSenderLoop<Socket> {
     }
 }
 
+#[derive(Debug)]
+pub struct DebugEvent {
+    pub node: ArrayString<20>,
+    pub time: Instant,
+    pub msg: DebugEventMsg,
+}
+
+pub enum DebugEventMsg {
+    Send(String/*msg*/)
+}
+
+impl Debug for DebugEventMsg {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DebugEventMsg::Send(s) => {
+                write!(f, "Send({})", s)
+            }
+        }
+    }
+}
+
 enum Cmd<APP: Application> {
     AddMessage(
         Option<NoatunTime>,
@@ -676,6 +698,20 @@ enum Cmd<APP: Application> {
     ),
     Quit(oneshot::Sender<()>),
     GetStatus(oneshot::Sender<Status>),
+    InstallDebugEventLogger(Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>, oneshot::Sender<()>),
+}
+
+#[derive(Debug, Default)]
+pub struct QueryableOutbuffer {
+    pub(crate) outbuf: VecDeque<DistributorMessage>,
+    compile_error!("Only keep for a specific time. ");
+    pub(crate) recent_sent: VecDeque<DistributorMessage>,
+}
+
+impl QueryableOutbuffer {
+    pub fn len(&self) -> usize {
+        self.outbuf.len()
+    }
 }
 
 struct DatabaseCommunicationLoop<APP: Application + Send>
@@ -684,6 +720,7 @@ where
     Self: Send,
 {
     database: Arc<Mutex<Database<APP>>>,
+    /// Join handle for MulticastSenderLoop
     jh: tokio::task::JoinHandle<Result<()>>,
     sender_tx: Sender<Vec<u8>>,
     receiver_rx: Receiver<Vec<u8>>,
@@ -694,10 +731,11 @@ where
     buffer_life_start: Instant,
     next_periodic: tokio::time::Instant,
     buffered_incoming_messages: Vec<DistributorMessage>,
-    outbuf: VecDeque<DistributorMessage>,
+    outbuf: QueryableOutbuffer,
     nextsend: Vec<u8>,
     nextsend_id: Option<MessageId>,
     node: String, //Address as string
+    debug_event_logger: Option<Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>>,
 }
 
 impl<APP: Application + Send> Drop for DatabaseCommunicationLoop<APP>
@@ -748,12 +786,50 @@ where
     }
     fn process_messages(&mut self) -> Result<()> {
         let mut database = self.database.lock().unwrap();
-
-        let new_msgs = self
+        self
             .distributor
-            .receive_message(&mut *database, self.buffered_incoming_messages.drain(..))?;
+            .receive_message(&mut *database, self.buffered_incoming_messages.drain(..), &mut self.outbuf)?;
         drop(database);
-        self.outbuf.extend(new_msgs);
+        Ok(())
+    }
+
+    fn debug_record(&mut self, msg: &DistributorMessage) -> Result<()> {
+        if let Some(dbg) = &mut self.debug_event_logger {
+
+            let msg = match msg {
+                DistributorMessage::ReportHeads(cutoff, heads, sender) => {
+                    format!("ReportHeads: Node: {sender}, cutoff: {cutoff}, heads: {:?}", heads)
+                }
+                DistributorMessage::SyncAllQuery(messages) => {
+                    format!("SyncAllQuery: Messages: {:?}", messages)
+                }
+                DistributorMessage::SyncAllRequest(messages) => {
+                    format!("SyncAllRequest: Messages: {:?}", messages)
+                }
+                DistributorMessage::SyncAllAck(messages) => {
+                    format!("SyncAllAck: Messages: {:?}", messages)
+                }
+                DistributorMessage::RequestUpstream { query } => {
+                    format!("RequestUpstream: Query: {:?}", query)
+                }
+                DistributorMessage::UpstreamResponse { messages } => {
+                    format!("UpstreamResponse: Messages: {:?}", messages)
+                }
+                DistributorMessage::SendMessageAndAllDescendants { message_id } => {
+                    format!("SendMessageAndAllDescendants: messages: {:?}", message_id)
+                }
+                DistributorMessage::Message(msg, demand_ack) => {
+                    let msg: MessageFrame<APP::Message> = msg.to_message_from_ref()?;
+                    format!("Message: id = {}, parents = {:?}, need_ack = {}, msg = {:?}", msg.header.id, msg.header.parents, demand_ack, msg.payload)
+                }
+            };
+
+            dbg(DebugEvent {
+                node: ArrayString::from(&self.node).unwrap_or_else(|_|Default::default()),
+                time: Instant::now(),
+                msg: DebugEventMsg::Send(msg),
+            });
+        }
         Ok(())
     }
 
@@ -795,6 +871,7 @@ where
 
             if self.nextsend.is_empty() && !self.outbuf.is_empty() {
                 let msg = self.outbuf.pop_front().unwrap();
+                self.debug_record(&msg)?;
                 self.nextsend_id = msg.message_id();
                 Serializer::bare_serialize(&mut self.nextsend, 0, &msg)?;
                 //info!("Sending {:?} as {} byte", msg, self.nextsend.len());
@@ -847,6 +924,10 @@ where
                         return Ok(None); //Done
                     };
                     match cmd {
+                        Cmd::InstallDebugEventLogger(debug_event_logger, oneshot) =>  {
+                            self.debug_event_logger = Some(debug_event_logger);
+                            _ = oneshot.send(());
+                        }
                         Cmd::Quit(sender) => {
                             info!("cmd rx received quit");
                             return Ok(Some(sender));
@@ -913,6 +994,24 @@ where
             Ok(()) => {
                 let result: Status = oneshot_rx.await?;
                 Ok(result)
+            }
+            Err(err) => {
+                bail!("Failed to send command to background thread {:?}", err);
+            }
+        }
+    }
+
+    /// Install a callback that will receive events describing the operation of the
+    /// communication. This is only meant for debugging/logging.
+    pub async fn install_debug_logger(&self, f: impl FnMut(DebugEvent)+'static+Send+Sync) -> Result<()> {
+        let (oneshot_tx, oneshot_rx) = oneshot::channel();
+        let status = self.cmd_tx.send(Cmd::InstallDebugEventLogger(
+            Box::new(f),
+            oneshot_tx)).await;
+        match status {
+            Ok(()) => {
+                oneshot_rx.await?;
+                Ok(())
             }
             Err(err) => {
                 bail!("Failed to send command to background thread {:?}", err);
@@ -1050,7 +1149,7 @@ where
         let (sender_tx, sender_rx) = tokio::sync::mpsc::channel(1);
         let (quit_tx, quit_rx) = tokio::sync::oneshot::channel();
         let (receiver_tx, receiver_rx) = tokio::sync::mpsc::channel(1000);
-        let sender_loop = MulticasterSenderLoop::new(
+        let sender_loop = MulticastSenderLoop::new(
             driver,
             &config.listen_address,
             &config.multicast_address,
@@ -1084,6 +1183,7 @@ where
             outbuf: Default::default(),
             nextsend: vec![],
             nextsend_id: None,
+            debug_event_logger: None,
         };
 
         spawn(main.run(quit_tx));
@@ -1136,7 +1236,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::communication::udp::TokioUdpDriver;
-    use crate::communication::{MulticasterSenderLoop, ReceiveTrack};
+    use crate::communication::{MulticastSenderLoop, ReceiveTrack};
     use crate::tests::setup_tracing;
     use std::time::Duration;
     use tokio::spawn;
@@ -1164,7 +1264,7 @@ mod tests {
         let (_quit_tx1, quit_rx1) = tokio::sync::oneshot::channel();
         let (receiver_tx1, _receiver_rx1) = tokio::sync::mpsc::channel(1000);
 
-        let mloop1 = MulticasterSenderLoop::new(
+        let mloop1 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
             "127.0.0.1:0",
             "230.230.230.230:7777",
@@ -1183,7 +1283,7 @@ mod tests {
         let (_quit_tx2, quit_rx2) = tokio::sync::oneshot::channel();
         let (receiver_tx2, mut receiver_rx2) = tokio::sync::mpsc::channel(1000);
 
-        let mloop2 = MulticasterSenderLoop::new(
+        let mloop2 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
             "127.0.0.1:0",
             "230.230.230.230:7777",
@@ -1226,7 +1326,7 @@ mod tests {
         let (_quit_tx1, quit_rx1) = tokio::sync::oneshot::channel();
         let (receiver_tx1, _receiver_rx1) = tokio::sync::mpsc::channel(1000);
 
-        let mloop1 = MulticasterSenderLoop::new(
+        let mloop1 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
             "[::]:0",
             "[ff02::42:41%2]:7775",
@@ -1245,7 +1345,7 @@ mod tests {
         let (_quit_tx2, quit_rx2) = tokio::sync::oneshot::channel();
         let (receiver_tx2, mut receiver_rx2) = tokio::sync::mpsc::channel(1000);
 
-        let mloop2 = MulticasterSenderLoop::new(
+        let mloop2 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
             "[::]:0",
             "[ff02::42:41%2]:7775",
