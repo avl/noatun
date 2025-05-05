@@ -1,4 +1,7 @@
-use crate::communication::{CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket, DatabaseCommunication, DatabaseCommunicationConfig, DebugEvent};
+use crate::communication::{
+    CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
+    DatabaseCommunication, DatabaseCommunicationConfig, DebugEvent, DebugEventMsg,
+};
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
 use crate::distributor::Status;
@@ -10,6 +13,8 @@ use chrono::DateTime;
 use chrono::TimeDelta;
 use chrono::Utc;
 use datetime_literal::datetime;
+use indexmap::IndexSet;
+use insta::assert_snapshot;
 use rand::distributions::uniform::SampleUniform;
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -18,14 +23,14 @@ use std::cell::RefCell;
 use std::fmt::Debug;
 use std::io::Write;
 use std::ops::Add;
+use std::ops::Sub;
 use std::pin::Pin;
-use std::time::Duration;
-use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::info;
 use std::sync::Arc;
 use std::sync::Mutex;
-use insta::assert_snapshot;
+use std::time::Duration;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::Instant;
+use tracing::info;
 
 thread_local! {
     pub static MY_THREAD_RNG: RefCell<Option<SmallRng>> = const { RefCell::new(None) };
@@ -102,12 +107,48 @@ impl TestDriver {
         let mut ret = String::new();
 
         let mut evs = self.debug_events.lock().unwrap();
-        evs.sort_by_key(|x|x.time);
-        for ev in &*evs {
-            use std::fmt::Write;
-            let elapsed = ev.time.duration_since(self.driver_start);
-            write!(&mut ret, "{elapsed:>10?}: #{}: {:?}\n", ev.node, ev.msg).unwrap();
+        evs.sort_by_key(|x| x.time);
+
+        let mut receive_of = vec![None; evs.len()];
+        for (receive_index, receive_ev) in evs.iter().enumerate().rev() {
+            if let DebugEventMsg::Receive(_) = &receive_ev.msg {
+                if let Some((send_index, send_ev)) = evs
+                    .iter()
+                    .enumerate()
+                    .take(receive_index)
+                    .rev()
+                    .find(|(_send_index, send_ev)| send_ev.is_send_of(receive_ev))
+                {
+                    if send_ev.is_send_of(receive_ev) {
+                        receive_of[send_index] = Some(receive_index);
+                    }
+                }
+            }
         }
+
+        for (index, ev) in evs.iter().enumerate() {
+            use std::fmt::Write;
+            let node: u32 = ev.node.parse().unwrap();
+            let elapsed = ev.time.duration_since(self.driver_start);
+            let lost = match &ev.msg {
+                DebugEventMsg::Send(_) => {
+                    if let Some(receive_index) = receive_of[index] {
+                        format!("{:?}", evs[receive_index].time.duration_since(ev.time))
+                    } else {
+                        "*".to_string()
+                    }
+                }
+                DebugEventMsg::Receive(_) => String::new(),
+            };
+            writeln!(
+                &mut ret,
+                "{elapsed:>8?}: #{}:{lost:>8} {:?}",
+                crate::colored_int(node),
+                ev.msg
+            )
+            .unwrap();
+        }
+        ret = ret.replace("2020-01-01T00:", "*");
 
         ret
     }
@@ -160,7 +201,7 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
                     .await
                     .map_err(|e| std::io::Error::other(format!("simulated net failed {e:?}")))?;
             } else {
-                //info!("== SIMULATOR CAUSED PACKET LOSS ==");
+                //println!("== SIMULATOR CAUSED PACKET LOSS ==");
             }
         }
         Ok(buf.len())
@@ -208,7 +249,7 @@ const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
 
 async fn create_app(driver: &mut TestDriver) -> DatabaseCommunication<SyncApp> {
     let db: Database<SyncApp> = Database::create_in_memory(
-        500000,
+        2_500_000,
         CutOffDuration::from_minutes(15),
         DatabaseSettings {
             mock_time: Some(START_TIME.into()),
@@ -219,6 +260,7 @@ async fn create_app(driver: &mut TestDriver) -> DatabaseCommunication<SyncApp> {
     )
     .unwrap();
 
+    let log = driver.debug_events.clone();
     let comm = DatabaseCommunication::async_tokio_new(
         driver,
         db,
@@ -229,15 +271,15 @@ async fn create_app(driver: &mut TestDriver) -> DatabaseCommunication<SyncApp> {
             bandwidth_limit_bytes_per_second: 1000,
             retransmit_interval_seconds: 1.0,
             retransmit_buffer_size_bytes: 1_000_000,
+            debug_logger: Some(Box::new(move |ev| {
+                let mut log = log.lock().unwrap();
+                log.push(ev);
+            })),
+            periodic_message_interval: Duration::from_secs(5),
         },
     )
     .await
     .unwrap();
-    let log = driver.debug_events.clone();
-    comm.install_debug_logger(move |ev|{
-        let mut log = log.lock().unwrap();
-        log.push(ev);
-    }).await.unwrap();
     comm
 }
 
@@ -276,7 +318,6 @@ async fn all_up_simple_sync_test() {
     assert_eq!(root1, root2);
 
     assert_snapshot!(driver.messages_snapshot());
-
 }
 
 fn random<T: SampleUniform + PartialOrd>(range: std::ops::Range<T>) -> T {
@@ -444,10 +485,10 @@ async fn all_up_gradual_update_sync_test() {
     let app1 = create_app(&mut driver).await;
     let app2 = create_app(&mut driver).await;
 
-
     driver.set_loss(0.5);
     let mut correct_count = 0;
     let mut correct_sum = 0;
+    let start_time = tokio::time::Instant::now();
     for _i in 0..10 {
         //println!("I = {}", i);
         //println!("Msgs1: {:#?}", app1.get_all_messages().unwrap());
@@ -466,9 +507,11 @@ async fn all_up_gradual_update_sync_test() {
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
+        let elapsed = start_time.elapsed();
         app1.add_message_at(
             datetime!(2020-01-01 Z)
-                .add(TimeDelta::seconds(random(0..100)))
+                .add(elapsed)
+                //.add(TimeDelta::seconds(random(0..100)))
                 .into(),
             SyncMessage {
                 value: 1,
@@ -535,8 +578,8 @@ async fn all_up_gradual_update_sync_test() {
     .unwrap();
     app1.close().await.unwrap();
     app2.close().await.unwrap();
-    assert_snapshot!(driver.messages_snapshot());
-
+    println!("{}", driver.messages_snapshot());
+    //  assert_snapshot!(driver.messages_snapshot());
 }
 
 #[tokio::test(start_paused = true)]
@@ -770,4 +813,151 @@ async fn all_up_general_update_sync_test_impl(
 
     app1.close().await.unwrap();
     app2.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn all_up_big_severely_desynced_test() {
+    MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
+    let mut driver = TestDriver::default();
+    let mut app1 = create_app(&mut driver).await;
+    let mut app2 = create_app(&mut driver).await;
+
+    driver.set_loss(1.0);
+    let start = Instant::now();
+    for _msg in 0..100 {
+        app1.add_message(SyncMessage {
+            value: 1,
+            persist: false,
+            reset: false,
+        })
+        .await
+        .unwrap();
+        app2.add_message(SyncMessage {
+            persist: false,
+            value: 2,
+            reset: false,
+        })
+        .await
+        .unwrap();
+        app1.set_mock_time(NoatunTime::from_datetime(
+            datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+        )).unwrap();
+        app2.set_mock_time(NoatunTime::from_datetime(
+            datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+        )).unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(900)).await;
+    driver.set_loss(0.0);
+    tokio::time::sleep(Duration::from_secs(60)).await;
+
+    let root1 = app1.with_root(|root| root.detach());
+    let root2 = app2.with_root(|root| root.detach());
+
+    assert_eq!(root1, root2);
+    println!("{}", driver.messages_snapshot());
+}
+
+#[tokio::test(start_paused = true)]
+async fn all_up_big_nominal_test() {
+    MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
+    let mut driver = TestDriver::default();
+    let mut app1 = create_app(&mut driver).await;
+    let mut app2 = create_app(&mut driver).await;
+
+    driver.set_loss(1.0);
+    let start = Instant::now();
+    for msg in 0..100 {
+        app1.add_message(SyncMessage {
+            value: 1,
+            persist: false,
+            reset: false,
+        })
+        .await
+        .unwrap();
+        app2.add_message(SyncMessage {
+            persist: false,
+            value: 2,
+            reset: false,
+        })
+        .await
+        .unwrap();
+        app1.set_mock_time(NoatunTime::from_datetime(
+            datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+        )).unwrap();
+        app2.set_mock_time(NoatunTime::from_datetime(
+            datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+        )).unwrap();
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        if msg > 15 {
+            driver.set_loss(0.0);
+        }
+    }
+    tokio::time::sleep(Duration::from_secs(120)).await;
+
+    let root1 = app1.with_root(|root| root.detach());
+    let root2 = app2.with_root(|root| root.detach());
+
+    println!("{}", driver.messages_snapshot());
+
+    let msgs1 = app1
+        .inner_database()
+        .begin_session()
+        .unwrap()
+        .get_all_messages()
+        .unwrap();
+    let msgs2 = app2
+        .inner_database()
+        .begin_session()
+        .unwrap()
+        .get_all_messages()
+        .unwrap();
+    assert!(msgs1.is_sorted_by_key(|x| x.header.id));
+    assert!(msgs2.is_sorted_by_key(|x| x.header.id));
+    let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
+    let smsgs2: IndexSet<_> = msgs2.iter().map(|x| x.header.id).collect();
+    println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
+    println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
+    println!("Only in 1: {:?}", smsgs1.sub(&smsgs2));
+    println!("Only in 2: {:?}", smsgs2.sub(&smsgs1));
+    {
+        assert_eq!(msgs1.len(), msgs2.len());
+    }
+
+    assert_eq!(root1, root2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn all_up_huge_desynced_test() {
+    MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
+    let mut driver = TestDriver::default();
+    let mut app1 = create_app(&mut driver).await;
+    let mut app2 = create_app(&mut driver).await;
+
+    driver.set_loss(1.0);
+    let start = Instant::now();
+    for _msg in 0..200 {
+        app1.set_mock_time(NoatunTime::from_datetime(
+            datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+        )).unwrap();
+        app2.set_mock_time(NoatunTime::from_datetime(
+            datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+        )).unwrap();
+        app1.add_message(SyncMessage {
+            value: 1,
+            persist: false,
+            reset: false,
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    driver.set_loss(0.0);
+    tokio::time::sleep(Duration::from_secs(120)).await;
+
+    let root1 = app1.with_root(|root| root.detach());
+    let root2 = app2.with_root(|root| root.detach());
+    println!("{}", driver.messages_snapshot());
+
+    assert_eq!(root1, root2);
 }

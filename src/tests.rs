@@ -316,7 +316,8 @@ fn test_mmap_helper() {
         0,
         16 * 1024 * 1024,
     )
-    .unwrap().0;
+    .unwrap()
+    .0;
     mmap.write_u32::<LittleEndian>(0x2b).unwrap();
     use byteorder::ReadBytesExt;
     use std::io::Read;

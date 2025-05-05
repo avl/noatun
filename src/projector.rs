@@ -311,7 +311,7 @@ impl<APP: Application> Projector<APP> {
 
         drop(guard);
 
-        context.set_next_seqnr(seqnr.successor()); //TODO(future): Don't record a snapshot for _every_ message.
+        context.set_next_seqnr(seqnr.successor());
         context.finalize_message(seqnr);
     }
 

@@ -115,7 +115,7 @@ pub struct CutOffTime(u32 /*minutes since unix epoch*/);
 
 impl Display for CutOffTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CutOffTime({})", self.to_noatun_time())
+        write!(f, "{}", self.to_noatun_time())
     }
 }
 
@@ -123,7 +123,7 @@ unsafe impl NoatunStorable for CutOffTime {}
 
 impl Debug for CutOffTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CutOffTime({:?})", self.to_noatun_time())
+        write!(f, "{:?}", self.to_noatun_time())
     }
 }
 
@@ -154,7 +154,7 @@ impl CutOffTime {
     }
 }
 
-#[derive(Clone, Copy, Debug, Savefile, PartialEq, Eq)]
+#[derive(Clone, Copy, Savefile, PartialEq, Eq)]
 #[repr(C)]
 pub struct CutOffHashPos {
     pub(crate) hash: CutoffHash,
@@ -166,9 +166,15 @@ pub struct CutOffHashPos {
     padding: u32,
 }
 
+impl Debug for CutOffHashPos {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({:?}, {})", &self.hash, &self.before_time)
+    }
+}
+
 impl Display for CutOffHashPos {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CutOffHashPos({:?}, cutoff_time={}", &self.hash, &self.before_time)
+        write!(f, "({:?}, {})", &self.hash, &self.before_time)
     }
 }
 

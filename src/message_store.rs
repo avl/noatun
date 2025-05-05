@@ -569,13 +569,11 @@ impl<M> OnDiskMessageStore<M> {
             return Ok(());
         }
 
-
         Self::do_grow_file(map, file_capacity + extra)
     }
 
     #[cold]
     fn do_grow_file(map: &mut FileAccessor, base_capacity: usize) -> Result<()> {
-
         if base_capacity >= u32::MAX as usize {
             return Err(anyhow!("Database max-size reached (~2^32 entries)"));
         }
@@ -1194,10 +1192,6 @@ impl<M> OnDiskMessageStore<M> {
     /// deleted or does not exist.
     /// If the call itself fails, returns Err.
     /// Returns true if deleted.
-    // TODO: Consider if there's a risk of inefficiency when two severely desynced instances meet.
-    // They might have completely different messages, even before the cutoff time.
-    // When they start bringing each other up-to-date, their before-cutoff timestamp will change.
-    // Will this cause them to restart the sync-process? Make sure it doesn't.
     pub fn mark_deleted_by_index(
         &mut self,
         delete_index: SequenceNr,
@@ -2146,7 +2140,6 @@ impl<M> OnDiskMessageStore<M> {
             })
             .unwrap()
             .0;
-
 
         let this = Self {
             target: target.clone(),

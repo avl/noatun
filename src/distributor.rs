@@ -1,3 +1,5 @@
+use crate::colors::*;
+use crate::communication::{QueryableOutbuffer};
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
 use crate::{Application, Database, Message, MessageFrame, MessageHeader, MessageId, NoatunTime};
@@ -5,10 +7,13 @@ use anyhow::Result;
 use arrayvec::ArrayString;
 use indexmap::{IndexMap, IndexSet};
 use savefile_derive::Savefile;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
-use crate::communication::QueryableOutbuffer;
+
+pub const MAX_RECENT_SENT_MEMORY: usize = 100;
+
 // Principle
 // The node that is 'most ahead' (highest MessageId) has responsibility.
 // If knows all the heads of other node, just sends perfect updates.
@@ -68,13 +73,15 @@ pub struct MessageSubGraphNodeValue {
 #[derive(Debug, Savefile, Clone)]
 pub enum DistributorMessage {
     /// Report all update heads for the sender
-    ReportHeads(CutOffHashPos, Vec<MessageId>, /*sender name*/ArrayString<10>),
+    ReportHeads(
+        CutOffHashPos,
+        Vec<MessageId>,
+        /*sender name*/ ArrayString<40>,
+    ),
     /// A query to tell if the listed messages are known.
     /// If they are, they should be requested by SyncAllRequest.
-    /// The id of this query is the xor of all these message ids
     SyncAllQuery(Vec<MessageId>),
     /// The given messages should be sent.
-    /// CutoffHash is xor of all messages in query
     SyncAllRequest(Vec<MessageId>),
     /// Sent only when doing a full sync
     SyncAllAck(Vec<MessageId>),
@@ -100,6 +107,54 @@ impl DistributorMessage {
             _ => None,
         }
     }
+    pub fn debug_format<M: Message>(&self) -> Result<String> {
+        Ok(match self {
+            DistributorMessage::ReportHeads(cutoff, heads, sender) => {
+                format!(
+                    "{}: Node: {sender}, cutoff: {cutoff}, heads: {:?}",
+                    lightblue("ReportHeads"),
+                    heads
+                )
+            }
+            DistributorMessage::SyncAllQuery(messages) => {
+                format!("{}: Messages: {:?}", lightgreen("SyncAllQuery"), messages)
+            }
+            DistributorMessage::SyncAllRequest(messages) => {
+                format!("{}: Messages: {:?}", orange("SyncAllRequest"), messages)
+            }
+            DistributorMessage::SyncAllAck(messages) => {
+                format!("{}: Messages: {:?}", lightbluegreen("SyncAllAck"), messages)
+            }
+            DistributorMessage::RequestUpstream { query } => {
+                format!("{}: Query: {:?}", red("RequestUpstream"), query)
+            }
+            DistributorMessage::UpstreamResponse { messages } => {
+                format!(
+                    "{}: Messages: {:?}",
+                    lightbrown("UpstreamResponse"),
+                    messages
+                )
+            }
+            DistributorMessage::SendMessageAndAllDescendants { message_id } => {
+                format!(
+                    "{}: messages: {:?}",
+                    pink("SendMessageAndAllDescendants"),
+                    message_id
+                )
+            }
+            DistributorMessage::Message(msg, demand_ack) => {
+                let msg: MessageFrame<M> = msg.to_message_from_ref()?;
+                format!(
+                    "{}: id = {}, parents = {:?}, need_ack = {}, msg = {:?}",
+                    turqouise("Message"),
+                    msg.header.id,
+                    msg.header.parents,
+                    demand_ack,
+                    msg.payload
+                )
+            }
+        })
+    }
 }
 
 struct MergedDistributorMessages {
@@ -123,11 +178,22 @@ enum SyncAllState {
     ),
 }
 
+impl SyncAllState {
+    pub fn idle(&self) -> bool {
+        match self {
+            SyncAllState::NotActive => true,
+            SyncAllState::Starting
+            | SyncAllState::BeginQuery(_)
+            | SyncAllState::QueryActive(_, _, _) => false,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct DistributorStatus {
     nominal: bool,
-    most_recent_clockdrift: HashMap<ArrayString<10>, NoatunTime>,
-    most_recent_unsynced: HashMap<ArrayString<10>, NoatunTime>,
+    most_recent_clockdrift: HashMap<ArrayString<40>, NoatunTime>,
+    most_recent_unsynced: HashMap<ArrayString<40>, NoatunTime>,
     have_heard_peer: bool,
 }
 
@@ -138,7 +204,8 @@ pub struct Distributor {
     sync_all_inprogress: SyncAllState,
 
     distributor_state: DistributorStatus,
-    own_name: ArrayString<10>,
+    own_name: ArrayString<40>,
+    periodic_message_interval: Duration,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -150,7 +217,7 @@ pub enum Status {
     Synchronizing,
 }
 
-pub fn truncate_to_arraystring(name: &str) -> ArrayString<10> {
+pub fn truncate_to_arraystring(name: &str) -> ArrayString<40> {
     if name.len() <= 10 {
         return name.try_into().unwrap();
     }
@@ -162,8 +229,6 @@ pub fn truncate_to_arraystring(name: &str) -> ArrayString<10> {
     "?".try_into().unwrap()
 }
 
-
-
 impl QueryableOutbuffer {
     pub(crate) fn is_empty(&self) -> bool {
         self.outbuf.is_empty()
@@ -172,10 +237,13 @@ impl QueryableOutbuffer {
         let msg = self.outbuf.pop_front();
         if let Some(msg) = &msg {
             self.recent_sent.push_back(msg.clone());
+            if self.recent_sent.len() > MAX_RECENT_SENT_MEMORY {
+                self.recent_sent.pop_front();
+            }
         }
         msg
     }
-    pub(crate) fn push_back(&mut self, msg: DistributorMessage)  {
+    pub(crate) fn push_back(&mut self, msg: DistributorMessage) {
         self.outbuf.push_back(msg);
     }
 
@@ -183,26 +251,25 @@ impl QueryableOutbuffer {
         self.outbuf.extend(items);
     }
     pub(crate) fn has_request_for(&mut self, message: MessageId) -> bool {
-        self.outbuf.iter().chain(self.recent_sent.iter()).any(|x|
-            {
-                println!("has-request-for checking: {:?}", x);
-                if let DistributorMessage::RequestUpstream { query } = x {
-                    query.iter().any(|x| x.0 == message)
-                } else {
-                    false
-                }
+        self.outbuf.iter().chain(self.recent_sent.iter()).any(|x| {
+            println!("has-request-for checking: {x:?}");
+            if let DistributorMessage::RequestUpstream { query } = x {
+                query.iter().any(|x| x.0 == message)
+            } else {
+                false
             }
-        )
+        })
     }
 }
 
 impl Distributor {
     const BATCH_SIZE: usize = 20;
-    pub(crate) fn new(node_name: &str) -> Distributor {
+    pub(crate) fn new(node_name: &str, report_head_interval: Duration) -> Distributor {
         Self {
             sync_all_inprogress: SyncAllState::NotActive,
             distributor_state: DistributorStatus::default(),
             own_name: truncate_to_arraystring(node_name),
+            periodic_message_interval: report_head_interval,
         }
     }
 
@@ -236,7 +303,7 @@ impl Distributor {
         &mut self,
         database: &DatabaseSession<APP>,
     ) -> Result<Vec<DistributorMessage>> {
-        let mut heads =  database.get_update_heads().to_vec();
+        let mut heads = database.get_update_heads().to_vec();
         heads.sort();
         let mut temp = vec![DistributorMessage::ReportHeads(
             database.current_cutoff_state()?,
@@ -269,24 +336,34 @@ impl Distributor {
 
         Ok(temp)
     }
+
+    // Legacy, for some old tests
     pub(crate) fn receive_message2<APP: Application>(
         &mut self,
         database: &mut Database<APP>,
         input: impl Iterator<Item = DistributorMessage>,
     ) -> Result<Vec<DistributorMessage>> {
-        let mut buf = QueryableOutbuffer    ::default();
-        self.receive_message(database, input, &mut buf)?;
+        let mut buf = QueryableOutbuffer {
+            outbuf: Default::default(),
+            recent_sent: Default::default(),
+            request_upstream_message_inhibit: Default::default(),
+            request_upstream_message_inhibit_counter: 0,
+            periodic_message_interval: self.periodic_message_interval,
+        };
+        self.receive_message(
+            database,
+            input.map(|x| ("src".try_into().unwrap(), x)),
+            &mut buf,
+        )?;
         Ok(buf.outbuf.into_iter().collect())
     }
 
     pub(crate) fn receive_message<APP: Application>(
         &mut self,
         database: &mut Database<APP>,
-        input: impl Iterator<Item = DistributorMessage>,
-        outbuf: &mut QueryableOutbuffer
+        input: impl Iterator<Item = (ArrayString<40>, DistributorMessage)>,
+        outbuf: &mut QueryableOutbuffer,
     ) -> Result<()> {
-
-
         let mut database = database.begin_session_mut()?;
         let mut accumulated_heads: IndexSet<MessageId> = IndexSet::new();
         let mut accumulated_upstream_queries = IndexMap::new();
@@ -295,7 +372,7 @@ impl Distributor {
         let mut accumulated_serialized = vec![];
         let mut accumulated_sync_all_queries = IndexSet::new();
         let mut accumulated_sync_all_requests = IndexSet::new();
-        for item in input {
+        for (_src, item) in input {
             self.distributor_state.have_heard_peer = true;
             match item {
                 DistributorMessage::SyncAllQuery(query) => {
@@ -306,10 +383,12 @@ impl Distributor {
                 }
 
                 DistributorMessage::ReportHeads(cutoff_hash, heads, src) => {
-                    accumulated_heads.extend(heads);
                     for pass in 0..2 {
                         match database.is_acceptable_cutoff_hash(cutoff_hash)? {
                             Acceptability::Nominal => {
+                                if self.sync_all_inprogress.idle() {
+                                    accumulated_heads.extend(heads);
+                                }
                                 info!("Acceptability: Nominal");
                                 self.distributor_state.most_recent_unsynced.remove(&src);
                                 self.distributor_state.most_recent_clockdrift.remove(&src);
@@ -320,7 +399,9 @@ impl Distributor {
                                 self.distributor_state
                                     .most_recent_unsynced
                                     .insert(src, database.noatun_now());
-                                self.sync_all_inprogress = SyncAllState::Starting;
+                                if self.sync_all_inprogress.idle() {
+                                    self.sync_all_inprogress = SyncAllState::Starting;
+                                }
                                 break;
                             }
                             Acceptability::Undecided(advance) => {
@@ -338,6 +419,9 @@ impl Distributor {
                                 }
                             }
                             Acceptability::UnacceptablePeerClockDrift => {
+                                if self.sync_all_inprogress.idle() {
+                                    accumulated_heads.extend(heads);
+                                }
                                 info!("Acceptability: Clockdrift");
                                 self.distributor_state
                                     .most_recent_clockdrift
@@ -387,8 +471,6 @@ impl Distributor {
             }
         }
 
-
-
         self.process_reported_heads(&mut database, accumulated_heads, outbuf)?;
 
         accumulated_upstream_queries.sort_keys();
@@ -398,11 +480,11 @@ impl Distributor {
         self.process_send_message_all_descendants(
             &mut database,
             accumulated_send_msg_and_descendants,
-            outbuf
+            outbuf,
         )?;
         self.process_received_messages(&mut database, accumulated_serialized, outbuf)?;
         self.process_sync_all_queries(&mut database, accumulated_sync_all_queries, outbuf)?;
-        self.process_sync_all_requests(&mut database, accumulated_sync_all_requests,outbuf)?;
+        self.process_sync_all_requests(&mut database, accumulated_sync_all_requests, outbuf)?;
         Ok(())
     }
 
@@ -410,7 +492,7 @@ impl Distributor {
         &self,
         database: &mut DatabaseSessionMut<APP>,
         accumulated_sync_all_queries: IndexSet<MessageId>,
-        output: &mut QueryableOutbuffer
+        output: &mut QueryableOutbuffer,
     ) -> Result<()> {
         let mut request = vec![];
         let mut acks = vec![];
@@ -434,7 +516,7 @@ impl Distributor {
         &self,
         database: &mut DatabaseSessionMut<APP>,
         accumulated_sync_all_requests: IndexSet<MessageId>,
-        output: &mut QueryableOutbuffer
+        output: &mut QueryableOutbuffer,
     ) -> Result<()> {
         for request in accumulated_sync_all_requests {
             match database.load_message(request) {
@@ -459,10 +541,9 @@ impl Distributor {
         &mut self,
         database: &mut DatabaseSessionMut<APP>,
         accumulated_heads: IndexSet<MessageId>,
-        existing_outbuf: &mut QueryableOutbuffer
+        existing_outbuf: &mut QueryableOutbuffer,
     ) -> Result<()> {
         let mut messages_to_request = vec![];
-        println!("Start loop");
         for message in accumulated_heads {
             if database.contains_message(message)? {
                 continue;
@@ -470,18 +551,19 @@ impl Distributor {
             if existing_outbuf.has_request_for(message) {
                 continue;
             }
-            if messages_to_request.iter().any(|x:&(MessageId, usize)|x.0 == message) {
+            if messages_to_request
+                .iter()
+                .any(|x: &(MessageId, usize)| x.0 == message)
+            {
                 continue;
             }
-            println!("REQUEST_UPSTREAM inner (from within process__reporteD_heads");
+            //println!("REQUEST_UPSTREAM inner (from within process__reporteD_heads");
             messages_to_request.push((message, 4));
         }
         if !messages_to_request.is_empty() {
-            println!("REQUEST_UPSTREAM (from within process__reporteD_heads");
+            //println!("REQUEST_UPSTREAM (from within process__reporteD_heads");
 
-            existing_outbuf.push_back(DistributorMessage::RequestUpstream {
-                query: messages_to_request,
-            });
+            existing_outbuf.request_upstream(messages_to_request.into_iter());
             self.distributor_state.nominal = false;
         } else {
             self.distributor_state.nominal = true;
@@ -492,7 +574,7 @@ impl Distributor {
         &self,
         database: &mut DatabaseSessionMut<APP>,
         accumulated_heads: IndexMap<MessageId, usize>,
-        output: &mut QueryableOutbuffer
+        output: &mut QueryableOutbuffer,
     ) -> Result<()> {
         let messages: Vec<MessageSubGraphNode> = database
             .get_upstream_of(accumulated_heads.into_iter())?
@@ -511,7 +593,7 @@ impl Distributor {
         &self,
         database: &mut DatabaseSessionMut<APP>,
         upstream_response: IndexMap<MessageId, /*parents*/ MessageSubGraphNodeValue>,
-        queryable_outbuffer: &mut QueryableOutbuffer
+        queryable_outbuffer: &mut QueryableOutbuffer,
     ) -> Result<()> {
         let mut unknowns: HashSet<(MessageId, usize)> = HashSet::new();
         let mut send_cmds = vec![];
@@ -550,10 +632,8 @@ impl Distributor {
                     msg_value
                         .parents
                         .iter()
-                        .filter(|x|{
-                            !queryable_outbuffer.has_request_for(**x)
-                        })
-                        .map(|x| (*x, msg_value.query_count)),
+                        .filter(|x| !queryable_outbuffer.has_request_for(**x))
+                        .map(|x| (*x, (2 * msg_value.query_count).min(256))),
                 );
             }
         }
@@ -563,10 +643,8 @@ impl Distributor {
             });
         }
         if unknowns.is_empty() == false {
-            println!("REQUEST_UPSTREAM (from within process_upstream_response");
-            queryable_outbuffer.push_back(DistributorMessage::RequestUpstream {
-                query: unknowns.into_iter().collect(),
-            });
+            //println!("REQUEST_UPSTREAM (from within process_upstream_response");
+            queryable_outbuffer.request_upstream(unknowns.into_iter())
         }
 
         Ok(())
@@ -575,7 +653,7 @@ impl Distributor {
         &self,
         database: &mut DatabaseSessionMut<APP>,
         mut message_list: IndexSet<MessageId>,
-        output: &mut QueryableOutbuffer
+        output: &mut QueryableOutbuffer,
     ) -> Result<()> {
         while let Some(msg) = message_list.pop() {
             let msg = match database.load_message(msg) {
@@ -615,7 +693,7 @@ impl Distributor {
         &self,
         database: &mut DatabaseSessionMut<APP>,
         mut message_list: Vec<(SerializedMessage, /*need ack*/ bool)>,
-        output: &mut QueryableOutbuffer
+        output: &mut QueryableOutbuffer,
     ) -> Result<()> {
         database.maybe_advance_cutoff()?;
 

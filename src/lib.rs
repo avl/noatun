@@ -39,10 +39,28 @@ use std::pin::Pin;
 use std::ptr::null_mut;
 use std::slice;
 use std::time::Duration;
+use crate::private::Sealed;
+use crate::undo_store::magic_initialize_ptr;
+pub use paste::paste;
+use tracing::warn;
+
+
 mod disk_abstraction;
 mod message_store;
 mod projection_store;
 mod undo_store;
+#[cfg(feature = "debug")]
+mod term_colors;
+#[cfg(not(feature = "debug"))]
+mod dummy_term_colors;
+
+#[cfg(not(feature = "debug"))]
+use dummy_term_colors as colors;
+
+#[cfg(feature = "debug")]
+use term_colors as colors;
+#[allow(unused)]
+use crate::colors::colored_int;
 
 pub mod prelude {}
 #[cfg(feature = "tokio")]
@@ -318,6 +336,19 @@ impl Display for MessageId {
         let time = chrono::DateTime::from_timestamp_millis(time_ms.as_ms() as i64).unwrap();
 
         let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
+        {
+            #[cfg(feature = "debug")]
+            write!(
+                f,
+                "{:?}-{}-{:x}-{:x}",
+                time_str,
+                colored_int((self.data[1] & 0xffff0000) >> 16),
+                self.data[2],
+                self.data[3]
+            )
+        }
+
+        #[cfg(not(feature = "debug"))]
         write!(
             f,
             "{:?}-{:x}-{:x}-{:x}",
@@ -1350,10 +1381,7 @@ impl Drop for ContextGuardMut {
     }
 }
 
-use crate::private::Sealed;
-use crate::undo_store::magic_initialize_ptr;
-pub use paste::paste;
-use tracing::warn;
+
 
 noatun_object!(
         struct Kalle {

@@ -3,14 +3,6 @@ use crate::Target;
 use anyhow::{bail, Result};
 use std::alloc::Layout;
 use std::slice;
-/* TODO:
-
-4: Add more tests, hammer it with chaos!
- a) More synch-tests!
- b) Recovery-test! Panic in middle of access (maybe add support for injecting panics in tests)
-
-7: Can we do something to the chain-of-dependent updates problem? Main snapshots?
-*/
 
 /// Use to abstract away the concrete mmap and disk io implementations.
 /// This can be used to easily change implementations of these, but more
@@ -24,7 +16,7 @@ pub(crate) trait Disk {
         file: &str,
         min_size: usize,
         max_size: usize,
-    ) -> Result<(FileAccessor, bool/*file existed*/)>;
+    ) -> Result<(FileAccessor, bool /*file existed*/)>;
 }
 /*pub trait DiskFile: Seek + Write + Read {
     fn set_len(&mut self, len: u64) -> Result<()>;

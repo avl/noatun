@@ -1,9 +1,11 @@
 use crate::distributor::{Distributor, DistributorMessage, SerializedMessage, Status};
 
+use crate::colors::{rgb};
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 use crate::communication::udp::TokioUdpDriver;
-use crate::{Application, Database, MessageFrame, MessageId, NoatunTime};
+use crate::{Application, Database, MessageId, NoatunTime};
 use anyhow::{anyhow, bail, Result};
+use arrayvec::ArrayString;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
 use indexmap::{IndexMap, IndexSet};
@@ -12,14 +14,14 @@ use savefile::{
     Serialize, Serializer, WithSchema, WithSchemaContext,
 };
 use savefile_derive::Savefile;
-use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::{io, thread};
-use arrayvec::ArrayString;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
@@ -172,6 +174,20 @@ struct ReceiveTrack {
     sorted_packets: VecDeque<SortableTransmittedEntity>,
     retransmit_interval: Duration,
 }
+
+fn to_arraystring<T: Display>(t: T) -> ArrayString<40> {
+    use std::fmt::Write;
+    let mut x = ArrayString::<40>::new();
+    #[cfg(debug_assertions)]
+    {
+        let mut s = String::new();
+        write!(&mut s, "{t}").unwrap();
+        assert!(s.len() <= 40, "address {} (len={}) was too long", s, s.len());
+    }
+    write!(&mut x, "{t}").unwrap();
+    x
+}
+
 impl ReceiveTrack {
     /// How long are packets kept in the retransmit window.
     /// I.e, after this has passed, they're lost forever.
@@ -208,11 +224,11 @@ impl ReceiveTrack {
         expected_next + short_delta as u64
     }
 
-    async fn process<Endpoint: Hash + Eq + Debug>(
+    async fn process<Endpoint: Hash + Eq + Debug + Copy + Display>(
         &mut self,
         packet: TransmittedEntitySortable,
         packet_source: Endpoint,
-        tx_finished_received_frame: &mut Sender<Vec<u8>>,
+        tx_finished_received_frame: &mut Sender<(ArrayString<40>, Vec<u8>)>,
         retransmit_requests: &mut IndexMap<Endpoint, RetransmitInfo>,
         push: bool,
     ) -> Result<()> {
@@ -287,7 +303,10 @@ impl ReceiveTrack {
                     .extend(&first.entity.data[0..first.entity.first_boundary as usize]);
                 if !self.accum.is_empty() {
                     tx_finished_received_frame
-                        .try_send(self.accum.iter().copied().collect())
+                        .try_send((
+                            to_arraystring(packet_source),
+                            self.accum.iter().copied().collect(),
+                        ))
                         .unwrap();
                     self.accum.clear();
                 }
@@ -304,7 +323,9 @@ impl ReceiveTrack {
                     let mut temp = vec![0; next_size];
                     reader.read_exact(&mut temp)?;
                     if !temp.is_empty() {
-                        tx_finished_received_frame.try_send(temp).unwrap();
+                        tx_finished_received_frame
+                            .try_send((to_arraystring(packet_source), temp))
+                            .unwrap();
                     }
 
                     cur_boundary += next_size;
@@ -344,7 +365,7 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     /// Sent to net
     message_rx: Receiver<Vec<u8>>,
     /// Received from net
-    message_tx: Sender<Vec<u8>>,
+    message_tx: Sender<(ArrayString<40> /*src*/, Vec<u8>)>,
     last_send: Instant,
     last_send_size: usize,
     recvbuf: Vec<u8>,
@@ -401,7 +422,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         driver: &mut Socket,
         bind_address: &str,
         multicast_group: &str,
-        message_tx: Sender<Vec<u8>>,
+        message_tx: Sender<(ArrayString<40>, Vec<u8>)>,
         message_rx: Receiver<Vec<u8>>,
         bandwidth_bytes_per_second: u64,
         quit_rx: tokio::sync::oneshot::Receiver<()>,
@@ -677,14 +698,31 @@ pub struct DebugEvent {
 }
 
 pub enum DebugEventMsg {
-    Send(String/*msg*/)
+    Send(String /*msg*/),
+    Receive(String /*msg*/),
+}
+
+impl DebugEvent {
+    pub fn is_send_of(&self, receive: &DebugEvent) -> bool {
+        match (&self.msg, &receive.msg) {
+            (DebugEventMsg::Send(s), DebugEventMsg::Receive(r)) => {
+                s == r
+            }
+            (_s, _r) => {
+                false
+            }
+        }
+    }
 }
 
 impl Debug for DebugEventMsg {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             DebugEventMsg::Send(s) => {
-                write!(f, "Send({})", s)
+                write!(f, "{}({})", rgb("Send", 100, 225, 255), s)
+            }
+            DebugEventMsg::Receive(s) => {
+                write!(f, "{}({})", rgb("Receive", 255, 200, 100), s)
             }
         }
     }
@@ -698,19 +736,65 @@ enum Cmd<APP: Application> {
     ),
     Quit(oneshot::Sender<()>),
     GetStatus(oneshot::Sender<Status>),
-    InstallDebugEventLogger(Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>, oneshot::Sender<()>),
+    InstallDebugEventLogger(
+        Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>,
+        oneshot::Sender<()>,
+    ),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct QueryableOutbuffer {
     pub(crate) outbuf: VecDeque<DistributorMessage>,
-    compile_error!("Only keep for a specific time. ");
     pub(crate) recent_sent: VecDeque<DistributorMessage>,
+    pub(crate) request_upstream_message_inhibit: HashMap<MessageId, Instant>,
+    pub(crate) request_upstream_message_inhibit_counter: usize,
+    pub(crate) periodic_message_interval: Duration,
 }
 
 impl QueryableOutbuffer {
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.outbuf.len()
+    }
+
+    pub(crate) fn request_upstream(
+        &mut self,
+        messages_to_request: impl Iterator<Item = (MessageId, usize)>,
+    ) {
+        let now = Instant::now();
+
+        self.request_upstream_message_inhibit_counter += 1;
+        let query: Vec<_> = messages_to_request
+            .filter(
+                |msg| match self.request_upstream_message_inhibit.entry(msg.0) {
+                    Entry::Occupied(mut x) => {
+                        if x.get().elapsed() > 2 * self.periodic_message_interval {
+                            println!("Reusing {} bec el: {:?}", msg.0, x.get().elapsed());
+                            x.insert(now);
+                            true
+                        } else {
+                            println!("blocked!");
+                            false
+                        }
+                    }
+                    Entry::Vacant(x) => {
+                        println!("Inserting {}", msg.0);
+                        x.insert(now);
+                        true
+                    }
+                },
+            )
+            .collect();
+        if self.request_upstream_message_inhibit_counter > 10000
+            && self.request_upstream_message_inhibit.len() > 1000
+        {
+            self.request_upstream_message_inhibit
+                .retain(|_x, v| v.elapsed() < 2 * self.periodic_message_interval);
+            self.request_upstream_message_inhibit_counter = 0;
+        }
+        if !query.is_empty() {
+            self.outbuf
+                .push_back(DistributorMessage::RequestUpstream { query });
+        }
     }
 }
 
@@ -723,19 +807,20 @@ where
     /// Join handle for MulticastSenderLoop
     jh: tokio::task::JoinHandle<Result<()>>,
     sender_tx: Sender<Vec<u8>>,
-    receiver_rx: Receiver<Vec<u8>>,
+    receiver_rx: Receiver<(ArrayString<40>, Vec<u8>)>,
     distributor: Distributor,
     cmd_rx: Receiver<Cmd<APP>>,
 
     /// When the first item was put into the buffer
     buffer_life_start: Instant,
     next_periodic: tokio::time::Instant,
-    buffered_incoming_messages: Vec<DistributorMessage>,
+    buffered_incoming_messages: Vec<(ArrayString<40> /*src*/, DistributorMessage)>,
     outbuf: QueryableOutbuffer,
     nextsend: Vec<u8>,
     nextsend_id: Option<MessageId>,
     node: String, //Address as string
     debug_event_logger: Option<Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>>,
+    report_head_interval: Duration,
 }
 
 impl<APP: Application + Send> Drop for DatabaseCommunicationLoop<APP>
@@ -755,7 +840,10 @@ pub struct DatabaseCommunicationConfig {
     pub bandwidth_limit_bytes_per_second: u64,
     pub retransmit_interval_seconds: f32,
     pub retransmit_buffer_size_bytes: usize,
+    pub debug_logger: Option<Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>>,
+    pub periodic_message_interval: Duration,
 }
+const REPORT_HEAD_INTERVAL_DEFAULT: Duration = Duration::from_secs(5);
 
 impl Default for DatabaseCommunicationConfig {
     fn default() -> Self {
@@ -766,6 +854,8 @@ impl Default for DatabaseCommunicationConfig {
             bandwidth_limit_bytes_per_second: 1000,
             retransmit_interval_seconds: 1.0,
             retransmit_buffer_size_bytes: 10000000,
+            debug_logger: None,
+            periodic_message_interval: REPORT_HEAD_INTERVAL_DEFAULT,
         }
     }
 }
@@ -776,58 +866,42 @@ where
 
     <APP as Application>::Message: Send,
 {
-    const PERIODIC_MSG_INTERVAL: Duration = Duration::from_secs(5);
-
-    fn process_packet(&mut self, packet: Vec<u8>) -> Result<()> {
+    fn process_packet(&mut self, src: ArrayString<40>, packet: Vec<u8>) -> Result<()> {
         let msg: DistributorMessage = Deserializer::bare_deserialize(&mut Cursor::new(&packet), 0)?;
         trace!("Received DistrMsg {:?}", msg);
-        self.buffered_incoming_messages.push(msg);
+        self.buffered_incoming_messages.push((src, msg));
         Ok(())
     }
     fn process_messages(&mut self) -> Result<()> {
+        if self.buffered_incoming_messages.is_empty() {
+            return Ok(());
+        }
         let mut database = self.database.lock().unwrap();
-        self
-            .distributor
-            .receive_message(&mut *database, self.buffered_incoming_messages.drain(..), &mut self.outbuf)?;
+        if let Some(dbg) = &mut self.debug_event_logger {
+            for msg in self.buffered_incoming_messages.iter() {
+                dbg(DebugEvent {
+                    node: ArrayString::from(&self.node).unwrap_or_else(|_| Default::default()),
+                    time: Instant::now(),
+                    msg: DebugEventMsg::Receive(msg.1.debug_format::<APP::Message>()?),
+                });
+            }
+        }
+        self.outbuf.recent_sent.clear();
+        self.distributor.receive_message(
+            &mut *database,
+            self.buffered_incoming_messages.drain(..),
+            &mut self.outbuf,
+        )?;
         drop(database);
         Ok(())
     }
 
     fn debug_record(&mut self, msg: &DistributorMessage) -> Result<()> {
         if let Some(dbg) = &mut self.debug_event_logger {
-
-            let msg = match msg {
-                DistributorMessage::ReportHeads(cutoff, heads, sender) => {
-                    format!("ReportHeads: Node: {sender}, cutoff: {cutoff}, heads: {:?}", heads)
-                }
-                DistributorMessage::SyncAllQuery(messages) => {
-                    format!("SyncAllQuery: Messages: {:?}", messages)
-                }
-                DistributorMessage::SyncAllRequest(messages) => {
-                    format!("SyncAllRequest: Messages: {:?}", messages)
-                }
-                DistributorMessage::SyncAllAck(messages) => {
-                    format!("SyncAllAck: Messages: {:?}", messages)
-                }
-                DistributorMessage::RequestUpstream { query } => {
-                    format!("RequestUpstream: Query: {:?}", query)
-                }
-                DistributorMessage::UpstreamResponse { messages } => {
-                    format!("UpstreamResponse: Messages: {:?}", messages)
-                }
-                DistributorMessage::SendMessageAndAllDescendants { message_id } => {
-                    format!("SendMessageAndAllDescendants: messages: {:?}", message_id)
-                }
-                DistributorMessage::Message(msg, demand_ack) => {
-                    let msg: MessageFrame<APP::Message> = msg.to_message_from_ref()?;
-                    format!("Message: id = {}, parents = {:?}, need_ack = {}, msg = {:?}", msg.header.id, msg.header.parents, demand_ack, msg.payload)
-                }
-            };
-
             dbg(DebugEvent {
-                node: ArrayString::from(&self.node).unwrap_or_else(|_|Default::default()),
+                node: ArrayString::from(&self.node).unwrap_or_else(|_| Default::default()),
                 time: Instant::now(),
-                msg: DebugEventMsg::Send(msg),
+                msg: DebugEventMsg::Send(msg.debug_format::<APP::Message>()?),
             });
         }
         Ok(())
@@ -915,7 +989,7 @@ where
                     let msgs = self.distributor.get_periodic_message(&session)?;
                     info!("Time for periodic messages: {:?}", msgs);
                     self.outbuf.extend(msgs);
-                    self.next_periodic += Self::PERIODIC_MSG_INTERVAL;
+                    self.next_periodic += self.report_head_interval;
                 }
                 cmd = self.cmd_rx.recv() => {
                     let Some(cmd) = cmd else {
@@ -966,7 +1040,7 @@ where
                     let Some(recv_pkt) = recv_pkt else {
                         bail!("sender loop quit");
                     };
-                    self.process_packet(recv_pkt)?;
+                    self.process_packet(recv_pkt.0, recv_pkt.1)?;
                 }
 
             );
@@ -1003,11 +1077,15 @@ where
 
     /// Install a callback that will receive events describing the operation of the
     /// communication. This is only meant for debugging/logging.
-    pub async fn install_debug_logger(&self, f: impl FnMut(DebugEvent)+'static+Send+Sync) -> Result<()> {
+    pub async fn install_debug_logger(
+        &self,
+        f: impl FnMut(DebugEvent) + 'static + Send + Sync,
+    ) -> Result<()> {
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
-        let status = self.cmd_tx.send(Cmd::InstallDebugEventLogger(
-            Box::new(f),
-            oneshot_tx)).await;
+        let status = self
+            .cmd_tx
+            .send(Cmd::InstallDebugEventLogger(Box::new(f), oneshot_tx))
+            .await;
         match status {
             Ok(()) => {
                 oneshot_rx.await?;
@@ -1170,7 +1248,7 @@ where
         let database = Arc::new(Mutex::new(database));
 
         let main = DatabaseCommunicationLoop {
-            distributor: Distributor::new(&node),
+            distributor: Distributor::new(&node, config.periodic_message_interval),
             node: node.clone(),
             database: database.clone(),
             jh,
@@ -1180,10 +1258,17 @@ where
             buffer_life_start: Instant::now(),
             next_periodic: tokio::time::Instant::now(),
             buffered_incoming_messages: vec![],
-            outbuf: Default::default(),
+            outbuf: QueryableOutbuffer {
+                outbuf: Default::default(),
+                recent_sent: Default::default(),
+                request_upstream_message_inhibit: Default::default(),
+                request_upstream_message_inhibit_counter: 0,
+                periodic_message_interval: config.periodic_message_interval,
+            },
             nextsend: vec![],
             nextsend_id: None,
-            debug_event_logger: None,
+            debug_event_logger: config.debug_logger,
+            report_head_interval: config.periodic_message_interval,
         };
 
         spawn(main.run(quit_tx));
@@ -1310,7 +1395,7 @@ mod tests {
         ] {
             sender_tx1.send(packet.clone()).await.unwrap();
 
-            let got = receiver_rx2.recv().await.unwrap();
+            let (_src, got) = receiver_rx2.recv().await.unwrap();
             assert_eq!(got, packet);
         }
         drop(sender_tx1);
@@ -1366,7 +1451,7 @@ mod tests {
         for packet in [vec![1u8; 1], vec![2u8; 10]] {
             sender_tx1.send(packet.clone()).await.unwrap();
 
-            let got = receiver_rx2.recv().await.unwrap();
+            let (_src, got) = receiver_rx2.recv().await.unwrap();
             assert_eq!(got, packet);
         }
         drop(sender_tx1);

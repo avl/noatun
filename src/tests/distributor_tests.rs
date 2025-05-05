@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use crate::communication::QueryableOutbuffer;
 use crate::cutoff::CutOffDuration;
 use crate::database::DatabaseSettings;
 use crate::distributor::{Distributor, DistributorMessage};
@@ -7,7 +7,7 @@ use crate::{Database, MessageId, NoatunTime};
 use datetime_literal::datetime;
 use std::iter::once;
 use std::mem::swap;
-use crate::communication::QueryableOutbuffer;
+use std::time::Duration;
 
 fn create_app<'a>(
     msgs: impl IntoIterator<
@@ -65,7 +65,12 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
     let mut dbs: Vec<(Distributor, Database<_>)> = dbs
         .into_iter()
         .enumerate()
-        .map(|(index, x)| (Distributor::new(&index.to_string()), x))
+        .map(|(index, x)| {
+            (
+                Distributor::new(&index.to_string(), Duration::from_secs(5)),
+                x,
+            )
+        })
         .collect();
     let mut ether = vec![];
     for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
@@ -81,15 +86,22 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
     let mut next_ether = vec![];
     loop {
         for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
-            let mut sent = QueryableOutbuffer::default();
-                distr
+            let mut sent = QueryableOutbuffer {
+                outbuf: Default::default(),
+                recent_sent: Default::default(),
+                request_upstream_message_inhibit: Default::default(),
+                request_upstream_message_inhibit_counter: 0,
+                periodic_message_interval: Duration::from_secs(5),
+            };
+
+            distr
                 .receive_message(
                     db,
                     ether
                         .iter()
                         .filter(|(x_src_id, _msg)| *x_src_id != db_id)
-                        .map(|(_src, x)| x.clone()),
-                    &mut sent
+                        .map(|(_src, x)| ("src".try_into().unwrap(), x.clone())),
+                    &mut sent,
                 )
                 .unwrap();
             report.num_messages += sent.len();
@@ -191,8 +203,8 @@ fn test_distributor() {
     let mut app1 = create_app([(datetime!(2021-01-01 Z), [].as_slice(), 1, 0, true)]);
     let mut app2 = create_app([(datetime!(2021-01-02 Z), [].as_slice(), 1, 0, true)]);
 
-    let mut dist1 = crate::distributor::Distributor::new("1");
-    let mut dist2 = crate::distributor::Distributor::new("2");
+    let mut dist1 = crate::distributor::Distributor::new("1", Duration::from_secs(5));
+    let mut dist2 = crate::distributor::Distributor::new("2", Duration::from_secs(5));
 
     let sess1 = app1.begin_session().unwrap();
     let mut msg1 = dist1.get_periodic_message(&sess1).unwrap();

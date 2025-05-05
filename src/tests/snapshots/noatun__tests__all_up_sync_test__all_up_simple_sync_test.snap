@@ -1,0 +1,16 @@
+---
+source: src/tests/all_up_sync_test.rs
+expression: driver.messages_snapshot()
+---
+     0ns: #0:    10ms Send(ReportHeads: Node: 0, cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [])
+     0ns: #0:    63ms Send(Message: id = "*00:00.000Z"-0-0-0, parents = [], need_ack = false, msg = SyncMessage { value: 1, reset: false, persist: false })
+     0ns: #1:    10ms Send(ReportHeads: Node: 1, cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [])
+     0ns: #1:    63ms Send(Message: id = "*00:00.000Z"-1-0-0, parents = [], need_ack = false, msg = SyncMessage { value: 2, reset: false, persist: false })
+    10ms: #0:         Receive(ReportHeads: Node: 1, cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [])
+    10ms: #1:         Receive(ReportHeads: Node: 0, cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: [])
+    63ms: #1:         Receive(Message: id = "*00:00.000Z"-0-0-0, parents = [], need_ack = false, msg = SyncMessage { value: 1, reset: false, persist: false })
+    63ms: #0:         Receive(Message: id = "*00:00.000Z"-1-0-0, parents = [], need_ack = false, msg = SyncMessage { value: 2, reset: false, persist: false })
+      5s: #1:     0ns Send(ReportHeads: Node: 1, cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: ["*00:00.000Z"-0-0-0, "*00:00.000Z"-1-0-0])
+      5s: #0:     0ns Send(ReportHeads: Node: 0, cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: ["*00:00.000Z"-0-0-0, "*00:00.000Z"-1-0-0])
+      5s: #0:         Receive(ReportHeads: Node: 1, cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: ["*00:00.000Z"-0-0-0, "*00:00.000Z"-1-0-0])
+      5s: #1:         Receive(ReportHeads: Node: 0, cutoff: (0:0-0-0-0, 2019-12-31T23:44:00.000Z), heads: ["*00:00.000Z"-0-0-0, "*00:00.000Z"-1-0-0])
