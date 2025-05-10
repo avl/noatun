@@ -3,6 +3,9 @@ use colored::{ColoredString, Colorize};
 pub fn lightblue(s: &str) -> ColoredString {
     s.truecolor(158, 190, 255)
 }
+pub fn lightgray(s: &str) -> ColoredString {
+    s.truecolor(140, 140, 160)
+}
 pub fn lightgreen(s: &str) -> ColoredString {
     s.bright_green()
 }
@@ -28,7 +31,7 @@ pub fn rgb(s: &str, r: u8, g: u8, b: u8) -> ColoredString {
     s.truecolor(r, g, b)
 }
 
-pub fn colored_int(i: u32) -> ColoredString {
+fn colored_int_impl(i: u32, hex: bool) -> ColoredString {
     let p = (i * 181 + 203) % (128 * 3);
     let r;
     let g;
@@ -48,5 +51,15 @@ pub fn colored_int(i: u32) -> ColoredString {
         g = 255 - p;
         b = 128 + p;
     }
-    i.to_string().truecolor(r as u8, g as u8, b as u8)
+    if hex {
+        format!("{i:x}")
+    } else {
+        i.to_string()
+    }.truecolor(r as u8, g as u8, b as u8)
+}
+pub fn colored_hex_int(i: u32) -> ColoredString {
+    colored_int_impl(i, true)
+}
+pub fn colored_int(i: u32) -> ColoredString {
+    colored_int_impl(i, false)
 }

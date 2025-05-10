@@ -1,4 +1,4 @@
-use crate::distributor::{Distributor, DistributorMessage, SerializedMessage, Status};
+use crate::distributor::{Address, Distributor, DistributorMessage, EphemeralNodeId, SerializedMessage, Status};
 
 use crate::colors::{rgb};
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
@@ -14,7 +14,7 @@ use savefile::{
     Serialize, Serializer, WithSchema, WithSchemaContext,
 };
 use savefile_derive::Savefile;
-use std::collections::hash_map::Entry;
+
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
@@ -22,6 +22,8 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::{io, thread};
+use indexmap::map::Entry;
+use sha2::digest::crypto_common::InnerInit;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
@@ -52,6 +54,27 @@ const APPROX_HEADER_SIZE: usize = IP_HEADER_SIZE
 pub trait CommunicationDriver: Sync + Send {
     type Receiver: CommunicationReceiveSocket<Self::Endpoint> + Send + Sync;
     type Sender: CommunicationSendSocket<Self::Endpoint> + Send + Sync;
+
+    /// This is the address type used by this driver.
+    ///
+    /// Apart from the trait bounds, there are few requirements on these addresses.
+    /// There are no hard requirements, but performance will be better if the following
+    /// is fulfilled:
+    ///  * No two neighboring nodes should appear to have the same address
+    ///  * In particular, no node on the network should appear to have our address.
+    ///  * If loopback occurs (we see the packets we ourselves end), the source address
+    ///    should always be `Self::own_address`.
+    ///
+    /// However, there are some things which are explicitly not required:
+    ///  * Remote nodes can be behind NAT. This means that there's no requirement that
+    ///    the addresses we see are the same addresses seen by other nodes. However,
+    ///    performance may be better if all nodes see the same source addresses for all
+    ///    packets.
+    ///  * Specifically, remote nodes may not perceive us as having the address
+    ///    Self::own_address
+    ///  * Addresses don't have to be globally unique. It's completely okay for two
+    ///    nodes to have the same address. However, if they are within communication
+    ///    distance of each other, sharing the same address can lead to decreased performance.
     type Endpoint: Eq
         + Debug
         + Hash
@@ -175,18 +198,6 @@ struct ReceiveTrack {
     retransmit_interval: Duration,
 }
 
-fn to_arraystring<T: Display>(t: T) -> ArrayString<40> {
-    use std::fmt::Write;
-    let mut x = ArrayString::<40>::new();
-    #[cfg(debug_assertions)]
-    {
-        let mut s = String::new();
-        write!(&mut s, "{t}").unwrap();
-        assert!(s.len() <= 40, "address {} (len={}) was too long", s, s.len());
-    }
-    write!(&mut x, "{t}").unwrap();
-    x
-}
 
 impl ReceiveTrack {
     /// How long are packets kept in the retransmit window.
@@ -228,7 +239,7 @@ impl ReceiveTrack {
         &mut self,
         packet: TransmittedEntitySortable,
         packet_source: Endpoint,
-        tx_finished_received_frame: &mut Sender<(ArrayString<40>, Vec<u8>)>,
+        tx_finished_received_frame: &mut Sender<(Address, Vec<u8>)>,
         retransmit_requests: &mut IndexMap<Endpoint, RetransmitInfo>,
         push: bool,
     ) -> Result<()> {
@@ -304,7 +315,7 @@ impl ReceiveTrack {
                 if !self.accum.is_empty() {
                     tx_finished_received_frame
                         .try_send((
-                            to_arraystring(packet_source),
+                            Address::from(packet_source),
                             self.accum.iter().copied().collect(),
                         ))
                         .unwrap();
@@ -324,7 +335,7 @@ impl ReceiveTrack {
                     reader.read_exact(&mut temp)?;
                     if !temp.is_empty() {
                         tx_finished_received_frame
-                            .try_send((to_arraystring(packet_source), temp))
+                            .try_send((Address::from(packet_source), temp))
                             .unwrap();
                     }
 
@@ -365,7 +376,7 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     /// Sent to net
     message_rx: Receiver<Vec<u8>>,
     /// Received from net
-    message_tx: Sender<(ArrayString<40> /*src*/, Vec<u8>)>,
+    message_tx: Sender<(Address /*src*/, Vec<u8>)>,
     last_send: Instant,
     last_send_size: usize,
     recvbuf: Vec<u8>,
@@ -422,7 +433,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         driver: &mut Socket,
         bind_address: &str,
         multicast_group: &str,
-        message_tx: Sender<(ArrayString<40>, Vec<u8>)>,
+        message_tx: Sender<(Address, Vec<u8>)>,
         message_rx: Receiver<Vec<u8>>,
         bandwidth_bytes_per_second: u64,
         quit_rx: tokio::sync::oneshot::Receiver<()>,
@@ -742,6 +753,220 @@ enum Cmd<APP: Application> {
     ),
 }
 
+
+struct FillInFrequency {
+    who: Address,
+}
+
+
+struct SeenBy {
+    who: Address,
+    when: Instant
+}
+
+
+struct DecayingKnowledge {
+    short_term: f32,
+    long_term: f32,
+    epic_term: f32,
+    last_update: Instant,
+    interval_seconds: f32,
+}
+impl Default for DecayingKnowledge {
+    fn default() -> Self {
+        Self {
+            short_term: 0.0,
+            long_term: 0.0,
+            epic_term: 0.0,
+            last_update: Instant::now(),
+            interval_seconds: 0.0,
+        }
+    }
+}
+
+impl DecayingKnowledge {
+    pub fn check(&mut self) -> bool {
+        self.decay();
+        self.short_term + self.long_term + self.epic_term > 0.0
+    }
+    fn decay(&mut self)  {
+        let now = Instant::now();
+        let elapsed_secs = now.duration_since(self.last_update).as_secs_f32();
+        let short_k = elapsed_secs/self.interval_seconds;
+        let long_k = 0.1 * short_k;
+        let epic_k = 0.01 * short_k;
+        self.last_update = now;
+        self.short_term *= (-elapsed_secs*short_k).exp();
+        self.long_term *= (-elapsed_secs*long_k).exp();
+        self.epic_term *= (-elapsed_secs*epic_k).exp();
+        self.short_term = self.short_term.clamp(-10.0,10.0);
+        self.long_term = self.long_term.clamp(-10.0,10.0);
+        self.epic_term = self.epic_term.clamp(-10.0,10.0);
+    }
+    pub fn observe_true(&mut self) {
+        self.short_term += 1.0;
+        self.long_term += 1.0;
+        self.epic_term += 1.0;
+    }
+    pub fn observe_false(&mut self) {
+        self.short_term -= 5.0;
+        self.long_term -= 1.0;
+        self.epic_term -= 1.0;
+    }
+}
+
+
+/*
+compile_error!("Do this:\
+Each node has a randomized back-off interval of 10s (or periodic message interval) + 10s * [num nodes].
+When it fires, the node observes for a while after if anyone else answered the same query.
+If not, it reduces its delay to 0. It keeps looking for other nodes answering the same query.
+If it sees that, it compares the node-id:s. If it's smaller, it resets its state to the regular
+back-off interval.
+
+This is all kept per "original source". So nodes keep track of which node they first observed
+having each message-id. This means we can handle situations where different messages need be
+treated differently.
+
+We also introduce a squelch-message. A node that gets multiple answers to the same query sends
+a squelch to one of them. This is for the case where the nodes cannot hear each other, and can't
+themselves figure out that a squelch is needed.
+
+The squelch is also "per source". The squelch has a lifetime. It's also possible to un-squelch,
+which is done if duplicate partner is unavailable.
+
+There is also force-un-squelch, which forces transmission of a channel
+")*/
+
+//TODO: Consider the responsibilities of 'communciation.rs' and 'distributor.rs'
+// I think possibly this should be put in 'distributor.rs'. And the latter should perhaps
+// be split into submodules.
+pub(crate) struct PeerSourceInfo {
+    /// The peer this information concerns
+    peer: Address,
+    /// The source of that peer this information concerns
+    source: Address,
+    /// True if 'peer' can normally hear 'source'
+    can_hear_source: DecayingKnowledge,
+    /// True if, when 'peer' is missing information from 'source', that we (the local node)
+    /// are the ones responsible for updating them
+    we_are_designated_responders: DecayingKnowledge,
+
+}
+impl PeerSourceInfo {
+    pub fn new(peer: Address, source: Address) -> PeerSourceInfo {
+        PeerSourceInfo {
+            peer,
+            source,
+            can_hear_source: DecayingKnowledge::default(),
+            we_are_designated_responders: DecayingKnowledge::default(),
+        }
+    }
+}
+
+pub(crate) struct PeerInfo {
+    pub(crate) peer: Address,
+    /// For messages we first observed from key (`Address`), this peer is usually filled in
+    /// by messagees from `SeenBy`.
+    pub(crate) source_info: IndexMap<Address, PeerSourceInfo>,
+}
+impl PeerInfo {
+    pub fn new(peer: Address) -> PeerInfo {
+        PeerInfo {
+            peer,
+            source_info: Default::default(),
+        }
+    }
+    pub fn cant_hear(&mut self, source: Address) {
+        let source_info = self.source_info.entry(source).or_insert_with(||PeerSourceInfo::new(self.peer, source));
+        source_info.can_hear_source.observe_false();
+    }
+    pub fn can_hear(&mut self, source: Address) {
+        let source_info = self.source_info.entry(source).or_insert_with(||PeerSourceInfo::new(self.peer, source));
+        source_info.can_hear_source.observe_true();
+    }
+}
+
+
+pub(crate) struct MessageSourceInfo {
+    pub(crate) original_source: EphemeralNodeId,
+    pub(crate) transmitter_seen: bool,
+    pub(crate) other_transmitters: bool
+}
+
+pub(crate) struct Neighborhood {
+    pub(crate) peers: IndexMap<EphemeralNodeId, PeerInfo>,
+    /// The source we've observed for recent messages.
+    pub(crate) recent_messages: IndexMap<MessageId, MessageSourceInfo>,
+}
+
+impl Neighborhood {
+    /// actual_transmission is to be set to true if message was transmitted in full, not just
+    /// mentioned. This is used to help us understand if a node has a message because of a
+    /// retransmission. I.e, if actual_transmission=false, this event itself can't be such a
+    /// retransmission.
+    fn record_message_source(&mut self, message: MessageId, source: &EphemeralNodeId, actual_transmission: bool ) {
+        match self.recent_messages.entry(message) {
+            Entry::Vacant(e) => {
+                e.insert( MessageSourceInfo {
+                    original_source: *source,
+                    transmitter_seen: actual_transmission,
+                    other_transmitters: false,
+                });
+            }
+            Entry::Occupied(mut e) => {
+                let item = e.get_mut();
+                if actual_transmission && !item.transmitter_seen {
+                    item.transmitter_seen = true;
+                    item.original_source = *source;
+                } else if actual_transmission && source != &item.original_source {
+                    item.other_transmitters = true;
+                }
+            }
+        }
+    }
+    pub fn record_message(&mut self, message: &DistributorMessage) {
+        compile_error!("Finish epohemeralnodeid stuff, make sure to implement re-randomization on conflicts! And clean up old history")
+        match message {
+
+            DistributorMessage::ReportHeads{heads, source,..}=> {
+                let peer = self.peers.entry(*source).or_insert_with(||PeerInfo::new(source));
+                for head in heads {
+                    if let Some(msg_source) = self.recent_messages.get(head) {
+                        if msg_source.other_transmitters == false {
+                            peer.can_hear(msg_source.original_source);
+                        }
+                    }
+                    self.record_message_source(*head, &source, false);
+                }
+            }
+            DistributorMessage::SyncAllQuery(_) => {}
+            DistributorMessage::SyncAllRequest(_) => {}
+            DistributorMessage::SyncAllAck(_) => {}
+            DistributorMessage::RequestUpstream { query, .. } => {
+                for (queried_msg, _count) in query {
+                    if let Some(msg_source) = self.recent_messages.get(queried_msg) {
+                        if msg_source.other_transmitters == false {
+                            peer.cant_hear(msg_source.original_source);
+                        }
+                    }
+                }
+
+
+            }
+            DistributorMessage::UpstreamResponse { messages, .. } => {
+                for msg in messages {
+                    self.record_message_source(msg.id, &source);
+                }
+            }
+            DistributorMessage::SendMessageAndAllDescendants { .. } => {}
+            DistributorMessage::Message{message:msg, ..} => {
+                self.record_message_source(msg.message_id(), &source, true);
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct QueryableOutbuffer {
     pub(crate) outbuf: VecDeque<DistributorMessage>,
@@ -807,14 +1032,14 @@ where
     /// Join handle for MulticastSenderLoop
     jh: tokio::task::JoinHandle<Result<()>>,
     sender_tx: Sender<Vec<u8>>,
-    receiver_rx: Receiver<(ArrayString<40>, Vec<u8>)>,
+    receiver_rx: Receiver<(Address, Vec<u8>)>,
     distributor: Distributor,
     cmd_rx: Receiver<Cmd<APP>>,
 
     /// When the first item was put into the buffer
     buffer_life_start: Instant,
     next_periodic: tokio::time::Instant,
-    buffered_incoming_messages: Vec<(ArrayString<40> /*src*/, DistributorMessage)>,
+    buffered_incoming_messages: Vec<(Address /*src*/, DistributorMessage)>,
     outbuf: QueryableOutbuffer,
     nextsend: Vec<u8>,
     nextsend_id: Option<MessageId>,
@@ -842,6 +1067,10 @@ pub struct DatabaseCommunicationConfig {
     pub retransmit_buffer_size_bytes: usize,
     pub debug_logger: Option<Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>>,
     pub periodic_message_interval: Duration,
+    /// Specifying this is only useful for debugging. The ephemeral node id is chosen
+    /// automatically, and is also automatically changed if conflicts are
+    /// detected.
+    pub initial_ephemeral_node_id: Option<EphemeralNodeId>
 }
 const REPORT_HEAD_INTERVAL_DEFAULT: Duration = Duration::from_secs(5);
 
@@ -866,7 +1095,7 @@ where
 
     <APP as Application>::Message: Send,
 {
-    fn process_packet(&mut self, src: ArrayString<40>, packet: Vec<u8>) -> Result<()> {
+    fn process_packet(&mut self, src: Address, packet: Vec<u8>) -> Result<()> {
         let msg: DistributorMessage = Deserializer::bare_deserialize(&mut Cursor::new(&packet), 0)?;
         trace!("Received DistrMsg {:?}", msg);
         self.buffered_incoming_messages.push((src, msg));
@@ -1023,10 +1252,11 @@ where
                             match msg {
                                 Ok(msg) => {
                                     self.outbuf.push_back(
-                                        DistributorMessage::Message(SerializedMessage::new(
-                                            msg
-                                        )?, false)
-                                    );
+                                        DistributorMessage::Message{
+                                            source: self.distributor.node_id(),
+                                            message:SerializedMessage::new(msg)?,
+                                            demand_ack: false
+                                    });
                                     _ = result.send(Ok(()));
                                 }
                                 Err(err) => {
@@ -1248,7 +1478,7 @@ where
         let database = Arc::new(Mutex::new(database));
 
         let main = DatabaseCommunicationLoop {
-            distributor: Distributor::new(&node, config.periodic_message_interval),
+            distributor: Distributor::new(&node, config.periodic_message_interval, config.initial_ephemeral_node_id.unwrap_or_else(||EphemeralNodeId::random())),
             node: node.clone(),
             database: database.clone(),
             jh,

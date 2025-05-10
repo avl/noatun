@@ -8,6 +8,7 @@ use datetime_literal::datetime;
 use std::iter::once;
 use std::mem::swap;
 use std::time::Duration;
+use crate::distributor::Address;
 
 fn create_app<'a>(
     msgs: impl IntoIterator<
@@ -100,7 +101,7 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
                     ether
                         .iter()
                         .filter(|(x_src_id, _msg)| *x_src_id != db_id)
-                        .map(|(_src, x)| ("src".try_into().unwrap(), x.clone())),
+                        .map(|(_src, x)| (Address::from("src"), x.clone())),
                     &mut sent,
                 )
                 .unwrap();

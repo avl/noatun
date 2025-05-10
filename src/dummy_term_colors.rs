@@ -1,6 +1,9 @@
 pub fn lightblue(s: &str) -> &str {
     s
 }
+pub fn lightgray(s: &str) -> &str {
+    s
+}
 pub fn lightgreen(s: &str) -> &str {
     s
 }

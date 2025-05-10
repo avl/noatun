@@ -14,7 +14,7 @@ use chrono::TimeDelta;
 use chrono::Utc;
 use datetime_literal::datetime;
 use indexmap::IndexSet;
-use insta::assert_snapshot;
+use insta::{assert_debug_snapshot, assert_snapshot};
 use rand::distributions::uniform::SampleUniform;
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -958,6 +958,53 @@ async fn all_up_huge_desynced_test() {
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
     println!("{}", driver.messages_snapshot());
+    assert_debug_snapshot!(driver.messages_snapshot());
+    assert_eq!(root1, root2);
+}
+
+
+#[tokio::test(start_paused = true)]
+async fn all_up_three_node_resync() {
+    MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
+    let mut driver = TestDriver::default();
+    let mut app1 = create_app(&mut driver).await;
+    let app2 = create_app(&mut driver).await;
+    let app3 = create_app(&mut driver).await;
+
+    driver.set_loss(1.0);
+    let start = Instant::now();
+    app1.set_mock_time(NoatunTime::from_datetime(
+        datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+    )).unwrap();
+
+    for i in 0..2 {
+        app1.add_message(SyncMessage {
+            value: i,
+            persist: false,
+            reset: false,
+        })
+            .await
+            .unwrap();
+
+    }
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    app1.set_mock_time(NoatunTime::from_datetime(
+        datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+    )).unwrap();
+    driver.set_loss(0.0);
+
+    for _ in 0..15 {
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        app1.set_mock_time(NoatunTime::from_datetime(
+            datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+        )).unwrap();
+    }
+
+    let root1 = app1.with_root(|root| root.detach());
+    let root2 = app2.with_root(|root| root.detach());
+    let root3 = app3.with_root(|root| root.detach());
+    println!("{}", driver.messages_snapshot());
 
     assert_eq!(root1, root2);
+    assert_eq!(root2, root3);
 }

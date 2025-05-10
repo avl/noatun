@@ -59,6 +59,7 @@ use dummy_term_colors as colors;
 
 #[cfg(feature = "debug")]
 use term_colors as colors;
+use crate::colors::colored_hex_int;
 #[allow(unused)]
 use crate::colors::colored_int;
 
@@ -340,11 +341,11 @@ impl Display for MessageId {
             #[cfg(feature = "debug")]
             write!(
                 f,
-                "{:?}-{}-{:x}-{:x}",
+                "{:?}-{}-{}-{}",
                 time_str,
-                colored_int((self.data[1] & 0xffff0000) >> 16),
-                self.data[2],
-                self.data[3]
+                colored_hex_int((self.data[1] & 0xffff0000) >> 16),
+                colored_hex_int(self.data[2]),
+                colored_hex_int(self.data[3])
             )
         }
 
