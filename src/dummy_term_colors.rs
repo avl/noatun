@@ -1,3 +1,4 @@
+
 pub fn lightblue(s: &str) -> &str {
     s
 }
@@ -16,6 +17,9 @@ pub fn lightbluegreen(s: &str) -> &str {
 pub fn red(s: &str) -> &str {
     s
 }
+pub fn brightred(s: &str) -> &str {
+    s
+}
 pub fn lightbrown(s: &str) -> &str {
     s
 }
@@ -30,4 +34,8 @@ pub fn colored_int(i: u32) -> u32 {
 }
 pub fn rgb(s: &str, _r: u8, _g: u8, _b: u8) -> &str {
     s
+}
+
+pub fn colored_hex_int(i: u32) -> u32 {
+    i
 }

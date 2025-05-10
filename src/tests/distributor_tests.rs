@@ -1,7 +1,7 @@
-use crate::communication::QueryableOutbuffer;
+use crate::communication::{Neighborhood, QueryableOutbuffer};
 use crate::cutoff::CutOffDuration;
 use crate::database::DatabaseSettings;
-use crate::distributor::{Distributor, DistributorMessage};
+use crate::distributor::{Distributor, DistributorMessage, EphemeralNodeId};
 use crate::tests::{CounterMessage, CounterObject};
 use crate::{Database, MessageId, NoatunTime};
 use datetime_literal::datetime;
@@ -68,15 +68,17 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
         .enumerate()
         .map(|(index, x)| {
             (
-                Distributor::new(&index.to_string(), Duration::from_secs(5)),
+                Distributor::new(Duration::from_secs(5), EphemeralNodeId::new(index.try_into().unwrap())),
                 x,
             )
         })
         .collect();
     let mut ether = vec![];
+    let mut neighborhood = Neighborhood::default();
+
     for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
         let sess = db.begin_session().unwrap();
-        let mut sent = distr.get_periodic_message(&sess).unwrap();
+        let mut sent = distr.get_periodic_message(&sess, &neighborhood).unwrap();
         assert_eq!(sent.len(), 1, "no resync is active");
         let sent = sent.pop().unwrap();
 
@@ -85,6 +87,7 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
         ether.push((db_id, sent));
     }
     let mut next_ether = vec![];
+    let mut neighborhood = Neighborhood::default();
     loop {
         for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
             let mut sent = QueryableOutbuffer {
@@ -103,6 +106,7 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
                         .filter(|(x_src_id, _msg)| *x_src_id != db_id)
                         .map(|(_src, x)| (Address::from("src"), x.clone())),
                     &mut sent,
+                    &mut neighborhood
                 )
                 .unwrap();
             report.num_messages += sent.len();
@@ -204,11 +208,12 @@ fn test_distributor() {
     let mut app1 = create_app([(datetime!(2021-01-01 Z), [].as_slice(), 1, 0, true)]);
     let mut app2 = create_app([(datetime!(2021-01-02 Z), [].as_slice(), 1, 0, true)]);
 
-    let mut dist1 = crate::distributor::Distributor::new("1", Duration::from_secs(5));
-    let mut dist2 = crate::distributor::Distributor::new("2", Duration::from_secs(5));
+    let mut dist1 = Distributor::new(Duration::from_secs(5), EphemeralNodeId::new(1));
+    let mut dist2 = Distributor::new(Duration::from_secs(5), EphemeralNodeId::new(2));
 
+    let mut neighborhood = Neighborhood::default();
     let sess1 = app1.begin_session().unwrap();
-    let mut msg1 = dist1.get_periodic_message(&sess1).unwrap();
+    let mut msg1 = dist1.get_periodic_message(&sess1, &neighborhood).unwrap();
     assert_eq!(msg1.len(), 1, "no resync is in progress");
     let msg1 = msg1.pop().unwrap();
 
@@ -237,7 +242,7 @@ fn test_distributor() {
         .receive_message2(&mut app1, once(result.pop().unwrap()))
         .unwrap();
     println!("dist1 sent: {result:?}");
-    assert!(matches!(&result[0], DistributorMessage::Message(_, false)));
+    assert!(matches!(&result[0], DistributorMessage::Message{demand_ack: false, ..}));
     assert_eq!(result.len(), 1);
 
     let _result = dist2

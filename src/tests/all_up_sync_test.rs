@@ -276,6 +276,7 @@ async fn create_app(driver: &mut TestDriver) -> DatabaseCommunication<SyncApp> {
                 log.push(ev);
             })),
             periodic_message_interval: Duration::from_secs(5),
+            initial_ephemeral_node_id: None,
         },
     )
     .await
@@ -968,14 +969,19 @@ async fn all_up_three_node_resync() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
     let mut app1 = create_app(&mut driver).await;
-    let app2 = create_app(&mut driver).await;
-    let app3 = create_app(&mut driver).await;
+    let mut app2 = create_app(&mut driver).await;
+    let mut app3 = create_app(&mut driver).await;
 
     driver.set_loss(1.0);
     let start = Instant::now();
-    app1.set_mock_time(NoatunTime::from_datetime(
-        datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
-    )).unwrap();
+    compile_error!("check why no neighbors")
+
+    for app in [&mut app1, &mut app2, &mut app3] {
+        app.set_mock_time(NoatunTime::from_datetime(
+            datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+        )).unwrap();
+    }
+
 
     for i in 0..2 {
         app1.add_message(SyncMessage {

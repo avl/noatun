@@ -120,13 +120,23 @@ impl Display for Address {
 #[derive(Debug,Clone,Copy,PartialEq,Eq,Hash, Savefile)]
 pub struct EphemeralNodeId(u16);
 
+impl Display for EphemeralNodeId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
+
 static NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER: std::sync::atomic::AtomicU16 =
     std::sync::atomic::AtomicU16::new(0);
 
 impl EphemeralNodeId {
+    pub fn new(value: u16) -> Self {
+        EphemeralNodeId(value)
+    }
     pub fn random() -> EphemeralNodeId {
         #[cfg(test)] {
-            if FOR_TEST_NON_RANDOM_ID {
+            if crate::FOR_TEST_NON_RANDOM_ID {
                 let id = NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return EphemeralNodeId(id);
             }
@@ -194,18 +204,26 @@ pub enum DistributorMessage {
 impl DistributorMessage {
     pub(crate) fn message_id(&self) -> Option<MessageId> {
         match self {
-            DistributorMessage::Message(msg, _) => Some(msg.id),
+            DistributorMessage::Message{message: msg, ..} => Some(msg.id),
             _ => None,
         }
     }
     pub fn debug_format<M: Message>(&self) -> Result<String> {
         Ok(match self {
-            DistributorMessage::ReportHeads{cutoff, heads, source} => {
+            DistributorMessage::ReportHeads{cutoff, heads, source, neighbors} => {
                 format!(
-                    "{}: cutoff: {cutoff}, heads: {:?}, src: {:?}",
+                    "{}: cutoff: {cutoff}, heads: {:?}, src: {:?}, neigh: {:?}",
                     lightgray("ReportHeads"),
                     heads,
-                    source
+                    source,
+                    neighbors
+                )
+            }
+            DistributorMessage::Squelch { source, transmitter, messages } => {
+                format!(
+                    "{}: source: {source} transmitter: {transmitter}, messages: {:?}",
+                    brightred("Squelch"),
+                    messages,
                 )
             }
             DistributorMessage::SyncAllQuery(messages) => {
@@ -237,7 +255,7 @@ impl DistributorMessage {
                 )
             }
             DistributorMessage::Message {
-                source, payload: message, demand_ack
+                source, message, demand_ack
             } => {
                 let msg: MessageFrame<M> = message.to_message_from_ref()?;
                 format!(
@@ -302,7 +320,6 @@ pub struct Distributor {
     sync_all_inprogress: SyncAllState,
 
     distributor_state: DistributorStatus,
-    own_name: Address,
     periodic_message_interval: Duration,
 }
 
@@ -351,7 +368,7 @@ impl QueryableOutbuffer {
     pub(crate) fn has_request_for(&mut self, message: MessageId) -> bool {
         self.outbuf.iter().chain(self.recent_sent.iter()).any(|x| {
             println!("has-request-for checking: {x:?}");
-            if let DistributorMessage::RequestUpstream { query } = x {
+            if let DistributorMessage::RequestUpstream { query, .. } = x {
                 query.iter().any(|x| x.0 == message)
             } else {
                 false
@@ -362,13 +379,12 @@ impl QueryableOutbuffer {
 
 impl Distributor {
     const BATCH_SIZE: usize = 20;
-    pub(crate) fn new(node_name: &str, report_head_interval: Duration, node_id: EphemeralNodeId) -> Distributor {
+    pub(crate) fn new(report_head_interval: Duration, initial_node_id: EphemeralNodeId) -> Distributor {
         Self {
             sync_all_inprogress: SyncAllState::NotActive,
             distributor_state: DistributorStatus::default(),
-            own_name: truncate_to_arraystring(node_name),
             periodic_message_interval: report_head_interval,
-            ephemeral_node_id: node_id
+            ephemeral_node_id: initial_node_id
         }
     }
 
@@ -406,6 +422,7 @@ impl Distributor {
     pub(crate) fn get_periodic_message<APP: Application>(
         &mut self,
         database: &DatabaseSession<APP>,
+        neighbors: &Neighborhood
     ) -> Result<Vec<DistributorMessage>> {
         let mut heads = database.get_update_heads().to_vec();
         heads.sort();
@@ -413,7 +430,7 @@ impl Distributor {
             source: self.ephemeral_node_id,
             cutoff: database.current_cutoff_state()?,
             heads,
-            neighbors: vec![],
+            neighbors: neighbors.get_neighbors(),
         }];
         let sync_from = match &self.sync_all_inprogress {
             SyncAllState::NotActive => None,
@@ -459,6 +476,7 @@ impl Distributor {
             database,
             input.map(|x| (Address::from("src"), x)),
             &mut buf,
+            &mut Default::default()
         )?;
         Ok(buf.outbuf.into_iter().collect())
     }
@@ -478,10 +496,14 @@ impl Distributor {
         let mut accumulated_serialized = vec![];
         let mut accumulated_sync_all_queries = IndexSet::new();
         let mut accumulated_sync_all_requests = IndexSet::new();
+
         for (src, item) in input {
+            neighborhood.record_message(&item, self.ephemeral_node_id);
 
             self.distributor_state.have_heard_peer = true;
             match item {
+                DistributorMessage::Squelch {..} => {
+                }
                 DistributorMessage::SyncAllQuery(query) => {
                     accumulated_sync_all_queries.extend(query);
                 }
@@ -489,7 +511,7 @@ impl Distributor {
                     accumulated_sync_all_requests.extend(requests);
                 }
 
-                DistributorMessage::ReportHeads(cutoff_hash, heads) => {
+                DistributorMessage::ReportHeads{ source, cutoff: cutoff_hash, heads, neighbors } => {
                     for pass in 0..2 {
                         match database.is_acceptable_cutoff_hash(cutoff_hash)? {
                             Acceptability::Nominal => {
@@ -499,6 +521,10 @@ impl Distributor {
                                 info!("Acceptability: Nominal");
                                 self.distributor_state.most_recent_unsynced.remove(&src);
                                 self.distributor_state.most_recent_clockdrift.remove(&src);
+
+                                let peer= neighborhood.get_insert_peer(source);
+                                peer.peer_neighbors.clone_from(&neighbors);
+
                                 break;
                             }
                             Acceptability::Unacceptable => {
@@ -539,12 +565,17 @@ impl Distributor {
                     }
                 }
                 DistributorMessage::RequestUpstream { source, query } => {
-                    for (msg, count) in query {
-                        let accum_count = accumulated_upstream_queries.entry(msg).or_insert(0usize);
-                        *accum_count = (*accum_count).max(count);
+                    if let Some(peer) = neighborhood.get_peer(source) {
+                        for (msg, count) in query {
+                            //let origin = neighborhood.recent_messages.recent_messages.get(&msg);
+                            if peer.we_should_answer_request(self.ephemeral_node_id) {
+                                let accum_count = accumulated_upstream_queries.entry(msg).or_insert(0usize);
+                                *accum_count = (*accum_count).max(count);
+                            }
+                        }
                     }
                 }
-                DistributorMessage::UpstreamResponse { source, messages } => {
+                DistributorMessage::UpstreamResponse { source:_, messages } => {
                     for msg in messages {
                         let val = MessageSubGraphNodeValue {
                             parents: msg.parents,
@@ -553,7 +584,7 @@ impl Distributor {
                         accumulated_responses.insert(msg.id, val);
                     }
                 }
-                DistributorMessage::SendMessageAndAllDescendants { source, message_id } => {
+                DistributorMessage::SendMessageAndAllDescendants { source:_, message_id } => {
                     accumulated_send_msg_and_descendants.extend(message_id);
                 }
                 DistributorMessage::Message{message:msg, demand_ack: need_ack, ..} => {
@@ -628,10 +659,11 @@ impl Distributor {
         for request in accumulated_sync_all_requests {
             match database.load_message(request) {
                 Ok(msg) => {
-                    output.push_back(DistributorMessage::Message(
-                        SerializedMessage::new(msg)?,
-                        true,
-                    ));
+                    output.push_back(DistributorMessage::Message {
+                        source: self.ephemeral_node_id,
+                        message: SerializedMessage::new(msg) ?,
+                        demand_ack: true,
+                    });
                 }
                 Err(err) => {
                     warn!(
@@ -669,7 +701,7 @@ impl Distributor {
         }
         if !messages_to_request.is_empty() {
             //println!("REQUEST_UPSTREAM (from within process__reporteD_heads");
-            existing_outbuf.request_upstream(messages_to_request.into_iter());
+            existing_outbuf.request_upstream(messages_to_request.into_iter(), self.ephemeral_node_id);
             self.distributor_state.nominal = false;
         } else {
             self.distributor_state.nominal = true;
@@ -691,7 +723,7 @@ impl Distributor {
             })
             .collect();
         if !messages.is_empty() {
-            output.push_back(DistributorMessage::UpstreamResponse { messages });
+            output.push_back(DistributorMessage::UpstreamResponse { messages, source: self.ephemeral_node_id });
         }
         Ok(())
     }
@@ -746,11 +778,12 @@ impl Distributor {
         if send_cmds.is_empty() == false {
             queryable_outbuffer.push_back(DistributorMessage::SendMessageAndAllDescendants {
                 message_id: send_cmds,
+                source: self.ephemeral_node_id,
             });
         }
         if unknowns.is_empty() == false {
             //println!("REQUEST_UPSTREAM (from within process_upstream_response");
-            queryable_outbuffer.request_upstream(unknowns.into_iter())
+            queryable_outbuffer.request_upstream(unknowns.into_iter(), self.ephemeral_node_id);
         }
 
         Ok(())
@@ -770,10 +803,11 @@ impl Distributor {
                 }
             };
             let msg_id = msg.id();
-            output.push_back(DistributorMessage::Message(
-                SerializedMessage::new(msg)?,
-                false,
-            ));
+            output.push_back(DistributorMessage::Message {
+                message: SerializedMessage::new(msg)?,
+                source: self.ephemeral_node_id,
+                demand_ack: false,
+            });
 
             let mut children = database.get_message_children(msg_id)?;
             message_list.extend(children.iter().copied());

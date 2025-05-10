@@ -15,7 +15,7 @@ use savefile::{
 };
 use savefile_derive::Savefile;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
@@ -23,7 +23,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::{io, thread};
 use indexmap::map::Entry;
-use sha2::digest::crypto_common::InnerInit;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
@@ -841,49 +840,70 @@ There is also force-un-squelch, which forces transmission of a channel
 //TODO: Consider the responsibilities of 'communciation.rs' and 'distributor.rs'
 // I think possibly this should be put in 'distributor.rs'. And the latter should perhaps
 // be split into submodules.
-pub(crate) struct PeerSourceInfo {
+pub(crate) struct PeerOriginInfo {
     /// The peer this information concerns
-    peer: Address,
-    /// The source of that peer this information concerns
-    source: Address,
-    /// True if 'peer' can normally hear 'source'
+    peer: EphemeralNodeId,
+    /// The origin of that peer this information concerns
+    origin: EphemeralNodeId,
+    /// True if 'peer' can normally hear 'origin'
     can_hear_source: DecayingKnowledge,
-    /// True if, when 'peer' is missing information from 'source', that we (the local node)
-    /// are the ones responsible for updating them
-    we_are_designated_responders: DecayingKnowledge,
 
 }
-impl PeerSourceInfo {
-    pub fn new(peer: Address, source: Address) -> PeerSourceInfo {
-        PeerSourceInfo {
+impl PeerOriginInfo {
+    pub fn new(peer: EphemeralNodeId, source: EphemeralNodeId) -> PeerOriginInfo {
+        PeerOriginInfo {
             peer,
-            source,
+            origin: source,
             can_hear_source: DecayingKnowledge::default(),
-            we_are_designated_responders: DecayingKnowledge::default(),
         }
     }
 }
 
+/// Information about a neighbor's neighbors
+pub(crate) struct NeighborNeighborInfo {
+    node_id: EphemeralNodeId,
+    //squelched: DecayingKnowledge,
+    is_neighbor: DecayingKnowledge,
+}
 pub(crate) struct PeerInfo {
-    pub(crate) peer: Address,
+    pub(crate) peer: EphemeralNodeId,
     /// For messages we first observed from key (`Address`), this peer is usually filled in
-    /// by messagees from `SeenBy`.
-    pub(crate) source_info: IndexMap<Address, PeerSourceInfo>,
+    /// by messages from `SeenBy`.
+    pub(crate) source_info: IndexMap<EphemeralNodeId, PeerOriginInfo>,
+    pub(crate) peer_neighbors: Vec<EphemeralNodeId>,
 }
 impl PeerInfo {
-    pub fn new(peer: Address) -> PeerInfo {
+    pub fn new(peer: EphemeralNodeId) -> PeerInfo {
         PeerInfo {
             peer,
             source_info: Default::default(),
+            peer_neighbors: vec![],
         }
     }
-    pub fn cant_hear(&mut self, source: Address) {
-        let source_info = self.source_info.entry(source).or_insert_with(||PeerSourceInfo::new(self.peer, source));
+    pub fn we_should_answer_request(&self, our_id: EphemeralNodeId) -> bool {
+
+        if let Some(our_index_in_their_neighbor_list) = self.peer_neighbors.iter().position(|x|*x == our_id) {
+            if our_index_in_their_neighbor_list == 0 {
+                return true;
+            }
+        }
+        false
+    }
+    pub fn cant_hear(&mut self, source: EphemeralNodeId) {
+        let source_info = self.source_info.entry(source).or_insert_with(|| PeerOriginInfo::new(self.peer, source));
         source_info.can_hear_source.observe_false();
     }
-    pub fn can_hear(&mut self, source: Address) {
-        let source_info = self.source_info.entry(source).or_insert_with(||PeerSourceInfo::new(self.peer, source));
+    pub fn can_hear(&mut self, source: EphemeralNodeId) {
+        let source_info = self.source_info.entry(source).or_insert_with(|| PeerOriginInfo::new(self.peer, source));
         source_info.can_hear_source.observe_true();
+    }
+    pub fn record_squelch(&mut self, origin: EphemeralNodeId) {
+        //TODO: Implement or remove this
+        todo!()/*7let origin = self.source_info.entry(origin).or_insert_with(|| PeerOriginInfo {
+            peer: self.peer,
+            origin: origin,
+            can_hear_source: Default::default(),
+        });*/
     }
 }
 
@@ -894,22 +914,23 @@ pub(crate) struct MessageSourceInfo {
     pub(crate) other_transmitters: bool
 }
 
-pub(crate) struct Neighborhood {
-    pub(crate) peers: IndexMap<EphemeralNodeId, PeerInfo>,
-    /// The source we've observed for recent messages.
+#[derive(Default)]
+pub(crate) struct RecentMessages {
     pub(crate) recent_messages: IndexMap<MessageId, MessageSourceInfo>,
 }
-
-impl Neighborhood {
+impl RecentMessages {
+    fn get(&mut self, message_id: &MessageId) -> Option<&mut MessageSourceInfo> {
+        self.recent_messages.get_mut(message_id)
+    }
     /// actual_transmission is to be set to true if message was transmitted in full, not just
     /// mentioned. This is used to help us understand if a node has a message because of a
     /// retransmission. I.e, if actual_transmission=false, this event itself can't be such a
     /// retransmission.
-    fn record_message_source(&mut self, message: MessageId, source: &EphemeralNodeId, actual_transmission: bool ) {
+    fn record_message_source(&mut self, message: MessageId, source: EphemeralNodeId, actual_transmission: bool ) {
         match self.recent_messages.entry(message) {
             Entry::Vacant(e) => {
                 e.insert( MessageSourceInfo {
-                    original_source: *source,
+                    original_source: source,
                     transmitter_seen: actual_transmission,
                     other_transmitters: false,
                 });
@@ -918,32 +939,70 @@ impl Neighborhood {
                 let item = e.get_mut();
                 if actual_transmission && !item.transmitter_seen {
                     item.transmitter_seen = true;
-                    item.original_source = *source;
-                } else if actual_transmission && source != &item.original_source {
+                    item.original_source = source;
+                } else if actual_transmission && source != item.original_source {
                     item.other_transmitters = true;
                 }
             }
         }
-    }
-    pub fn record_message(&mut self, message: &DistributorMessage) {
-        compile_error!("Finish epohemeralnodeid stuff, make sure to implement re-randomization on conflicts! And clean up old history")
-        match message {
+    }}
 
+#[derive(Default)]
+pub(crate) struct Neighborhood {
+    peers: IndexMap<EphemeralNodeId, PeerInfo>,
+    /// The source we've observed for recent messages.
+    pub(crate) recent_messages: RecentMessages,
+}
+
+impl Neighborhood {
+    pub fn get_neighbors(&self) -> Vec<EphemeralNodeId> {
+        self.peers.keys().copied().collect()
+    }
+
+    pub fn get_insert_peer(&mut self, peer_id: EphemeralNodeId) -> &mut PeerInfo {
+        self.peers.entry(peer_id).or_insert_with(||PeerInfo::new(peer_id))
+    }
+    pub fn get_peer(&mut self, peer_id: EphemeralNodeId) -> Option<&mut PeerInfo> {
+        self.peers.get_mut(&peer_id)
+    }
+
+    fn record_squelch(&mut self, destination: EphemeralNodeId, origin: EphemeralNodeId) {
+        let peer = self.peers.entry(destination).or_insert_with(||PeerInfo::new(destination));
+        peer.record_squelch(origin);
+    }
+
+
+    pub fn record_message(&mut self, message: &DistributorMessage, our_node_id: EphemeralNodeId) {
+        //TODO Finish epohemeralnodeid stuff, make sure to implement re-randomization on conflicts! And clean up old history
+        match message {
+            DistributorMessage::Squelch {
+                source, transmitter, messages
+            } => {
+                if *transmitter == our_node_id {
+                    let peer = self.peers.entry(*source).or_insert_with(||PeerInfo::new(*source));
+                    for message in messages {
+                        if let Some(source) = self.recent_messages.get(message) {
+                            peer.record_squelch(source.original_source);
+                        }
+                    }
+                }
+            }
             DistributorMessage::ReportHeads{heads, source,..}=> {
-                let peer = self.peers.entry(*source).or_insert_with(||PeerInfo::new(source));
+                let peer = self.peers.entry(*source).or_insert_with(||PeerInfo::new(*source));
                 for head in heads {
                     if let Some(msg_source) = self.recent_messages.get(head) {
                         if msg_source.other_transmitters == false {
                             peer.can_hear(msg_source.original_source);
                         }
                     }
-                    self.record_message_source(*head, &source, false);
+                    self.recent_messages.record_message_source(*head, *source, false);
                 }
             }
             DistributorMessage::SyncAllQuery(_) => {}
             DistributorMessage::SyncAllRequest(_) => {}
             DistributorMessage::SyncAllAck(_) => {}
-            DistributorMessage::RequestUpstream { query, .. } => {
+            DistributorMessage::RequestUpstream { source, query, .. } => {
+                let peer = self.peers.entry(*source).or_insert_with(||PeerInfo::new(*source));
                 for (queried_msg, _count) in query {
                     if let Some(msg_source) = self.recent_messages.get(queried_msg) {
                         if msg_source.other_transmitters == false {
@@ -954,14 +1013,14 @@ impl Neighborhood {
 
 
             }
-            DistributorMessage::UpstreamResponse { messages, .. } => {
+            DistributorMessage::UpstreamResponse { source, messages, .. } => {
                 for msg in messages {
-                    self.record_message_source(msg.id, &source);
+                    self.recent_messages.record_message_source(msg.id, *source, false);
                 }
             }
             DistributorMessage::SendMessageAndAllDescendants { .. } => {}
-            DistributorMessage::Message{message:msg, ..} => {
-                self.record_message_source(msg.message_id(), &source, true);
+            DistributorMessage::Message{source, message:msg, ..} => {
+                self.recent_messages.record_message_source(msg.message_id(), *source, true);
             }
         }
     }
@@ -971,7 +1030,7 @@ impl Neighborhood {
 pub struct QueryableOutbuffer {
     pub(crate) outbuf: VecDeque<DistributorMessage>,
     pub(crate) recent_sent: VecDeque<DistributorMessage>,
-    pub(crate) request_upstream_message_inhibit: HashMap<MessageId, Instant>,
+    pub(crate) request_upstream_message_inhibit: IndexMap<MessageId, Instant>,
     pub(crate) request_upstream_message_inhibit_counter: usize,
     pub(crate) periodic_message_interval: Duration,
 }
@@ -984,6 +1043,7 @@ impl QueryableOutbuffer {
     pub(crate) fn request_upstream(
         &mut self,
         messages_to_request: impl Iterator<Item = (MessageId, usize)>,
+        self_node: EphemeralNodeId,
     ) {
         let now = Instant::now();
 
@@ -1002,7 +1062,6 @@ impl QueryableOutbuffer {
                         }
                     }
                     Entry::Vacant(x) => {
-                        println!("Inserting {}", msg.0);
                         x.insert(now);
                         true
                     }
@@ -1018,7 +1077,7 @@ impl QueryableOutbuffer {
         }
         if !query.is_empty() {
             self.outbuf
-                .push_back(DistributorMessage::RequestUpstream { query });
+                .push_back(DistributorMessage::RequestUpstream { query, source: self_node });
         }
     }
 }
@@ -1041,6 +1100,7 @@ where
     next_periodic: tokio::time::Instant,
     buffered_incoming_messages: Vec<(Address /*src*/, DistributorMessage)>,
     outbuf: QueryableOutbuffer,
+    neighborhood: Neighborhood,
     nextsend: Vec<u8>,
     nextsend_id: Option<MessageId>,
     node: String, //Address as string
@@ -1085,6 +1145,7 @@ impl Default for DatabaseCommunicationConfig {
             retransmit_buffer_size_bytes: 10000000,
             debug_logger: None,
             periodic_message_interval: REPORT_HEAD_INTERVAL_DEFAULT,
+            initial_ephemeral_node_id: None,
         }
     }
 }
@@ -1120,6 +1181,7 @@ where
             &mut *database,
             self.buffered_incoming_messages.drain(..),
             &mut self.outbuf,
+            &mut self.neighborhood
         )?;
         drop(database);
         Ok(())
@@ -1215,7 +1277,7 @@ where
                 _periodic = tokio::time::sleep_until(self.next_periodic) => {
                     let database = self.database.lock().unwrap();
                     let session = database.begin_session()?;
-                    let msgs = self.distributor.get_periodic_message(&session)?;
+                    let msgs = self.distributor.get_periodic_message(&session, &self.neighborhood)?;
                     info!("Time for periodic messages: {:?}", msgs);
                     self.outbuf.extend(msgs);
                     self.next_periodic += self.report_head_interval;
@@ -1478,7 +1540,7 @@ where
         let database = Arc::new(Mutex::new(database));
 
         let main = DatabaseCommunicationLoop {
-            distributor: Distributor::new(&node, config.periodic_message_interval, config.initial_ephemeral_node_id.unwrap_or_else(||EphemeralNodeId::random())),
+            distributor: Distributor::new(config.periodic_message_interval, config.initial_ephemeral_node_id.unwrap_or_else(EphemeralNodeId::random)),
             node: node.clone(),
             database: database.clone(),
             jh,
@@ -1495,6 +1557,7 @@ where
                 request_upstream_message_inhibit_counter: 0,
                 periodic_message_interval: config.periodic_message_interval,
             },
+            neighborhood: Neighborhood::default(),
             nextsend: vec![],
             nextsend_id: None,
             debug_event_logger: config.debug_logger,

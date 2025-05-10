@@ -51,6 +51,10 @@ mod projection_store;
 mod undo_store;
 #[cfg(feature = "debug")]
 mod term_colors;
+
+#[cfg(feature = "debug")]
+use term_colors as colors;
+
 #[cfg(not(feature = "debug"))]
 mod dummy_term_colors;
 
@@ -58,8 +62,8 @@ mod dummy_term_colors;
 use dummy_term_colors as colors;
 
 #[cfg(feature = "debug")]
-use term_colors as colors;
 use crate::colors::colored_hex_int;
+
 #[allow(unused)]
 use crate::colors::colored_int;
 

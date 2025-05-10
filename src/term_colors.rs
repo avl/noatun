@@ -18,6 +18,9 @@ pub fn lightbluegreen(s: &str) -> ColoredString {
 pub fn red(s: &str) -> ColoredString {
     s.truecolor(0xff, 0x51, 0x50)
 }
+pub fn brightred(s: &str) -> ColoredString {
+    s.truecolor(0xff, 0x90, 0x60)
+}
 pub fn lightbrown(s: &str) -> ColoredString {
     s.truecolor(0xff, 0x94, 0x52)
 }
