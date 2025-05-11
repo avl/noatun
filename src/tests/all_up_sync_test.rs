@@ -31,6 +31,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::Instant;
 use tracing::info;
+use crate::tests::setup_tracing;
 
 thread_local! {
     pub static MY_THREAD_RNG: RefCell<Option<SmallRng>> = const { RefCell::new(None) };
@@ -966,6 +967,14 @@ async fn all_up_huge_desynced_test() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_three_node_resync() {
+    compile_error!("
+* Try to avoid sending RequestUpstream from multiple nodes
+* Automatic relay-routing-requests (unsquelch - rename?) (witrh also squelch if duplicates)
+
+
+
+    ")
+    setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
     let mut app1 = create_app(&mut driver).await;
@@ -974,17 +983,17 @@ async fn all_up_three_node_resync() {
 
     driver.set_loss(1.0);
     let start = Instant::now();
-    compile_error!("check why no neighbors")
+    let start_time = datetime!(2020-01-01 T 00:00:00 Z);
 
     for app in [&mut app1, &mut app2, &mut app3] {
         app.set_mock_time(NoatunTime::from_datetime(
-            datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+            start_time + start.elapsed(),
         )).unwrap();
     }
 
 
     for i in 0..2 {
-        app1.add_message(SyncMessage {
+        app3.add_message(SyncMessage {
             value: i,
             persist: false,
             reset: false,
@@ -995,20 +1004,22 @@ async fn all_up_three_node_resync() {
     }
     tokio::time::sleep(Duration::from_millis(1000)).await;
     app1.set_mock_time(NoatunTime::from_datetime(
-        datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+        start_time + start.elapsed(),
     )).unwrap();
     driver.set_loss(0.0);
 
-    for _ in 0..15 {
+    for _ in 0..25 {
         tokio::time::sleep(Duration::from_millis(1000)).await;
         app1.set_mock_time(NoatunTime::from_datetime(
-            datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
+            start_time + start.elapsed(),
         )).unwrap();
     }
 
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
     let root3 = app3.with_root(|root| root.detach());
+
+    println!("Start time: {:?}", start_time);
     println!("{}", driver.messages_snapshot());
 
     assert_eq!(root1, root2);

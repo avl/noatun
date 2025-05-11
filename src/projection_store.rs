@@ -1253,11 +1253,11 @@ impl DatabaseContextData {
         let mut deleted = Vec::new();
         let mut deferred = Vec::new();
         let mut new_unused_list = Vec::new();
-        debug!("Unused batch: {:?}", unused_messages);
+        trace!("Unused batch: {:?}", unused_messages);
         if unused_messages.is_empty() {
             return Ok(vec![]);
         }
-        debug!("Calculating staleness, cutoff: {:?}", before_cutoff);
+        trace!("Calculating staleness, cutoff: {:?}", before_cutoff);
         #[cfg(debug_assertions)]
         {
             debug!(
@@ -1268,7 +1268,7 @@ impl DatabaseContextData {
         'outer: while let Some(msg) = unused_messages.pop() {
             let msgobj = messages.read_message_header_and_children_by_index(msg.seq);
             debug!("considering {:?} = {:?} for deletion", msgobj, msg);
-            info!(
+            debug!(
                 "unconditionally overwritten: {:?}",
                 msg.unconditionally_overwritten
             );

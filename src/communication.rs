@@ -22,6 +22,7 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::{io, thread};
+use std::cmp::Reverse;
 use indexmap::map::Entry;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -387,7 +388,7 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
 }
 impl<Socket: CommunicationDriver> Drop for MulticastSenderLoop<Socket> {
     fn drop(&mut self) {
-        info!("Dropping MulticastSenderLoop loop");
+        trace!("Dropping MulticastSenderLoop loop");
     }
 }
 
@@ -444,7 +445,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             .initialize(bind_address, multicast_group, mtu)
             .await?;
         let max_payload_per_packet = mtu.saturating_sub(APPROX_HEADER_SIZE);
-        info!("Send socket bind-address: {:?}", send_socket.local_addr()?);
+        debug!("Send socket bind-address: {:?}", send_socket.local_addr()?);
 
         if max_payload_per_packet < 100 {
             bail!("Unreasonably small MTU specified: {}", mtu);
@@ -549,7 +550,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                 warn!("history did not contain {:?}", what);
                 return;
             };
-            info!("enqueued {:?} from history", what);
+            trace!("enqueued {:?} from history", what);
             let (Ok(insert_point) | Err(insert_point)) = self
                 .queue
                 .binary_search_by_key(what, |x| x.reconstructed_seq);
@@ -575,7 +576,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                             what: first_val.items.iter().take(20).copied().collect(), //If more than this are missing, we'll request them too in due time
                         };
                         Serializer::bare_serialize(&mut temp, 0, &packet).unwrap();
-                        debug!("Sending raw retransmit {:?} ({} bytes)", packet, temp.len());
+                        trace!("Sending raw retransmit {:?} ({} bytes)", packet, temp.len());
                         cursend = Some(temp);
                         first_val.items = first_val.items.iter().skip(20).copied().collect();
                         if first_val.items.is_empty() {
@@ -630,12 +631,9 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         }
                         Err(err) => {
                             // Apply rate limit even on failure
-                            println!("Send err");
                             self.limiter.incur_debt(send_size as u64);
                             cursend.take();
-                            println!("Sleeping");
                             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                            println!("Slept");
                             error!("Send error: {:?}", err);
                         }
                     }
@@ -865,6 +863,8 @@ pub(crate) struct NeighborNeighborInfo {
     //squelched: DecayingKnowledge,
     is_neighbor: DecayingKnowledge,
 }
+
+//TODO: Clean up all unused stuff here and around
 pub(crate) struct PeerInfo {
     pub(crate) peer: EphemeralNodeId,
     /// For messages we first observed from key (`Address`), this peer is usually filled in
@@ -881,8 +881,9 @@ impl PeerInfo {
         }
     }
     pub fn we_should_answer_request(&self, our_id: EphemeralNodeId) -> bool {
-
+        error!("Checking peer's (={:?}) neighborlist: {:?} looking for us: {:?}", self.peer,self.peer_neighbors, our_id);
         if let Some(our_index_in_their_neighbor_list) = self.peer_neighbors.iter().position(|x|*x == our_id) {
+            println!("our index in neighborlist: {}", our_index_in_their_neighbor_list);
             if our_index_in_their_neighbor_list == 0 {
                 return true;
             }
@@ -945,32 +946,88 @@ impl RecentMessages {
                 }
             }
         }
-    }}
-
-#[derive(Default)]
-pub(crate) struct Neighborhood {
-    peers: IndexMap<EphemeralNodeId, PeerInfo>,
-    /// The source we've observed for recent messages.
-    pub(crate) recent_messages: RecentMessages,
+    }
 }
 
-impl Neighborhood {
-    pub fn get_neighbors(&self) -> Vec<EphemeralNodeId> {
-        self.peers.keys().copied().collect()
-    }
+#[derive(Default)]
+pub(crate) struct Peers {
+    peers: IndexMap<EphemeralNodeId, PeerInfo>,
+}
 
+impl Peers {
     pub fn get_insert_peer(&mut self, peer_id: EphemeralNodeId) -> &mut PeerInfo {
         self.peers.entry(peer_id).or_insert_with(||PeerInfo::new(peer_id))
     }
     pub fn get_peer(&mut self, peer_id: EphemeralNodeId) -> Option<&mut PeerInfo> {
         self.peers.get_mut(&peer_id)
     }
+    pub fn get_neighbors(&self) -> Vec<EphemeralNodeId> {
+        let mut t: Vec<_> = self.peers.keys().copied().collect();
+        t.sort_unstable();
+        t
+    }
 
     fn record_squelch(&mut self, destination: EphemeralNodeId, origin: EphemeralNodeId) {
         let peer = self.peers.entry(destination).or_insert_with(||PeerInfo::new(destination));
         peer.record_squelch(origin);
     }
+}
 
+pub(crate) struct QuarantinedMessage {
+    /// The message we're talking about
+    message_id: MessageId,
+    /// Where we got the reference to the message
+    immediate_source: EphemeralNodeId,
+    /// An original origin we might be able to ask to get the message relayed from
+    origin: EphemeralNodeId,
+    /// The first time we noticed we lacked this message
+    first_need: Instant,
+}
+
+// TODO: Maybe nodes that notice that they have more neighbors than basically anybody,
+// should try to change node-id to a small number, so they can be natural, efficient relays for everybody.
+#[derive(Default)]
+pub(crate) struct Neighborhood {
+    pub(crate) peers: Peers,
+    /// The source we've observed for recent messages.
+    pub(crate) recent_messages: RecentMessages,
+
+    pub(crate) quarantine: IndexMap<MessageId, QuarantinedMessage>
+}
+
+impl Neighborhood {
+
+    /// A previous tentatively missing path may actually not be a missing path, it might just
+    /// be there's some jitter (which is normal and expected).
+    ///
+    /// The 'msg' is a message that was just received and had all parents resolved.
+    pub(crate) fn check_if_tentative_missing_path_was_actually_ok(&mut self, msg: MessageId)  {
+        self.quarantine.swap_remove(&msg);
+    }
+    /// Origin is where our immediate source got it from.
+    pub(crate) fn record_tentative_missing_path(&mut self, parent_we_are_missing: MessageId, immediate_source: EphemeralNodeId, origin: EphemeralNodeId) {
+        match self.quarantine.entry(parent_we_are_missing) {
+            Entry::Occupied(mut e) => {
+                let e = e.get_mut();
+                if immediate_source < e.immediate_source {
+                    e.immediate_source = immediate_source;
+                    e.origin = origin;
+                }
+                if immediate_source == e.immediate_source {
+                    e.origin = origin.min(e.immediate_source);
+                }
+
+            }
+            Entry::Vacant(mut e) => {
+                e.insert(QuarantinedMessage {
+                    message_id: parent_we_are_missing,
+                    immediate_source,
+                    origin,
+                    first_need: Instant::now(),
+                });
+            }
+        }
+    }
 
     pub fn record_message(&mut self, message: &DistributorMessage, our_node_id: EphemeralNodeId) {
         //TODO Finish epohemeralnodeid stuff, make sure to implement re-randomization on conflicts! And clean up old history
@@ -979,7 +1036,7 @@ impl Neighborhood {
                 source, transmitter, messages
             } => {
                 if *transmitter == our_node_id {
-                    let peer = self.peers.entry(*source).or_insert_with(||PeerInfo::new(*source));
+                    let peer = self.peers.get_insert_peer(*source);
                     for message in messages {
                         if let Some(source) = self.recent_messages.get(message) {
                             peer.record_squelch(source.original_source);
@@ -988,7 +1045,7 @@ impl Neighborhood {
                 }
             }
             DistributorMessage::ReportHeads{heads, source,..}=> {
-                let peer = self.peers.entry(*source).or_insert_with(||PeerInfo::new(*source));
+                let peer = self.peers.get_insert_peer(*source);
                 for head in heads {
                     if let Some(msg_source) = self.recent_messages.get(head) {
                         if msg_source.other_transmitters == false {
@@ -1002,7 +1059,7 @@ impl Neighborhood {
             DistributorMessage::SyncAllRequest(_) => {}
             DistributorMessage::SyncAllAck(_) => {}
             DistributorMessage::RequestUpstream { source, query, .. } => {
-                let peer = self.peers.entry(*source).or_insert_with(||PeerInfo::new(*source));
+                let peer = self.peers.get_insert_peer(*source);
                 for (queried_msg, _count) in query {
                     if let Some(msg_source) = self.recent_messages.get(queried_msg) {
                         if msg_source.other_transmitters == false {
@@ -1027,15 +1084,75 @@ impl Neighborhood {
 }
 
 #[derive(Debug)]
+pub struct DuplicationChecker<T> {
+    pub(crate) memory: IndexMap<T, Instant>,
+    pub(crate) gc_counter: usize,
+    pub(crate) interval: Duration
+}
+impl<T:Eq+Hash> DuplicationChecker<T> {
+    pub fn new(interval: Duration) -> DuplicationChecker<T> {
+        DuplicationChecker {
+            memory: Default::default(),
+            gc_counter: 0,
+            interval,
+        }
+    }
+    /// Returns true if duplicate.
+    pub fn is_duplicate(&mut self, id: T) -> bool {
+        self.gc_counter += 1;
+        if self.gc_counter > 10000 {
+            self.gc_counter = 0;
+            self.memory.retain(|k,v|v.elapsed() <= 2*self.interval);
+        }
+        match self.memory.entry(id) {
+            Entry::Occupied(e) => {
+                let e = e;
+                if e.get().elapsed() > self.interval {
+                    e.swap_remove();
+                    false
+                } else {
+                    true
+                }
+            }
+            Entry::Vacant(e) => {
+                e.insert(Instant::now());
+                false
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct QueryableOutbuffer {
     pub(crate) outbuf: VecDeque<DistributorMessage>,
     pub(crate) recent_sent: VecDeque<DistributorMessage>,
-    pub(crate) request_upstream_message_inhibit: IndexMap<MessageId, Instant>,
-    pub(crate) request_upstream_message_inhibit_counter: usize,
+
+    pub(crate) request_upstream_message_inhibit: DuplicationChecker<MessageId>,
     pub(crate) periodic_message_interval: Duration,
+
+    pub(crate) recently_sent_upstream_responses_for: DuplicationChecker<MessageId>,
+    pub(crate) recently_sent_message_ids:  DuplicationChecker<MessageId>,
 }
 
 impl QueryableOutbuffer {
+    pub fn new(periodic_message_interval: Duration) -> Self {
+        Self {
+            outbuf: Default::default(),
+            recent_sent: Default::default(),
+            request_upstream_message_inhibit: DuplicationChecker::new(2*periodic_message_interval),
+            periodic_message_interval: periodic_message_interval,
+            recently_sent_upstream_responses_for: DuplicationChecker::new(2*periodic_message_interval),
+            recently_sent_message_ids: DuplicationChecker::new(2*periodic_message_interval),
+        }
+    }
+
+    pub(crate) fn upstream_response_blocked(&mut self, id: MessageId) -> bool {
+        self.recently_sent_upstream_responses_for.is_duplicate(id)
+    }
+    pub(crate) fn message_already_sent(&mut self, id: MessageId) -> bool {
+        self.recently_sent_message_ids.is_duplicate(id)
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.outbuf.len()
     }
@@ -1044,40 +1161,17 @@ impl QueryableOutbuffer {
         &mut self,
         messages_to_request: impl Iterator<Item = (MessageId, usize)>,
         self_node: EphemeralNodeId,
+        request_from: EphemeralNodeId
     ) {
-        let now = Instant::now();
-
-        self.request_upstream_message_inhibit_counter += 1;
         let query: Vec<_> = messages_to_request
             .filter(
-                |msg| match self.request_upstream_message_inhibit.entry(msg.0) {
-                    Entry::Occupied(mut x) => {
-                        if x.get().elapsed() > 2 * self.periodic_message_interval {
-                            println!("Reusing {} bec el: {:?}", msg.0, x.get().elapsed());
-                            x.insert(now);
-                            true
-                        } else {
-                            println!("blocked!");
-                            false
-                        }
-                    }
-                    Entry::Vacant(x) => {
-                        x.insert(now);
-                        true
-                    }
-                },
+                |msg| !self.request_upstream_message_inhibit.is_duplicate(msg.0)
             )
             .collect();
-        if self.request_upstream_message_inhibit_counter > 10000
-            && self.request_upstream_message_inhibit.len() > 1000
-        {
-            self.request_upstream_message_inhibit
-                .retain(|_x, v| v.elapsed() < 2 * self.periodic_message_interval);
-            self.request_upstream_message_inhibit_counter = 0;
-        }
+
         if !query.is_empty() {
             self.outbuf
-                .push_back(DistributorMessage::RequestUpstream { query, source: self_node });
+                .push_back(DistributorMessage::RequestUpstream { query, source: self_node, destination: request_from });
         }
     }
 }
@@ -1114,7 +1208,7 @@ where
     Self: Send,
 {
     fn drop(&mut self) {
-        info!("Dropping com loop");
+        trace!("Dropping com loop");
     }
 }
 
@@ -1278,7 +1372,7 @@ where
                     let database = self.database.lock().unwrap();
                     let session = database.begin_session()?;
                     let msgs = self.distributor.get_periodic_message(&session, &self.neighborhood)?;
-                    info!("Time for periodic messages: {:?}", msgs);
+                    trace!("Time for periodic messages: {:?}", msgs);
                     self.outbuf.extend(msgs);
                     self.next_periodic += self.report_head_interval;
                 }
@@ -1317,7 +1411,8 @@ where
                                         DistributorMessage::Message{
                                             source: self.distributor.node_id(),
                                             message:SerializedMessage::new(msg)?,
-                                            demand_ack: false
+                                            demand_ack: false,
+                                            origin: self.distributor.node_id()
                                     });
                                     _ = result.send(Ok(()));
                                 }
@@ -1550,13 +1645,7 @@ where
             buffer_life_start: Instant::now(),
             next_periodic: tokio::time::Instant::now(),
             buffered_incoming_messages: vec![],
-            outbuf: QueryableOutbuffer {
-                outbuf: Default::default(),
-                recent_sent: Default::default(),
-                request_upstream_message_inhibit: Default::default(),
-                request_upstream_message_inhibit_counter: 0,
-                periodic_message_interval: config.periodic_message_interval,
-            },
+            outbuf: QueryableOutbuffer::new(config.periodic_message_interval),
             neighborhood: Neighborhood::default(),
             nextsend: vec![],
             nextsend_id: None,

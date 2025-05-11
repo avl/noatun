@@ -90,13 +90,7 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
     let mut neighborhood = Neighborhood::default();
     loop {
         for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
-            let mut sent = QueryableOutbuffer {
-                outbuf: Default::default(),
-                recent_sent: Default::default(),
-                request_upstream_message_inhibit: Default::default(),
-                request_upstream_message_inhibit_counter: 0,
-                periodic_message_interval: Duration::from_secs(5),
-            };
+            let mut sent = QueryableOutbuffer::new(Duration::from_secs(5));
 
             distr
                 .receive_message(

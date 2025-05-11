@@ -287,7 +287,7 @@ pub fn setup_tracing() {
 
     let stdout_log = tracing_subscriber::fmt::layer()
         .with_timer(TracingTimer(tokio::time::Instant::now()))
-        .with_ansi(false)
+        .with_ansi(true)
         .pretty()
         .with_filter(tracing_subscriber::EnvFilter::from_default_env());
 

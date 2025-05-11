@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::io::Cursor;
 use std::time::Duration;
+use indexmap::map::Entry;
 use rand::{thread_rng, Rng};
 use tracing::{debug, error, info, warn};
 
@@ -117,7 +118,7 @@ impl Display for Address {
     }
 }
 
-#[derive(Debug,Clone,Copy,PartialEq,Eq,Hash, Savefile)]
+#[derive(Debug,Clone,Copy,PartialEq,Eq,Hash, Savefile, PartialOrd, Ord)]
 pub struct EphemeralNodeId(u16);
 
 impl Display for EphemeralNodeId {
@@ -145,6 +146,9 @@ impl EphemeralNodeId {
     }
 }
 
+//TODO: Add a quick-join mechanism. A newly started node can force all nodes to send an
+//extra ReportHeads, after which the newly joined nodes sends one of its own. Thus we
+//get rid of the 1-periodic msg delay of waiting for ReportHeads-messages
 
 #[derive(Debug, Savefile, Clone)]
 pub enum DistributorMessage {
@@ -167,6 +171,7 @@ pub enum DistributorMessage {
         source: EphemeralNodeId,
         /// the usize is How many levels to ascend from message
         query: Vec<(MessageId, usize)>,
+        destination: EphemeralNodeId,
     },
     /// Response to a RequestUpstream, giving information about the message graph
     UpstreamResponse {
@@ -182,7 +187,10 @@ pub enum DistributorMessage {
     Message {
         source: EphemeralNodeId,
         message: SerializedMessage,
-        demand_ack: bool
+        demand_ack: bool,
+        /// This message was created on the node that sent it.
+        /// This means it cannot be squelched.
+        origin: EphemeralNodeId,
     },
     /// Inform 'transmitter' that messages from 'origin' should not be
     /// transmitted when 'source' asks for them (because 'source' knows
@@ -235,8 +243,8 @@ impl DistributorMessage {
             DistributorMessage::SyncAllAck(messages) => {
                 format!("{}: Messages: {:?}", lightbluegreen("SyncAllAck"), messages)
             }
-            DistributorMessage::RequestUpstream { source, query } => {
-                format!("{}: Query: {:?}, src: {:?}", red("RequestUpstream"), query, source)
+            DistributorMessage::RequestUpstream { source, query, destination } => {
+                format!("{}: Query: {:?}, src: {:?}, dst: {:?}", red("RequestUpstream"), query, source, destination)
             }
             DistributorMessage::UpstreamResponse { source, messages } => {
                 format!(
@@ -255,17 +263,18 @@ impl DistributorMessage {
                 )
             }
             DistributorMessage::Message {
-                source, message, demand_ack
+                source, message, demand_ack, origin
             } => {
                 let msg: MessageFrame<M> = message.to_message_from_ref()?;
                 format!(
-                    "{}: id = {}, parents = {:?}, need_ack = {}, msg = {:?}, src = {:?}",
+                    "{}: id = {}, parents = {:?}, need_ack = {}, msg = {:?}, src = {:?}, origin = {:?}",
                     turqouise("Message"),
                     msg.header.id,
                     msg.header.parents,
                     demand_ack,
                     msg.payload,
-                    source
+                    source,
+                    origin
                 )
             }
         })
@@ -367,7 +376,6 @@ impl QueryableOutbuffer {
     }
     pub(crate) fn has_request_for(&mut self, message: MessageId) -> bool {
         self.outbuf.iter().chain(self.recent_sent.iter()).any(|x| {
-            println!("has-request-for checking: {x:?}");
             if let DistributorMessage::RequestUpstream { query, .. } = x {
                 query.iter().any(|x| x.0 == message)
             } else {
@@ -375,6 +383,16 @@ impl QueryableOutbuffer {
             }
         })
     }
+}
+
+struct AccumulatedMessage {
+    msg: SerializedMessage,
+    /// The sender of this message. Might not be original origin, since
+    /// message relaying occurs
+    source: EphemeralNodeId,
+    /// Equal to source for messages created _at_ source
+    origin: EphemeralNodeId,
+    need_ack: bool,
 }
 
 impl Distributor {
@@ -430,7 +448,7 @@ impl Distributor {
             source: self.ephemeral_node_id,
             cutoff: database.current_cutoff_state()?,
             heads,
-            neighbors: neighbors.get_neighbors(),
+            neighbors: neighbors.peers.get_neighbors(),
         }];
         let sync_from = match &self.sync_all_inprogress {
             SyncAllState::NotActive => None,
@@ -465,13 +483,7 @@ impl Distributor {
         database: &mut Database<APP>,
         input: impl Iterator<Item = DistributorMessage>,
     ) -> Result<Vec<DistributorMessage>> {
-        let mut buf = QueryableOutbuffer {
-            outbuf: Default::default(),
-            recent_sent: Default::default(),
-            request_upstream_message_inhibit: Default::default(),
-            request_upstream_message_inhibit_counter: 0,
-            periodic_message_interval: self.periodic_message_interval,
-        };
+        let mut buf = QueryableOutbuffer::new(self.periodic_message_interval);
         self.receive_message(
             database,
             input.map(|x| (Address::from("src"), x)),
@@ -488,10 +500,11 @@ impl Distributor {
         outbuf: &mut QueryableOutbuffer,
         neighborhood: &mut Neighborhood,
     ) -> Result<()> {
+
         let mut database = database.begin_session_mut()?;
-        let mut accumulated_heads: IndexSet<MessageId> = IndexSet::new();
-        let mut accumulated_upstream_queries = IndexMap::new();
-        let mut accumulated_responses = IndexMap::new();
+        let mut accumulated_heads: IndexMap<MessageId, Vec<EphemeralNodeId>> = IndexMap::new();
+        let mut accumulated_request_upstream = IndexMap::new();
+        let mut accumulated_upstream_responses:  IndexMap<MessageId, /*parents*/ (EphemeralNodeId/*src*/, MessageSubGraphNodeValue)> = IndexMap::new();
         let mut accumulated_send_msg_and_descendants = IndexSet::new();
         let mut accumulated_serialized = vec![];
         let mut accumulated_sync_all_queries = IndexSet::new();
@@ -515,20 +528,27 @@ impl Distributor {
                     for pass in 0..2 {
                         match database.is_acceptable_cutoff_hash(cutoff_hash)? {
                             Acceptability::Nominal => {
-                                if self.sync_all_inprogress.idle() {
-                                    accumulated_heads.extend(heads);
+                                // If the neighbor has no neighbors of its own, it's just starting up.
+                                // Let's wait a bit before acting on its messages
+                                if self.sync_all_inprogress.idle() && neighbors.is_empty() == false {
+                                    for head in heads {
+                                        let sources = accumulated_heads.entry(head).or_default();
+                                        if !sources.contains(&source) {
+                                            sources.push(source);
+                                        }
+                                    }
                                 }
-                                info!("Acceptability: Nominal");
+                                debug!("Acceptability: Nominal");
                                 self.distributor_state.most_recent_unsynced.remove(&src);
                                 self.distributor_state.most_recent_clockdrift.remove(&src);
 
-                                let peer= neighborhood.get_insert_peer(source);
+                                let peer= neighborhood.peers.get_insert_peer(source);
                                 peer.peer_neighbors.clone_from(&neighbors);
 
                                 break;
                             }
                             Acceptability::Unacceptable => {
-                                info!("Acceptability: Unacceptable");
+                                debug!("Acceptability: Unacceptable");
                                 self.distributor_state
                                     .most_recent_unsynced
                                     .insert(src, database.noatun_now());
@@ -538,7 +558,7 @@ impl Distributor {
                                 break;
                             }
                             Acceptability::Undecided(advance) => {
-                                info!("Acceptability: Undecided");
+                                debug!("Acceptability: Undecided");
                                 // We know this won't advance too far, because is_acceptable_cutoff_hash
                                 // never advances far
                                 database.advance_cutoff(advance)?;
@@ -552,9 +572,9 @@ impl Distributor {
                                 }
                             }
                             Acceptability::UnacceptablePeerClockDrift => {
-                                if self.sync_all_inprogress.idle() {
+                                /*if self.sync_all_inprogress.idle() {
                                     accumulated_heads.extend(heads);
-                                }
+                                }*/
                                 info!("Acceptability: Clockdrift");
                                 self.distributor_state
                                     .most_recent_clockdrift
@@ -564,31 +584,46 @@ impl Distributor {
                         }
                     }
                 }
-                DistributorMessage::RequestUpstream { source, query } => {
-                    if let Some(peer) = neighborhood.get_peer(source) {
+                DistributorMessage::RequestUpstream { source, query, destination } => {
+                    //if let Some(peer) = neighborhood.peers.get_peer(source) {
                         for (msg, count) in query {
-                            //let origin = neighborhood.recent_messages.recent_messages.get(&msg);
-                            if peer.we_should_answer_request(self.ephemeral_node_id) {
-                                let accum_count = accumulated_upstream_queries.entry(msg).or_insert(0usize);
+                            // TODO: Consider if this is fast enough to do unbatched here? (and is batching really faster?)
+                            if !database.contains_message(msg)? {
+                                continue;
+                            }
+                            error!("Considering {:?} query: {:?}", source, msg);
+                            if destination == self.ephemeral_node_id {
+                                println!("Recording query");
+                                let accum_count = accumulated_request_upstream.entry(msg).or_insert(0usize);
                                 *accum_count = (*accum_count).max(count);
                             }
                         }
-                    }
+                    //}
                 }
-                DistributorMessage::UpstreamResponse { source:_, messages } => {
+                DistributorMessage::UpstreamResponse { source, messages } => {
                     for msg in messages {
                         let val = MessageSubGraphNodeValue {
                             parents: msg.parents,
                             query_count: msg.query_count,
                         };
-                        accumulated_responses.insert(msg.id, val);
+                        match accumulated_upstream_responses.entry(msg.id) {
+                            Entry::Occupied(mut e) => {
+                                if e.get_mut().0 < source {
+                                    e.insert((source,val));
+                                }
+                            }
+                            Entry::Vacant(e) => {
+                                e.insert((source,val));
+                            }
+                        }
                     }
                 }
                 DistributorMessage::SendMessageAndAllDescendants { source:_, message_id } => {
                     accumulated_send_msg_and_descendants.extend(message_id);
                 }
-                DistributorMessage::Message{message:msg, demand_ack: need_ack, ..} => {
-                    accumulated_serialized.push((msg, need_ack));
+                DistributorMessage::Message{ source, message:mut msg, demand_ack: need_ack, origin } => {
+                    database.remove_cutoff_parents(&mut msg.parents);
+                    accumulated_serialized.push(AccumulatedMessage{msg, need_ack, source, origin});
                 }
                 DistributorMessage::SyncAllAck(acked) => match &mut self.sync_all_inprogress {
                     SyncAllState::QueryActive(from, to, items) => {
@@ -611,18 +646,20 @@ impl Distributor {
 
         self.process_reported_heads(&mut database, accumulated_heads, outbuf)?;
 
-        accumulated_upstream_queries.sort_keys();
+        accumulated_request_upstream.sort_keys();
+        println!("Accumulated upstream queries: {:?}", accumulated_request_upstream);
 
-        self.process_request_upstream(&mut database, accumulated_upstream_queries, outbuf)?;
-        self.process_upstream_response(&mut database, accumulated_responses, outbuf)?;
+        self.process_request_upstream(&mut database, accumulated_request_upstream, outbuf)?;
+        self.process_upstream_response(&mut database, accumulated_upstream_responses, outbuf)?;
         self.process_send_message_all_descendants(
             &mut database,
             accumulated_send_msg_and_descendants,
             outbuf,
+            neighborhood
         )?;
-        self.process_received_messages(&mut database, accumulated_serialized, outbuf)?;
+        self.process_received_messages(&mut database, accumulated_serialized, outbuf, neighborhood)?;
         self.process_sync_all_queries(&mut database, accumulated_sync_all_queries, outbuf)?;
-        self.process_sync_all_requests(&mut database, accumulated_sync_all_requests, outbuf)?;
+        self.process_sync_all_requests(&mut database, accumulated_sync_all_requests, outbuf, neighborhood)?;
         Ok(())
     }
 
@@ -655,15 +692,19 @@ impl Distributor {
         database: &mut DatabaseSessionMut<APP>,
         accumulated_sync_all_requests: IndexSet<MessageId>,
         output: &mut QueryableOutbuffer,
+        neighborhood: &Neighborhood
     ) -> Result<()> {
         for request in accumulated_sync_all_requests {
             match database.load_message(request) {
                 Ok(msg) => {
-                    output.push_back(DistributorMessage::Message {
-                        source: self.ephemeral_node_id,
-                        message: SerializedMessage::new(msg) ?,
-                        demand_ack: true,
-                    });
+                    if output.recently_sent_message_ids.is_duplicate(msg.id()) == false {
+                        output.push_back(DistributorMessage::Message {
+                            source: self.ephemeral_node_id,
+                            origin: neighborhood.recent_messages.recent_messages.get(&msg.id()).map(|x|x.original_source).unwrap_or(self.ephemeral_node_id),
+                            message: SerializedMessage::new(msg)?,
+                            demand_ack: true,
+                        });
+                    }
                 }
                 Err(err) => {
                     warn!(
@@ -679,32 +720,34 @@ impl Distributor {
     fn process_reported_heads<APP: Application>(
         &mut self,
         database: &mut DatabaseSessionMut<APP>,
-        accumulated_heads: IndexSet<MessageId>,
+        accumulated_heads: IndexMap< MessageId, Vec<EphemeralNodeId>>,
         existing_outbuf: &mut QueryableOutbuffer,
     ) -> Result<()> {
-        let mut messages_to_request = vec![];
-        for message in accumulated_heads {
-            if database.contains_message(message)? {
-                continue;
-            }
-            if existing_outbuf.has_request_for(message) {
-                continue;
-            }
-            if messages_to_request
-                .iter()
-                .any(|x: &(MessageId, usize)| x.0 == message)
+        for (message, srcs) in accumulated_heads {
+            let mut messages_to_request = vec![];
             {
-                continue;
+                if database.contains_message(message)? {
+                    continue;
+                }
+                if existing_outbuf.has_request_for(message) {
+                    continue;
+                }
+                if messages_to_request
+                    .iter()
+                    .any(|x: &(MessageId, usize)| x.0 == message)
+                {
+                    continue;
+                }
+                //println!("REQUEST_UPSTREAM inner (from within process__reporteD_heads");
+                messages_to_request.push((message, 4));
             }
-            //println!("REQUEST_UPSTREAM inner (from within process__reporteD_heads");
-            messages_to_request.push((message, 4));
-        }
-        if !messages_to_request.is_empty() {
-            //println!("REQUEST_UPSTREAM (from within process__reporteD_heads");
-            existing_outbuf.request_upstream(messages_to_request.into_iter(), self.ephemeral_node_id);
-            self.distributor_state.nominal = false;
-        } else {
-            self.distributor_state.nominal = true;
+            if !messages_to_request.is_empty() {
+                //println!("REQUEST_UPSTREAM (from within process__reporteD_heads");
+                existing_outbuf.request_upstream(messages_to_request.into_iter(), self.ephemeral_node_id, srcs[0]);
+                self.distributor_state.nominal = false;
+            } else {
+                self.distributor_state.nominal = true;
+            }
         }
         Ok(())
     }
@@ -716,6 +759,7 @@ impl Distributor {
     ) -> Result<()> {
         let messages: Vec<MessageSubGraphNode> = database
             .get_upstream_of(accumulated_heads.into_iter())?
+            .filter(|x|output.upstream_response_blocked(x.0.id))
             .map(|(msg, query_count)| MessageSubGraphNode {
                 id: msg.id,
                 parents: msg.parents,
@@ -723,6 +767,7 @@ impl Distributor {
             })
             .collect();
         if !messages.is_empty() {
+
             output.push_back(DistributorMessage::UpstreamResponse { messages, source: self.ephemeral_node_id });
         }
         Ok(())
@@ -730,12 +775,12 @@ impl Distributor {
     fn process_upstream_response<APP: Application>(
         &self,
         database: &mut DatabaseSessionMut<APP>,
-        upstream_response: IndexMap<MessageId, /*parents*/ MessageSubGraphNodeValue>,
+        upstream_response: IndexMap<MessageId, /*parents*/ (EphemeralNodeId/*src*/, MessageSubGraphNodeValue)>,
         queryable_outbuffer: &mut QueryableOutbuffer,
     ) -> Result<()> {
-        let mut unknowns: HashSet<(MessageId, usize)> = HashSet::new();
+        let mut unknowns: IndexMap<EphemeralNodeId, Vec<(MessageId, usize)>> = IndexMap::new();
         let mut send_cmds = vec![];
-        for (msg_id, msg_value) in upstream_response.iter() {
+        for (msg_id, (msg_source, msg_value)) in upstream_response.iter() {
             if database.contains_message(*msg_id)? {
                 continue; //We already have this one
             }
@@ -766,7 +811,7 @@ impl Distributor {
                 .iter()
                 .all(|x| upstream_response.contains_key(x));
             if !all_parents_are_also_in_request {
-                unknowns.extend(
+                unknowns.entry(*msg_source).or_default().extend(
                     msg_value
                         .parents
                         .iter()
@@ -783,7 +828,9 @@ impl Distributor {
         }
         if unknowns.is_empty() == false {
             //println!("REQUEST_UPSTREAM (from within process_upstream_response");
-            queryable_outbuffer.request_upstream(unknowns.into_iter(), self.ephemeral_node_id);
+            for (node,unknowns) in unknowns {
+                queryable_outbuffer.request_upstream(unknowns.into_iter(), self.ephemeral_node_id, node);
+            }
         }
 
         Ok(())
@@ -793,6 +840,7 @@ impl Distributor {
         database: &mut DatabaseSessionMut<APP>,
         mut message_list: IndexSet<MessageId>,
         output: &mut QueryableOutbuffer,
+        neighborhood: &Neighborhood
     ) -> Result<()> {
         while let Some(msg) = message_list.pop() {
             let msg = match database.load_message(msg) {
@@ -803,11 +851,14 @@ impl Distributor {
                 }
             };
             let msg_id = msg.id();
-            output.push_back(DistributorMessage::Message {
-                message: SerializedMessage::new(msg)?,
-                source: self.ephemeral_node_id,
-                demand_ack: false,
-            });
+            if output.recently_sent_message_ids.is_duplicate(msg.id()) == false {
+                output.push_back(DistributorMessage::Message {
+                    origin: neighborhood.recent_messages.recent_messages.get(&msg_id).map(|x| x.original_source).unwrap_or(self.ephemeral_node_id),
+                    message: SerializedMessage::new(msg)?,
+                    source: self.ephemeral_node_id,
+                    demand_ack: false,
+                });
+            }
 
             let mut children = database.get_message_children(msg_id)?;
             message_list.extend(children.iter().copied());
@@ -832,20 +883,24 @@ impl Distributor {
     fn process_received_messages<APP: Application>(
         &self,
         database: &mut DatabaseSessionMut<APP>,
-        mut message_list: Vec<(SerializedMessage, /*need ack*/ bool)>,
+        mut message_list: Vec<AccumulatedMessage>,
         output: &mut QueryableOutbuffer,
+        neighborhood: &mut Neighborhood
     ) -> Result<()> {
         database.maybe_advance_cutoff()?;
 
-        message_list.sort_by_key(|x| x.0.id);
+        message_list.sort_by_key(|x| x.msg.id);
 
         let mut chosen_messages = IndexMap::new();
-        'msg_iter: for (msg, need_ack) in message_list.into_iter() {
+        'msg_iter: for AccumulatedMessage{msg, source, origin, need_ack } in message_list.into_iter() {
             for parent in msg.parents.iter() {
                 if database.contains_message(*parent)? == false
                     && !chosen_messages.contains_key(parent)
                 // message_list is sorted by id (i.e, also by time), so parent should be found here
                 {
+
+                    neighborhood.record_tentative_missing_path(*parent, source, origin);
+
                     warn!(
                         "Could not apply message {:?} because parent {:?} is not known",
                         msg.id, parent
@@ -853,6 +908,7 @@ impl Distributor {
                     continue 'msg_iter;
                 }
             }
+            neighborhood.check_if_tentative_missing_path_was_actually_ok(msg.id);
             chosen_messages.insert(msg.id, (msg, need_ack));
         }
 

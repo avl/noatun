@@ -16,7 +16,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::offset_of;
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
@@ -661,7 +661,7 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message,
     {
-        info!("Start recovery procedure");
+        debug!("Start recovery procedure");
         self.index_mmap.truncate(0)?;
 
         let magic_finder = memchr::memmem::Finder::new(&MAGIC);
@@ -1835,7 +1835,7 @@ impl<M> OnDiskMessageStore<M> {
                 Cases::NextFromInput => {
                     let msg = cur_input_message.take().unwrap();
 
-                    info!(
+                    trace!(
                         "Inserting message {:?} at index {}",
                         msg.header.id, cur_index
                     );

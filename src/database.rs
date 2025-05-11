@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::pin::Pin;
-use tracing::{error, info};
+use tracing::{error, info, trace};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LoadingStatus {
@@ -92,6 +92,12 @@ impl<'a, APP: Application> DatabaseSession<'a, APP> {
         self.db.contains_message(message_id)
     }
 
+    pub fn remove_cutoff_parents(&self, parents: &mut Vec<MessageId>) {
+        if let Ok(cutoff) = self.db.current_cutoff_time() {
+            parents.retain(|x|x.timestamp() >= cutoff);
+        }
+    }
+
     pub(crate) fn get_upstream_of(
         &self,
         message_id: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
@@ -163,6 +169,12 @@ impl<'a, APP: Application> DatabaseSession<'a, APP> {
 impl<'a, APP: Application> DatabaseSessionMut<'a, APP> {
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
+    }
+
+    pub fn remove_cutoff_parents(&self, parents: &mut Vec<MessageId>) {
+        if let Ok(cutoff) = self.db.current_cutoff_time() {
+            parents.retain(|x|x.timestamp() >= cutoff);
+        }
     }
 
     pub(crate) fn get_upstream_of(
@@ -839,7 +851,7 @@ impl<APP: Application> Database<APP> {
         self.message_store
             .push_messages(&mut self.context, messages, local)?;
 
-        info!("apply_missing_messages");
+        trace!("apply_missing_messages");
 
         self.do_apply_missing()?;
         Ok(())
