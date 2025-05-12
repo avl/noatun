@@ -967,13 +967,13 @@ async fn all_up_huge_desynced_test() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_three_node_resync() {
+/*
     compile_error!("
 * Try to avoid sending RequestUpstream from multiple nodes
 * Automatic relay-routing-requests (unsquelch - rename?) (witrh also squelch if duplicates)
-
-
-
     ")
+*/
+
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();

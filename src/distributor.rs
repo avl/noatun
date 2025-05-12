@@ -644,13 +644,12 @@ impl Distributor {
             }
         }
 
-        self.process_reported_heads(&mut database, accumulated_heads, outbuf)?;
+        self.process_reported_heads(&mut database, accumulated_heads, outbuf, neighborhood)?;
 
         accumulated_request_upstream.sort_keys();
-        println!("Accumulated upstream queries: {:?}", accumulated_request_upstream);
 
         self.process_request_upstream(&mut database, accumulated_request_upstream, outbuf)?;
-        self.process_upstream_response(&mut database, accumulated_upstream_responses, outbuf)?;
+        self.process_upstream_response(&mut database, accumulated_upstream_responses, outbuf, neighborhood)?;
         self.process_send_message_all_descendants(
             &mut database,
             accumulated_send_msg_and_descendants,
@@ -722,6 +721,7 @@ impl Distributor {
         database: &mut DatabaseSessionMut<APP>,
         accumulated_heads: IndexMap< MessageId, Vec<EphemeralNodeId>>,
         existing_outbuf: &mut QueryableOutbuffer,
+        neighborhood: &mut Neighborhood //TODO: Maybe outbuf and neighborhood should be fields on distributor?
     ) -> Result<()> {
         for (message, srcs) in accumulated_heads {
             let mut messages_to_request = vec![];
@@ -743,7 +743,7 @@ impl Distributor {
             }
             if !messages_to_request.is_empty() {
                 //println!("REQUEST_UPSTREAM (from within process__reporteD_heads");
-                existing_outbuf.request_upstream(messages_to_request.into_iter(), self.ephemeral_node_id, srcs[0]);
+                existing_outbuf.request_upstream(messages_to_request.into_iter(), self.ephemeral_node_id, srcs[0], neighborhood);
                 self.distributor_state.nominal = false;
             } else {
                 self.distributor_state.nominal = true;
@@ -759,15 +759,19 @@ impl Distributor {
     ) -> Result<()> {
         let messages: Vec<MessageSubGraphNode> = database
             .get_upstream_of(accumulated_heads.into_iter())?
-            .filter(|x|output.upstream_response_blocked(x.0.id))
+            .filter(|x|output.upstream_response_blocked(x.0.id) == false)
             .map(|(msg, query_count)| MessageSubGraphNode {
                 id: msg.id,
                 parents: msg.parents,
                 query_count,
             })
             .collect();
-        if !messages.is_empty() {
 
+        /*if neighbors.is_inhibited(request_from, self_node, |info|&mut info.request_inhibited_based_on_node_numbers) {
+            return;
+        }*/
+
+        if !messages.is_empty() {
             output.push_back(DistributorMessage::UpstreamResponse { messages, source: self.ephemeral_node_id });
         }
         Ok(())
@@ -777,6 +781,7 @@ impl Distributor {
         database: &mut DatabaseSessionMut<APP>,
         upstream_response: IndexMap<MessageId, /*parents*/ (EphemeralNodeId/*src*/, MessageSubGraphNodeValue)>,
         queryable_outbuffer: &mut QueryableOutbuffer,
+        neighborhood: &mut Neighborhood,
     ) -> Result<()> {
         let mut unknowns: IndexMap<EphemeralNodeId, Vec<(MessageId, usize)>> = IndexMap::new();
         let mut send_cmds = vec![];
@@ -802,6 +807,10 @@ impl Distributor {
                     "Requesting msg.id={:?}, because we have all its parents: {:?}",
                     msg_id, msg_value.parents
                 );
+
+                if neighborhood.is_inhibited(*msg_source, self.ephemeral_node_id, |info|&mut info.send_msg_and_descendants_based_on_node_numbers) {
+                    continue;
+                }
                 send_cmds.push(*msg_id);
                 continue;
             }
@@ -828,8 +837,8 @@ impl Distributor {
         }
         if unknowns.is_empty() == false {
             //println!("REQUEST_UPSTREAM (from within process_upstream_response");
-            for (node,unknowns) in unknowns {
-                queryable_outbuffer.request_upstream(unknowns.into_iter(), self.ephemeral_node_id, node);
+            for (src_node,unknowns) in unknowns {
+                queryable_outbuffer.request_upstream(unknowns.into_iter(), self.ephemeral_node_id, src_node, neighborhood);
             }
         }
 

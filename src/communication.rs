@@ -24,6 +24,7 @@ use std::time::Duration;
 use std::{io, thread};
 use std::cmp::Reverse;
 use indexmap::map::Entry;
+use smallvec::SmallVec;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
@@ -871,6 +872,12 @@ pub(crate) struct PeerInfo {
     /// by messages from `SeenBy`.
     pub(crate) source_info: IndexMap<EphemeralNodeId, PeerOriginInfo>,
     pub(crate) peer_neighbors: Vec<EphemeralNodeId>,
+
+    /// set to true whenever we decide to inhibit a request based on the idea that
+    /// there's another node in our group that should be doing the request
+    pub(crate) request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit,
+    pub(crate) send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit,
+
 }
 impl PeerInfo {
     pub fn new(peer: EphemeralNodeId) -> PeerInfo {
@@ -878,6 +885,8 @@ impl PeerInfo {
             peer,
             source_info: Default::default(),
             peer_neighbors: vec![],
+            request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit::default(),
+            send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit::default(),
         }
     }
     pub fn we_should_answer_request(&self, our_id: EphemeralNodeId) -> bool {
@@ -920,6 +929,10 @@ pub(crate) struct RecentMessages {
     pub(crate) recent_messages: IndexMap<MessageId, MessageSourceInfo>,
 }
 impl RecentMessages {
+    pub(crate) fn get_node_for(&mut self, message_id: &MessageId) -> Option<EphemeralNodeId> {
+        self.recent_messages.get_mut(message_id).map(|x|x.original_source)
+    }
+
     fn get(&mut self, message_id: &MessageId) -> Option<&mut MessageSourceInfo> {
         self.recent_messages.get_mut(message_id)
     }
@@ -955,11 +968,25 @@ pub(crate) struct Peers {
 }
 
 impl Peers {
+    /*pub(crate) fn request_upstream_inhibited(&self, peer: EphemeralNodeId) -> bool {
+        if let Some(info) = self.peers.get(&peer) {
+            info.request_inhibited_based_on_node_numbers
+        } else {
+            true
+        }
+
+    }*/
     pub fn get_insert_peer(&mut self, peer_id: EphemeralNodeId) -> &mut PeerInfo {
         self.peers.entry(peer_id).or_insert_with(||PeerInfo::new(peer_id))
     }
-    pub fn get_peer(&mut self, peer_id: EphemeralNodeId) -> Option<&mut PeerInfo> {
+    pub fn get_insert_peer2(&mut self, peer_id: EphemeralNodeId) -> &PeerInfo {
+        self.peers.entry(peer_id).or_insert_with(||PeerInfo::new(peer_id))
+    }
+    pub fn get_peer_mut(&mut self, peer_id: EphemeralNodeId) -> Option<&mut PeerInfo> {
         self.peers.get_mut(&peer_id)
+    }
+    pub fn get_peer(&self, peer_id: EphemeralNodeId) -> Option<&PeerInfo> {
+        self.peers.get(&peer_id)
     }
     pub fn get_neighbors(&self) -> Vec<EphemeralNodeId> {
         let mut t: Vec<_> = self.peers.keys().copied().collect();
@@ -984,6 +1011,69 @@ pub(crate) struct QuarantinedMessage {
     first_need: Instant,
 }
 
+#[derive(Default)]
+pub(crate) struct NodeNumberBasedInhibit {
+    was_inhibited: bool,
+    inhibit_with_no_one_else_taking_up_the_slack_count: usize,
+}
+
+compile_error!("all_up_three_node_resync is now quite tight. Check other scenarios.
+
+then start fixing general relaying-requests for missing parents on received msgs
+")
+
+struct Patience(usize);
+
+impl Patience {
+    pub fn tax(&mut self) -> bool {
+        if self.0 == 0 {
+            true
+        } else {
+            self.0 -= 1;
+            false
+        }
+    }
+}
+
+
+impl NodeNumberBasedInhibit {
+    pub(crate) fn satisfied(&mut self) {
+        self.was_inhibited = false;
+        self.inhibit_with_no_one_else_taking_up_the_slack_count = 0;
+    }
+    pub(crate) fn time_passed(&mut self) {
+        if self.was_inhibited {
+            self.inhibit_with_no_one_else_taking_up_the_slack_count += 1;
+        }
+    }
+    pub fn is_inhibited(&mut self,
+                        self_node: EphemeralNodeId,
+                        our_neighbor_list: &[EphemeralNodeId],
+                        request_from_neighbors: &[EphemeralNodeId]
+    ) -> bool {
+        let mut patience = Patience(self.inhibit_with_no_one_else_taking_up_the_slack_count);
+        error!("is_inhibited #{:?}: our: {:?} neigh: {:?}", self_node, our_neighbor_list, request_from_neighbors);
+        for our_neighbor in our_neighbor_list {
+            if *our_neighbor >= self_node {
+                continue;
+            }
+
+            if request_from_neighbors.contains(&our_neighbor) {
+                if patience.tax() {
+                    self.was_inhibited = true;
+                    error!("#{:?}: was inhibited", self_node);
+                    // This other neighbor should do the request instead
+                    return true;
+                }
+            }
+
+        }
+        error!("#{:?}: was not inhibited", self_node);
+        false
+    }
+
+}
+
 // TODO: Maybe nodes that notice that they have more neighbors than basically anybody,
 // should try to change node-id to a small number, so they can be natural, efficient relays for everybody.
 #[derive(Default)]
@@ -992,10 +1082,26 @@ pub(crate) struct Neighborhood {
     /// The source we've observed for recent messages.
     pub(crate) recent_messages: RecentMessages,
 
-    pub(crate) quarantine: IndexMap<MessageId, QuarantinedMessage>
+    pub(crate) quarantine: IndexMap<MessageId, QuarantinedMessage>,
 }
 
 impl Neighborhood {
+
+    /// request_from = the origin of the request we're about to respond to
+    /// self_node = ourselves
+    pub(crate) fn is_inhibited(&mut self, request_from: EphemeralNodeId, self_node: EphemeralNodeId, kind :impl FnOnce(&mut PeerInfo) -> &mut NodeNumberBasedInhibit ) -> bool {
+        let neighbors_list: SmallVec<[_;16]> = self.peers.peers.keys().copied().collect();
+        let Some(requesting_node) = self.peers.get_peer_mut(request_from) else {
+            return true;
+        };
+        if requesting_node.peer_neighbors.is_empty() {
+            // Not fully up-and-running yet
+            return true;
+        }
+        let requesting_node_neighbors: SmallVec<[_;16]> = requesting_node.peer_neighbors.iter().copied().collect();
+        let inhibitor = kind(requesting_node);
+        inhibitor.is_inhibited(self_node, &neighbors_list, &requesting_node_neighbors)
+    }
 
     /// A previous tentatively missing path may actually not be a missing path, it might just
     /// be there's some jitter (which is normal and expected).
@@ -1004,6 +1110,7 @@ impl Neighborhood {
     pub(crate) fn check_if_tentative_missing_path_was_actually_ok(&mut self, msg: MessageId)  {
         self.quarantine.swap_remove(&msg);
     }
+
     /// Origin is where our immediate source got it from.
     pub(crate) fn record_tentative_missing_path(&mut self, parent_we_are_missing: MessageId, immediate_source: EphemeralNodeId, origin: EphemeralNodeId) {
         match self.quarantine.entry(parent_we_are_missing) {
@@ -1046,6 +1153,7 @@ impl Neighborhood {
             }
             DistributorMessage::ReportHeads{heads, source,..}=> {
                 let peer = self.peers.get_insert_peer(*source);
+                peer.request_inhibited_based_on_node_numbers.time_passed();
                 for head in heads {
                     if let Some(msg_source) = self.recent_messages.get(head) {
                         if msg_source.other_transmitters == false {
@@ -1071,6 +1179,9 @@ impl Neighborhood {
 
             }
             DistributorMessage::UpstreamResponse { source, messages, .. } => {
+                if let Some(peer) = self.peers.get_peer_mut(*source) {
+                    peer.request_inhibited_based_on_node_numbers.satisfied();
+                }
                 for msg in messages {
                     self.recent_messages.record_message_source(msg.id, *source, false);
                 }
@@ -1145,7 +1256,7 @@ impl QueryableOutbuffer {
             recently_sent_message_ids: DuplicationChecker::new(2*periodic_message_interval),
         }
     }
-
+    //TODO: Implement detection of node id duplicates
     pub(crate) fn upstream_response_blocked(&mut self, id: MessageId) -> bool {
         self.recently_sent_upstream_responses_for.is_duplicate(id)
     }
@@ -1161,11 +1272,19 @@ impl QueryableOutbuffer {
         &mut self,
         messages_to_request: impl Iterator<Item = (MessageId, usize)>,
         self_node: EphemeralNodeId,
-        request_from: EphemeralNodeId
+        request_from: EphemeralNodeId,
+        neighbors: &mut Neighborhood
     ) {
+
+        if neighbors.is_inhibited(request_from, self_node, |info|&mut info.request_inhibited_based_on_node_numbers) {
+            return;
+        }
+
         let query: Vec<_> = messages_to_request
             .filter(
-                |msg| !self.request_upstream_message_inhibit.is_duplicate(msg.0)
+                |msg| {
+                    !self.request_upstream_message_inhibit.is_duplicate(msg.0)
+                }
             )
             .collect();
 
