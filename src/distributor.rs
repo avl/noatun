@@ -7,13 +7,13 @@ use anyhow::Result;
 use arrayvec::ArrayString;
 use indexmap::{IndexMap, IndexSet};
 use savefile_derive::Savefile;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::io::Cursor;
 use std::time::Duration;
 use indexmap::map::Entry;
 use rand::{thread_rng, Rng};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 pub const MAX_RECENT_SENT_MEMORY: usize = 100;
 
@@ -176,6 +176,7 @@ pub enum DistributorMessage {
     /// Response to a RequestUpstream, giving information about the message graph
     UpstreamResponse {
         source: EphemeralNodeId,
+        dest: EphemeralNodeId,
         messages: Vec<MessageSubGraphNode>,
     },
     /// Command the recipient to send all descendants of the given messages
@@ -246,12 +247,13 @@ impl DistributorMessage {
             DistributorMessage::RequestUpstream { source, query, destination } => {
                 format!("{}: Query: {:?}, src: {:?}, dst: {:?}", red("RequestUpstream"), query, source, destination)
             }
-            DistributorMessage::UpstreamResponse { source, messages } => {
+            DistributorMessage::UpstreamResponse { source,dest, messages } => {
                 format!(
-                    "{}: Messages: {:?}, src: {:?}",
+                    "{}: Messages: {:?}, src: {:?}, dst: {:?}",
                     lightbrown("UpstreamResponse"),
                     messages,
-                    source
+                    source,
+                    dest
                 )
             }
             DistributorMessage::SendMessageAndAllDescendants { source, message_id } => {
@@ -504,8 +506,8 @@ impl Distributor {
         let mut database = database.begin_session_mut()?;
         let mut accumulated_heads: IndexMap<MessageId, Vec<EphemeralNodeId>> = IndexMap::new();
         let mut accumulated_request_upstream = IndexMap::new();
-        let mut accumulated_upstream_responses:  IndexMap<MessageId, /*parents*/ (EphemeralNodeId/*src*/, MessageSubGraphNodeValue)> = IndexMap::new();
-        let mut accumulated_send_msg_and_descendants = IndexSet::new();
+        let mut accumulated_upstream_responses:  IndexMap<MessageId, /*parents*/ (EphemeralNodeId/*src*/, EphemeralNodeId/*dst*/, MessageSubGraphNodeValue)> = IndexMap::new();
+        let mut accumulated_send_msg_and_descendants = IndexMap::new();
         let mut accumulated_serialized = vec![];
         let mut accumulated_sync_all_queries = IndexSet::new();
         let mut accumulated_sync_all_requests = IndexSet::new();
@@ -591,35 +593,48 @@ impl Distributor {
                             if !database.contains_message(msg)? {
                                 continue;
                             }
-                            error!("Considering {:?} query: {:?}", source, msg);
+                            trace!("Considering {:?} query: {:?}", source, msg);
                             if destination == self.ephemeral_node_id {
-                                println!("Recording query");
-                                let accum_count = accumulated_request_upstream.entry(msg).or_insert(0usize);
-                                *accum_count = (*accum_count).max(count);
+                                let accum_count = accumulated_request_upstream.entry(msg).or_insert((0usize, source));
+                                accum_count.0 = (accum_count.0).max(count);
+                                accum_count.1 = (accum_count.1).min(source);
                             }
                         }
                     //}
                 }
-                DistributorMessage::UpstreamResponse { source, messages } => {
-                    for msg in messages {
-                        let val = MessageSubGraphNodeValue {
-                            parents: msg.parents,
-                            query_count: msg.query_count,
-                        };
-                        match accumulated_upstream_responses.entry(msg.id) {
-                            Entry::Occupied(mut e) => {
-                                if e.get_mut().0 < source {
-                                    e.insert((source,val));
+                DistributorMessage::UpstreamResponse { source, dest, messages } => {
+                    if dest == self.ephemeral_node_id {
+                        for msg in messages {
+                            let val = MessageSubGraphNodeValue {
+                                parents: msg.parents,
+                                query_count: msg.query_count,
+                            };
+                            match accumulated_upstream_responses.entry(msg.id) {
+                                Entry::Occupied(mut e) => {
+                                    if e.get_mut().0 < source {
+                                        e.insert((source, dest,val));
+                                    }
                                 }
-                            }
-                            Entry::Vacant(e) => {
-                                e.insert((source,val));
+                                Entry::Vacant(e) => {
+                                    e.insert((source, dest,val));
+                                }
                             }
                         }
                     }
                 }
-                DistributorMessage::SendMessageAndAllDescendants { source:_, message_id } => {
-                    accumulated_send_msg_and_descendants.extend(message_id);
+                DistributorMessage::SendMessageAndAllDescendants { source, message_id } => {
+                    for msg in message_id {
+                        match accumulated_send_msg_and_descendants.entry(msg) {
+                            Entry::Occupied(mut e) => {
+                                if *e.get() > source {
+                                    e.insert(source);
+                                }
+                            }
+                            Entry::Vacant(e) => {
+                                e.insert(source);
+                            }
+                        }
+                    }
                 }
                 DistributorMessage::Message{ source, message:mut msg, demand_ack: need_ack, origin } => {
                     database.remove_cutoff_parents(&mut msg.parents);
@@ -738,11 +753,11 @@ impl Distributor {
                 {
                     continue;
                 }
-                //println!("REQUEST_UPSTREAM inner (from within process__reporteD_heads");
+
                 messages_to_request.push((message, 4));
             }
             if !messages_to_request.is_empty() {
-                //println!("REQUEST_UPSTREAM (from within process__reporteD_heads");
+
                 existing_outbuf.request_upstream(messages_to_request.into_iter(), self.ephemeral_node_id, srcs[0], neighborhood);
                 self.distributor_state.nominal = false;
             } else {
@@ -754,41 +769,53 @@ impl Distributor {
     fn process_request_upstream<APP: Application>(
         &self,
         database: &mut DatabaseSessionMut<APP>,
-        accumulated_heads: IndexMap<MessageId, usize>,
+        accumulated_heads: IndexMap<MessageId, (usize, /*src:*/EphemeralNodeId)>,
         output: &mut QueryableOutbuffer,
     ) -> Result<()> {
-        let messages: Vec<MessageSubGraphNode> = database
-            .get_upstream_of(accumulated_heads.into_iter())?
-            .filter(|x|output.upstream_response_blocked(x.0.id) == false)
-            .map(|(msg, query_count)| MessageSubGraphNode {
-                id: msg.id,
-                parents: msg.parents,
-                query_count,
-            })
-            .collect();
+        let mut by_src : IndexMap<EphemeralNodeId, Vec<(MessageId, usize)>> = IndexMap::new();
 
-        /*if neighbors.is_inhibited(request_from, self_node, |info|&mut info.request_inhibited_based_on_node_numbers) {
-            return;
-        }*/
-
-        if !messages.is_empty() {
-            output.push_back(DistributorMessage::UpstreamResponse { messages, source: self.ephemeral_node_id });
+        for (msg,(count,src)) in accumulated_heads {
+            by_src.entry(src).or_default().push((msg, count));
         }
+        for (src, heads) in by_src {
+            let messages: Vec<MessageSubGraphNode> = database
+                .get_upstream_of(heads.into_iter())?
+                .filter(|x|output.upstream_response_blocked(x.0.id) == false)
+                .map(|(msg, query_count)| MessageSubGraphNode {
+                    id: msg.id,
+                    parents: msg.parents,
+                    query_count,
+                })
+                .collect();
+
+            /*if neighbors.is_inhibited(request_from, self_node, |info|&mut info.request_inhibited_based_on_node_numbers) {
+                return;
+            }*/
+
+            if !messages.is_empty() {
+                output.push_back(DistributorMessage::UpstreamResponse { messages, dest: src, source: self.ephemeral_node_id });
+            }
+        }
+
         Ok(())
     }
     fn process_upstream_response<APP: Application>(
         &self,
         database: &mut DatabaseSessionMut<APP>,
-        upstream_response: IndexMap<MessageId, /*parents*/ (EphemeralNodeId/*src*/, MessageSubGraphNodeValue)>,
+        upstream_response: IndexMap<MessageId, /*parents*/ (EphemeralNodeId/*src*/, EphemeralNodeId/*dst*/, MessageSubGraphNodeValue)>,
         queryable_outbuffer: &mut QueryableOutbuffer,
         neighborhood: &mut Neighborhood,
     ) -> Result<()> {
         let mut unknowns: IndexMap<EphemeralNodeId, Vec<(MessageId, usize)>> = IndexMap::new();
         let mut send_cmds = vec![];
-        for (msg_id, (msg_source, msg_value)) in upstream_response.iter() {
+        for (msg_id, (msg_source, msg_dest, msg_value)) in upstream_response.iter() {
             if database.contains_message(*msg_id)? {
                 continue; //We already have this one
             }
+            if *msg_dest != self.ephemeral_node_id {
+                continue;
+            }
+
             let mut err = Ok(());
             let have_all_parents = msg_value.parents.iter().all(|x| {
                 database
@@ -808,9 +835,9 @@ impl Distributor {
                     msg_id, msg_value.parents
                 );
 
-                if neighborhood.is_inhibited(*msg_source, self.ephemeral_node_id, |info|&mut info.send_msg_and_descendants_based_on_node_numbers) {
+                /*if neighborhood.is_inhibited(*msg_source, self.ephemeral_node_id, |info|&mut info.send_msg_and_descendants_based_on_node_numbers) {
                     continue;
-                }
+                }*/
                 send_cmds.push(*msg_id);
                 continue;
             }
@@ -847,11 +874,12 @@ impl Distributor {
     fn process_send_message_all_descendants<APP: Application>(
         &self,
         database: &mut DatabaseSessionMut<APP>,
-        mut message_list: IndexSet<MessageId>,
+        mut message_list: IndexMap<MessageId, EphemeralNodeId>,
         output: &mut QueryableOutbuffer,
-        neighborhood: &Neighborhood
+        neighborhood: &mut Neighborhood
     ) -> Result<()> {
-        while let Some(msg) = message_list.pop() {
+        let mut message_list : VecDeque<_> = message_list.drain(..).collect();
+        while let Some((msg, src)) = message_list.pop_front() {
             let msg = match database.load_message(msg) {
                 Ok(msg) => msg,
                 Err(err) => {
@@ -860,6 +888,11 @@ impl Distributor {
                 }
             };
             let msg_id = msg.id();
+
+            if neighborhood.is_inhibited(src, self.ephemeral_node_id, |info| {&mut info.resend_actual_message_based_on_node_numbers}) {
+                break;
+            }
+
             if output.recently_sent_message_ids.is_duplicate(msg.id()) == false {
                 output.push_back(DistributorMessage::Message {
                     origin: neighborhood.recent_messages.recent_messages.get(&msg_id).map(|x| x.original_source).unwrap_or(self.ephemeral_node_id),
@@ -869,8 +902,9 @@ impl Distributor {
                 });
             }
 
+
             let mut children = database.get_message_children(msg_id)?;
-            message_list.extend(children.iter().copied());
+            message_list.extend(children.iter().map(|x|(*x, src)));
             #[cfg(debug_assertions)]
             {
                 let mut actual_children = vec![];

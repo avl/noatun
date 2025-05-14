@@ -58,6 +58,7 @@ pub struct DatabaseSettings {
 
     pub max_file_size: usize,
     pub cutoff_interval: CutOffDuration,
+
 }
 impl Default for DatabaseSettings {
     fn default() -> Self {

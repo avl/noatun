@@ -37,7 +37,7 @@ pub mod size_limit_vec_deque;
 pub mod udp;
 
 #[derive(Savefile, Debug)]
-enum NetworkPacket<Endpoint> {
+pub(crate) enum NetworkPacket<Endpoint> {
     Data(bool /*push*/, TransmittedEntitySortable),
     RetransmitRequest { who: Endpoint, what: Vec<u64> },
 }
@@ -110,11 +110,6 @@ pub trait CommunicationSendSocket<Endpoint: PartialEq + Debug + Send> {
     ) -> impl std::future::Future<Output = io::Result<usize>> + Send;
 }
 
-#[derive(Debug)]
-enum TransmittedEntity<Endpoint> {
-    Sortable(TransmittedEntitySortable),
-    Retransmit(u64, Endpoint),
-}
 
 #[derive(Debug, Clone)]
 struct TransmittedEntitySortable {
@@ -193,29 +188,44 @@ impl MeasurableSize for SortableTransmittedEntity {
 }
 
 struct ReceiveTrack {
+    have_valid_accum: bool,
     accum: VecDeque<u8>,
     expected_next: u64,
     sorted_packets: VecDeque<SortableTransmittedEntity>,
     retransmit_interval: Duration,
+    disable_retransmit: bool,
+    retransmit_counter: usize,
+    last_success: Instant,
 }
 
+enum ReceiveResult {
+    Nominal,
+    RestartTrack,
+}
 
 impl ReceiveTrack {
     /// How long are packets kept in the retransmit window.
     /// I.e, after this has passed, they're lost forever.
-    pub const RETRANSMIT_WINDOW: usize = 1000;
-    pub const RETRANSMIT_WINDOW_U16: u16 = if Self::RETRANSMIT_WINDOW > u16::MAX as usize {
+    pub const RECEIVER_RETRANSMIT_WINDOW: usize = 1000;
+    pub const SENDER_RETRANSMIT_WINDOW: usize = ReceiveTrack::RECEIVER_RETRANSMIT_WINDOW/5;
+    pub const RETRANSMIT_WINDOW_U16: u16 = if Self::RECEIVER_RETRANSMIT_WINDOW > u16::MAX as usize {
         panic!("RETRANSMIT_WINDOW constant value too large")
     } else {
-        Self::RETRANSMIT_WINDOW as u16
+        Self::RECEIVER_RETRANSMIT_WINDOW as u16
     };
 
-    pub(crate) fn new(retransmit_interval: Duration) -> Self {
+    pub(crate) fn new(retransmit_interval: Duration, retransmit_disabled: bool) -> Self {
         ReceiveTrack {
+            have_valid_accum: true,
             accum: Default::default(),
             expected_next: 0,
             sorted_packets: Default::default(),
             retransmit_interval,
+            disable_retransmit: retransmit_disabled,
+            retransmit_counter: 0,
+            //TODO: Clean away tracks if last success is long far ago
+            compile_error!("Maybe low-level retransmits should also use the neighbor info...")
+            last_success: Instant::now(),
         }
     }
 
@@ -258,61 +268,87 @@ impl ReceiveTrack {
             debug!("Already had packet: {:?}", &packet);
             return Ok(());
         };
-
         self.sorted_packets.insert(insert_point, packet);
+
+        let packet_count = self.sorted_packets.len();
+        if reconstructed_seq == 0 {
+            self.have_valid_accum = true;
+            debug_assert!(self.accum.is_empty());
+            self.accum.clear();
+        }
         while let Some(first) = self.sorted_packets.front() {
+
             if first.reconstructed_seq != self.expected_next {
-                trace!(
-                    "Expected next: {}, actual (reconstructed) seq: {}",
-                    self.expected_next,
-                    first.reconstructed_seq
-                );
-                if first.reconstructed_seq < self.expected_next {
-                    info!(
+                println!("Mismatch: disabled retransmit: {:?}, packet count: {}, last prog: {:?}", self.disable_retransmit, self.expected_next, self.retransmit_counter);
+                if self.disable_retransmit || packet_count > Self::SENDER_RETRANSMIT_WINDOW || self.retransmit_counter > 3 {
+                    self.accum.clear();
+                    self.have_valid_accum = false;
+                    self.expected_next = first.reconstructed_seq;
+                    self.retransmit_counter = 0;
+                } else {
+                    trace!(
+                        "Expected next: {}, actual (reconstructed) seq: {}",
+                        self.expected_next,
+                        first.reconstructed_seq
+                    );
+                    if first.reconstructed_seq < self.expected_next {
+                        info!(
                         "duplicate packet ignored (expected {}, got {})",
                         self.expected_next, first.reconstructed_seq
                     );
-                    self.sorted_packets.pop_front();
-                    continue;
-                }
-                if self.expected_next == 0 {
-                    //Make sure that after a restart, we always pickup wherever the on-wire stream is
-                    self.expected_next = first.reconstructed_seq;
-                } else {
-                    trace!(
+                        self.sorted_packets.pop_front();
+                        continue;
+                    }
+                    if self.expected_next == 0 {
+                        //Make sure that after a restart, we always pickup wherever the on-wire stream is
+                        self.expected_next = first.reconstructed_seq;
+                    } else {
+                        trace!(
                         "Appending retransmit-request for {:?} {:?}",
                         packet_source,
                         self.expected_next
                     );
-                    //let cur_missing = self.expected_next;
-                    let accum = retransmit_requests.entry(packet_source).or_default();
-                    for x in self.expected_next..first.reconstructed_seq {
-                        accum.items.insert(x);
-                    }
-                    if !push {
-                        accum.wait_until = Instant::now() + self.retransmit_interval;
-                    }
-                    let mut cur = first.reconstructed_seq;
-                    'loop1: for key in &self.sorted_packets {
-                        while cur < key.reconstructed_seq {
-                            accum.items.insert(cur);
-                            cur += 1;
-                            if accum.items.len() > 100 {
-                                break 'loop1;
-                            }
+                        //let cur_missing = self.expected_next;
+                        let accum_retransmits = retransmit_requests.entry(packet_source).or_default();
+                        for x in self.expected_next..first.reconstructed_seq {
+                            accum_retransmits.items.insert(x);
                         }
-                        cur = key.reconstructed_seq + 1;
-                    }
-                    assert!(accum.items.is_empty() == false);
+                        if !push {
+                            println!("Enqueue retransmit in {:?}", self.retransmit_interval);
+                            accum_retransmits.wait_until = Instant::now() + self.retransmit_interval;
+                        }
+                        let mut cur = first.reconstructed_seq;
+                        'loop1: for key in &self.sorted_packets {
+                            while cur < key.reconstructed_seq {
+                                accum_retransmits.items.insert(cur);
+                                cur += 1;
+                                if accum_retransmits.items.len() > 100 {
+                                    break 'loop1;
+                                }
+                            }
+                            cur = key.reconstructed_seq + 1;
+                        }
+                        assert!(accum_retransmits.items.is_empty() == false);
 
-                    return Ok(());
+                        self.retransmit_counter += 1;
+
+                        return Ok(());
+                    }
                 }
             }
+
+            self.retransmit_counter = 0;
+            self.last_success = Instant::now();
+
             if first.entity.first_boundary == u16::MAX {
-                self.accum.extend(&first.entity.data);
+                if self.have_valid_accum {
+                    self.accum.extend(&first.entity.data);
+                }
             } else {
-                self.accum
-                    .extend(&first.entity.data[0..first.entity.first_boundary as usize]);
+                if self.have_valid_accum {
+                    self.accum
+                        .extend(&first.entity.data[0..first.entity.first_boundary as usize]);
+                }
                 if !self.accum.is_empty() {
                     tx_finished_received_frame
                         .try_send((
@@ -322,6 +358,7 @@ impl ReceiveTrack {
                         .unwrap();
                     self.accum.clear();
                 }
+                self.have_valid_accum = true;
                 let mut cur_boundary = first.entity.first_boundary as usize;
                 let mut reader = Cursor::new(&first.entity.data);
                 reader.seek(SeekFrom::Start(cur_boundary as u64))?;
@@ -386,6 +423,7 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     limiter: BwLimiter,
     /// The timeout before a retransmit is initiated
     retransmit_interval: Duration,
+    disable_retransmit: bool,
 }
 impl<Socket: CommunicationDriver> Drop for MulticastSenderLoop<Socket> {
     fn drop(&mut self) {
@@ -430,6 +468,7 @@ impl BwLimiter {
 }
 
 impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
+    //TODO: Too many arguments
     pub(crate) async fn new(
         driver: &mut Socket,
         bind_address: &str,
@@ -441,6 +480,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         mtu: usize,
         retransmit_interval: Duration,
         retransmit_buffer_size_bytes: usize,
+        disable_retransmit: bool,
     ) -> Result<MulticastSenderLoop<Socket>> {
         let (send_socket, receive_socket) = driver
             .initialize(bind_address, multicast_group, mtu)
@@ -458,6 +498,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             receive_socket,
             history: SizeLimitVecDeque::new(retransmit_buffer_size_bytes),
             queue: Default::default(),
+            disable_retransmit,
             outgoing_retransmit_requests: Default::default(),
             receive_track: Default::default(),
             limiter: BwLimiter::new(bandwidth_bytes_per_second),
@@ -679,7 +720,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         match packet {
                             NetworkPacket::Data(push, entity) => {
 
-                                match self.receive_track.entry(src_addr).or_insert_with(||ReceiveTrack::new(self.retransmit_interval))
+                                match self.receive_track.entry(src_addr).or_insert_with(||ReceiveTrack::new(self.retransmit_interval, self.disable_retransmit))
                                     .process(entity, src_addr, &mut self.message_tx, &mut self.outgoing_retransmit_requests, push).await {
                                         Ok(()) => {}
                                         Err(err) => {
@@ -876,7 +917,8 @@ pub(crate) struct PeerInfo {
     /// set to true whenever we decide to inhibit a request based on the idea that
     /// there's another node in our group that should be doing the request
     pub(crate) request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit,
-    pub(crate) send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit,
+    pub(crate) send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit, //TODO: Unused?
+    pub(crate) resend_actual_message_based_on_node_numbers: NodeNumberBasedInhibit,
 
 }
 impl PeerInfo {
@@ -887,6 +929,7 @@ impl PeerInfo {
             peer_neighbors: vec![],
             request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit::default(),
             send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit::default(),
+            resend_actual_message_based_on_node_numbers: Default::default(),
         }
     }
     pub fn we_should_answer_request(&self, our_id: EphemeralNodeId) -> bool {
@@ -1017,11 +1060,6 @@ pub(crate) struct NodeNumberBasedInhibit {
     inhibit_with_no_one_else_taking_up_the_slack_count: usize,
 }
 
-compile_error!("all_up_three_node_resync is now quite tight. Check other scenarios.
-
-then start fixing general relaying-requests for missing parents on received msgs
-")
-
 struct Patience(usize);
 
 impl Patience {
@@ -1049,26 +1087,26 @@ impl NodeNumberBasedInhibit {
     pub fn is_inhibited(&mut self,
                         self_node: EphemeralNodeId,
                         our_neighbor_list: &[EphemeralNodeId],
-                        request_from_neighbors: &[EphemeralNodeId]
+                        neighbors_of_requester: &[EphemeralNodeId]
     ) -> bool {
         let mut patience = Patience(self.inhibit_with_no_one_else_taking_up_the_slack_count);
-        error!("is_inhibited #{:?}: our: {:?} neigh: {:?}", self_node, our_neighbor_list, request_from_neighbors);
+        trace!("is_inhibited #{:?}: our: {:?} neigh: {:?}", self_node, our_neighbor_list, neighbors_of_requester);
         for our_neighbor in our_neighbor_list {
             if *our_neighbor >= self_node {
                 continue;
             }
 
-            if request_from_neighbors.contains(&our_neighbor) {
+            if neighbors_of_requester.contains(&our_neighbor) {
                 if patience.tax() {
                     self.was_inhibited = true;
-                    error!("#{:?}: was inhibited", self_node);
+                    trace!("#{:?}: was inhibited", self_node);
                     // This other neighbor should do the request instead
                     return true;
                 }
             }
 
         }
-        error!("#{:?}: was not inhibited", self_node);
+        trace!("#{:?}: was not inhibited", self_node);
         false
     }
 
@@ -1343,7 +1381,11 @@ pub struct DatabaseCommunicationConfig {
     /// Specifying this is only useful for debugging. The ephemeral node id is chosen
     /// automatically, and is also automatically changed if conflicts are
     /// detected.
-    pub initial_ephemeral_node_id: Option<EphemeralNodeId>
+    pub initial_ephemeral_node_id: Option<EphemeralNodeId>,
+    /// Disable the NACK-based low-level retransmit protocol.
+    ///
+    /// This is basically never recommended, but can possibly be useful for troubleshooting.
+    pub disable_retransmit: bool,
 }
 const REPORT_HEAD_INTERVAL_DEFAULT: Duration = Duration::from_secs(5);
 
@@ -1359,6 +1401,7 @@ impl Default for DatabaseCommunicationConfig {
             debug_logger: None,
             periodic_message_interval: REPORT_HEAD_INTERVAL_DEFAULT,
             initial_ephemeral_node_id: None,
+            disable_retransmit: false,
         }
     }
 }
@@ -1744,6 +1787,7 @@ where
             config.mtu,
             Duration::from_secs_f32(config.retransmit_interval_seconds),
             config.retransmit_buffer_size_bytes,
+            config.disable_retransmit
         )
         .await?;
         let node = sender_loop.bind_address.to_string();
@@ -1852,8 +1896,8 @@ mod tests {
 
         let mloop1 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
-            "127.0.0.1:0",
-            "230.230.230.230:7777",
+            "192.168.1.112:0",
+            "224.1.2.3:7776",
             receiver_tx1,
             sender_rx1,
             10000,
@@ -1861,6 +1905,7 @@ mod tests {
             200,
             Duration::from_secs_f32(1.0),
             1_000_000,
+            false
         )
         .await
         .unwrap();
@@ -1871,8 +1916,8 @@ mod tests {
 
         let mloop2 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
-            "127.0.0.1:0",
-            "230.230.230.230:7777",
+            "192.168.1.112:0",
+            "224.1.2.3:7776",
             receiver_tx2,
             sender_rx2,
             10000,
@@ -1880,6 +1925,7 @@ mod tests {
             200,
             Duration::from_secs_f32(1.0),
             1_000_000,
+            false
         )
         .await
         .unwrap();
@@ -1899,6 +1945,7 @@ mod tests {
             let (_src, got) = receiver_rx2.recv().await.unwrap();
             assert_eq!(got, packet);
         }
+        std::thread::sleep(Duration::from_secs(1000));
         drop(sender_tx1);
         drop(sender_tx2);
         jh1.await.unwrap().unwrap();
@@ -1923,6 +1970,7 @@ mod tests {
             200,
             Duration::from_secs_f32(1.0),
             100,
+            false
         )
         .await
         .unwrap();
@@ -1942,6 +1990,7 @@ mod tests {
             200,
             Duration::from_secs_f32(1.0),
             100,
+            false
         )
         .await
         .unwrap();
