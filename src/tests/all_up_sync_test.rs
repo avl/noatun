@@ -32,6 +32,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::Instant;
 use tracing::info;
+use crate::colors::colored_int;
 use crate::tests::setup_tracing;
 
 thread_local! {
@@ -138,13 +139,17 @@ impl TestDriver {
     pub fn raw_frames_snapshot(&mut self) -> String {
         let mut ret = String::new();
 
-        println!("TIME:      SRC: DST:           Len");
+        println!("TIME:       SRC: DST:         Len  Data");
         for (t, src,msg,dst) in self.senders.get().raw_messages.lock().unwrap().iter() {
             use itertools::Itertools;
 
-            let data: crate::communication::NetworkPacket<u8> = savefile::Deserializer::bare_deserialize(&mut std::io::Cursor::new(msg),0).unwrap();
+            let data: crate::communication::NetworkPacket = savefile::Deserializer::bare_deserialize(&mut std::io::Cursor::new(msg),0).unwrap();
 
-            println!("{:>10?}:{:>4} {:>14} {} = {:?}", t.duration_since(self.driver_start), src, dst.iter().join(","), msg.len(), data);
+            let rawlen = dst.iter().map(|x|format!("{}",x)).join(",");
+            let padcount = 12-rawlen.len();
+            let padding = " ".repeat(padcount);
+
+            println!("{:>10?}: {}    {}{} {} B {:?}", t.duration_since(self.driver_start), colored_int((*src).into()), dst.iter().map(|x|colored_int((*x).into())).join(","), padding, msg.len(), data);
         }
 
         ret
@@ -1314,7 +1319,7 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
 
         if i >= 20 {
             driver.unpartition_node(1);
-        } else if i >= 4 {
+        } else if i >= 9 {
             driver.partition_node(1);
         }
     }

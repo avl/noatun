@@ -15,7 +15,7 @@ use savefile::{
 };
 use savefile_derive::Savefile;
 
-use std::collections::{VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::{io, thread};
 use std::cmp::Reverse;
+use arcshift::ArcShift;
 use indexmap::map::Entry;
 use smallvec::SmallVec;
 use tokio::runtime::Runtime;
@@ -37,9 +38,9 @@ pub mod size_limit_vec_deque;
 pub mod udp;
 
 #[derive(Savefile, Debug)]
-pub(crate) enum NetworkPacket<Endpoint> {
+pub(crate) enum NetworkPacket {
     Data(bool /*push*/, TransmittedEntitySortable),
-    RetransmitRequest { who: Endpoint, what: Vec<u64> },
+    RetransmitRequest { who: EphemeralNodeId, what: Vec<u64> },
 }
 
 const IP_HEADER_SIZE: usize = 20;
@@ -117,6 +118,7 @@ struct TransmittedEntitySortable {
     data: Vec<u8>,
     // Note, u16::MAX signifies "no boundary"
     first_boundary: u16,
+    src: EphemeralNodeId
 }
 
 impl Introspect for TransmittedEntitySortable {
@@ -146,6 +148,7 @@ impl Serialize for TransmittedEntitySortable {
         serializer: &mut Serializer<impl Write>,
     ) -> std::result::Result<(), SavefileError> {
         serializer.write_u16(self.seq)?;
+        serializer.write_u16(self.src.raw_u16())?;
         assert!(self.data.len() <= u16::MAX as usize);
         serializer.write_u16(self.data.len() as u16)?;
         serializer.write_bytes(&self.data)?;
@@ -158,6 +161,7 @@ impl Deserialize for TransmittedEntitySortable {
         deserializer: &mut Deserializer<impl Read>,
     ) -> std::result::Result<Self, SavefileError> {
         let seq = deserializer.read_u16()?;
+        let src = EphemeralNodeId::new(deserializer.read_u16()?);
         let datalen = deserializer.read_u16()?;
         let data = deserializer.read_bytes(datalen as usize)?;
         let first_boundary = deserializer.read_u16()?;
@@ -165,6 +169,7 @@ impl Deserialize for TransmittedEntitySortable {
             seq,
             data,
             first_boundary,
+            src,
         })
     }
 }
@@ -176,6 +181,7 @@ impl TransmittedEntitySortable {
 }
 
 #[derive(Debug)]
+// TODO: Rename this. It makes no sense to have both SortableTransmittedEntity and TransmittedEntitySortable
 struct SortableTransmittedEntity {
     reconstructed_seq: u64,
     entity: TransmittedEntitySortable,
@@ -223,8 +229,7 @@ impl ReceiveTrack {
             retransmit_interval,
             disable_retransmit: retransmit_disabled,
             retransmit_counter: 0,
-            //TODO: Clean away tracks if last success is long far ago
-            compile_error!("Maybe low-level retransmits should also use the neighbor info...")
+            //TODO: Clean away tracks if last success is too long ago
             last_success: Instant::now(),
         }
     }
@@ -246,13 +251,14 @@ impl ReceiveTrack {
         expected_next + short_delta as u64
     }
 
-    async fn process<Endpoint: Hash + Eq + Debug + Copy + Display>(
+    async fn process(
         &mut self,
         packet: TransmittedEntitySortable,
-        packet_source: Endpoint,
+        packet_source: EphemeralNodeId,
         tx_finished_received_frame: &mut Sender<(Address, Vec<u8>)>,
-        retransmit_requests: &mut IndexMap<Endpoint, RetransmitInfo>,
+        retransmit_requests: &mut IndexMap<EphemeralNodeId, RetransmitInfo>,
         push: bool,
+        retransmit_responsibility_query: &mut (dyn FnMut(EphemeralNodeId, usize) -> bool + 'static + Sync + Send)
     ) -> Result<()> {
         let reconstructed_seq = self.reconstruct_seq(packet.seq);
 
@@ -277,15 +283,22 @@ impl ReceiveTrack {
             self.accum.clear();
         }
         while let Some(first) = self.sorted_packets.front() {
+            if let Some(accum_retransmits) = retransmit_requests.get_mut(&packet_source) {
+                accum_retransmits.items.remove(&reconstructed_seq);
+                if accum_retransmits.items.is_empty() {
+                    retransmit_requests.swap_remove(&packet_source);
+                }
+            }
 
             if first.reconstructed_seq != self.expected_next {
-                println!("Mismatch: disabled retransmit: {:?}, packet count: {}, last prog: {:?}", self.disable_retransmit, self.expected_next, self.retransmit_counter);
+                //println!("Mismatch: disabled retransmit: {:?}, packet count: {}, last prog: {:?}", self.disable_retransmit, self.expected_next, self.retransmit_counter);
                 if self.disable_retransmit || packet_count > Self::SENDER_RETRANSMIT_WINDOW || self.retransmit_counter > 3 {
                     self.accum.clear();
                     self.have_valid_accum = false;
                     self.expected_next = first.reconstructed_seq;
                     self.retransmit_counter = 0;
                 } else {
+
                     trace!(
                         "Expected next: {}, actual (reconstructed) seq: {}",
                         self.expected_next,
@@ -293,29 +306,38 @@ impl ReceiveTrack {
                     );
                     if first.reconstructed_seq < self.expected_next {
                         info!(
-                        "duplicate packet ignored (expected {}, got {})",
-                        self.expected_next, first.reconstructed_seq
-                    );
+                            "duplicate packet ignored (expected {}, got {})",
+                            self.expected_next, first.reconstructed_seq
+                        );
                         self.sorted_packets.pop_front();
                         continue;
                     }
+
+                    self.retransmit_counter += 1;
+                    if !retransmit_responsibility_query(first.entity.src, self.retransmit_counter - 1) {
+                        println!("Re-transmit query believes we shouldn't transmit (counter: {})", self.retransmit_counter);
+                        return Ok(());
+                    }
+                    println!("Re-transmit query believes we SHOULD transmit (counter: {})", self.retransmit_counter);
+
+
                     if self.expected_next == 0 {
+                        debug_assert!(self.accum.is_empty());
                         //Make sure that after a restart, we always pickup wherever the on-wire stream is
                         self.expected_next = first.reconstructed_seq;
                     } else {
                         trace!(
-                        "Appending retransmit-request for {:?} {:?}",
-                        packet_source,
-                        self.expected_next
-                    );
-                        //let cur_missing = self.expected_next;
+                            "Appending retransmit-request for {:?} {:?}",
+                            packet_source,
+                            self.expected_next
+                        );
                         let accum_retransmits = retransmit_requests.entry(packet_source).or_default();
                         for x in self.expected_next..first.reconstructed_seq {
                             accum_retransmits.items.insert(x);
                         }
-                        if !push {
+                        if !push && accum_retransmits.wait_until.is_none(){
                             println!("Enqueue retransmit in {:?}", self.retransmit_interval);
-                            accum_retransmits.wait_until = Instant::now() + self.retransmit_interval;
+                            accum_retransmits.wait_until = Some(Instant::now() + self.retransmit_interval);
                         }
                         let mut cur = first.reconstructed_seq;
                         'loop1: for key in &self.sorted_packets {
@@ -330,7 +352,6 @@ impl ReceiveTrack {
                         }
                         assert!(accum_retransmits.items.is_empty() == false);
 
-                        self.retransmit_counter += 1;
 
                         return Ok(());
                     }
@@ -389,14 +410,31 @@ impl ReceiveTrack {
 }
 
 struct RetransmitInfo {
-    wait_until: Instant,
-    items: IndexSet<u64>,
+    wait_until: Option<Instant>,
+    items: BTreeSet<u64>,
 }
 impl Default for RetransmitInfo {
     fn default() -> Self {
         Self {
-            wait_until: tokio::time::Instant::now(),
+            wait_until: None,
             items: Default::default(),
+        }
+    }
+}
+
+#[derive(Default, Debug)]
+pub(crate) struct PeerSummaryInfo {
+    peers: IndexMap<EphemeralNodeId, Vec<EphemeralNodeId>/*neighbors in common with us*/>
+}
+
+impl PeerSummaryInfo {
+    pub(crate) fn we_should_retransmit(&self, our_node_id: EphemeralNodeId, peer: EphemeralNodeId, retransmit_count: usize) -> bool{
+        if let Some(peer_neighbors) = self.peers.get(&peer) {
+            let our_index = peer_neighbors.iter().position(|&x| x == our_node_id).unwrap_or(100);
+            error!("our index: {}", our_index);
+            retransmit_count >= our_index
+        } else {
+            false
         }
     }
 }
@@ -408,8 +446,8 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     /// Transmitted messages kept in out queue, to allow retransmitting
     history: SizeLimitVecDeque<SortableTransmittedEntity>,
     queue: VecDeque<SortableTransmittedEntity>,
-    outgoing_retransmit_requests: IndexMap<Socket::Endpoint, RetransmitInfo>,
-    receive_track: IndexMap<Socket::Endpoint, ReceiveTrack>,
+    outgoing_retransmit_requests: IndexMap<EphemeralNodeId, RetransmitInfo>,
+    receive_track: IndexMap<(EphemeralNodeId, Socket::Endpoint), ReceiveTrack>,
     quit_rx: tokio::sync::oneshot::Receiver<()>,
     /// Sent to net
     message_rx: Receiver<Vec<u8>>,
@@ -424,6 +462,8 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     /// The timeout before a retransmit is initiated
     retransmit_interval: Duration,
     disable_retransmit: bool,
+    ephemeral_node_id: ArcShift<EphemeralNodeId>,
+    retransmit_responsibility_query: Box<dyn FnMut(/*src: */EphemeralNodeId, /*repetitions: */ usize) -> bool + Sync + Send + 'static>
 }
 impl<Socket: CommunicationDriver> Drop for MulticastSenderLoop<Socket> {
     fn drop(&mut self) {
@@ -481,6 +521,8 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         retransmit_interval: Duration,
         retransmit_buffer_size_bytes: usize,
         disable_retransmit: bool,
+        ephemeral_node_id: ArcShift<EphemeralNodeId>,
+        retransmit_responsibility_query: Box<dyn FnMut(/*src: */EphemeralNodeId,/*repetitions*/usize) -> bool + 'static + Send + Sync>
     ) -> Result<MulticastSenderLoop<Socket>> {
         let (send_socket, receive_socket) = driver
             .initialize(bind_address, multicast_group, mtu)
@@ -510,6 +552,8 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             max_payload_per_packet,
             next_send_seq: 0,
             retransmit_interval,
+            ephemeral_node_id,
+            retransmit_responsibility_query
         })
     }
     pub(crate) fn send_buf(
@@ -517,6 +561,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         max_payload_per_packet: usize,
         next_send_seq: &mut u64,
         buffer: Vec<u8>,
+        own_id: EphemeralNodeId
     ) -> Result<()> {
         let mut is_first;
         let buffer: &[u8] = if let Some(last) = queue.back_mut() {
@@ -568,6 +613,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                     seq: *next_send_seq as u16,
                     data,
                     first_boundary: if is_first { 0 } else { u16::MAX },
+                    src: own_id,
                 },
             });
             is_first = false;
@@ -603,6 +649,8 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
     pub async fn run(mut self) -> Result<()> {
         let mut cursend: Option<Vec<u8>> = None;
         let send_local_addr = self.send_socket.local_addr()?;
+        let mut next_retransmit = Instant::now();
+        let mut next_retransmit_active = false;
         loop {
             self.recvbuf.clear();
             let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
@@ -610,20 +658,34 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             if cursend.is_none() {
                 if self.outgoing_retransmit_requests.is_empty() == false {
                     let mut temp = vec![];
-                    if let Some((first_key, first_val)) =
-                        self.outgoing_retransmit_requests.iter_mut().next()
-                    {
-                        let packet = NetworkPacket::<Socket::Endpoint>::RetransmitRequest {
-                            who: *first_key,
-                            what: first_val.items.iter().take(20).copied().collect(), //If more than this are missing, we'll request them too in due time
+                    let now = Instant::now();
+                    let first_key = *self.outgoing_retransmit_requests.iter().min_by_key(|(k,v)|v.wait_until).unwrap().0;
+                    let first_val = self.outgoing_retransmit_requests.get_mut(&first_key).unwrap();
+                    if first_val.wait_until <= Some(now) {
+                        let mut what = Vec::with_capacity(20);
+                        while what.len() < 20 {
+                            let Some(item) = first_val.items.pop_first() else {
+                                break;
+                            };
+                            what.push(item);
+                        }
+                        let mut packet = NetworkPacket::RetransmitRequest {
+                            who: first_key,
+                            what
                         };
                         Serializer::bare_serialize(&mut temp, 0, &packet).unwrap();
                         trace!("Sending raw retransmit {:?} ({} bytes)", packet, temp.len());
                         cursend = Some(temp);
-                        first_val.items = first_val.items.iter().skip(20).copied().collect();
                         if first_val.items.is_empty() {
-                            let first_key = *first_key;
                             self.outgoing_retransmit_requests.swap_remove(&first_key);
+                        }
+                    } else {
+                        // This if is probably dead code, since we only get here if wait_until > Some(_),
+                        // which actually implies wait_until != None
+                        if let Some(wait) = first_val.wait_until {
+                            trace!("Scheduling raw retransmit in {:?}",wait.duration_since(Instant::now()));
+                            next_retransmit = wait;
+                            next_retransmit_active = true;
                         }
                     }
                 }
@@ -635,7 +697,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         Serializer::bare_serialize(
                             &mut temp,
                             0,
-                            &NetworkPacket::<Socket::Endpoint>::Data(
+                            &NetworkPacket::Data(
                                 self.queue.is_empty(),
                                 x.entity.clone(),
                             ),
@@ -685,56 +747,60 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             };
             let get_cmd = self.message_rx.recv();
             select! {
-                    biased;
-                    _ = &mut self.quit_rx => {
-                        info!("quit_rx signalled, background task shutting down");
+                biased;
+                _ = &mut self.quit_rx => {
+                    info!("quit_rx signalled, background task shutting down");
+                    return Ok(());
+                }
+                _ = send => {
+                }
+                buf = get_cmd, if send_queue_empty => {
+                    if let Some(buf) = buf {
+                        Self::send_buf(
+                            &mut self.queue,
+                            self.max_payload_per_packet,
+                            &mut self.next_send_seq,
+                            buf,
+                            *self.ephemeral_node_id.get()
+                        )?;
+                    } else {
+                        info!("cmd-channel gone, background task shutting down");
                         return Ok(());
                     }
-                    _ = send => {
+                }
+                msg = receive => {
+                    let (size, src_addr) = msg.expect("network should not fail");
+                    if src_addr == send_local_addr {
+                        continue;
                     }
-                    buf = get_cmd, if send_queue_empty => {
-                        if let Some(buf) = buf {
-                            Self::send_buf(
-                                &mut self.queue,
-                                self.max_payload_per_packet,
-                                &mut self.next_send_seq,
-                                buf
-                            )?;
-                        } else {
-                            info!("cmd-channel gone, background task shutting down");
-                            return Ok(());
-                        }
-                    }
-                    msg = receive => {
-                        let (size, src_addr) = msg.expect("network should not fail");
-                        if src_addr == send_local_addr {
-                            continue;
-                        }
 
-                        assert_eq!(size, self.recvbuf.len());
-                        let Ok(packet): Result<NetworkPacket<Socket::Endpoint>,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0)  else {
-                            error!("Invalid packet received");
-                            continue;
-                        };
-                        //trace!("Received packet {:?}", packet);
-                        match packet {
-                            NetworkPacket::Data(push, entity) => {
-
-                                match self.receive_track.entry(src_addr).or_insert_with(||ReceiveTrack::new(self.retransmit_interval, self.disable_retransmit))
-                                    .process(entity, src_addr, &mut self.message_tx, &mut self.outgoing_retransmit_requests, push).await {
-                                        Ok(()) => {}
-                                        Err(err) => {
-                                            error!("Receive error: {:?}", err);
-                                    }
-                                }
-                            }
-                            NetworkPacket::RetransmitRequest{who, what  } => {
-                                if who == self.bind_address {
-                                    self.queue_retransmits(&what);
+                    assert_eq!(size, self.recvbuf.len());
+                    let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0)  else {
+                        error!("Invalid packet received");
+                        continue;
+                    };
+                    //trace!("Received packet {:?}", packet);
+                    match packet {
+                        NetworkPacket::Data(push, entity) => {
+                            let src_node = entity.src;
+                            match self.receive_track.entry((src_node, src_addr)).or_insert_with(||ReceiveTrack::new(self.retransmit_interval, self.disable_retransmit))
+                                .process(entity, src_node, &mut self.message_tx, &mut self.outgoing_retransmit_requests, push, &mut self.retransmit_responsibility_query).await {
+                                    Ok(()) => {}
+                                    Err(err) => {
+                                        error!("Receive error: {:?}", err);
                                 }
                             }
                         }
+                        NetworkPacket::RetransmitRequest{who, what  } => {
+                            if who == *self.ephemeral_node_id.get() {
+                                self.queue_retransmits(&what);
+                            }
+                        }
                     }
+                }
+                _ = tokio::time::sleep_until(next_retransmit), if next_retransmit_active => {
+                    next_retransmit_active = false;
+                }
             }
         }
     }
@@ -914,6 +980,8 @@ pub(crate) struct PeerInfo {
     pub(crate) source_info: IndexMap<EphemeralNodeId, PeerOriginInfo>,
     pub(crate) peer_neighbors: Vec<EphemeralNodeId>,
 
+    pub(crate) last_seen: Instant,
+
     /// set to true whenever we decide to inhibit a request based on the idea that
     /// there's another node in our group that should be doing the request
     pub(crate) request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit,
@@ -927,6 +995,7 @@ impl PeerInfo {
             peer,
             source_info: Default::default(),
             peer_neighbors: vec![],
+            last_seen: Instant::now(),
             request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit::default(),
             send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit::default(),
             resend_actual_message_based_on_node_numbers: Default::default(),
@@ -1005,25 +1074,42 @@ impl RecentMessages {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct Peers {
+    //TODO: GC this, remove stale entries
     peers: IndexMap<EphemeralNodeId, PeerInfo>,
+    peer_summary_info: ArcShift<PeerSummaryInfo>,
+    last_gc: Instant,
 }
 
 impl Peers {
-    /*pub(crate) fn request_upstream_inhibited(&self, peer: EphemeralNodeId) -> bool {
-        if let Some(info) = self.peers.get(&peer) {
-            info.request_inhibited_based_on_node_numbers
-        } else {
-            true
+    pub fn gc_if_necessary(&mut self, our_node_id: EphemeralNodeId, periodic_message: Duration) {
+        if self.last_gc.elapsed() > periodic_message {
+            self.last_gc = Instant::now();
+            let peers_before = self.peers.len();
+            self.peers.retain(|k,v|{
+                v.last_seen.elapsed() < 4*periodic_message
+            });
+            if peers_before != self.peers.len() {
+                self.recalculate_summary(our_node_id);
+            }
         }
-
-    }*/
-    pub fn get_insert_peer(&mut self, peer_id: EphemeralNodeId) -> &mut PeerInfo {
-        self.peers.entry(peer_id).or_insert_with(||PeerInfo::new(peer_id))
     }
-    pub fn get_insert_peer2(&mut self, peer_id: EphemeralNodeId) -> &PeerInfo {
-        self.peers.entry(peer_id).or_insert_with(||PeerInfo::new(peer_id))
+    pub(crate) fn recalculate_summary(&mut self, our_node_id: EphemeralNodeId) {
+        let mut summary = PeerSummaryInfo::default();
+        for (peer, info) in self.peers.iter() {
+            summary.peers.insert(*peer,
+                                 info.peer_neighbors.iter().copied().filter(|x|
+                                        self.peers.contains_key(x) || *x == our_node_id
+                                 ).collect()
+            );
+
+        }
+        self.peer_summary_info.update(summary);
+    }
+    pub fn get_insert_peer(&mut self, peer_id: EphemeralNodeId) -> &mut PeerInfo {
+        let t = self.peers.entry(peer_id).or_insert_with(||PeerInfo::new(peer_id));
+        t.last_seen = Instant::now();
+        t
     }
     pub fn get_peer_mut(&mut self, peer_id: EphemeralNodeId) -> Option<&mut PeerInfo> {
         self.peers.get_mut(&peer_id)
@@ -1038,8 +1124,9 @@ impl Peers {
     }
 
     fn record_squelch(&mut self, destination: EphemeralNodeId, origin: EphemeralNodeId) {
-        let peer = self.peers.entry(destination).or_insert_with(||PeerInfo::new(destination));
-        peer.record_squelch(origin);
+        if let Some(peer) = self.peers.get_mut(&destination) {
+            peer.record_squelch(origin);
+        }
     }
 }
 
@@ -1114,7 +1201,7 @@ impl NodeNumberBasedInhibit {
 
 // TODO: Maybe nodes that notice that they have more neighbors than basically anybody,
 // should try to change node-id to a small number, so they can be natural, efficient relays for everybody.
-#[derive(Default)]
+
 pub(crate) struct Neighborhood {
     pub(crate) peers: Peers,
     /// The source we've observed for recent messages.
@@ -1124,6 +1211,18 @@ pub(crate) struct Neighborhood {
 }
 
 impl Neighborhood {
+
+    pub fn new(peer_summary_info: ArcShift<PeerSummaryInfo>) -> Neighborhood {
+        Self {
+            peers: Peers {
+                peers: Default::default(),
+                peer_summary_info,
+                last_gc: Instant::now(),
+            },
+            recent_messages: Default::default(),
+            quarantine: Default::default(),
+        }
+    }
 
     /// request_from = the origin of the request we're about to respond to
     /// self_node = ourselves
@@ -1174,17 +1273,19 @@ impl Neighborhood {
         }
     }
 
-    pub fn record_message(&mut self, message: &DistributorMessage, our_node_id: EphemeralNodeId) {
+    pub fn record_message(&mut self, message: &DistributorMessage, our_node_id: EphemeralNodeId, periodic_message: Duration) {
         //TODO Finish epohemeralnodeid stuff, make sure to implement re-randomization on conflicts! And clean up old history
         match message {
             DistributorMessage::Squelch {
                 source, transmitter, messages
             } => {
                 if *transmitter == our_node_id {
-                    let peer = self.peers.get_insert_peer(*source);
-                    for message in messages {
-                        if let Some(source) = self.recent_messages.get(message) {
-                            peer.record_squelch(source.original_source);
+                    let peer = self.peers.get_peer_mut(*source);
+                    if let Some(peer) = peer {
+                        for message in messages {
+                            if let Some(source) = self.recent_messages.get(message) {
+                                peer.record_squelch(source.original_source);
+                            }
                         }
                     }
                 }
@@ -1200,6 +1301,7 @@ impl Neighborhood {
                     }
                     self.recent_messages.record_message_source(*head, *source, false);
                 }
+                self.peers.gc_if_necessary(our_node_id, periodic_message);
             }
             DistributorMessage::SyncAllQuery(_) => {}
             DistributorMessage::SyncAllRequest(_) => {}
@@ -1776,6 +1878,19 @@ where
         let (sender_tx, sender_rx) = tokio::sync::mpsc::channel(1);
         let (quit_tx, quit_rx) = tokio::sync::oneshot::channel();
         let (receiver_tx, receiver_rx) = tokio::sync::mpsc::channel(1000);
+        let our_node_id = ArcShift::new(config.initial_ephemeral_node_id.unwrap_or_else(EphemeralNodeId::random));
+        let mut node_peer_info = ArcShift::new(PeerSummaryInfo::default());
+
+        let mut node_peer_info2 = node_peer_info.clone();
+        let mut our_node_id2 = our_node_id.clone();
+        let should_retransmit: Box<dyn FnMut(EphemeralNodeId, usize) -> bool + Send + Sync> = Box::new(move |peer,retransmit_count| -> bool {
+            let info = node_peer_info2.get();
+            error!("--------------------------------------------------------");
+            error!("Peer summary: {:#?}", info);
+            let t = info.we_should_retransmit(*our_node_id2.get(), peer, retransmit_count);
+            error!("Conclusion: {} (for peer: {}, we:'re: {}", t, peer, our_node_id2.get());
+            t
+        });
         let sender_loop = MulticastSenderLoop::new(
             driver,
             &config.listen_address,
@@ -1787,7 +1902,9 @@ where
             config.mtu,
             Duration::from_secs_f32(config.retransmit_interval_seconds),
             config.retransmit_buffer_size_bytes,
-            config.disable_retransmit
+            config.disable_retransmit,
+            our_node_id.clone(),
+            should_retransmit
         )
         .await?;
         let node = sender_loop.bind_address.to_string();
@@ -1798,7 +1915,7 @@ where
         let database = Arc::new(Mutex::new(database));
 
         let main = DatabaseCommunicationLoop {
-            distributor: Distributor::new(config.periodic_message_interval, config.initial_ephemeral_node_id.unwrap_or_else(EphemeralNodeId::random)),
+            distributor: Distributor::new(config.periodic_message_interval, our_node_id),
             node: node.clone(),
             database: database.clone(),
             jh,
@@ -1809,7 +1926,7 @@ where
             next_periodic: tokio::time::Instant::now(),
             buffered_incoming_messages: vec![],
             outbuf: QueryableOutbuffer::new(config.periodic_message_interval),
-            neighborhood: Neighborhood::default(),
+            neighborhood: Neighborhood::new(node_peer_info),
             nextsend: vec![],
             nextsend_id: None,
             debug_event_logger: config.debug_logger,
@@ -1870,6 +1987,8 @@ mod tests {
     use crate::tests::setup_tracing;
     use std::time::Duration;
     use tokio::spawn;
+    use crate::distributor::EphemeralNodeId;
+    use arcshift::ArcShift;
 
     #[test]
     fn reconstruct_seq_logic() {
@@ -1897,7 +2016,7 @@ mod tests {
         let mloop1 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
             "192.168.1.112:0",
-            "224.1.2.3:7776",
+            "224.45.0.1:7777",
             receiver_tx1,
             sender_rx1,
             10000,
@@ -1905,7 +2024,9 @@ mod tests {
             200,
             Duration::from_secs_f32(1.0),
             1_000_000,
-            false
+            false,
+            ArcShift::new(EphemeralNodeId::new(1)),
+            Box::new(|_,_|true),
         )
         .await
         .unwrap();
@@ -1917,7 +2038,7 @@ mod tests {
         let mloop2 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
             "192.168.1.112:0",
-            "224.1.2.3:7776",
+            "224.45.0.1:7777",
             receiver_tx2,
             sender_rx2,
             10000,
@@ -1925,7 +2046,9 @@ mod tests {
             200,
             Duration::from_secs_f32(1.0),
             1_000_000,
-            false
+            false,
+            ArcShift::new(EphemeralNodeId::new(2)),
+            Box::new(|_,_|true),
         )
         .await
         .unwrap();
@@ -1945,7 +2068,7 @@ mod tests {
             let (_src, got) = receiver_rx2.recv().await.unwrap();
             assert_eq!(got, packet);
         }
-        std::thread::sleep(Duration::from_secs(1000));
+        std::thread::sleep(Duration::from_secs(1000_000_000));
         drop(sender_tx1);
         drop(sender_tx2);
         jh1.await.unwrap().unwrap();
@@ -1970,7 +2093,9 @@ mod tests {
             200,
             Duration::from_secs_f32(1.0),
             100,
-            false
+            false,
+            ArcShift::new(EphemeralNodeId::new(1)),
+            Box::new(|_,_|true),
         )
         .await
         .unwrap();
@@ -1990,7 +2115,9 @@ mod tests {
             200,
             Duration::from_secs_f32(1.0),
             100,
-            false
+            false,
+            ArcShift::new(EphemeralNodeId::new(2)),
+            Box::new(|_,_|true),
         )
         .await
         .unwrap();

@@ -1,5 +1,5 @@
 use crate::colors::*;
-use crate::communication::{Neighborhood, QueryableOutbuffer};
+use crate::communication::{Neighborhood, PeerSummaryInfo, QueryableOutbuffer};
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
 use crate::{Application, Database, Message, MessageFrame, MessageHeader, MessageId, NoatunTime};
@@ -11,6 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::io::Cursor;
 use std::time::Duration;
+use arcshift::ArcShift;
 use indexmap::map::Entry;
 use rand::{thread_rng, Rng};
 use tracing::{debug, error, info, trace, warn};
@@ -118,12 +119,17 @@ impl Display for Address {
     }
 }
 
-#[derive(Debug,Clone,Copy,PartialEq,Eq,Hash, Savefile, PartialOrd, Ord)]
+#[derive(Clone,Copy,PartialEq,Eq,Hash, Savefile, PartialOrd, Ord)]
 pub struct EphemeralNodeId(u16);
 
 impl Display for EphemeralNodeId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "#{}", self.0)
+        write!(f, "#{}", colored_int(self.0.into()))
+    }
+}
+impl Debug for EphemeralNodeId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{}", colored_int(self.0.into()))
     }
 }
 
@@ -132,6 +138,9 @@ static NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER: std::sync::atomic::AtomicU16 =
     std::sync::atomic::AtomicU16::new(0);
 
 impl EphemeralNodeId {
+    pub fn raw_u16(self) -> u16 {
+        self.0
+    }
     pub fn new(value: u16) -> Self {
         EphemeralNodeId(value)
     }
@@ -324,7 +333,7 @@ pub struct DistributorStatus {
 }
 
 pub struct Distributor {
-    ephemeral_node_id: EphemeralNodeId,
+    ephemeral_node_id: ArcShift<EphemeralNodeId>,
     // A sync-all request is in progress.
     // It sends all Messages in MessageId-order (which guarantees that all
     // parents will be sent before any children.
@@ -399,7 +408,7 @@ struct AccumulatedMessage {
 
 impl Distributor {
     const BATCH_SIZE: usize = 20;
-    pub(crate) fn new(report_head_interval: Duration, initial_node_id: EphemeralNodeId) -> Distributor {
+    pub(crate) fn new(report_head_interval: Duration, initial_node_id: ArcShift<EphemeralNodeId>) -> Distributor {
         Self {
             sync_all_inprogress: SyncAllState::NotActive,
             distributor_state: DistributorStatus::default(),
@@ -408,8 +417,8 @@ impl Distributor {
         }
     }
 
-    pub fn node_id(&self) -> EphemeralNodeId {
-        self.ephemeral_node_id
+    pub fn node_id(&mut self) -> EphemeralNodeId {
+        *self.ephemeral_node_id.get()
     }
 
 
@@ -447,7 +456,7 @@ impl Distributor {
         let mut heads = database.get_update_heads().to_vec();
         heads.sort();
         let mut temp = vec![DistributorMessage::ReportHeads {
-            source: self.ephemeral_node_id,
+            source: *self.ephemeral_node_id.get(),
             cutoff: database.current_cutoff_state()?,
             heads,
             neighbors: neighbors.peers.get_neighbors(),
@@ -490,7 +499,7 @@ impl Distributor {
             database,
             input.map(|x| (Address::from("src"), x)),
             &mut buf,
-            &mut Default::default()
+            &mut Neighborhood::new(ArcShift::new(PeerSummaryInfo::default()))
         )?;
         Ok(buf.outbuf.into_iter().collect())
     }
@@ -513,7 +522,7 @@ impl Distributor {
         let mut accumulated_sync_all_requests = IndexSet::new();
 
         for (src, item) in input {
-            neighborhood.record_message(&item, self.ephemeral_node_id);
+            neighborhood.record_message(&item, *self.ephemeral_node_id.get(), self.periodic_message_interval);
 
             self.distributor_state.have_heard_peer = true;
             match item {
@@ -545,7 +554,9 @@ impl Distributor {
                                 self.distributor_state.most_recent_clockdrift.remove(&src);
 
                                 let peer= neighborhood.peers.get_insert_peer(source);
+                                debug_assert!(neighbors.is_sorted());
                                 peer.peer_neighbors.clone_from(&neighbors);
+                                neighborhood.peers.recalculate_summary(*self.ephemeral_node_id.get());
 
                                 break;
                             }
@@ -594,7 +605,7 @@ impl Distributor {
                                 continue;
                             }
                             trace!("Considering {:?} query: {:?}", source, msg);
-                            if destination == self.ephemeral_node_id {
+                            if destination == *self.ephemeral_node_id.get() {
                                 let accum_count = accumulated_request_upstream.entry(msg).or_insert((0usize, source));
                                 accum_count.0 = (accum_count.0).max(count);
                                 accum_count.1 = (accum_count.1).min(source);
@@ -603,7 +614,7 @@ impl Distributor {
                     //}
                 }
                 DistributorMessage::UpstreamResponse { source, dest, messages } => {
-                    if dest == self.ephemeral_node_id {
+                    if dest == *self.ephemeral_node_id.get() {
                         for msg in messages {
                             let val = MessageSubGraphNodeValue {
                                 parents: msg.parents,
@@ -702,7 +713,7 @@ impl Distributor {
     }
 
     fn process_sync_all_requests<APP: Application>(
-        &self,
+        &mut self,
         database: &mut DatabaseSessionMut<APP>,
         accumulated_sync_all_requests: IndexSet<MessageId>,
         output: &mut QueryableOutbuffer,
@@ -713,8 +724,8 @@ impl Distributor {
                 Ok(msg) => {
                     if output.recently_sent_message_ids.is_duplicate(msg.id()) == false {
                         output.push_back(DistributorMessage::Message {
-                            source: self.ephemeral_node_id,
-                            origin: neighborhood.recent_messages.recent_messages.get(&msg.id()).map(|x|x.original_source).unwrap_or(self.ephemeral_node_id),
+                            source: *self.ephemeral_node_id.get(),
+                            origin: neighborhood.recent_messages.recent_messages.get(&msg.id()).map(|x|x.original_source).unwrap_or(*self.ephemeral_node_id.get()),
                             message: SerializedMessage::new(msg)?,
                             demand_ack: true,
                         });
@@ -758,7 +769,7 @@ impl Distributor {
             }
             if !messages_to_request.is_empty() {
 
-                existing_outbuf.request_upstream(messages_to_request.into_iter(), self.ephemeral_node_id, srcs[0], neighborhood);
+                existing_outbuf.request_upstream(messages_to_request.into_iter(), *self.ephemeral_node_id.get(), srcs[0], neighborhood);
                 self.distributor_state.nominal = false;
             } else {
                 self.distributor_state.nominal = true;
@@ -767,7 +778,7 @@ impl Distributor {
         Ok(())
     }
     fn process_request_upstream<APP: Application>(
-        &self,
+        &mut self,
         database: &mut DatabaseSessionMut<APP>,
         accumulated_heads: IndexMap<MessageId, (usize, /*src:*/EphemeralNodeId)>,
         output: &mut QueryableOutbuffer,
@@ -793,14 +804,14 @@ impl Distributor {
             }*/
 
             if !messages.is_empty() {
-                output.push_back(DistributorMessage::UpstreamResponse { messages, dest: src, source: self.ephemeral_node_id });
+                output.push_back(DistributorMessage::UpstreamResponse { messages, dest: src, source: *self.ephemeral_node_id.get() });
             }
         }
 
         Ok(())
     }
     fn process_upstream_response<APP: Application>(
-        &self,
+        &mut self,
         database: &mut DatabaseSessionMut<APP>,
         upstream_response: IndexMap<MessageId, /*parents*/ (EphemeralNodeId/*src*/, EphemeralNodeId/*dst*/, MessageSubGraphNodeValue)>,
         queryable_outbuffer: &mut QueryableOutbuffer,
@@ -812,7 +823,7 @@ impl Distributor {
             if database.contains_message(*msg_id)? {
                 continue; //We already have this one
             }
-            if *msg_dest != self.ephemeral_node_id {
+            if *msg_dest != *self.ephemeral_node_id.get() {
                 continue;
             }
 
@@ -859,20 +870,20 @@ impl Distributor {
         if send_cmds.is_empty() == false {
             queryable_outbuffer.push_back(DistributorMessage::SendMessageAndAllDescendants {
                 message_id: send_cmds,
-                source: self.ephemeral_node_id,
+                source: *self.ephemeral_node_id.get(),
             });
         }
         if unknowns.is_empty() == false {
             //println!("REQUEST_UPSTREAM (from within process_upstream_response");
             for (src_node,unknowns) in unknowns {
-                queryable_outbuffer.request_upstream(unknowns.into_iter(), self.ephemeral_node_id, src_node, neighborhood);
+                queryable_outbuffer.request_upstream(unknowns.into_iter(), *self.ephemeral_node_id.get(), src_node, neighborhood);
             }
         }
 
         Ok(())
     }
     fn process_send_message_all_descendants<APP: Application>(
-        &self,
+        &mut self,
         database: &mut DatabaseSessionMut<APP>,
         mut message_list: IndexMap<MessageId, EphemeralNodeId>,
         output: &mut QueryableOutbuffer,
@@ -889,15 +900,15 @@ impl Distributor {
             };
             let msg_id = msg.id();
 
-            if neighborhood.is_inhibited(src, self.ephemeral_node_id, |info| {&mut info.resend_actual_message_based_on_node_numbers}) {
+            if neighborhood.is_inhibited(src, *self.ephemeral_node_id.get(), |info| {&mut info.resend_actual_message_based_on_node_numbers}) {
                 break;
             }
 
             if output.recently_sent_message_ids.is_duplicate(msg.id()) == false {
                 output.push_back(DistributorMessage::Message {
-                    origin: neighborhood.recent_messages.recent_messages.get(&msg_id).map(|x| x.original_source).unwrap_or(self.ephemeral_node_id),
+                    origin: neighborhood.recent_messages.recent_messages.get(&msg_id).map(|x| x.original_source).unwrap_or(*self.ephemeral_node_id.get()),
                     message: SerializedMessage::new(msg)?,
-                    source: self.ephemeral_node_id,
+                    source: *self.ephemeral_node_id.get(),
                     demand_ack: false,
                 });
             }

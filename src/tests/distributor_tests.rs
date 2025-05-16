@@ -9,6 +9,7 @@ use std::iter::once;
 use std::mem::swap;
 use std::time::Duration;
 use crate::distributor::Address;
+use arcshift::ArcShift;
 
 fn create_app<'a>(
     msgs: impl IntoIterator<
@@ -68,13 +69,13 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
         .enumerate()
         .map(|(index, x)| {
             (
-                Distributor::new(Duration::from_secs(5), EphemeralNodeId::new(index.try_into().unwrap())),
+                Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(index.try_into().unwrap()))),
                 x,
             )
         })
         .collect();
     let mut ether = vec![];
-    let mut neighborhood = Neighborhood::default();
+    let mut neighborhood = Neighborhood::new(ArcShift::default());
 
     for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
         let sess = db.begin_session().unwrap();
@@ -87,7 +88,7 @@ fn sync(dbs: Vec<Database<CounterObject>>) -> SyncReport {
         ether.push((db_id, sent));
     }
     let mut next_ether = vec![];
-    let mut neighborhood = Neighborhood::default();
+    let mut neighborhood = Neighborhood::new(ArcShift::default());
     loop {
         for (db_id, (distr, db)) in dbs.iter_mut().enumerate() {
             let mut sent = QueryableOutbuffer::new(Duration::from_secs(5));
@@ -202,10 +203,10 @@ fn test_distributor() {
     let mut app1 = create_app([(datetime!(2021-01-01 Z), [].as_slice(), 1, 0, true)]);
     let mut app2 = create_app([(datetime!(2021-01-02 Z), [].as_slice(), 1, 0, true)]);
 
-    let mut dist1 = Distributor::new(Duration::from_secs(5), EphemeralNodeId::new(1));
-    let mut dist2 = Distributor::new(Duration::from_secs(5), EphemeralNodeId::new(2));
+    let mut dist1 = Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(1)));
+    let mut dist2 = Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(2)));
 
-    let mut neighborhood = Neighborhood::default();
+    let mut neighborhood = Neighborhood::new(ArcShift::default());
     let sess1 = app1.begin_session().unwrap();
     let mut msg1 = dist1.get_periodic_message(&sess1, &neighborhood).unwrap();
     assert_eq!(msg1.len(), 1, "no resync is in progress");

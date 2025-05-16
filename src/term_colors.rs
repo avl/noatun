@@ -35,7 +35,7 @@ pub fn rgb(s: &str, r: u8, g: u8, b: u8) -> ColoredString {
 }
 
 fn colored_int_impl(i: u32, hex: bool) -> ColoredString {
-    let p = (i * 181 + 203) % (128 * 3);
+    let p = (i * 167 + 203) % (128 * 3);
     let r;
     let g;
     let b;
