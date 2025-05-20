@@ -1067,6 +1067,39 @@ async fn all_up_three_node_resync() {
     )).unwrap();
     driver.set_loss(0.0);
 
+
+    compile_error!("
+
+Document the following behavior:
+
+* When do we inhibit sending retransmit requests on the packet level
+
+* When do we inhibit sending the various retransmit-requests on the Message-layer
+ - Response to RequestUpstream
+ - Response to SendMessageAndAllDescendants
+
+* Calmly observe the written documentation. What can be made simpler? Do we even need the
+heuristic, couldn't  we just delay a random amount based on the number of neighbors, combined
+with inhibiting sending stuff we've just seen sent anyway?
+
+* Implement Unsquelch/squelch based on detecting when a node emits an object with a parent
+we don't know, where we previously considered ourselves to be up-to-date with the node (i.e,
+initial sync complete). I.e, when the first sync-process started, completes. We then take
+note whenever we receive a Message with a parent unknown to us, and add an Unsquelch for that
+messages "original" source. We also check if we receive messages twice. If we do,
+we squelch the one that's usually slowest. Determine slowest by averaging or something, device
+some data structure for this!
+
+* Figure out how to even test this.
+
+* Add tests for EphemeralNodeId collisions (figure out how to cause them, probably
+by overriding default EphemeralNodeId in config)
+
+* Create perf benchmarks, compare with other tools (which?)
+
+
+    ")
+
     for _ in 0..35 {
         tokio::time::sleep(Duration::from_millis(1000)).await;
         app1.set_mock_time(NoatunTime::from_datetime(
