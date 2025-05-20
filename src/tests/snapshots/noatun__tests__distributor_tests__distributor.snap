@@ -1,14 +1,16 @@
 ---
-source: src/lib.rs
+source: src/tests/distributor_tests.rs
 expression: result
 ---
 [
     RequestUpstream {
+        source: #2,
         query: [
             (
                 "2021-01-01T00:00:00.000Z"-0-0-0,
                 4,
             ),
         ],
+        destination: #1,
     },
 ]

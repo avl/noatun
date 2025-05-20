@@ -1,5 +1,5 @@
 use crate::colors::*;
-use crate::communication::{Neighborhood, PeerSummaryInfo, QueryableOutbuffer};
+use crate::communication::{NeighborNeighborInfo, Neighborhood, PeerSummaryInfo, QueryableOutbuffer};
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
 use crate::{Application, Database, Message, MessageFrame, MessageHeader, MessageId, NoatunTime};
@@ -354,9 +354,12 @@ pub enum Status {
 
 pub fn truncate_to_arraystring(name: &str) -> Address {
     if name.len() <= Address::MAX_LENGTH {
+        println!("Name len: {}", name.len());
         return Address::from(name);
     }
+    println!("Length: {}", name.len());
     for i in (1..=Address::MAX_LENGTH).rev() {
+        println!("IS char boundary at {}: {}", i, name.is_char_boundary(i));
         if name.is_char_boundary(i) {
             return Address::from(name.split_at(i).0);
         }
@@ -493,13 +496,14 @@ impl Distributor {
         &mut self,
         database: &mut Database<APP>,
         input: impl Iterator<Item = DistributorMessage>,
+        neighborhood: &mut Neighborhood
     ) -> Result<Vec<DistributorMessage>> {
         let mut buf = QueryableOutbuffer::new(self.periodic_message_interval);
         self.receive_message(
             database,
             input.map(|x| (Address::from("src"), x)),
             &mut buf,
-            &mut Neighborhood::new(ArcShift::new(PeerSummaryInfo::default()))
+            neighborhood
         )?;
         Ok(buf.outbuf.into_iter().collect())
     }
@@ -602,6 +606,7 @@ impl Distributor {
                         for (msg, count) in query {
                             // TODO: Consider if this is fast enough to do unbatched here? (and is batching really faster?)
                             if !database.contains_message(msg)? {
+                                println!("Database {} doesn't contain {:?}", self.ephemeral_node_id.get(), msg);
                                 continue;
                             }
                             trace!("Considering {:?} query: {:?}", source, msg);
@@ -749,6 +754,7 @@ impl Distributor {
         existing_outbuf: &mut QueryableOutbuffer,
         neighborhood: &mut Neighborhood //TODO: Maybe outbuf and neighborhood should be fields on distributor?
     ) -> Result<()> {
+        self.distributor_state.nominal = true;
         for (message, srcs) in accumulated_heads {
             let mut messages_to_request = vec![];
             {
@@ -768,11 +774,9 @@ impl Distributor {
                 messages_to_request.push((message, 4));
             }
             if !messages_to_request.is_empty() {
-
+                println!("Messages to request {:?}", messages_to_request);
                 existing_outbuf.request_upstream(messages_to_request.into_iter(), *self.ephemeral_node_id.get(), srcs[0], neighborhood);
                 self.distributor_state.nominal = false;
-            } else {
-                self.distributor_state.nominal = true;
             }
         }
         Ok(())
@@ -891,20 +895,24 @@ impl Distributor {
     ) -> Result<()> {
         let mut message_list : VecDeque<_> = message_list.drain(..).collect();
         while let Some((msg, src)) = message_list.pop_front() {
+            println!("{} Considering request to send {:?}", self.ephemeral_node_id.get(), msg);
             let msg = match database.load_message(msg) {
                 Ok(msg) => msg,
                 Err(err) => {
                     tracing::warn!("could not find requested message {:?}: {:?}", msg, err);
+                    println!("{} doesn't have message!", self.ephemeral_node_id.get());
                     continue;
                 }
             };
             let msg_id = msg.id();
 
             if neighborhood.is_inhibited(src, *self.ephemeral_node_id.get(), |info| {&mut info.resend_actual_message_based_on_node_numbers}) {
+                println!("{} not sending {:?}, inhibited", self.ephemeral_node_id.get(), msg);
                 break;
             }
 
             if output.recently_sent_message_ids.is_duplicate(msg.id()) == false {
+                println!("It's recently sent!");
                 output.push_back(DistributorMessage::Message {
                     origin: neighborhood.recent_messages.recent_messages.get(&msg_id).map(|x| x.original_source).unwrap_or(*self.ephemeral_node_id.get()),
                     message: SerializedMessage::new(msg)?,
@@ -915,6 +923,7 @@ impl Distributor {
 
 
             let mut children = database.get_message_children(msg_id)?;
+            println!("Queueing it.");
             message_list.extend(children.iter().map(|x|(*x, src)));
             #[cfg(debug_assertions)]
             {
@@ -1000,10 +1009,10 @@ mod tests {
     use super::truncate_to_arraystring;
     #[test]
     fn do_test_truncate() {
-        assert_eq!(&truncate_to_arraystring("abcd"), "abcd");
-        assert_eq!(&truncate_to_arraystring("0123456789"), "0123456789");
-        assert_eq!(&truncate_to_arraystring("0123456789A"), "0123456789");
-        assert_eq!(&truncate_to_arraystring("012345678﷽"), "012345678");
-        assert_eq!(&truncate_to_arraystring("01234567◌"), "01234567");
+        assert_eq!(truncate_to_arraystring("012345678901234567890123456789012345678﷽").0.as_str(), "012345678901234567890123456789012345678");
+        assert_eq!(truncate_to_arraystring("0123456789012345678901234567890123456789A").0.as_str(), "0123456789012345678901234567890123456789");
+        assert_eq!(truncate_to_arraystring("abcd").0.as_str(), "abcd");
+        assert_eq!(truncate_to_arraystring("0123456789").0.as_str(), "0123456789");
+        assert_eq!(truncate_to_arraystring("01234567890123456789012345678901234567◌").0.as_str(), "01234567890123456789012345678901234567");
     }
 }

@@ -209,6 +209,7 @@ enum ReceiveResult {
     RestartTrack,
 }
 
+
 impl ReceiveTrack {
     /// How long are packets kept in the retransmit window.
     /// I.e, after this has passed, they're lost forever.
@@ -258,7 +259,10 @@ impl ReceiveTrack {
         tx_finished_received_frame: &mut Sender<(Address, Vec<u8>)>,
         retransmit_requests: &mut IndexMap<EphemeralNodeId, RetransmitInfo>,
         push: bool,
-        retransmit_responsibility_query: &mut (dyn FnMut(EphemeralNodeId, usize) -> bool + 'static + Sync + Send)
+        retransmit_responsibility_query: &mut (dyn FnMut(EphemeralNodeId, usize) -> bool + 'static + Sync + Send),
+        our_node_id: EphemeralNodeId,
+        new_track: bool,
+
     ) -> Result<()> {
         let reconstructed_seq = self.reconstruct_seq(packet.seq);
 
@@ -291,8 +295,8 @@ impl ReceiveTrack {
             }
 
             if first.reconstructed_seq != self.expected_next {
-                //println!("Mismatch: disabled retransmit: {:?}, packet count: {}, last prog: {:?}", self.disable_retransmit, self.expected_next, self.retransmit_counter);
-                if self.disable_retransmit || packet_count > Self::SENDER_RETRANSMIT_WINDOW || self.retransmit_counter > 3 {
+
+                if self.disable_retransmit || packet_count > Self::SENDER_RETRANSMIT_WINDOW || self.retransmit_counter > 3 || new_track {
                     self.accum.clear();
                     self.have_valid_accum = false;
                     self.expected_next = first.reconstructed_seq;
@@ -314,8 +318,12 @@ impl ReceiveTrack {
                     }
 
                     self.retransmit_counter += 1;
+                    debug_assert_eq!(first.entity.src, packet_source);
                     if !retransmit_responsibility_query(first.entity.src, self.retransmit_counter - 1) {
-                        println!("Re-transmit query believes we shouldn't transmit (counter: {})", self.retransmit_counter);
+                        println!("Re-transmit ({}({})) query believes we ({}) shouldn't transmit (for {}) (counter: {})",
+                            first.reconstructed_seq,self.expected_next,
+                            our_node_id, packet_source,
+                                 self.retransmit_counter);
                         return Ok(());
                     }
                     println!("Re-transmit query believes we SHOULD transmit (counter: {})", self.retransmit_counter);
@@ -424,7 +432,7 @@ impl Default for RetransmitInfo {
 
 #[derive(Default, Debug)]
 pub(crate) struct PeerSummaryInfo {
-    peers: IndexMap<EphemeralNodeId, Vec<EphemeralNodeId>/*neighbors in common with us*/>
+    pub(crate) peers: IndexMap<EphemeralNodeId, Vec<EphemeralNodeId>/*neighbors in common with us*/>
 }
 
 impl PeerSummaryInfo {
@@ -779,12 +787,21 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         error!("Invalid packet received");
                         continue;
                     };
-                    //trace!("Received packet {:?}", packet);
+
                     match packet {
                         NetworkPacket::Data(push, entity) => {
                             let src_node = entity.src;
-                            match self.receive_track.entry((src_node, src_addr)).or_insert_with(||ReceiveTrack::new(self.retransmit_interval, self.disable_retransmit))
-                                .process(entity, src_node, &mut self.message_tx, &mut self.outgoing_retransmit_requests, push, &mut self.retransmit_responsibility_query).await {
+
+                            let (track, new_track) = match self.receive_track.entry((src_node, src_addr)) {
+                                Entry::Occupied(e) => {
+                                    (e.into_mut(), false)
+                                }
+                                Entry::Vacant(e) => {
+                                    (e.insert(ReceiveTrack::new(self.retransmit_interval, self.disable_retransmit)), true)
+                                }
+                            };
+
+                            match track.process(entity, src_node, &mut self.message_tx, &mut self.outgoing_retransmit_requests, push, &mut self.retransmit_responsibility_query, *self.ephemeral_node_id.get(), new_track).await {
                                     Ok(()) => {}
                                     Err(err) => {
                                         error!("Receive error: {:?}", err);
@@ -985,7 +1002,7 @@ pub(crate) struct PeerInfo {
     /// set to true whenever we decide to inhibit a request based on the idea that
     /// there's another node in our group that should be doing the request
     pub(crate) request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit,
-    pub(crate) send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit, //TODO: Unused?
+    //pub(crate) send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit, //TODO: Unused?
     pub(crate) resend_actual_message_based_on_node_numbers: NodeNumberBasedInhibit,
 
 }
@@ -997,7 +1014,7 @@ impl PeerInfo {
             peer_neighbors: vec![],
             last_seen: Instant::now(),
             request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit::default(),
-            send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit::default(),
+            //send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit::default(),
             resend_actual_message_based_on_node_numbers: Default::default(),
         }
     }
@@ -1147,6 +1164,7 @@ pub(crate) struct NodeNumberBasedInhibit {
     inhibit_with_no_one_else_taking_up_the_slack_count: usize,
 }
 
+#[derive(Debug)]
 struct Patience(usize);
 
 impl Patience {
@@ -1162,13 +1180,14 @@ impl Patience {
 
 
 impl NodeNumberBasedInhibit {
-    pub(crate) fn satisfied(&mut self) {
+    /*pub(crate) fn satisfied(&mut self) {
         self.was_inhibited = false;
         self.inhibit_with_no_one_else_taking_up_the_slack_count = 0;
-    }
+    }*/
     pub(crate) fn time_passed(&mut self) {
         if self.was_inhibited {
             self.inhibit_with_no_one_else_taking_up_the_slack_count += 1;
+            println!("Time passed: {}", self.inhibit_with_no_one_else_taking_up_the_slack_count);
         }
     }
     pub fn is_inhibited(&mut self,
@@ -1177,7 +1196,7 @@ impl NodeNumberBasedInhibit {
                         neighbors_of_requester: &[EphemeralNodeId]
     ) -> bool {
         let mut patience = Patience(self.inhibit_with_no_one_else_taking_up_the_slack_count);
-        trace!("is_inhibited #{:?}: our: {:?} neigh: {:?}", self_node, our_neighbor_list, neighbors_of_requester);
+        println!("is_inhibited #{:?}: our: {:?} neigh: {:?}", self_node, our_neighbor_list, neighbors_of_requester);
         for our_neighbor in our_neighbor_list {
             if *our_neighbor >= self_node {
                 continue;
@@ -1187,13 +1206,18 @@ impl NodeNumberBasedInhibit {
                 if patience.tax() {
                     self.was_inhibited = true;
                     trace!("#{:?}: was inhibited", self_node);
+                    println!("Inhibited because {:?}, considers {:?} to be a neighbor of requester, and patience is taxed: {:?}", self_node, our_neighbor, patience);
                     // This other neighbor should do the request instead
                     return true;
+                } else {
+                    println!("Not inhibited yet because {:?}, considers {:?} to be a neighbor of requester, and patience isn't taxed: {:?}", self_node, our_neighbor, patience);
                 }
             }
 
         }
-        trace!("#{:?}: was not inhibited", self_node);
+        self.inhibit_with_no_one_else_taking_up_the_slack_count = 0;
+        self.was_inhibited = false;
+        println!("#{:?}: was not inhibited", self_node);
         false
     }
 
@@ -1229,9 +1253,11 @@ impl Neighborhood {
     pub(crate) fn is_inhibited(&mut self, request_from: EphemeralNodeId, self_node: EphemeralNodeId, kind :impl FnOnce(&mut PeerInfo) -> &mut NodeNumberBasedInhibit ) -> bool {
         let neighbors_list: SmallVec<[_;16]> = self.peers.peers.keys().copied().collect();
         let Some(requesting_node) = self.peers.get_peer_mut(request_from) else {
+            println!("Inhibit, because requesting node is not known");
             return true;
         };
         if requesting_node.peer_neighbors.is_empty() {
+            println!("Inhibit, because requesting node has no neighbors");
             // Not fully up-and-running yet
             return true;
         }
@@ -1293,6 +1319,7 @@ impl Neighborhood {
             DistributorMessage::ReportHeads{heads, source,..}=> {
                 let peer = self.peers.get_insert_peer(*source);
                 peer.request_inhibited_based_on_node_numbers.time_passed();
+                peer.resend_actual_message_based_on_node_numbers.time_passed();
                 for head in heads {
                     if let Some(msg_source) = self.recent_messages.get(head) {
                         if msg_source.other_transmitters == false {
@@ -1319,9 +1346,10 @@ impl Neighborhood {
 
             }
             DistributorMessage::UpstreamResponse { source, messages, .. } => {
-                if let Some(peer) = self.peers.get_peer_mut(*source) {
+                /*if let Some(peer) = self.peers.get_peer_mut(*source) {
+                    //
                     peer.request_inhibited_based_on_node_numbers.satisfied();
-                }
+                }*/
                 for msg in messages {
                     self.recent_messages.record_message_source(msg.id, *source, false);
                 }
@@ -1416,6 +1444,7 @@ impl QueryableOutbuffer {
         neighbors: &mut Neighborhood
     ) {
 
+        println!("request upstream inhibit check");
         if neighbors.is_inhibited(request_from, self_node, |info|&mut info.request_inhibited_based_on_node_numbers) {
             return;
         }
@@ -1885,10 +1914,10 @@ where
         let mut our_node_id2 = our_node_id.clone();
         let should_retransmit: Box<dyn FnMut(EphemeralNodeId, usize) -> bool + Send + Sync> = Box::new(move |peer,retransmit_count| -> bool {
             let info = node_peer_info2.get();
-            error!("--------------------------------------------------------");
-            error!("Peer summary: {:#?}", info);
+            println!("--------------------------------------------------------");
+            println!("Peer summary: {:#?}", info);
             let t = info.we_should_retransmit(*our_node_id2.get(), peer, retransmit_count);
-            error!("Conclusion: {} (for peer: {}, we:'re: {}", t, peer, our_node_id2.get());
+            println!("Conclusion: {} (for peer: {}, we:'re: {}", t, peer, our_node_id2.get());
             t
         });
         let sender_loop = MulticastSenderLoop::new(
@@ -2068,7 +2097,7 @@ mod tests {
             let (_src, got) = receiver_rx2.recv().await.unwrap();
             assert_eq!(got, packet);
         }
-        std::thread::sleep(Duration::from_secs(1000_000_000));
+        //std::thread::sleep(Duration::from_secs(1000_000_000));
         drop(sender_tx1);
         drop(sender_tx2);
         jh1.await.unwrap().unwrap();
