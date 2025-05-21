@@ -1072,7 +1072,7 @@ async fn all_up_three_node_resync() {
 
 Document the following behavior:
 
-* When do we inhibit sending retransmit requests on the packet level
+* When do we inhibit sending retransmit requests on the packet level (i.e, the low-level retransmit)
 
 * When do we inhibit sending the various retransmit-requests on the Message-layer
  - Response to RequestUpstream

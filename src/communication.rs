@@ -1003,7 +1003,7 @@ pub(crate) struct PeerInfo {
     /// there's another node in our group that should be doing the request
     pub(crate) request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit,
     //pub(crate) send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit, //TODO: Unused?
-    pub(crate) resend_actual_message_based_on_node_numbers: NodeNumberBasedInhibit,
+    //pub(crate) resend_actual_message_based_on_node_numbers: NodeNumberBasedInhibit,
 
 }
 impl PeerInfo {
@@ -1015,7 +1015,7 @@ impl PeerInfo {
             last_seen: Instant::now(),
             request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit::default(),
             //send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit::default(),
-            resend_actual_message_based_on_node_numbers: Default::default(),
+            //resend_actual_message_based_on_node_numbers: Default::default(),
         }
     }
     pub fn we_should_answer_request(&self, our_id: EphemeralNodeId) -> bool {
@@ -1158,9 +1158,21 @@ pub(crate) struct QuarantinedMessage {
     first_need: Instant,
 }
 
+
+/// Inhibit mechanism based on node numbers. The idea is that within any neighborhood,
+/// lower node numbers are "designated responders". When anyone is missing a piece of
+/// information, the lowest numbered nodes, and only the lowest numbered nodes, answer. This
+/// alleviates the problem of everyone trying to fill-in the missing information of
+/// a node requesting info.
+///
+/// There are two main requests whose responses we apply the inhibit mechanism to:
+/// * ReportHeads - Inhibit applied to RequestUpstream-responses
+/// * SendMessageAndAllDescendants - Inhibit applied to Message-type
 #[derive(Default)]
 pub(crate) struct NodeNumberBasedInhibit {
+    /// True if we inhibited a response to this node in the last cycle (since last ReportHeads from peer)
     was_inhibited: bool,
+    /// Incremented whenever we receive a ReportHeads, while 'was_inhibited' is true.
     inhibit_with_no_one_else_taking_up_the_slack_count: usize,
 }
 
@@ -1180,10 +1192,7 @@ impl Patience {
 
 
 impl NodeNumberBasedInhibit {
-    /*pub(crate) fn satisfied(&mut self) {
-        self.was_inhibited = false;
-        self.inhibit_with_no_one_else_taking_up_the_slack_count = 0;
-    }*/
+    /// This is called when we receive a ReportHeads from this peer
     pub(crate) fn time_passed(&mut self) {
         if self.was_inhibited {
             self.inhibit_with_no_one_else_taking_up_the_slack_count += 1;
@@ -1319,7 +1328,7 @@ impl Neighborhood {
             DistributorMessage::ReportHeads{heads, source,..}=> {
                 let peer = self.peers.get_insert_peer(*source);
                 peer.request_inhibited_based_on_node_numbers.time_passed();
-                peer.resend_actual_message_based_on_node_numbers.time_passed();
+                //peer.resend_actual_message_based_on_node_numbers.time_passed();
                 for head in heads {
                     if let Some(msg_source) = self.recent_messages.get(head) {
                         if msg_source.other_transmitters == false {
@@ -1364,9 +1373,9 @@ impl Neighborhood {
 
 #[derive(Debug)]
 pub struct DuplicationChecker<T> {
-    pub(crate) memory: IndexMap<T, Instant>,
-    pub(crate) gc_counter: usize,
-    pub(crate) interval: Duration
+    memory: IndexMap<T, Instant>,
+    gc_counter: usize,
+    interval: Duration
 }
 impl<T:Eq+Hash> DuplicationChecker<T> {
     pub fn new(interval: Duration) -> DuplicationChecker<T> {
@@ -1384,10 +1393,10 @@ impl<T:Eq+Hash> DuplicationChecker<T> {
             self.memory.retain(|k,v|v.elapsed() <= 2*self.interval);
         }
         match self.memory.entry(id) {
-            Entry::Occupied(e) => {
-                let e = e;
-                if e.get().elapsed() > self.interval {
-                    e.swap_remove();
+            Entry::Occupied(mut e) => {
+                let prev_elapsed = e.get().elapsed();
+                *e.get_mut() = Instant::now();
+                if prev_elapsed > self.interval {
                     false
                 } else {
                     true
@@ -1401,10 +1410,10 @@ impl<T:Eq+Hash> DuplicationChecker<T> {
     }
 }
 
+const MAX_RECENT_SENT_KEPT: usize = 1000;
 #[derive(Debug)]
 pub struct QueryableOutbuffer {
     pub(crate) outbuf: VecDeque<DistributorMessage>,
-    pub(crate) recent_sent: VecDeque<DistributorMessage>,
 
     pub(crate) request_upstream_message_inhibit: DuplicationChecker<MessageId>,
     pub(crate) periodic_message_interval: Duration,
@@ -1417,7 +1426,6 @@ impl QueryableOutbuffer {
     pub fn new(periodic_message_interval: Duration) -> Self {
         Self {
             outbuf: Default::default(),
-            recent_sent: Default::default(),
             request_upstream_message_inhibit: DuplicationChecker::new(2*periodic_message_interval),
             periodic_message_interval: periodic_message_interval,
             recently_sent_upstream_responses_for: DuplicationChecker::new(2*periodic_message_interval),
@@ -1425,6 +1433,10 @@ impl QueryableOutbuffer {
         }
     }
     //TODO: Implement detection of node id duplicates
+    pub(crate) fn request_upstream_blocked(&mut self, id: MessageId) -> bool {
+        self.recently_sent_upstream_responses_for.is_duplicate(id)
+    }
+
     pub(crate) fn upstream_response_blocked(&mut self, id: MessageId) -> bool {
         self.recently_sent_upstream_responses_for.is_duplicate(id)
     }
@@ -1563,7 +1575,7 @@ where
                 });
             }
         }
-        self.outbuf.recent_sent.clear();
+
         self.distributor.receive_message(
             &mut *database,
             self.buffered_incoming_messages.drain(..),

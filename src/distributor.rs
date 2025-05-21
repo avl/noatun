@@ -191,6 +191,7 @@ pub enum DistributorMessage {
     /// Command the recipient to send all descendants of the given messages
     SendMessageAndAllDescendants {
         source: EphemeralNodeId,
+        destination: EphemeralNodeId,
         message_id: Vec<MessageId>,
     },
     /// Actual messages
@@ -265,12 +266,13 @@ impl DistributorMessage {
                     dest
                 )
             }
-            DistributorMessage::SendMessageAndAllDescendants { source, message_id } => {
+            DistributorMessage::SendMessageAndAllDescendants { source, message_id, destination } => {
                 format!(
-                    "{}: messages: {:?}, src: {:?}",
+                    "{}: messages: {:?}, src: {:?}, dst: {:?}",
                     pink("SendMessageAndAllDescendants"),
                     message_id,
-                    source
+                    source,
+                    destination
                 )
             }
             DistributorMessage::Message {
@@ -373,12 +375,6 @@ impl QueryableOutbuffer {
     }
     pub(crate) fn pop_front(&mut self) -> Option<DistributorMessage> {
         let msg = self.outbuf.pop_front();
-        if let Some(msg) = &msg {
-            self.recent_sent.push_back(msg.clone());
-            if self.recent_sent.len() > MAX_RECENT_SENT_MEMORY {
-                self.recent_sent.pop_front();
-            }
-        }
         msg
     }
     pub(crate) fn push_back(&mut self, msg: DistributorMessage) {
@@ -387,15 +383,6 @@ impl QueryableOutbuffer {
 
     pub(crate) fn extend<I: IntoIterator<Item = DistributorMessage>>(&mut self, items: I) {
         self.outbuf.extend(items);
-    }
-    pub(crate) fn has_request_for(&mut self, message: MessageId) -> bool {
-        self.outbuf.iter().chain(self.recent_sent.iter()).any(|x| {
-            if let DistributorMessage::RequestUpstream { query, .. } = x {
-                query.iter().any(|x| x.0 == message)
-            } else {
-                false
-            }
-        })
     }
 }
 
@@ -638,18 +625,21 @@ impl Distributor {
                         }
                     }
                 }
-                DistributorMessage::SendMessageAndAllDescendants { source, message_id } => {
-                    for msg in message_id {
-                        match accumulated_send_msg_and_descendants.entry(msg) {
-                            Entry::Occupied(mut e) => {
-                                if *e.get() > source {
+                DistributorMessage::SendMessageAndAllDescendants { source, message_id, destination } => {
+                    if destination == *self.ephemeral_node_id.get() {
+                        for msg in message_id {
+                            match accumulated_send_msg_and_descendants.entry(msg) {
+                                Entry::Occupied(mut e) => {
+                                    if *e.get() > source {
+                                        e.insert(source);
+                                    }
+                                }
+                                Entry::Vacant(e) => {
                                     e.insert(source);
                                 }
                             }
-                            Entry::Vacant(e) => {
-                                e.insert(source);
-                            }
                         }
+
                     }
                 }
                 DistributorMessage::Message{ source, message:mut msg, demand_ack: need_ack, origin } => {
@@ -755,29 +745,21 @@ impl Distributor {
         neighborhood: &mut Neighborhood //TODO: Maybe outbuf and neighborhood should be fields on distributor?
     ) -> Result<()> {
         self.distributor_state.nominal = true;
-        for (message, srcs) in accumulated_heads {
-            let mut messages_to_request = vec![];
-            {
-                if database.contains_message(message)? {
-                    continue;
-                }
-                if existing_outbuf.has_request_for(message) {
-                    continue;
-                }
-                if messages_to_request
-                    .iter()
-                    .any(|x: &(MessageId, usize)| x.0 == message)
-                {
-                    continue;
-                }
 
-                messages_to_request.push((message, 4));
+        let mut messages_to_request_from_source = IndexMap::<_,Vec<_>>::new();
+        for (message, srcs) in accumulated_heads {
+
+            assert!(!srcs.is_empty());
+            if database.contains_message(message)? {
+                continue;
             }
-            if !messages_to_request.is_empty() {
-                println!("Messages to request {:?}", messages_to_request);
-                existing_outbuf.request_upstream(messages_to_request.into_iter(), *self.ephemeral_node_id.get(), srcs[0], neighborhood);
+
+            messages_to_request_from_source.entry(srcs[0]).or_default().push(message);
+        }
+        for (src,msgs) in messages_to_request_from_source.into_iter() {
+                println!("Messages to request from {:?}: {:?}", src,msgs);
+                existing_outbuf.request_upstream(msgs.into_iter().map(|x|(x,4)), *self.ephemeral_node_id.get(), src, neighborhood);
                 self.distributor_state.nominal = false;
-            }
         }
         Ok(())
     }
@@ -822,7 +804,7 @@ impl Distributor {
         neighborhood: &mut Neighborhood,
     ) -> Result<()> {
         let mut unknowns: IndexMap<EphemeralNodeId, Vec<(MessageId, usize)>> = IndexMap::new();
-        let mut send_cmds = vec![];
+        let mut send_cmds = IndexMap::new();
         for (msg_id, (msg_source, msg_dest, msg_value)) in upstream_response.iter() {
             if database.contains_message(*msg_id)? {
                 continue; //We already have this one
@@ -853,7 +835,7 @@ impl Distributor {
                 /*if neighborhood.is_inhibited(*msg_source, self.ephemeral_node_id, |info|&mut info.send_msg_and_descendants_based_on_node_numbers) {
                     continue;
                 }*/
-                send_cmds.push(*msg_id);
+                send_cmds.insert(*msg_id, msg_source);
                 continue;
             }
 
@@ -866,16 +848,22 @@ impl Distributor {
                     msg_value
                         .parents
                         .iter()
-                        .filter(|x| !queryable_outbuffer.has_request_for(**x))
                         .map(|x| (*x, (2 * msg_value.query_count).min(256))),
                 );
             }
         }
         if send_cmds.is_empty() == false {
-            queryable_outbuffer.push_back(DistributorMessage::SendMessageAndAllDescendants {
-                message_id: send_cmds,
-                source: *self.ephemeral_node_id.get(),
-            });
+            let mut msg_by_source = IndexMap::<_,Vec<_>>::new();
+            for (k,v) in send_cmds {
+                msg_by_source.entry(*v).or_default().push(k);
+            }
+            for (src, messages) in msg_by_source {
+                queryable_outbuffer.push_back(DistributorMessage::SendMessageAndAllDescendants {
+                    message_id: messages,
+                    source: *self.ephemeral_node_id.get(),
+                    destination: src
+                });
+            }
         }
         if unknowns.is_empty() == false {
             //println!("REQUEST_UPSTREAM (from within process_upstream_response");
@@ -905,11 +893,6 @@ impl Distributor {
                 }
             };
             let msg_id = msg.id();
-
-            if neighborhood.is_inhibited(src, *self.ephemeral_node_id.get(), |info| {&mut info.resend_actual_message_based_on_node_numbers}) {
-                println!("{} not sending {:?}, inhibited", self.ephemeral_node_id.get(), msg);
-                break;
-            }
 
             if output.recently_sent_message_ids.is_duplicate(msg.id()) == false {
                 println!("It's recently sent!");
