@@ -42,6 +42,7 @@ use std::time::Duration;
 use crate::private::Sealed;
 use crate::undo_store::magic_initialize_ptr;
 pub use paste::paste;
+use tokio::time::Instant;
 use tracing::warn;
 
 
@@ -385,6 +386,21 @@ static FOR_TEST_NON_RANDOM_ID: bool = true;
 #[cfg(test)]
 static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+
+thread_local! {
+    pub static TEST_EPOCH: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+pub fn test_epoch() -> Instant {
+    TEST_EPOCH.with(|epoch| epoch.get().expect("must call set_test_epoch first"))
+}
+pub fn set_test_epoch(instant: Instant)  {
+    TEST_EPOCH.with(|epoch| {epoch.set(Some(instant));})
+}
+pub fn test_elapsed() -> Duration {
+    test_epoch().elapsed()
+}
+
+
 
 impl MessageId {
     pub const ZERO: MessageId = MessageId { data: [0u32; 4] };

@@ -1,5 +1,5 @@
 use crate::colors::*;
-use crate::communication::{NeighborNeighborInfo, Neighborhood, PeerSummaryInfo, QueryableOutbuffer};
+use crate::communication::{Neighborhood, QueryableOutbuffer};
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
 use crate::{Application, Database, Message, MessageFrame, MessageHeader, MessageId, NoatunTime};

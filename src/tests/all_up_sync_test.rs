@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
 use crate::distributor::Status;
-use crate::{Application, Database, Message, MessageId, NoatunTime, Object};
+use crate::{set_test_epoch, Application, Database, Message, MessageId, NoatunTime, Object};
 use crate::{Persistence, Savefile};
 use arcshift::ArcShift;
 use bytes::BufMut;
@@ -137,7 +137,7 @@ impl TestDriver {
         });
     }
     pub fn raw_frames_snapshot(&mut self) -> String {
-        let mut ret = String::new();
+        let ret = String::new();
 
         println!("TIME:       SRC: DST:         Len  Data");
         for (t, src,msg,dst) in self.senders.get().raw_messages.lock().unwrap().iter() {
@@ -1067,7 +1067,7 @@ async fn all_up_three_node_resync() {
     )).unwrap();
     driver.set_loss(0.0);
 
-
+/*
     compile_error!("
 
 Document the following behavior:
@@ -1099,6 +1099,7 @@ by overriding default EphemeralNodeId in config)
 
 
     ")
+*/
 
     for _ in 0..35 {
         tokio::time::sleep(Duration::from_millis(1000)).await;
@@ -1140,7 +1141,7 @@ async fn all_up_three_node_partial_resync1() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig|{
+    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig|{
         let mut sess = db.begin_session_mut().unwrap();
         sess.append_single(&crate::MessageFrame::new(
             MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
@@ -1209,7 +1210,7 @@ async fn all_up_three_node_partial_resync2() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig|{
+    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig|{
         let mut sess = db.begin_session_mut().unwrap();
         sess.append_single(&crate::MessageFrame::new(
             MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
@@ -1276,7 +1277,7 @@ async fn all_up_four_node_partial_resync1() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig|{
+    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig|{
         let mut sess = db.begin_session_mut().unwrap();
         sess.append_single(&crate::MessageFrame::new(
             MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
@@ -1289,9 +1290,9 @@ async fn all_up_four_node_partial_resync1() {
         ), false).unwrap();
     };
     let mut app1 = create_app(&mut driver, Some(&mut add)).await;
-    let mut app2 = create_app(&mut driver, None).await;
-    let mut app3 = create_app(&mut driver, None).await;
-    let mut app4 = create_app(&mut driver, Some(&mut add)).await;
+    let app2 = create_app(&mut driver, None).await;
+    let app3 = create_app(&mut driver, None).await;
+    let app4 = create_app(&mut driver, Some(&mut add)).await;
 
     let start = Instant::now();
     let start_time = datetime!(2020-01-01 T 00:00:00 Z);
@@ -1324,6 +1325,7 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
+    set_test_epoch(Instant::now());
 
     let mut add = |db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig|{
         config.disable_retransmit = false;
@@ -1338,13 +1340,13 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
             }
         ), false).unwrap();
     };
-    let mut noadd = |db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig|{
+    let mut noadd = |_db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig|{
         config.disable_retransmit = false;
     };
     let mut app1 = create_app(&mut driver, Some(&mut add)).await;
-    let mut app2 = create_app(&mut driver, Some(&mut noadd)).await;
-    let mut app3 = create_app(&mut driver, Some(&mut noadd)).await;
-    let mut app4 = create_app(&mut driver, Some(&mut add)).await;
+    let app2 = create_app(&mut driver, Some(&mut noadd)).await;
+    let app3 = create_app(&mut driver, Some(&mut noadd)).await;
+    let app4 = create_app(&mut driver, Some(&mut add)).await;
 
     let start = Instant::now();
     let start_time = datetime!(2020-01-01 T 00:00:00 Z);

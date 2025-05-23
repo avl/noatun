@@ -1,4 +1,4 @@
-use crate::communication::{Neighborhood, PeerSummaryInfo, QueryableOutbuffer};
+use crate::communication::{Neighborhood};
 use crate::cutoff::CutOffDuration;
 use crate::database::DatabaseSettings;
 use crate::distributor::{Distributor, DistributorMessage, EphemeralNodeId};
@@ -6,9 +6,7 @@ use crate::tests::{CounterMessage, CounterObject};
 use crate::{Database, MessageId, NoatunTime};
 use datetime_literal::datetime;
 use std::iter::once;
-use std::mem::swap;
 use std::time::Duration;
-use crate::distributor::Address;
 use arcshift::ArcShift;
 
 fn create_app<'a>(

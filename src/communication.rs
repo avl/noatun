@@ -3,12 +3,12 @@ use crate::distributor::{Address, Distributor, DistributorMessage, EphemeralNode
 use crate::colors::{rgb};
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 use crate::communication::udp::TokioUdpDriver;
-use crate::{Application, Database, MessageId, NoatunTime};
+use crate::{test_elapsed, Application, Database, MessageId, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayString;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
-use indexmap::{IndexMap, IndexSet};
+use indexmap::{IndexMap};
 use savefile::{
     Deserialize, Deserializer, Introspect, IntrospectItem, Packed, SavefileError, Schema,
     Serialize, Serializer, WithSchema, WithSchemaContext,
@@ -22,7 +22,6 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::{io, thread};
-use std::cmp::Reverse;
 use arcshift::ArcShift;
 use indexmap::map::Entry;
 use smallvec::SmallVec;
@@ -113,7 +112,7 @@ pub trait CommunicationSendSocket<Endpoint: PartialEq + Debug + Send> {
 
 
 #[derive(Debug, Clone)]
-struct TransmittedEntitySortable {
+pub(crate) struct TransmittedEntitySortable {
     seq: u16,
     data: Vec<u8>,
     // Note, u16::MAX signifies "no boundary"
@@ -200,7 +199,6 @@ struct ReceiveTrack {
     sorted_packets: VecDeque<SortableTransmittedEntity>,
     retransmit_interval: Duration,
     disable_retransmit: bool,
-    retransmit_counter: usize,
     last_success: Instant,
 }
 
@@ -229,7 +227,6 @@ impl ReceiveTrack {
             sorted_packets: Default::default(),
             retransmit_interval,
             disable_retransmit: retransmit_disabled,
-            retransmit_counter: 0,
             //TODO: Clean away tracks if last success is too long ago
             last_success: Instant::now(),
         }
@@ -259,10 +256,8 @@ impl ReceiveTrack {
         tx_finished_received_frame: &mut Sender<(Address, Vec<u8>)>,
         retransmit_requests: &mut IndexMap<EphemeralNodeId, RetransmitInfo>,
         push: bool,
-        retransmit_responsibility_query: &mut (dyn FnMut(EphemeralNodeId, usize) -> bool + 'static + Sync + Send),
-        our_node_id: EphemeralNodeId,
+        retransmit_responsibility_query: &mut (dyn FnMut(EphemeralNodeId) -> Duration + 'static + Sync + Send),
         new_track: bool,
-
     ) -> Result<()> {
         let reconstructed_seq = self.reconstruct_seq(packet.seq);
 
@@ -287,20 +282,36 @@ impl ReceiveTrack {
             self.accum.clear();
         }
         while let Some(first) = self.sorted_packets.front() {
+
             if let Some(accum_retransmits) = retransmit_requests.get_mut(&packet_source) {
-                accum_retransmits.items.remove(&reconstructed_seq);
+                if accum_retransmits.items.remove(&reconstructed_seq) {
+                    println!("{:?} retransmission received!", test_elapsed());
+                    accum_retransmits.outstanding_retransmit = None;
+                }
+
                 if accum_retransmits.items.is_empty() {
                     retransmit_requests.swap_remove(&packet_source);
                 }
+
             }
 
             if first.reconstructed_seq != self.expected_next {
+                let mut give_up_on_retransmit = false;
+                if let Some(accum_retransmits) = retransmit_requests.get_mut(&packet_source) {
+                    if let Some(outstanding) = accum_retransmits.outstanding_retransmit {
+                        if outstanding.elapsed() > 2*self.retransmit_interval {
+                            give_up_on_retransmit = true;
+                            accum_retransmits.outstanding_retransmit = None;
+                            accum_retransmits.items.clear();
+                            accum_retransmits.wait_until = None;
+                        }
+                    }
+                }
 
-                if self.disable_retransmit || packet_count > Self::SENDER_RETRANSMIT_WINDOW || self.retransmit_counter > 3 || new_track {
+                if self.disable_retransmit || packet_count > Self::SENDER_RETRANSMIT_WINDOW || give_up_on_retransmit || new_track {
                     self.accum.clear();
                     self.have_valid_accum = false;
                     self.expected_next = first.reconstructed_seq;
-                    self.retransmit_counter = 0;
                 } else {
 
                     trace!(
@@ -317,56 +328,43 @@ impl ReceiveTrack {
                         continue;
                     }
 
-                    self.retransmit_counter += 1;
                     debug_assert_eq!(first.entity.src, packet_source);
-                    if !retransmit_responsibility_query(first.entity.src, self.retransmit_counter - 1) {
-                        println!("Re-transmit ({}({})) query believes we ({}) shouldn't transmit (for {}) (counter: {})",
-                            first.reconstructed_seq,self.expected_next,
-                            our_node_id, packet_source,
-                                 self.retransmit_counter);
-                        return Ok(());
+                    // See: #packet_retransmit_logic
+                    let retransmission_delay = retransmit_responsibility_query(first.entity.src);
+                    println!("Re-transmit query believes we SHOULD transmit after {:?}", retransmission_delay);
+
+                    trace!(
+                        "Appending retransmit-request for {:?} {:?} (delay: {:?})",
+                        packet_source,
+                        self.expected_next,
+                        retransmission_delay
+                    );
+                    let accum_retransmits = retransmit_requests.entry(packet_source).or_default();
+                    for x in self.expected_next..first.reconstructed_seq {
+                        accum_retransmits.items.insert(x);
                     }
-                    println!("Re-transmit query believes we SHOULD transmit (counter: {})", self.retransmit_counter);
-
-
-                    if self.expected_next == 0 {
-                        debug_assert!(self.accum.is_empty());
-                        //Make sure that after a restart, we always pickup wherever the on-wire stream is
-                        self.expected_next = first.reconstructed_seq;
-                    } else {
-                        trace!(
-                            "Appending retransmit-request for {:?} {:?}",
-                            packet_source,
-                            self.expected_next
-                        );
-                        let accum_retransmits = retransmit_requests.entry(packet_source).or_default();
-                        for x in self.expected_next..first.reconstructed_seq {
-                            accum_retransmits.items.insert(x);
-                        }
-                        if !push && accum_retransmits.wait_until.is_none(){
-                            println!("Enqueue retransmit in {:?}", self.retransmit_interval);
-                            accum_retransmits.wait_until = Some(Instant::now() + self.retransmit_interval);
-                        }
-                        let mut cur = first.reconstructed_seq;
-                        'loop1: for key in &self.sorted_packets {
-                            while cur < key.reconstructed_seq {
-                                accum_retransmits.items.insert(cur);
-                                cur += 1;
-                                if accum_retransmits.items.len() > 100 {
-                                    break 'loop1;
-                                }
+                    if !push && accum_retransmits.wait_until.is_none(){
+                        println!("{:?} Enqueue retransmit in {:?}", test_elapsed(), retransmission_delay);
+                        accum_retransmits.wait_until = Some(Instant::now() + retransmission_delay);
+                    }
+                    let mut cur = first.reconstructed_seq;
+                    'loop1: for key in &self.sorted_packets {
+                        while cur < key.reconstructed_seq {
+                            accum_retransmits.items.insert(cur);
+                            cur += 1;
+                            if accum_retransmits.items.len() > 100 {
+                                break 'loop1;
                             }
-                            cur = key.reconstructed_seq + 1;
                         }
-                        assert!(accum_retransmits.items.is_empty() == false);
-
-
-                        return Ok(());
+                        cur = key.reconstructed_seq + 1;
                     }
+                    assert!(accum_retransmits.items.is_empty() == false);
+
+                    return Ok(());
+
                 }
             }
 
-            self.retransmit_counter = 0;
             self.last_success = Instant::now();
 
             if first.entity.first_boundary == u16::MAX {
@@ -420,12 +418,22 @@ impl ReceiveTrack {
 struct RetransmitInfo {
     wait_until: Option<Instant>,
     items: BTreeSet<u64>,
+
+    //TODO: Detect when hearing one's self. Possibly by blake-hashing the entire packets, and
+    //detecting something we didn't transmit, but with our ephemerealid.
+
+    /// When sending a retransmit message, this is set to Some(now) (if not already Some).
+    /// Whenever a retransmission is received, we set it to None.
+    /// If enough time passes without us hearing the requested messages retransmitted,
+    /// we give up on the retransmission, and clear all retransmit items
+    outstanding_retransmit: Option<Instant>
 }
 impl Default for RetransmitInfo {
     fn default() -> Self {
         Self {
             wait_until: None,
             items: Default::default(),
+            outstanding_retransmit: None
         }
     }
 }
@@ -436,13 +444,13 @@ pub(crate) struct PeerSummaryInfo {
 }
 
 impl PeerSummaryInfo {
-    pub(crate) fn we_should_retransmit(&self, our_node_id: EphemeralNodeId, peer: EphemeralNodeId, retransmit_count: usize) -> bool{
+    pub(crate) fn we_should_retransmit(&self, our_node_id: EphemeralNodeId, peer: EphemeralNodeId, retransmit_interval: Duration) -> Duration {
         if let Some(peer_neighbors) = self.peers.get(&peer) {
             let our_index = peer_neighbors.iter().position(|&x| x == our_node_id).unwrap_or(100);
             error!("our index: {}", our_index);
-            retransmit_count >= our_index
+            ((our_index as u32) * retransmit_interval) / 4
         } else {
-            false
+            retransmit_interval
         }
     }
 }
@@ -471,7 +479,7 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     retransmit_interval: Duration,
     disable_retransmit: bool,
     ephemeral_node_id: ArcShift<EphemeralNodeId>,
-    retransmit_responsibility_query: Box<dyn FnMut(/*src: */EphemeralNodeId, /*repetitions: */ usize) -> bool + Sync + Send + 'static>
+    retransmit_responsibility_query: Box<dyn FnMut(/*src: */EphemeralNodeId) -> Duration + Sync + Send + 'static>
 }
 impl<Socket: CommunicationDriver> Drop for MulticastSenderLoop<Socket> {
     fn drop(&mut self) {
@@ -530,7 +538,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         retransmit_buffer_size_bytes: usize,
         disable_retransmit: bool,
         ephemeral_node_id: ArcShift<EphemeralNodeId>,
-        retransmit_responsibility_query: Box<dyn FnMut(/*src: */EphemeralNodeId,/*repetitions*/usize) -> bool + 'static + Send + Sync>
+        retransmit_responsibility_query: Box<dyn FnMut(/*src: */EphemeralNodeId) -> Duration + 'static + Send + Sync>
     ) -> Result<MulticastSenderLoop<Socket>> {
         let (send_socket, receive_socket) = driver
             .initialize(bind_address, multicast_group, mtu)
@@ -650,6 +658,8 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             let (Ok(insert_point) | Err(insert_point)) = self
                 .queue
                 .binary_search_by_key(what, |x| x.reconstructed_seq);
+            println!("Node {:?} enqueing retransmit {:?} at position {} in send queue",
+                self.ephemeral_node_id.get(),history_item.reconstructed_seq, insert_point);
             self.queue.insert(insert_point, history_item);
         }
     }
@@ -667,7 +677,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                 if self.outgoing_retransmit_requests.is_empty() == false {
                     let mut temp = vec![];
                     let now = Instant::now();
-                    let first_key = *self.outgoing_retransmit_requests.iter().min_by_key(|(k,v)|v.wait_until).unwrap().0;
+                    let first_key = *self.outgoing_retransmit_requests.iter().min_by_key(|(_k,v)|v.wait_until).unwrap().0;
                     let first_val = self.outgoing_retransmit_requests.get_mut(&first_key).unwrap();
                     if first_val.wait_until <= Some(now) {
                         let mut what = Vec::with_capacity(20);
@@ -677,7 +687,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                             };
                             what.push(item);
                         }
-                        let mut packet = NetworkPacket::RetransmitRequest {
+                        let packet = NetworkPacket::RetransmitRequest {
                             who: first_key,
                             what
                         };
@@ -801,7 +811,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                                 }
                             };
 
-                            match track.process(entity, src_node, &mut self.message_tx, &mut self.outgoing_retransmit_requests, push, &mut self.retransmit_responsibility_query, *self.ephemeral_node_id.get(), new_track).await {
+                            match track.process(entity, src_node, &mut self.message_tx, &mut self.outgoing_retransmit_requests, push, &mut self.retransmit_responsibility_query, new_track).await {
                                     Ok(()) => {}
                                     Err(err) => {
                                         error!("Receive error: {:?}", err);
@@ -1036,7 +1046,7 @@ impl PeerInfo {
         let source_info = self.source_info.entry(source).or_insert_with(|| PeerOriginInfo::new(self.peer, source));
         source_info.can_hear_source.observe_true();
     }
-    pub fn record_squelch(&mut self, origin: EphemeralNodeId) {
+    pub fn record_squelch(&mut self, _origin: EphemeralNodeId) {
         //TODO: Implement or remove this
         todo!()/*7let origin = self.source_info.entry(origin).or_insert_with(|| PeerOriginInfo {
             peer: self.peer,
@@ -1103,7 +1113,7 @@ impl Peers {
         if self.last_gc.elapsed() > periodic_message {
             self.last_gc = Instant::now();
             let peers_before = self.peers.len();
-            self.peers.retain(|k,v|{
+            self.peers.retain(|_k,v|{
                 v.last_seen.elapsed() < 4*periodic_message
             });
             if peers_before != self.peers.len() {
@@ -1297,7 +1307,7 @@ impl Neighborhood {
                 }
 
             }
-            Entry::Vacant(mut e) => {
+            Entry::Vacant(e) => {
                 e.insert(QuarantinedMessage {
                     message_id: parent_we_are_missing,
                     immediate_source,
@@ -1390,7 +1400,7 @@ impl<T:Eq+Hash> DuplicationChecker<T> {
         self.gc_counter += 1;
         if self.gc_counter > 10000 {
             self.gc_counter = 0;
-            self.memory.retain(|k,v|v.elapsed() <= 2*self.interval);
+            self.memory.retain(|_k,v|v.elapsed() <= 2*self.interval);
         }
         match self.memory.entry(id) {
             Entry::Occupied(mut e) => {
@@ -1920,16 +1930,20 @@ where
         let (quit_tx, quit_rx) = tokio::sync::oneshot::channel();
         let (receiver_tx, receiver_rx) = tokio::sync::mpsc::channel(1000);
         let our_node_id = ArcShift::new(config.initial_ephemeral_node_id.unwrap_or_else(EphemeralNodeId::random));
-        let mut node_peer_info = ArcShift::new(PeerSummaryInfo::default());
+        let node_peer_info = ArcShift::new(PeerSummaryInfo::default());
 
         let mut node_peer_info2 = node_peer_info.clone();
         let mut our_node_id2 = our_node_id.clone();
-        let should_retransmit: Box<dyn FnMut(EphemeralNodeId, usize) -> bool + Send + Sync> = Box::new(move |peer,retransmit_count| -> bool {
+
+        let retransmit_interval = Duration::from_secs_f32(config.retransmit_interval_seconds);
+
+        let should_retransmit: Box<dyn FnMut(EphemeralNodeId) -> Duration + Send + Sync> = Box::new(move |peer| -> Duration {
+            // #packet_retransmit_logic
             let info = node_peer_info2.get();
             println!("--------------------------------------------------------");
             println!("Peer summary: {:#?}", info);
-            let t = info.we_should_retransmit(*our_node_id2.get(), peer, retransmit_count);
-            println!("Conclusion: {} (for peer: {}, we:'re: {}", t, peer, our_node_id2.get());
+            let t = info.we_should_retransmit(*our_node_id2.get(), peer, retransmit_interval);
+            println!("Conclusion: {:?} (for peer: {}, we:'re: {}", t, peer, our_node_id2.get());
             t
         });
         let sender_loop = MulticastSenderLoop::new(
@@ -1941,7 +1955,7 @@ where
             config.bandwidth_limit_bytes_per_second,
             quit_rx,
             config.mtu,
-            Duration::from_secs_f32(config.retransmit_interval_seconds),
+            retransmit_interval,
             config.retransmit_buffer_size_bytes,
             config.disable_retransmit,
             our_node_id.clone(),
@@ -2067,7 +2081,7 @@ mod tests {
             1_000_000,
             false,
             ArcShift::new(EphemeralNodeId::new(1)),
-            Box::new(|_,_|true),
+            Box::new(|_|Duration::ZERO),
         )
         .await
         .unwrap();
@@ -2089,7 +2103,7 @@ mod tests {
             1_000_000,
             false,
             ArcShift::new(EphemeralNodeId::new(2)),
-            Box::new(|_,_|true),
+            Box::new(|_|Duration::ZERO),
         )
         .await
         .unwrap();
@@ -2136,7 +2150,7 @@ mod tests {
             100,
             false,
             ArcShift::new(EphemeralNodeId::new(1)),
-            Box::new(|_,_|true),
+            Box::new(|_|Duration::ZERO),
         )
         .await
         .unwrap();
@@ -2158,7 +2172,7 @@ mod tests {
             100,
             false,
             ArcShift::new(EphemeralNodeId::new(2)),
-            Box::new(|_,_|true),
+            Box::new(|_|Duration::ZERO),
         )
         .await
         .unwrap();
