@@ -1,4 +1,4 @@
-use crate::distributor::{Address, Distributor, DistributorMessage, EphemeralNodeId, SerializedMessage, Status};
+use crate::distributor::{AccumulatedMessage, Address, Distributor, DistributorMessage, EphemeralNodeId, SerializedMessage, Status};
 
 use crate::colors::{rgb};
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
@@ -1058,8 +1058,14 @@ impl PeerInfo {
 
 
 pub(crate) struct MessageSourceInfo {
+    /// The node we first heard this message from. The firstactual transmitter of the complete
+    /// message, if any such available, otherwise the first node that mentioned the message
     pub(crate) original_source: EphemeralNodeId,
+    /// True if we have observed the actual message, not just a messageid mentioned in
+    /// ReportHeads or similar
     pub(crate) transmitter_seen: bool,
+    /// True if `origina_source` is the only source from which we have heard this particular
+    /// message
     pub(crate) other_transmitters: bool
 }
 
@@ -1205,8 +1211,12 @@ impl NodeNumberBasedInhibit {
     /// This is called when we receive a ReportHeads from this peer
     pub(crate) fn time_passed(&mut self) {
         if self.was_inhibited {
-            self.inhibit_with_no_one_else_taking_up_the_slack_count += 1;
-            println!("Time passed: {}", self.inhibit_with_no_one_else_taking_up_the_slack_count);
+            if self.inhibit_with_no_one_else_taking_up_the_slack_count == 0 {
+                self.inhibit_with_no_one_else_taking_up_the_slack_count += 1;
+            } else {
+                self.inhibit_with_no_one_else_taking_up_the_slack_count *= 2;
+            }
+            println!("Time passed: {} -> {} (p: {:x?})", self.inhibit_with_no_one_else_taking_up_the_slack_count-1, self.inhibit_with_no_one_else_taking_up_the_slack_count, self as *const _);
         }
     }
     pub fn is_inhibited(&mut self,
@@ -1225,15 +1235,15 @@ impl NodeNumberBasedInhibit {
                 if patience.tax() {
                     self.was_inhibited = true;
                     trace!("#{:?}: was inhibited", self_node);
-                    println!("Inhibited because {:?}, considers {:?} to be a neighbor of requester, and patience is taxed: {:?}", self_node, our_neighbor, patience);
+                    println!("Inhibited because we ({:?}), consider {:?} to be a neighbor of requester, and patience is taxed: {:?}", self_node, our_neighbor, patience);
                     // This other neighbor should do the request instead
                     return true;
                 } else {
                     println!("Not inhibited yet because {:?}, considers {:?} to be a neighbor of requester, and patience isn't taxed: {:?}", self_node, our_neighbor, patience);
                 }
             }
-
         }
+
         self.inhibit_with_no_one_else_taking_up_the_slack_count = 0;
         self.was_inhibited = false;
         println!("#{:?}: was not inhibited", self_node);
@@ -1250,6 +1260,8 @@ pub(crate) struct Neighborhood {
     /// The source we've observed for recent messages.
     pub(crate) recent_messages: RecentMessages,
 
+    //TODO:
+    // Remove quarantine field, or use it!
     pub(crate) quarantine: IndexMap<MessageId, QuarantinedMessage>,
 }
 
@@ -1337,6 +1349,7 @@ impl Neighborhood {
             }
             DistributorMessage::ReportHeads{heads, source,..}=> {
                 let peer = self.peers.get_insert_peer(*source);
+                println!("{:?}: Calling time_passed for {:?}", test_elapsed(), *source);
                 peer.request_inhibited_based_on_node_numbers.time_passed();
                 //peer.resend_actual_message_based_on_node_numbers.time_passed();
                 for head in heads {
@@ -1430,6 +1443,9 @@ pub struct QueryableOutbuffer {
 
     pub(crate) recently_sent_upstream_responses_for: DuplicationChecker<MessageId>,
     pub(crate) recently_sent_message_ids:  DuplicationChecker<MessageId>,
+
+    //TODO: Add gc for this
+    pub(crate) parentless_messages: IndexMap</*missing parent*/MessageId, Vec<AccumulatedMessage>>,
 }
 
 impl QueryableOutbuffer {
@@ -1440,6 +1456,7 @@ impl QueryableOutbuffer {
             periodic_message_interval: periodic_message_interval,
             recently_sent_upstream_responses_for: DuplicationChecker::new(2*periodic_message_interval),
             recently_sent_message_ids: DuplicationChecker::new(2*periodic_message_interval),
+            parentless_messages: Default::default(),
         }
     }
     //TODO: Implement detection of node id duplicates
@@ -1474,7 +1491,17 @@ impl QueryableOutbuffer {
         let query: Vec<_> = messages_to_request
             .filter(
                 |msg| {
-                    !self.request_upstream_message_inhibit.is_duplicate(msg.0)
+                    let is_dup = self.request_upstream_message_inhibit.is_duplicate(msg.0);
+                    if is_dup {
+                        println!("{:?} at {:?}: But {:?} was a duplicate, so not sent",
+                            test_elapsed(), self_node,
+                                 msg.0);
+                    } else {
+                        println!("{:?} at {:?}: But {:?} was NOT a duplicate, so sent",
+                                 test_elapsed(), self_node,
+                                 msg.0);
+                    }
+                    !is_dup
                 }
             )
             .collect();
@@ -1645,6 +1672,7 @@ where
 
             if self.nextsend.is_empty() && !self.outbuf.is_empty() {
                 let msg = self.outbuf.pop_front().unwrap();
+                println!("Node {:?} sends: {:?}", self.distributor.node_id(), msg);
                 self.debug_record(&msg)?;
                 self.nextsend_id = msg.message_id();
                 Serializer::bare_serialize(&mut self.nextsend, 0, &msg)?;
@@ -1722,6 +1750,7 @@ where
 
                             match msg {
                                 Ok(msg) => {
+                                    println!("Node {} adding message {:?}", self.distributor.node_id(), msg.header.id);
                                     self.outbuf.push_back(
                                         DistributorMessage::Message{
                                             source: self.distributor.node_id(),
@@ -1941,7 +1970,7 @@ where
             // #packet_retransmit_logic
             let info = node_peer_info2.get();
             println!("--------------------------------------------------------");
-            println!("Peer summary: {:#?}", info);
+            println!("Peer summary: {:?}", info);
             let t = info.we_should_retransmit(*our_node_id2.get(), peer, retransmit_interval);
             println!("Conclusion: {:?} (for peer: {}, we:'re: {}", t, peer, our_node_id2.get());
             t

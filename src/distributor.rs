@@ -1,8 +1,8 @@
 use crate::colors::*;
-use crate::communication::{Neighborhood, QueryableOutbuffer};
+use crate::communication::{Neighborhood, QuarantinedMessage, QueryableOutbuffer};
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
-use crate::{Application, Database, Message, MessageFrame, MessageHeader, MessageId, NoatunTime};
+use crate::{test_elapsed, Application, Database, Message, MessageFrame, MessageHeader, MessageId, NoatunTime};
 use anyhow::Result;
 use arrayvec::ArrayString;
 use indexmap::{IndexMap, IndexSet};
@@ -386,7 +386,8 @@ impl QueryableOutbuffer {
     }
 }
 
-struct AccumulatedMessage {
+#[derive(Debug)]
+pub(crate) struct AccumulatedMessage {
     msg: SerializedMessage,
     /// The sender of this message. Might not be original origin, since
     /// message relaying occurs
@@ -677,7 +678,19 @@ impl Distributor {
             outbuf,
             neighborhood
         )?;
-        self.process_received_messages(&mut database, accumulated_serialized, outbuf, neighborhood)?;
+
+
+        for i in 0..1000 {
+            if i == 1000 -1 {
+                error!("Unexpected iteration count {}", i);
+            }
+            let temp = self.process_received_messages(&mut database, std::mem::take(&mut accumulated_serialized), outbuf, neighborhood)?;
+            if temp.is_empty() {
+                break;
+            }
+            accumulated_serialized = temp;
+        }
+
         self.process_sync_all_queries(&mut database, accumulated_sync_all_queries, outbuf)?;
         self.process_sync_all_requests(&mut database, accumulated_sync_all_requests, outbuf, neighborhood)?;
         Ok(())
@@ -757,7 +770,7 @@ impl Distributor {
             messages_to_request_from_source.entry(srcs[0]).or_default().push(message);
         }
         for (src,msgs) in messages_to_request_from_source.into_iter() {
-                println!("Messages to request from {:?}: {:?}", src,msgs);
+                println!("{:?} at {:?} Messages to request from {:?}: {:?}", test_elapsed(), self.ephemeral_node_id.get(), src,msgs);
                 existing_outbuf.request_upstream(msgs.into_iter().map(|x|(x,4)), *self.ephemeral_node_id.get(), src, neighborhood);
                 self.distributor_state.nominal = false;
         }
@@ -777,7 +790,7 @@ impl Distributor {
         for (src, heads) in by_src {
             let messages: Vec<MessageSubGraphNode> = database
                 .get_upstream_of(heads.into_iter())?
-                .filter(|x|output.upstream_response_blocked(x.0.id) == false)
+                //TODO: Can we re-enable this? .filter(|x|output.upstream_response_blocked(x.0.id) == false)
                 .map(|(msg, query_count)| MessageSubGraphNode {
                     id: msg.id,
                     parents: msg.parents,
@@ -823,14 +836,24 @@ impl Distributor {
                     })
                     .is_ok_and(|x| x)
             });
-
+            debug_assert!(err.is_ok());
             err?;
-            if have_all_parents {
+
+
+            let all_parents_are_also_in_request = msg_value
+                .parents
+                .iter()
+                .all(|x| upstream_response.contains_key(x));
+
+            if have_all_parents || all_parents_are_also_in_request {
                 // We have all the parents, a perfect msg to request!
                 info!(
                     "Requesting msg.id={:?}, because we have all its parents: {:?}",
                     msg_id, msg_value.parents
                 );
+                if self.ephemeral_node_id.get().0 == 0 {
+                    println!("process_upstream_response - adding cmd");
+                }
 
                 /*if neighborhood.is_inhibited(*msg_source, self.ephemeral_node_id, |info|&mut info.send_msg_and_descendants_based_on_node_numbers) {
                     continue;
@@ -838,11 +861,9 @@ impl Distributor {
                 send_cmds.insert(*msg_id, msg_source);
                 continue;
             }
-
-            let all_parents_are_also_in_request = msg_value
-                .parents
-                .iter()
-                .all(|x| upstream_response.contains_key(x));
+            if self.ephemeral_node_id.get().0 == 0 {
+                println!("process_upstream_response {msg_id:?} - didn't have all parents, and wasn't requesting them");
+            }
             if !all_parents_are_also_in_request {
                 unknowns.entry(*msg_source).or_default().extend(
                     msg_value
@@ -866,8 +887,10 @@ impl Distributor {
             }
         }
         if unknowns.is_empty() == false {
-            //println!("REQUEST_UPSTREAM (from within process_upstream_response");
             for (src_node,unknowns) in unknowns {
+                if self.ephemeral_node_id.get().0 == 0 {
+                    println!("process_upstream_response requesting {:?} from {:?}", unknowns, src_node);
+                }
                 queryable_outbuffer.request_upstream(unknowns.into_iter(), *self.ephemeral_node_id.get(), src_node, neighborhood);
             }
         }
@@ -895,7 +918,7 @@ impl Distributor {
             let msg_id = msg.id();
 
             if output.recently_sent_message_ids.is_duplicate(msg.id()) == false {
-                println!("It's recently sent!");
+                println!("It's not recently sent!");
                 output.push_back(DistributorMessage::Message {
                     origin: neighborhood.recent_messages.recent_messages.get(&msg_id).map(|x| x.original_source).unwrap_or(*self.ephemeral_node_id.get()),
                     message: SerializedMessage::new(msg)?,
@@ -926,13 +949,15 @@ impl Distributor {
         Ok(())
     }
 
+    /// Returns list of messages whose parents are now known
     fn process_received_messages<APP: Application>(
         &self,
         database: &mut DatabaseSessionMut<APP>,
         mut message_list: Vec<AccumulatedMessage>,
         output: &mut QueryableOutbuffer,
         neighborhood: &mut Neighborhood
-    ) -> Result<()> {
+    ) -> Result<Vec<AccumulatedMessage>> {
+        let mut released_list = Vec::new();
         database.maybe_advance_cutoff()?;
 
         message_list.sort_by_key(|x| x.msg.id);
@@ -946,17 +971,25 @@ impl Distributor {
                 {
 
                     neighborhood.record_tentative_missing_path(*parent, source, origin);
+                    println!("{:?} {:?} MISSING PARENT {:?} of {:?}", test_elapsed(), *self.ephemeral_node_id.shared_get(), parent, msg.id);
 
                     warn!(
                         "Could not apply message {:?} because parent {:?} is not known",
                         msg.id, parent
                     );
+                    output.parentless_messages.entry(*parent).or_default().push(AccumulatedMessage{msg, source, origin, need_ack });
                     continue 'msg_iter;
                 }
             }
             neighborhood.check_if_tentative_missing_path_was_actually_ok(msg.id);
+
+            if let Some(released) = output.parentless_messages.swap_remove(&msg.id) {
+                released_list.extend(released);
+            }
+
             chosen_messages.insert(msg.id, (msg, need_ack));
         }
+
 
         let mut to_ack = vec![];
         let messages: Vec<_> = chosen_messages
@@ -983,7 +1016,7 @@ impl Distributor {
         if !to_ack.is_empty() {
             output.push_back(DistributorMessage::SyncAllAck(to_ack));
         }
-        Ok(())
+        Ok(released_list)
     }
 }
 

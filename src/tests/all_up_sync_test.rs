@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
 use crate::distributor::Status;
-use crate::{set_test_epoch, Application, Database, Message, MessageId, NoatunTime, Object};
+use crate::{set_test_epoch, test_elapsed, Application, Database, Message, MessageId, NoatunTime, Object};
 use crate::{Persistence, Savefile};
 use arcshift::ArcShift;
 use bytes::BufMut;
@@ -112,6 +112,21 @@ struct TestDriver {
     debug_events: Arc<Mutex<Vec<DebugEvent>>>,
 }
 impl TestDriver {
+    pub fn partition_all(&mut self) {
+        let num_nodes = self.senders.get().senders.len();
+        self.partitionings.rcu(|prev|{
+            let mut res: Partitionings = prev.clone();
+            for i in 0..num_nodes {
+                for j in 0..num_nodes {
+                    let i = i as u8;
+                    let j = j as u8;
+                    res.partitionings.insert((i, j));
+                    res.partitionings.insert((j, i));
+                }
+            }
+            res
+        });
+    }
     pub fn partition_node(&mut self, node: u8) {
         let num_nodes = self.senders.get().senders.len();
         self.partitionings.rcu(|prev|{
@@ -124,6 +139,18 @@ impl TestDriver {
             res
         });
     }
+    pub fn unpartition_bidirectional_links(&mut self, pairs: impl IntoIterator<Item=(u8,u8)>) {
+        let vec: Vec<(u8,u8)> = pairs.into_iter().collect();
+        self.partitionings.rcu(move|prev|{
+            let mut res: Partitionings = prev.clone();
+            for (a,b) in vec.iter().copied() {
+                res.partitionings.remove(&(a, b));
+                res.partitionings.remove(&(b, a));
+            }
+            res
+        });
+    }
+
     pub fn unpartition_node(&mut self, node: u8) {
         let num_nodes = self.senders.get().senders.len();
         self.partitionings.rcu(|prev|{
@@ -146,13 +173,19 @@ impl TestDriver {
             let data: crate::communication::NetworkPacket = savefile::Deserializer::bare_deserialize(&mut std::io::Cursor::new(msg),0).unwrap();
 
             let rawlen = dst.iter().map(|x|format!("{}",x)).join(",");
-            let padcount = 12-rawlen.len();
+            let padcount = 12usize.saturating_sub(rawlen.len());
             let padding = " ".repeat(padcount);
 
             println!("{:>10?}: {}    {}{} {} B {:?}", t.duration_since(self.driver_start), colored_int((*src).into()), dst.iter().map(|x|colored_int((*x).into())).join(","), padding, msg.len(), data);
         }
 
         ret
+    }
+    pub fn sent_messages_count(&self) -> usize {
+        self.debug_events.lock().unwrap().iter()
+            .filter(|x|{
+                matches!(&x.msg, DebugEventMsg::Send(_))
+            }).count()
     }
     pub fn messages_snapshot(&self) -> String {
         let mut ret = String::new();
@@ -254,7 +287,7 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
             if driver_inner.loss <= random(0.0..1.0) && !partitioned {
                 item.send((self.0 /*src*/, data.clone()))
                     .await
-                    .map_err(|e| std::io::Error::other(format!("simulated net failed {e:?}")))?;
+                    .map_err(|e| std::io::Error::other(format!("simulated net failed {:?}", e)))?;
                 delivered_to.push(*dst_node);
             } else {
                 //println!("== SIMULATOR CAUSED PACKET LOSS ==: partitioned: {}", partitioned);
@@ -545,6 +578,8 @@ fn old_transmitted_messages_without_effect_are_removed2() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_gradual_update_sync_test() {
+    set_test_epoch(Instant::now());
+
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
     let app1 = create_app(&mut driver, None).await;
@@ -1321,7 +1356,6 @@ async fn all_up_four_node_partial_resync1() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_four_node_partial_resync1_node1_isolated() {
-
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
@@ -1381,11 +1415,10 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
 }
 
 
-/*
-TODO: Fix this test
 #[tokio::test(start_paused = true)]
 async fn ten_nodes_sync_test() {
 
+    set_test_epoch(Instant::now());
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
@@ -1436,11 +1469,92 @@ async fn ten_nodes_sync_test() {
     println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.messages_snapshot());
 
+    println!("Sent Messages: {} ", driver.sent_messages_count());
+    assert!(driver.sent_messages_count() < 75, "every one sends heads 7 times, plus a few messages to bring 7 up-to-date");
+
     let root0 = apps[0].with_root(|root| root.detach());
     for i in 1..10 {
         let root = apps[i].with_root(|root| root.detach());
         assert_eq!(root0, root);
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn complex_forwarding_test() {
+    set_test_epoch(Instant::now());
+    setup_tracing();
+    MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
+    let mut driver = TestDriver::default();
+
+    let mut apps = vec![];
+
+    /*
+    a0 ____          ______ b2
+    |      \___c4___/       |
+    a1 ___/ \__c5_/ \______ b3
+
+    a* can't hear b* and vice-versa
+    c* can hear everyone
+    */
+
+    let a0 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
+    let a1 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
+    let b2 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
+    let b3 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
+    let c4 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
+    let c5 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
+
+    driver.partition_all();
+    // a/b can hear each other
+    driver.unpartition_bidirectional_links(
+        [
+            (a0,a1),
+            (b2,b3),
+        ]
+    );
+    //cs can hear everyone
+    driver.unpartition_node(c4);
+    driver.unpartition_node(c5);
+
+    /*
+    c* should detect that b* can't hear a*, and should retransmit automatically.
+    c1 should not retransmit that which c2 sends and vice versa.
+    neither a* nor b* should retransmit anything
+    */
+    let start_time = datetime!(2020-01-01 T 00:00:00 Z);
+
+    for i in 0..14 {
+        tokio::time::sleep(Duration::from_millis(5000)).await;
+        for app in apps.iter_mut() {
+            app.set_mock_time(NoatunTime::from_datetime(
+                start_time + test_elapsed(),
+            )).unwrap();
+        }
+
+        if i<5 {
+            for app in apps.iter_mut() {
+                app.add_message(SyncMessage {
+                    persist: true,
+                    value: 1,
+                    reset: false,
+                })
+                    .await
+                    .unwrap();
+            }
+        }
+
+    }
+    println!("Start time: {:?}", start_time);
+    println!("{}", driver.raw_frames_snapshot());
+    println!("{}", driver.messages_snapshot());
+
+    println!("Sent Messages: {} ", driver.sent_messages_count());
+
+    compile_error!("Check that this test really behaves as it should!")
+    let root0 = apps[0].with_root(|root| root.detach());
+    for i in 1..6 {
+        let root = apps[i].with_root(|root| root.detach());
+        assert_eq!(root0, root, "node {} and {} should have same state", 0, i);
+    }
 
 }
-*/
