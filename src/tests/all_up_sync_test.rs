@@ -188,6 +188,12 @@ impl TestDriver {
             }).count()
     }
     pub fn messages_snapshot(&self) -> String {
+        self.messages_snapshot_impl(false)
+    }
+    pub fn sent_messages_snapshot(&self) -> String {
+        self.messages_snapshot_impl(true)
+    }
+    pub fn messages_snapshot_impl(&self, sent_only:bool) -> String {
         let mut ret = String::new();
 
         let mut evs = self.debug_events.lock().unwrap();
@@ -222,7 +228,12 @@ impl TestDriver {
                         "*".to_string()
                     }
                 }
-                DebugEventMsg::Receive(_) => String::new(),
+                DebugEventMsg::Receive(_) => {
+                    if sent_only {
+                        continue;
+                    }
+                    String::new()
+                },
             };
             writeln!(
                 &mut ret,
@@ -383,6 +394,7 @@ async fn create_app(driver: &mut TestDriver, modify: Option<&mut dyn FnMut(&mut 
 
 #[tokio::test(start_paused = true)]
 async fn all_up_simple_sync_test() {
+    set_test_epoch(Instant::now());
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
 
     let mut driver = TestDriver::default();
@@ -753,6 +765,7 @@ async fn all_up_general_update_sync_test_impl(
     maxlen: usize,
     allow_reset: bool,
 ) {
+    set_test_epoch(Instant::now());
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(seed)));
 
     let mut driver = TestDriver::default();
@@ -913,6 +926,7 @@ async fn all_up_general_update_sync_test_impl(
 
 #[tokio::test(start_paused = true)]
 async fn all_up_big_severely_desynced_test() {
+    set_test_epoch(Instant::now());
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
     let mut app1 = create_app(&mut driver, None).await;
@@ -956,6 +970,8 @@ async fn all_up_big_severely_desynced_test() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_big_nominal_test() {
+    set_test_epoch(Instant::now());
+
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
     let mut app1 = create_app(&mut driver, None).await;
@@ -1025,6 +1041,7 @@ async fn all_up_big_nominal_test() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_huge_desynced_test() {
+    set_test_epoch(Instant::now());
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
     let mut app1 = create_app(&mut driver, None).await;
@@ -1234,12 +1251,7 @@ async fn all_up_three_node_partial_resync1() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_three_node_partial_resync2() {
-    /*
-        compile_error!("
-    * Try to avoid sending RequestUpstream from multiple nodes
-    * Automatic relay-routing-requests (unsquelch - rename?) (witrh also squelch if duplicates)
-        ")
-    */
+
 
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
@@ -1359,7 +1371,6 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
-    set_test_epoch(Instant::now());
 
     let mut add = |db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig|{
         config.disable_retransmit = false;
@@ -1418,12 +1429,11 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
 #[tokio::test(start_paused = true)]
 async fn ten_nodes_sync_test() {
 
-    set_test_epoch(Instant::now());
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig|{
+    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig|{
         let mut sess = db.begin_session_mut().unwrap();
         sess.append_single(&crate::MessageFrame::new(
             MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
@@ -1437,7 +1447,7 @@ async fn ten_nodes_sync_test() {
     };
     let mut apps = vec![];
     for i in 0..10 {
-        let mut inject: Option<&mut dyn for<'a> FnMut(&'a mut _, &mut crate::communication::DatabaseCommunicationConfig)> = if i != 7 {
+        let inject: Option<&mut dyn for<'a> FnMut(&'a mut _, &mut crate::communication::DatabaseCommunicationConfig)> = if i != 7 {
             Some(&mut add)
         } else {
             None
@@ -1481,7 +1491,7 @@ async fn ten_nodes_sync_test() {
 
 #[tokio::test(start_paused = true)]
 async fn complex_forwarding_test() {
-    set_test_epoch(Instant::now());
+
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
@@ -1542,15 +1552,14 @@ async fn complex_forwarding_test() {
                     .unwrap();
             }
         }
-
     }
+
     println!("Start time: {:?}", start_time);
     println!("{}", driver.raw_frames_snapshot());
-    println!("{}", driver.messages_snapshot());
+    println!("{}", driver.sent_messages_snapshot());
 
     println!("Sent Messages: {} ", driver.sent_messages_count());
 
-    compile_error!("Check that this test really behaves as it should!")
     let root0 = apps[0].with_root(|root| root.detach());
     for i in 1..6 {
         let root = apps[i].with_root(|root| root.detach());

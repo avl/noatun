@@ -15,7 +15,7 @@ use savefile::{
 };
 use savefile_derive::Savefile;
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
@@ -1012,11 +1012,14 @@ pub(crate) struct PeerInfo {
     /// set to true whenever we decide to inhibit a request based on the idea that
     /// there's another node in our group that should be doing the request
     pub(crate) request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit,
+
     //pub(crate) send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit, //TODO: Unused?
     //pub(crate) resend_actual_message_based_on_node_numbers: NodeNumberBasedInhibit,
 
 }
 impl PeerInfo {
+
+
     pub fn new(peer: EphemeralNodeId) -> PeerInfo {
         PeerInfo {
             peer,
@@ -1209,14 +1212,10 @@ impl Patience {
 
 impl NodeNumberBasedInhibit {
     /// This is called when we receive a ReportHeads from this peer
-    pub(crate) fn time_passed(&mut self) {
+    pub(crate) fn time_passed(&mut self, constant: usize) {
         if self.was_inhibited {
-            if self.inhibit_with_no_one_else_taking_up_the_slack_count == 0 {
-                self.inhibit_with_no_one_else_taking_up_the_slack_count += 1;
-            } else {
-                self.inhibit_with_no_one_else_taking_up_the_slack_count *= 2;
-            }
-            println!("Time passed: {} -> {} (p: {:x?})", self.inhibit_with_no_one_else_taking_up_the_slack_count-1, self.inhibit_with_no_one_else_taking_up_the_slack_count, self as *const _);
+            self.inhibit_with_no_one_else_taking_up_the_slack_count += constant;
+            println!("Time passed: {} -> {} (p: {:x?})", self.inhibit_with_no_one_else_taking_up_the_slack_count-constant, self.inhibit_with_no_one_else_taking_up_the_slack_count, self as *const _);
         }
     }
     pub fn is_inhibited(&mut self,
@@ -1262,11 +1261,52 @@ pub(crate) struct Neighborhood {
 
     //TODO:
     // Remove quarantine field, or use it!
+    /// Mapping from message that we're missing, to information about said message
     pub(crate) quarantine: IndexMap<MessageId, QuarantinedMessage>,
+
+    /// Messages that we were totally going to request from upstream, but didn't
+    /// because we figured a peer would do it. request_inhibited_based_on_node_numbers has
+    /// a counter that is increased when adding stuff here, and decreased whenever we
+    /// receive a message in here without having requestd it.
+    pub(crate) inhibited_request_upstream: IndexMap<MessageId, (Instant, EphemeralNodeId)>,
+    pub(crate) inhibited_request_upstream_oldest: IndexMap<EphemeralNodeId, BTreeMap<Instant, Vec<MessageId>>>,
 }
 
 impl Neighborhood {
 
+    pub fn report_no_longer_inhibited(&mut self, msg: MessageId) {
+        if let Some((time,src)) = self.inhibited_request_upstream.swap_remove(&msg) {
+            match self.inhibited_request_upstream_oldest.entry(src) {
+                Entry::Vacant(_) => {},
+                Entry::Occupied(mut e) => {
+                    match e.get_mut().entry(time) {
+                        std::collections::btree_map::Entry::Vacant(_) => {}
+                        std::collections::btree_map::Entry::Occupied(mut e2) => {
+                            e2.get_mut().retain(|x|x!=&msg);
+                            if e2.get().is_empty() {
+                                e2.remove();
+                            }
+                        }
+                    }
+                    if e.get_mut().is_empty() {
+                        e.swap_remove();
+                    }
+                }
+            }
+        }
+    }
+    pub fn report_inhibited_message(&mut self, msg_id: MessageId, source: EphemeralNodeId) {
+        match self.inhibited_request_upstream.entry(msg_id) {
+            Entry::Occupied(_e) => {}
+            Entry::Vacant(e) => {
+                let now = Instant::now();
+                e.insert((now, source));
+                self.inhibited_request_upstream_oldest.entry(source)
+                    .or_default().entry(now)
+                    .or_default().push(msg_id);
+            }
+        }
+    }
     pub fn new(peer_summary_info: ArcShift<PeerSummaryInfo>) -> Neighborhood {
         Self {
             peers: Peers {
@@ -1276,13 +1316,17 @@ impl Neighborhood {
             },
             recent_messages: Default::default(),
             quarantine: Default::default(),
+            inhibited_request_upstream: Default::default(),
+            inhibited_request_upstream_oldest: Default::default(),
         }
     }
 
     /// request_from = the origin of the request we're about to respond to
     /// self_node = ourselves
-    pub(crate) fn is_inhibited(&mut self, request_from: EphemeralNodeId, self_node: EphemeralNodeId, kind :impl FnOnce(&mut PeerInfo) -> &mut NodeNumberBasedInhibit ) -> bool {
+    pub(crate) fn is_request_upstream_inhibited(&mut self, request_from: EphemeralNodeId, self_node: EphemeralNodeId, message_ids: &[MessageId] ) -> bool {
         let neighbors_list: SmallVec<[_;16]> = self.peers.peers.keys().copied().collect();
+
+
         let Some(requesting_node) = self.peers.get_peer_mut(request_from) else {
             println!("Inhibit, because requesting node is not known");
             return true;
@@ -1293,8 +1337,21 @@ impl Neighborhood {
             return true;
         }
         let requesting_node_neighbors: SmallVec<[_;16]> = requesting_node.peer_neighbors.iter().copied().collect();
-        let inhibitor = kind(requesting_node);
-        inhibitor.is_inhibited(self_node, &neighbors_list, &requesting_node_neighbors)
+        let inhibitor = &mut requesting_node.request_inhibited_based_on_node_numbers;
+        if inhibitor.is_inhibited(self_node, &neighbors_list, &requesting_node_neighbors) {
+
+            for msg_id in message_ids {
+                self.report_inhibited_message(*msg_id, request_from);
+            }
+            true
+        } else {
+
+            for msg in message_ids {
+                self.report_no_longer_inhibited(*msg);
+            }
+            false
+        }
+
     }
 
     /// A previous tentatively missing path may actually not be a missing path, it might just
@@ -1333,7 +1390,7 @@ impl Neighborhood {
     pub fn record_message(&mut self, message: &DistributorMessage, our_node_id: EphemeralNodeId, periodic_message: Duration) {
         //TODO Finish epohemeralnodeid stuff, make sure to implement re-randomization on conflicts! And clean up old history
         match message {
-            DistributorMessage::Squelch {
+            DistributorMessage::Forwarding {
                 source, transmitter, messages
             } => {
                 if *transmitter == our_node_id {
@@ -1350,7 +1407,13 @@ impl Neighborhood {
             DistributorMessage::ReportHeads{heads, source,..}=> {
                 let peer = self.peers.get_insert_peer(*source);
                 println!("{:?}: Calling time_passed for {:?}", test_elapsed(), *source);
-                peer.request_inhibited_based_on_node_numbers.time_passed();
+                if let Some(inhibited) = self.inhibited_request_upstream_oldest.get(source) {
+                    if let Some((age,val)) = inhibited.first_key_value() {
+                        let periods = age.elapsed().as_secs_f32() / periodic_message.as_secs_f32();
+                        println!("{:?}: Stress level is baed on {} elapsed for msgs: {:?}", test_elapsed(), age.elapsed().as_secs_f32(), val);
+                        peer.request_inhibited_based_on_node_numbers.time_passed((periods+1.0) as usize);
+                    }
+                }
                 //peer.resend_actual_message_based_on_node_numbers.time_passed();
                 for head in heads {
                     if let Some(msg_source) = self.recent_messages.get(head) {
@@ -1388,6 +1451,8 @@ impl Neighborhood {
             }
             DistributorMessage::SendMessageAndAllDescendants { .. } => {}
             DistributorMessage::Message{source, message:msg, ..} => {
+                self.report_no_longer_inhibited(msg.message_id());
+
                 self.recent_messages.record_message_source(msg.message_id(), *source, true);
             }
         }
@@ -1433,6 +1498,14 @@ impl<T:Eq+Hash> DuplicationChecker<T> {
     }
 }
 
+#[derive(Debug,Default)]
+pub(crate) struct OriginData {
+    pub(crate) missing_paths: usize,
+    // TODO: Rename to forwarded?
+    /// Who have we asked to forward us stuff from this origin?
+    pub(crate) forwarding_from: Option<EphemeralNodeId>,
+}
+
 const MAX_RECENT_SENT_KEPT: usize = 1000;
 #[derive(Debug)]
 pub struct QueryableOutbuffer {
@@ -1446,6 +1519,8 @@ pub struct QueryableOutbuffer {
 
     //TODO: Add gc for this
     pub(crate) parentless_messages: IndexMap</*missing parent*/MessageId, Vec<AccumulatedMessage>>,
+
+    pub(crate) origin_paths: IndexMap<EphemeralNodeId/*origin*/, OriginData>,
 }
 
 impl QueryableOutbuffer {
@@ -1457,6 +1532,7 @@ impl QueryableOutbuffer {
             recently_sent_upstream_responses_for: DuplicationChecker::new(2*periodic_message_interval),
             recently_sent_message_ids: DuplicationChecker::new(2*periodic_message_interval),
             parentless_messages: Default::default(),
+            origin_paths: Default::default(),
         }
     }
     //TODO: Implement detection of node id duplicates
@@ -1477,34 +1553,37 @@ impl QueryableOutbuffer {
 
     pub(crate) fn request_upstream(
         &mut self,
-        messages_to_request: impl Iterator<Item = (MessageId, usize)>,
+        messages_to_request: &[MessageId],
         self_node: EphemeralNodeId,
         request_from: EphemeralNodeId,
         neighbors: &mut Neighborhood
     ) {
 
         println!("request upstream inhibit check");
-        if neighbors.is_inhibited(request_from, self_node, |info|&mut info.request_inhibited_based_on_node_numbers) {
+        if neighbors.is_request_upstream_inhibited(request_from, self_node, messages_to_request) {
             return;
         }
 
-        let query: Vec<_> = messages_to_request
-            .filter(
+        let query: Vec<_> = messages_to_request.iter()
+            .filter_map(
                 |msg| {
-                    let is_dup = self.request_upstream_message_inhibit.is_duplicate(msg.0);
+                    let is_dup = self.request_upstream_message_inhibit.is_duplicate(*msg);
                     if is_dup {
                         println!("{:?} at {:?}: But {:?} was a duplicate, so not sent",
                             test_elapsed(), self_node,
-                                 msg.0);
+                                 msg);
+                        None
                     } else {
                         println!("{:?} at {:?}: But {:?} was NOT a duplicate, so sent",
                                  test_elapsed(), self_node,
-                                 msg.0);
+                                 msg);
+                        Some((msg.clone(), 4))
                     }
-                    !is_dup
                 }
             )
             .collect();
+
+
 
         if !query.is_empty() {
             self.outbuf

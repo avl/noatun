@@ -3,11 +3,12 @@ use crate::cutoff::CutOffDuration;
 use crate::database::DatabaseSettings;
 use crate::distributor::{Distributor, DistributorMessage, EphemeralNodeId};
 use crate::tests::{CounterMessage, CounterObject};
-use crate::{Database, MessageId, NoatunTime};
+use crate::{set_test_epoch, Database, MessageId, NoatunTime};
 use datetime_literal::datetime;
 use std::iter::once;
 use std::time::Duration;
 use arcshift::ArcShift;
+use tokio::time::Instant;
 
 fn create_app<'a>(
     msgs: impl IntoIterator<
@@ -210,6 +211,7 @@ fn distributor_simple_almost_sync() {
 
 #[test]
 fn test_distributor() {
+    set_test_epoch(Instant::now());
     let mut app1 = create_app([(datetime!(2021-01-01 Z), [].as_slice(), 1, 0, true)]);
     let mut app2 = create_app([(datetime!(2021-01-02 Z), [].as_slice(), 1, 0, true)]);
 

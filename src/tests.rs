@@ -273,6 +273,8 @@ impl<Root: FixedSizeObject + DummyTestMessageApply> Application for DummyTestApp
 }
 
 pub fn setup_tracing() {
+    set_test_epoch(Instant::now());
+
     pub struct TracingTimer(tokio::time::Instant);
 
     impl tracing_subscriber::fmt::time::FormatTime for TracingTimer {

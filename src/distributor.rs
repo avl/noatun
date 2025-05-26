@@ -1,5 +1,5 @@
 use crate::colors::*;
-use crate::communication::{Neighborhood, QuarantinedMessage, QueryableOutbuffer};
+use crate::communication::{Neighborhood, OriginData, QueryableOutbuffer};
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
 use crate::{test_elapsed, Application, Database, Message, MessageFrame, MessageHeader, MessageId, NoatunTime};
@@ -206,17 +206,15 @@ pub enum DistributorMessage {
     /// Inform 'transmitter' that messages from 'origin' should not be
     /// transmitted when 'source' asks for them (because 'source' knows
     /// that some other node is responding to this.
-    Squelch {
-        /// The node requesting the squelch
+    Forwarding {
+        /// The node requesting the forwarding
         source: EphemeralNodeId,
-        /// The node that is to be squelched
+        /// The origin from which this forwarding request concerns itself with
+        origin: EphemeralNodeId,
+        /// The node that is to create the forwading path,
         transmitter: EphemeralNodeId,
-        /// Messages that 'source' didn't want to receive.
-        /// 'transmitter' is intended to understand that any other messages with
-        /// the same original source (from its perspective) shouldn't be distributed either.
-        /// This, because apparently, 'source' has another path that allows it to receive
-        /// 'messages'. The squelch has an unspecified but decaying lifetime.
-        messages: Vec<MessageId>,
+        /// True if the forward should be removed
+        remove: bool,
     }
 }
 
@@ -238,7 +236,7 @@ impl DistributorMessage {
                     neighbors
                 )
             }
-            DistributorMessage::Squelch { source, transmitter, messages } => {
+            DistributorMessage::Forwarding { source, transmitter, messages } => {
                 format!(
                     "{}: source: {source} transmitter: {transmitter}, messages: {:?}",
                     brightred("Squelch"),
@@ -397,6 +395,25 @@ pub(crate) struct AccumulatedMessage {
     need_ack: bool,
 }
 
+enum SquelchAction {
+    StartForwarding {
+        forwarder: EphemeralNodeId,
+        origin: EphemeralNodeId,
+    },
+    CancelForwardering {
+        forwarder: EphemeralNodeId,
+        origin: EphemeralNodeId,
+    },
+}
+impl SquelchAction {
+    fn origin(&self) -> EphemeralNodeId {
+        match self {
+            SquelchAction::StartForwarding { origin, .. } => *origin,
+            SquelchAction::CancelForwardering { origin, .. } => *origin
+        }
+    }
+}
+
 impl Distributor {
     const BATCH_SIZE: usize = 20;
     pub(crate) fn new(report_head_interval: Duration, initial_node_id: ArcShift<EphemeralNodeId>) -> Distributor {
@@ -518,7 +535,7 @@ impl Distributor {
 
             self.distributor_state.have_heard_peer = true;
             match item {
-                DistributorMessage::Squelch {..} => {
+                DistributorMessage::Forwarding {..} => {
                 }
                 DistributorMessage::SyncAllQuery(query) => {
                     accumulated_sync_all_queries.extend(query);
@@ -679,20 +696,42 @@ impl Distributor {
             neighborhood
         )?;
 
+        let mut forwarding_cmds = vec![];
+
 
         for i in 0..1000 {
             if i == 1000 -1 {
                 error!("Unexpected iteration count {}", i);
             }
-            let temp = self.process_received_messages(&mut database, std::mem::take(&mut accumulated_serialized), outbuf, neighborhood)?;
+            // Temp is messages that previously couldn't be imported because they
+            // were missing their parents. One or more parents have now become known.
+            let temp = self.process_received_messages(&mut database, std::mem::take(&mut accumulated_serialized), outbuf, neighborhood, &mut forwarding_cmds)?;
             if temp.is_empty() {
                 break;
             }
             accumulated_serialized = temp;
         }
-
         self.process_sync_all_queries(&mut database, accumulated_sync_all_queries, outbuf)?;
         self.process_sync_all_requests(&mut database, accumulated_sync_all_requests, outbuf, neighborhood)?;
+
+        {
+            let mut origins = vec![];
+            for squelch in forwarding_cmds.iter().rev() {
+                let origin = squelch.origin();
+                if origins.contains(&origin) {
+                    continue;
+                }
+                outbuf.push_back(DistributorMessage::Forwarding {
+                    source: compile_error!("Continue here!"),
+                    transmitter: EphemeralNodeId(),
+                    messages: vec![],
+                })
+            }
+
+        }
+
+
+
         Ok(())
     }
 
@@ -771,7 +810,7 @@ impl Distributor {
         }
         for (src,msgs) in messages_to_request_from_source.into_iter() {
                 println!("{:?} at {:?} Messages to request from {:?}: {:?}", test_elapsed(), self.ephemeral_node_id.get(), src,msgs);
-                existing_outbuf.request_upstream(msgs.into_iter().map(|x|(x,4)), *self.ephemeral_node_id.get(), src, neighborhood);
+                existing_outbuf.request_upstream(&msgs, *self.ephemeral_node_id.get(), src, neighborhood);
                 self.distributor_state.nominal = false;
         }
         Ok(())
@@ -891,7 +930,8 @@ impl Distributor {
                 if self.ephemeral_node_id.get().0 == 0 {
                     println!("process_upstream_response requesting {:?} from {:?}", unknowns, src_node);
                 }
-                queryable_outbuffer.request_upstream(unknowns.into_iter(), *self.ephemeral_node_id.get(), src_node, neighborhood);
+                let unknowns = unknowns.into_iter().map(|x|x.0).collect::<Vec<_>>();
+                queryable_outbuffer.request_upstream(&unknowns, *self.ephemeral_node_id.get(), src_node, neighborhood);
             }
         }
 
@@ -955,7 +995,8 @@ impl Distributor {
         database: &mut DatabaseSessionMut<APP>,
         mut message_list: Vec<AccumulatedMessage>,
         output: &mut QueryableOutbuffer,
-        neighborhood: &mut Neighborhood
+        neighborhood: &mut Neighborhood,
+        forward_cmds: &mut Vec<SquelchAction>
     ) -> Result<Vec<AccumulatedMessage>> {
         let mut released_list = Vec::new();
         database.maybe_advance_cutoff()?;
@@ -969,19 +1010,66 @@ impl Distributor {
                     && !chosen_messages.contains_key(parent)
                 // message_list is sorted by id (i.e, also by time), so parent should be found here
                 {
+                    // we don't have this message's parents!
+                    // this could mean we're missing a reliable path
 
                     neighborhood.record_tentative_missing_path(*parent, source, origin);
+
                     println!("{:?} {:?} MISSING PARENT {:?} of {:?}", test_elapsed(), *self.ephemeral_node_id.shared_get(), parent, msg.id);
 
                     warn!(
                         "Could not apply message {:?} because parent {:?} is not known",
                         msg.id, parent
                     );
-                    output.parentless_messages.entry(*parent).or_default().push(AccumulatedMessage{msg, source, origin, need_ack });
+
+                    let pathdata = output.origin_paths.entry(origin).or_default();
+                    pathdata.missing_paths += 1;
+                    if pathdata.missing_paths == 4 {
+                        forward_cmds.push(SquelchAction::StartForwarding{origin, forwarder: source});
+                    }
+
+                    let accum = AccumulatedMessage{msg, source, origin, need_ack };
+                    match output.parentless_messages.entry(*parent) {
+                        Entry::Occupied(mut e) => {
+                            e.get_mut().push(accum);
+                        }
+                        Entry::Vacant(mut e) => {
+                            e.insert(vec![accum]);
+                        }
+                    }
                     continue 'msg_iter;
                 }
             }
-            neighborhood.check_if_tentative_missing_path_was_actually_ok(msg.id);
+
+            match output.origin_paths.entry(origin) {
+                // We got something with original source 'origin', so maybe we have a forwarding path
+                Entry::Occupied(o) => {
+                    let data = o.get();
+                    if let Some(forward_from) = data.forwarding_from {
+                        if source < forward_from{
+                            // Seems there's an alternate path, cancel previous forwarding path
+                            forward_cmds.push(SquelchAction::CancelForwardering{origin, forwarder: forward_from});
+                        }
+                    }
+                    o.swap_remove();
+                }
+                Entry::Vacant(_) => {}
+            }
+
+            match output.origin_paths.entry(source) {
+                Entry::Occupied(mut o) => {
+                    if let Some(origindata) = output.origin_paths.swap_remove(&source) {
+                        if let Some(forward_from) = origindata.forwarding_from {
+                            forward_cmds.push(SquelchAction::CancelForwardering{origin, forwarder: forward_from});
+                        }
+                    }
+                    o.swap_remove();
+                }
+                Entry::Vacant(e) => {
+                }
+            }
+
+            neighborhood.check_if_tentative_missing_path_was_actually_ok(msg.id); //TODO: Remove this and the whole Quarantine type :)
 
             if let Some(released) = output.parentless_messages.swap_remove(&msg.id) {
                 released_list.extend(released);
