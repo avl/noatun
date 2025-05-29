@@ -1,7 +1,7 @@
-use crate::communication::{Neighborhood};
+
 use crate::cutoff::CutOffDuration;
 use crate::database::DatabaseSettings;
-use crate::distributor::{Distributor, DistributorMessage, EphemeralNodeId};
+use crate::distributor::{Distributor, DistributorMessage, EphemeralNodeId, Neighborhood};
 use crate::tests::{CounterMessage, CounterObject};
 use crate::{set_test_epoch, Database, MessageId, NoatunTime};
 use datetime_literal::datetime;
@@ -215,19 +215,20 @@ fn test_distributor() {
     let mut app1 = create_app([(datetime!(2021-01-01 Z), [].as_slice(), 1, 0, true)]);
     let mut app2 = create_app([(datetime!(2021-01-02 Z), [].as_slice(), 1, 0, true)]);
 
-    let mut dist1 = Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(1)));
-    let mut dist2 = Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(2)));
+    let peer_info = ArcShift::default();
+    let mut dist1 = Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(1)), peer_info.clone());
+    let mut dist2 = Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(2)), peer_info.clone());
 
-    let mut neighborhood2 = Neighborhood::new(ArcShift::default());
-    let mut neighborhood1 = Neighborhood::new(ArcShift::default());
-    neighborhood1.peers.get_insert_peer(EphemeralNodeId::new(2)).peer_neighbors.push(EphemeralNodeId::new(1));
+    let mut neighborhood2 = Neighborhood::new(ArcShift::default(), Instant::now().into());
+    let mut neighborhood1 = Neighborhood::new(ArcShift::default(), Instant::now().into());
+    neighborhood1.peers.get_insert_peer(EphemeralNodeId::new(2), Instant::now().into()).peer_neighbors.push(EphemeralNodeId::new(1));
     let sess1 = app1.begin_session().unwrap();
-    let mut msg1 = dist1.get_periodic_message(&sess1, &neighborhood1).unwrap();
+    let mut msg1 = dist1.get_periodic_message(&sess1).unwrap();
     assert_eq!(msg1.len(), 1, "no resync is in progress");
     let msg1 = msg1.pop().unwrap();
 
     println!("dist1 sent: {msg1:?}");
-    let mut result = dist2.receive_message2(&mut app2, once(msg1), &mut neighborhood2).unwrap();
+    let mut result = dist2.receive_message2(&mut app2, once(msg1), Instant::now().into()).unwrap();
 
     println!("dist2 sent: {result:?}");
 
@@ -235,27 +236,27 @@ fn test_distributor() {
     insta::assert_debug_snapshot!(result);
 
     let mut result = dist1
-        .receive_message2(&mut app1, once(result.pop().unwrap()), &mut neighborhood1)
+        .receive_message2(&mut app1, once(result.pop().unwrap()), Instant::now().into())
         .unwrap();
     println!("dist1 sent: {result:?}");
     insta::assert_debug_snapshot!(result);
     assert_eq!(result.len(), 1);
 
     let mut result = dist2
-        .receive_message2(&mut app2, once(result.pop().unwrap()), &mut neighborhood2)
+        .receive_message2(&mut app2, once(result.pop().unwrap()), Instant::now().into())
         .unwrap();
     println!("dist2 sent: {result:?}");
     insta::assert_debug_snapshot!(result);
 
     let mut result = dist1
-        .receive_message2(&mut app1, once(result.pop().unwrap()), &mut neighborhood1)
+        .receive_message2(&mut app1, once(result.pop().unwrap()), Instant::now().into())
         .unwrap();
     println!("dist1 sent: {result:?}");
     assert!(matches!(&result[0], DistributorMessage::Message{demand_ack: false, ..}));
     assert_eq!(result.len(), 1);
 
     let _result = dist2
-        .receive_message2(&mut app2, once(result.pop().unwrap()), &mut neighborhood2)
+        .receive_message2(&mut app2, once(result.pop().unwrap()), Instant::now().into())
         .unwrap();
     let sess2 = app2.begin_session().unwrap();
     println!("App2 all msgs: {:?}", sess2.get_all_message_ids().unwrap());

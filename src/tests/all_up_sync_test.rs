@@ -288,7 +288,7 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
         Ok(self.0)
     }
 
-    async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+    async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<()> {
         let driver_inner = self.1.get();
         let data = buf.to_vec();
         let mut delivered_to = vec![];
@@ -305,7 +305,7 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
             }
         }
         driver_inner.raw_messages.lock().unwrap().push((Instant::now(), self.0, data.clone(), delivered_to));
-        Ok(buf.len())
+        Ok(())
     }
 }
 
