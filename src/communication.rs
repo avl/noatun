@@ -671,10 +671,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         let mut next_retransmit_active = false;
         loop {
             self.recvbuf.clear();
-            let receive = async {
-                assert!(self.recvbuf.is_empty());
-                self.receive_socket.recv_buf_from(&mut self.recvbuf).await
-            };
+            let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
 
             if cursend.is_none() {
                 if self.outgoing_retransmit_requests.is_empty() == false {
@@ -1399,12 +1396,13 @@ impl Neighborhood {
             DistributorMessage::Forwarding {
                 source, origin, transmitter, action
             } => {
+                /* TODO: Implement forwarding
                 if *transmitter == our_node_id {
                     let peer = self.peers.get_peer_mut(*origin);
                     if let Some(peer) = peer {
                         peer.record_forwarding_for(*source, *action);
                     }
-                }
+                }*/
             }
             DistributorMessage::ReportHeads{heads, source,..}=> {
                 let peer = self.peers.get_insert_peer(*source);

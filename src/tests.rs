@@ -173,7 +173,7 @@ mod test_types_rewind {
                     root.insert(time.0, &(time.0 as u32))
                 } else {
                     let key = *root.iter().next().unwrap().0;
-                    root.remove(key);
+                    root.remove(&key);
                 }
             }
         }

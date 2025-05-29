@@ -1684,12 +1684,6 @@ impl<'a, K: NoatunKey + PartialEq, V: FixedSizeObject> HashAccessContextMut<'a, 
     }
 }
 
-pub trait NoatunHashMapExt<K:NoatunStorable+NoatunKey+PartialEq, V:FixedSizeObject> {
-    fn get_mut_val(self: Pin<&mut Self>, key: &K::DetachedOwnedType) -> Option<Pin<&mut V>>;
-}
-
-
-
 impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMap<K, V> {
     pub fn len(&self) -> usize {
         self.length
@@ -1771,7 +1765,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// Probe only useful for reading/updating existing bucket
     fn probe_read(
         database_context_data: HashAccessContext<K, V>,
-        key: impl AsRef<K::DetachedType>,
+        key: &K::DetachedType,
     ) -> Option<BucketNr> {
         let key = key.borrow();
         if database_context_data.buckets.is_empty() {
@@ -1779,7 +1773,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         }
         let HashAccessContext { metas, buckets } = database_context_data;
         let mut h = NoatunHasher::new();
-        K::hash(key.as_ref(), &mut h);
+        K::hash(key, &mut h);
         let cap = buckets.len();
         let (group_nr, key_meta) = MetaGroupNr::from_u64(h.finish(), cap);
 
@@ -1795,7 +1789,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 //println!("Checking key for bucket {:?}", bucket_nr);
                 if <K as NoatunKey>::eq(
                     unsafe { buckets[bucket_nr.0].assume_init_ref().key.detach_key_ref() },
-                    key.as_ref(),
+                    key,
                 ) {
                     result = Some(bucket_nr);
                     true
@@ -1973,13 +1967,13 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     }
 
     /// For a mutable version of this, see [`get_mut_val`].
-    pub fn get(&self, key: impl AsRef<K::DetachedType>) -> Option<&V> {
+    pub fn get(&self, key: &K::DetachedType) -> Option<&V> {
         let context = self.data_meta_len();
         let bucket = Self::probe_read(context, key)?;
         unsafe { Some(&context.buckets[bucket.0].assume_init_ref().v) }
     }
 
-    pub fn get_mut_val<'a>(self: Pin<&'a mut Self>, key: impl AsRef<K::DetachedType>) -> Option<Pin<&'a mut V>> {
+    pub fn get_mut_val<'a>(self: Pin<&'a mut Self>, key: &K::DetachedType) -> Option<Pin<&'a mut V>> {
         let tself = unsafe { self.get_unchecked_mut() };
         let context = tself.data_meta_len_mut();
         let bucket = Self::probe_read(context.readonly(), key)?;
@@ -1987,14 +1981,14 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     }
 
     /// Return true if a value was removed
-    pub fn remove(&mut self, key: impl AsRef<K::DetachedType>) -> bool {
+    pub fn remove(&mut self, key: &K::DetachedType) -> bool {
         self.remove_impl(key, |_| {})
     }
 
     /// Remove and return value for the given key.
     ///
     /// If the key is not present, None is returned.
-    pub fn pop(&mut self, key: impl AsRef<K::DetachedType>) -> Option<V::DetachedOwnedType> {
+    pub fn pop(&mut self, key: &K::DetachedType) -> Option<V::DetachedOwnedType> {
         let mut retval = None;
         self.remove_impl(key, |val| {
             retval = Some(val.detach());
@@ -2004,7 +1998,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
     fn remove_impl(
         &mut self,
-        key: impl AsRef<K::DetachedType>,
+        key: &K::DetachedType,
         getval: impl FnOnce(&mut Pin<&mut V>),
     ) -> bool {
         let context = self.data_meta_len_mut();
@@ -2292,7 +2286,7 @@ mod tests {
 
             map.0.insert(42, &42);
 
-            let val = map.0.get(42).unwrap();
+            let val = map.0.get(&42).unwrap();
             assert_eq!(val.get(), 42);
 
             let vals: Vec<u32> = map.0.iter().map(|(k, _)| *k).collect();
@@ -2420,15 +2414,15 @@ mod tests {
 
             map.0.insert(42, &42);
 
-            let val = map.0.get(42).unwrap();
+            let val = map.0.get(&42).unwrap();
             assert_eq!(val.get(), 42);
 
             let vals: Vec<u32> = map.0.iter().map(|(k, _)| *k).collect();
             assert_eq!(vals, [42]);
 
-            assert!(!map.0.remove(41), "remove nonexisting key");
+            assert!(!map.0.remove(&41), "remove nonexisting key");
 
-            assert!(map.0.remove(42));
+            assert!(map.0.remove(&42));
 
             assert_eq!(map.0.iter().count(), 0);
         })
@@ -2462,14 +2456,14 @@ mod tests {
             }
 
             for i in 0..N {
-                map.0.get(i).expect("key exists before starting deletes");
+                map.0.get(&i).expect("key exists before starting deletes");
             }
 
             for i in 0..N {
-                assert!(map.0.remove(i));
+                assert!(map.0.remove(&i));
                 for j in i + 1..N {
                     map.0
-                        .get(j)
+                        .get(&j)
                         .expect(&format!("key {j} exists after delete of {i}"));
                 }
             }
@@ -2497,7 +2491,7 @@ mod tests {
                 map.0.insert(i, &i);
             }
             for i in 0..300 {
-                let val = map.0.get(i).unwrap();
+                let val = map.0.get(&i).unwrap();
                 assert_eq!(val.get(), i);
             }
         })

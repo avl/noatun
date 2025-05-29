@@ -713,6 +713,7 @@ impl Distributor {
                 if origins.contains(&origin) {
                     continue;
                 }
+                /* TODO: Impl
                 outbuf.push_back(DistributorMessage::Forwarding {
                     source: self.node_id(),
                     origin,
@@ -723,6 +724,7 @@ impl Distributor {
                         SquelchAction::CancelForwardering { .. } => {ForwardingChange::Remove}
                     },
                 })
+                 */
             }
 
         }
@@ -1057,11 +1059,15 @@ impl Distributor {
             // Apparently we now hear directly from this origin, surely we don't need any forwarding
             match output.origin_paths.entry(source) {
                 Entry::Occupied(mut o) => {
+                    /*
+                    TODO: Implement forwarding
                     let origindata = o.get_mut();
                     if let Some(forward_from) = origindata.forwarding_from {
                         forward_cmds.push(SquelchAction::CancelForwardering{origin: source, forwarder: forward_from});
                     }
                     o.swap_remove();
+
+                    */
                 }
                 Entry::Vacant(_) => {
                 }
