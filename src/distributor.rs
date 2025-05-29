@@ -1,5 +1,6 @@
 use crate::colors::*;
-use crate::communication::{Neighborhood, OriginData, QueryableOutbuffer};
+#[cfg(feature = "tokio")]
+use crate::communication::{Neighborhood, QueryableOutbuffer};
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
 use crate::{test_elapsed, Application, Database, Message, MessageFrame, MessageHeader, MessageId, NoatunTime};
@@ -159,6 +160,14 @@ impl EphemeralNodeId {
 //extra ReportHeads, after which the newly joined nodes sends one of its own. Thus we
 //get rid of the 1-periodic msg delay of waiting for ReportHeads-messages
 
+#[derive(Debug, Savefile, Clone, Copy)]
+#[repr(u8)]
+pub enum ForwardingChange {
+    Add,
+    Remove
+}
+
+
 #[derive(Debug, Savefile, Clone)]
 pub enum DistributorMessage {
     /// Report all update heads for the sender
@@ -214,7 +223,7 @@ pub enum DistributorMessage {
         /// The node that is to create the forwading path,
         transmitter: EphemeralNodeId,
         /// True if the forward should be removed
-        remove: bool,
+        action: ForwardingChange,
     }
 }
 
@@ -236,11 +245,10 @@ impl DistributorMessage {
                     neighbors
                 )
             }
-            DistributorMessage::Forwarding { source, transmitter, messages } => {
+            DistributorMessage::Forwarding { source, origin, transmitter, action } => {
                 format!(
-                    "{}: source: {source} transmitter: {transmitter}, messages: {:?}",
+                    "{}: source: {source} transmitter: {transmitter}, origin: {origin}, action: {action:?}",
                     brightred("Squelch"),
-                    messages,
                 )
             }
             DistributorMessage::SyncAllQuery(messages) => {
@@ -367,22 +375,6 @@ pub fn truncate_to_arraystring(name: &str) -> Address {
     Address::from("?")
 }
 
-impl QueryableOutbuffer {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.outbuf.is_empty()
-    }
-    pub(crate) fn pop_front(&mut self) -> Option<DistributorMessage> {
-        let msg = self.outbuf.pop_front();
-        msg
-    }
-    pub(crate) fn push_back(&mut self, msg: DistributorMessage) {
-        self.outbuf.push_back(msg);
-    }
-
-    pub(crate) fn extend<I: IntoIterator<Item = DistributorMessage>>(&mut self, items: I) {
-        self.outbuf.extend(items);
-    }
-}
 
 #[derive(Debug)]
 pub(crate) struct AccumulatedMessage {
@@ -715,16 +707,21 @@ impl Distributor {
         self.process_sync_all_requests(&mut database, accumulated_sync_all_requests, outbuf, neighborhood)?;
 
         {
-            let mut origins = vec![];
+            let origins = vec![];
             for squelch in forwarding_cmds.iter().rev() {
                 let origin = squelch.origin();
                 if origins.contains(&origin) {
                     continue;
                 }
                 outbuf.push_back(DistributorMessage::Forwarding {
-                    source: compile_error!("Continue here!"),
-                    transmitter: EphemeralNodeId(),
-                    messages: vec![],
+                    source: self.node_id(),
+                    origin,
+                    transmitter: origin,
+
+                    action: match squelch {
+                        SquelchAction::StartForwarding { .. } => {ForwardingChange::Add}
+                        SquelchAction::CancelForwardering { .. } => {ForwardingChange::Remove}
+                    },
                 })
             }
 
@@ -1028,12 +1025,13 @@ impl Distributor {
                         forward_cmds.push(SquelchAction::StartForwarding{origin, forwarder: source});
                     }
 
-                    let accum = AccumulatedMessage{msg, source, origin, need_ack };
-                    match output.parentless_messages.entry(*parent) {
+                    let parent = *parent;
+                    let accum = AccumulatedMessage{ msg, source, origin, need_ack };
+                    match output.parentless_messages.entry(parent) {
                         Entry::Occupied(mut e) => {
                             e.get_mut().push(accum);
                         }
-                        Entry::Vacant(mut e) => {
+                        Entry::Vacant(e) => {
                             e.insert(vec![accum]);
                         }
                     }
@@ -1056,16 +1054,16 @@ impl Distributor {
                 Entry::Vacant(_) => {}
             }
 
+            // Apparently we now hear directly from this origin, surely we don't need any forwarding
             match output.origin_paths.entry(source) {
                 Entry::Occupied(mut o) => {
-                    if let Some(origindata) = output.origin_paths.swap_remove(&source) {
-                        if let Some(forward_from) = origindata.forwarding_from {
-                            forward_cmds.push(SquelchAction::CancelForwardering{origin, forwarder: forward_from});
-                        }
+                    let origindata = o.get_mut();
+                    if let Some(forward_from) = origindata.forwarding_from {
+                        forward_cmds.push(SquelchAction::CancelForwardering{origin: source, forwarder: forward_from});
                     }
                     o.swap_remove();
                 }
-                Entry::Vacant(e) => {
+                Entry::Vacant(_) => {
                 }
             }
 

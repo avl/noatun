@@ -42,6 +42,7 @@ use std::time::Duration;
 use crate::private::Sealed;
 use crate::undo_store::magic_initialize_ptr;
 pub use paste::paste;
+#[cfg(feature="tokio")]
 use tokio::time::Instant;
 use tracing::warn;
 
@@ -72,6 +73,7 @@ pub mod prelude {}
 #[cfg(feature = "tokio")]
 pub mod communication;
 
+#[cfg(feature = "tokio")]
 pub mod distributor;
 pub mod sequence_nr;
 
@@ -108,7 +110,14 @@ mod xxh3_vendored;
 ///
 ///
 /// Note that type is allowed to have padding.
-/// Type is also allowed to contain indices inside the database file (ThinPtr/FatPtr).
+/// Type is also allowed to contain indices inside the database file ([`ThinPtr`]/[`FatPtr`]).
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be stored in a noatun database.",
+    label = "`{Self}` does not implement NoatunStorable.",
+    note = "For structs, use the `noatun_object!`-macro to create a noatun object type.",
+    note = "For collections, try `NoatunHashMap` or `NoatunVec`.",
+    note = "Manually implementing this trait is not recommended, but can be possible. See trait docs."
+)]
 pub unsafe trait NoatunStorable: Sized + 'static {
     fn zeroed<T: NoatunStorable>() -> T {
         unsafe { MaybeUninit::<T>::zeroed().assume_init() }
@@ -387,15 +396,19 @@ static FOR_TEST_NON_RANDOM_ID: bool = true;
 static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(feature="tokio")]
 thread_local! {
     pub static TEST_EPOCH: Cell<Option<Instant>> = const { Cell::new(None) };
 }
+#[cfg(feature="tokio")]
 pub fn test_epoch() -> Instant {
-    TEST_EPOCH.with(|epoch| epoch.get().expect("must call set_test_epoch first"))
+    TEST_EPOCH.with(|epoch| epoch.get().unwrap_or(Instant::now()))
 }
+#[cfg(feature="tokio")]
 pub fn set_test_epoch(instant: Instant)  {
     TEST_EPOCH.with(|epoch| {epoch.set(Some(instant));})
 }
+#[cfg(feature="tokio")]
 pub fn test_elapsed() -> Duration {
     test_epoch().elapsed()
 }
@@ -903,6 +916,26 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
 /// code cannot obtain an owned instance of Self:
 ///   * No Default-impl!
 ///   * No new() impl (though DetachedType can of course have new())
+///
+/// NOTE!
+/// This trait represents an object that can be stored on its own as a first class
+/// noatun database object. However, noatun has a distinction between objects and values.
+/// At the top level, all information stored in a noatun database must be an object. However,
+/// the [`NoatunCell`] type allows storing values. This allows storing rust standard primitives
+/// like u8, u16, u32 etc directly in the database. It also allows storing custom types, for
+/// example newtype wrappers, identifiers etc directly in the database. All other information
+/// should be wrapped in a type that implements Object, such as [`data_types::NoatunVec`] or
+/// [`data_types::NoatunString`] etc.
+///
+///
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a noatun Object, and can't appear on its own in a noatun database.",
+    label = "`{Self}` does not implement Object.    ",
+    note = "For primitives, try wrapping in NoatunCell.",
+    note = "For structs, use `noatun_object!`-macro.",
+    note = "For collections, try `NoatunHashMap` or `NoatunVec`.",
+    note = "Manually implementing this trait is not recommended, but can be possible. See trait docs.",
+)]
 pub trait Object {
     /// This is meant to be either ThinPtr for sized objects, or
     /// FatPtr for dynamically sized objects. Other types are likely to not make sense.
@@ -940,6 +973,26 @@ pub trait Object {
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self>;
 }
 
+/// Define a noatun object.
+///
+/// Example:
+/// ```rust
+/// crate::noatun_object!(
+///     #[derive(PartialEq)]
+///     struct Employee {
+///         object name: NoatunString,
+///         pod salary: u32
+///     }
+/// );
+///
+/// crate::noatun_object!(
+///     struct ExampleDb {
+///         pod total_salary_cost: u32,
+///         object employees: NoatunVec<Employee>,
+///     }
+/// );
+/// ```
+///
 #[macro_export]
 macro_rules! noatun_object {
 

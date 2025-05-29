@@ -1,4 +1,4 @@
-use crate::distributor::{AccumulatedMessage, Address, Distributor, DistributorMessage, EphemeralNodeId, SerializedMessage, Status};
+use crate::distributor::{AccumulatedMessage, Address, Distributor, DistributorMessage, EphemeralNodeId, ForwardingChange, SerializedMessage, Status};
 
 use crate::colors::{rgb};
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
@@ -107,7 +107,7 @@ pub trait CommunicationSendSocket<Endpoint: PartialEq + Debug + Send> {
     fn send_to(
         &mut self,
         buf: &[u8],
-    ) -> impl std::future::Future<Output = io::Result<usize>> + Send;
+    ) -> impl std::future::Future<Output = io::Result<()>> + Send;
 }
 
 
@@ -671,7 +671,10 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         let mut next_retransmit_active = false;
         loop {
             self.recvbuf.clear();
-            let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
+            let receive = async {
+                assert!(self.recvbuf.is_empty());
+                self.receive_socket.recv_buf_from(&mut self.recvbuf).await
+            };
 
             if cursend.is_none() {
                 if self.outgoing_retransmit_requests.is_empty() == false {
@@ -739,13 +742,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                     self.limiter.wait_debt_free().await;
 
                     match self.send_socket.send_to(tosend).await {
-                        Ok(sent) => {
-                            if sent != send_size {
-                                error!(
-                                    "Packet send failure. Expected to send {}, sent {}",
-                                    send_size, sent
-                                );
-                            }
+                        Ok(()) => {
                             self.limiter.incur_debt(send_size as u64);
 
                             //trace!("Actually sent {} raw bytes", sent);
@@ -1004,8 +1001,12 @@ pub(crate) struct PeerInfo {
     pub(crate) peer: EphemeralNodeId,
     /// For messages we first observed from key (`Address`), this peer is usually filled in
     /// by messages from `SeenBy`.
+    /// TODO: Remove this unless we use it?
     pub(crate) source_info: IndexMap<EphemeralNodeId, PeerOriginInfo>,
     pub(crate) peer_neighbors: Vec<EphemeralNodeId>,
+
+    //TODO: Add GC
+    pub(crate) forwardings: IndexMap<EphemeralNodeId/*destination*/, Instant/*live*/>,
 
     pub(crate) last_seen: Instant,
 
@@ -1025,6 +1026,7 @@ impl PeerInfo {
             peer,
             source_info: Default::default(),
             peer_neighbors: vec![],
+            forwardings: Default::default(),
             last_seen: Instant::now(),
             request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit::default(),
             //send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit::default(),
@@ -1041,21 +1043,30 @@ impl PeerInfo {
         }
         false
     }
+
+    /// Report that this peer seems unable to hear messages from `source`
     pub fn cant_hear(&mut self, source: EphemeralNodeId) {
         let source_info = self.source_info.entry(source).or_insert_with(|| PeerOriginInfo::new(self.peer, source));
         source_info.can_hear_source.observe_false();
     }
+
+    /// Report that this peer seems able to hear messages from `source`
     pub fn can_hear(&mut self, source: EphemeralNodeId) {
         let source_info = self.source_info.entry(source).or_insert_with(|| PeerOriginInfo::new(self.peer, source));
         source_info.can_hear_source.observe_true();
     }
-    pub fn record_squelch(&mut self, _origin: EphemeralNodeId) {
-        //TODO: Implement or remove this
-        todo!()/*7let origin = self.source_info.entry(origin).or_insert_with(|| PeerOriginInfo {
-            peer: self.peer,
-            origin: origin,
-            can_hear_source: Default::default(),
-        });*/
+
+    /// Record that `destination` wants us to forward everything that originates at `Self`.
+    /// (Or remove such forwarding, depending on `forwarding_action`
+    pub fn record_forwarding_for(&mut self, destination: EphemeralNodeId, forwarding_action: ForwardingChange) {
+        match forwarding_action {
+            ForwardingChange::Add => {
+                self.forwardings.insert(destination, Instant::now());
+            }
+            ForwardingChange::Remove => {
+                self.forwardings.swap_remove(&destination);
+            }
+        }
     }
 }
 
@@ -1159,11 +1170,6 @@ impl Peers {
         t
     }
 
-    fn record_squelch(&mut self, destination: EphemeralNodeId, origin: EphemeralNodeId) {
-        if let Some(peer) = self.peers.get_mut(&destination) {
-            peer.record_squelch(origin);
-        }
-    }
 }
 
 pub(crate) struct QuarantinedMessage {
@@ -1391,16 +1397,12 @@ impl Neighborhood {
         //TODO Finish epohemeralnodeid stuff, make sure to implement re-randomization on conflicts! And clean up old history
         match message {
             DistributorMessage::Forwarding {
-                source, transmitter, messages
+                source, origin, transmitter, action
             } => {
                 if *transmitter == our_node_id {
-                    let peer = self.peers.get_peer_mut(*source);
+                    let peer = self.peers.get_peer_mut(*origin);
                     if let Some(peer) = peer {
-                        for message in messages {
-                            if let Some(source) = self.recent_messages.get(message) {
-                                peer.record_squelch(source.original_source);
-                            }
-                        }
+                        peer.record_forwarding_for(*source, *action);
                     }
                 }
             }
@@ -1522,6 +1524,24 @@ pub struct QueryableOutbuffer {
 
     pub(crate) origin_paths: IndexMap<EphemeralNodeId/*origin*/, OriginData>,
 }
+
+impl QueryableOutbuffer {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.outbuf.is_empty()
+    }
+    pub(crate) fn pop_front(&mut self) -> Option<DistributorMessage> {
+        let msg = self.outbuf.pop_front();
+        msg
+    }
+    pub(crate) fn push_back(&mut self, msg: DistributorMessage) {
+        self.outbuf.push_back(msg);
+    }
+
+    pub(crate) fn extend<I: IntoIterator<Item = DistributorMessage>>(&mut self, items: I) {
+        self.outbuf.extend(items);
+    }
+}
+
 
 impl QueryableOutbuffer {
     pub fn new(periodic_message_interval: Duration) -> Self {

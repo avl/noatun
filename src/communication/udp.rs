@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use crate::communication::{
     CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
 };
@@ -5,7 +6,7 @@ use anyhow::{bail, Context};
 use socket2::{Domain, Protocol, Type};
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
-use tracing::info;
+use tracing::{error, info};
 
 impl CommunicationDriver for TokioUdpDriver {
     type Receiver = UdpSocket;
@@ -110,11 +111,23 @@ impl CommunicationSendSocket<SocketAddr> for CommunicationUdpSendSocket {
         Ok(self.socket.local_addr()?)
     }
 
-    async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+    async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<()> {
         println!("Sending to {:?}", self.multicast_addr);
         let res = UdpSocket::send_to(&self.socket, buf, self.multicast_addr).await;
         println!("Res: {res:?}");
-        res
+        match res {
+            Ok(sent_size) => {
+                if sent_size != buf.len() {
+                    return Err(
+                        std::io::Error::new(ErrorKind::Other,
+                                            format!("Packet send failure. Expected to send {}, sent {}",
+                                                    buf.len(), sent_size)
+                        ));
+                }
+                Ok(())
+            }
+            Err(err) => Err(err)
+        }
     }
 }
 

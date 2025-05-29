@@ -8,11 +8,12 @@ resolver = "2"
 name = "meta"
 harness = false
 
-
 # The `foo` package will use the -Copt-level=3 flag.
 [profile.dev.package.sha2]
 opt-level = 3
 [profile.dev.package.byteorder]
+opt-level = 3
+[profile.dev.package.memchr]
 opt-level = 3
 
 [features]
@@ -46,8 +47,6 @@ arcshift = { version = "0.4.0", path = "../arcshift/arcshift" }
 
 [dev-dependencies]
 divan  = "0.1"
-savefile = {  version = "0.18", path ="../savefile/savefile"}
-savefile-derive = "0.18"
 noatun = { path = ".", features = ["tokio"] }
 datetime_literal = "0.1.3"
 insta = "1.42"
