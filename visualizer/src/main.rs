@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
-use std::io::Write;
+use std::io::{Cursor, Read, Write};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,14 +9,17 @@ use egui::{vec2, Color32, Context, CornerRadius, Pos2, Rect, Shape, StrokeKind, 
 use egui::epaint::RectShape;
 use noatun::{msg_deserialize, msg_serialize, noatun_object, Application, CutOffDuration, Database, Message, MessageFrame, MessageId, NoatunCell, NoatunTime, Savefile};
 use anyhow::Result;
-use bytes::BufMut;
+use bytes::{Buf, BufMut};
+use savefile::{Deserializer, LittleEndian};
+use savefile::prelude::ReadBytesExt;
 use tokio::time::Instant;
-use noatun::communication::{CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket, DatabaseCommunication, DatabaseCommunicationConfig};
+use noatun::communication::{CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket, DatabaseCommunication, DatabaseCommunicationConfig, NetworkPacket, TransmittedEntitySortable};
 use noatun::data_types::{NoatunHashMap, NoatunString};
 use noatun::database::DatabaseSettings;
+use noatun::distributor::{DistributorMessage, EphemeralNodeId};
 
 #[derive(Debug, Savefile)]
-pub enum KeyUpdate {
+pub enum KeyUpdateMessage {
     Set(String, i32),
     Change(String, i32)
 }
@@ -27,16 +30,16 @@ noatun_object!{
     }
 }
 
-impl Message for KeyUpdate {
+impl Message for KeyUpdateMessage {
     type Root = Document;
 
     fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
         let mut root = root.pin_project();
         match self {
-            KeyUpdate::Set(key, val) => {
+            KeyUpdateMessage::Set(key, val) => {
                 root.key_values.insert(key.as_str(), val);
             }
-            KeyUpdate::Change(key, msg_val) => {
+            KeyUpdateMessage::Change(key, msg_val) => {
                 if let Some(val) = root.key_values.get_mut_val(key) {
                     let prev = val.get();
                     let new = prev.saturating_add(*msg_val);
@@ -59,7 +62,7 @@ impl Message for KeyUpdate {
 }
 
 impl Application for Document {
-    type Message = KeyUpdate;
+    type Message = KeyUpdateMessage;
     type Params = ();
 }
 
@@ -71,6 +74,60 @@ struct InflightPacket {
     arrive_time: Instant,
     data: Vec<u8>,
     arrived: bool,
+}
+
+#[derive(Debug)]
+enum DecodedPacket {
+    Retransmit {
+        who: EphemeralNodeId,
+        what: Vec<u64>
+    },
+    Message{
+        push: bool,
+        seq: u16,
+        message: DistributorMessage,
+        src: EphemeralNodeId,
+        user_message: Option<MessageFrame<KeyUpdateMessage>>,
+    }
+}
+
+impl InflightPacket {
+    pub fn decode(&self) -> Vec<DecodedPacket> {
+        let netpacket: NetworkPacket = Deserializer::bare_deserialize(&mut Cursor::new(&self.data), 0).unwrap();
+
+        match netpacket {
+            NetworkPacket::Data(push, TransmittedEntitySortable { seq, data, first_boundary, src }) => {
+                let mut reader = Cursor::new(&data);
+                let mut retval = vec![];
+                while reader.position() < data.len() as u64 {
+                    println!("Reader position: {}/{}", reader.position(), data.len());
+                    let size = reader.read_u16::<LittleEndian>().unwrap() as usize;
+                    println!("Got size: {}", size);
+                    let mut temp = vec![0u8; size];
+                    reader.read_exact(&mut temp).unwrap();
+                    let msg: DistributorMessage = Deserializer::bare_deserialize(&mut Cursor::new(&temp), 0).unwrap();
+                    let mut user_message = None;
+                    if let DistributorMessage::Message { source, message, demand_ack, origin } = &msg {
+                        user_message = Some(message.to_message_from_ref().unwrap());
+                    }
+                    retval.push(DecodedPacket::Message {
+                        push,
+                        seq,
+                        message: msg,
+                        src,
+                        user_message
+                    });
+                }
+                retval
+            }
+            NetworkPacket::RetransmitRequest { who, what } => {
+                vec![DecodedPacket::Retransmit {
+                    who,
+                    what
+                }]
+            }
+        }
+    }
 }
 
 struct Node {
@@ -109,7 +166,7 @@ impl Node {
         let mut config =  DatabaseCommunicationConfig {
             listen_address: "dummy".to_string(),
             multicast_address: "dummy".to_string(),
-            mtu: 1500,
+            mtu: 1_000_000,
             bandwidth_limit_bytes_per_second: 1000,
             retransmit_interval_seconds: 1.0,
             retransmit_buffer_size_bytes: 1_000_000,
@@ -158,7 +215,7 @@ impl CommunicationSendSocket<u8> for Sender {
                 let velocity = 1.0;
                 let dist_time = (dest.pos - own_node.pos).length() / velocity;
                 let now = Instant::now();
-                ether.packets.push(InflightPacket {
+                let mut ifp = InflightPacket {
                     from: self.whoami,
                     to: index as u8,
                     start_time: now,
@@ -166,7 +223,9 @@ impl CommunicationSendSocket<u8> for Sender {
                     arrive_time: now + Duration::from_secs_f32(dist_time),
                     data: buf.to_vec(),
                     arrived: false,
-                });
+                };
+                println!("Decoded: {:?}", ifp.decode());
+                ether.packets.push(ifp);
             }
         }
         Ok(())
@@ -177,8 +236,6 @@ impl CommunicationReceiveSocket<u8> for Receiver{
     async fn recv_buf_from<B: BufMut + Send>(&mut self, buf: &mut B) -> std::io::Result<(usize, u8)> {
 
         loop {
-
-            compile_error!("Add observability of high level messages, and correlate them with low-level messages (how?)");
             let mut result = None;
             {
                 let mut ether = self.ether.lock().unwrap();
@@ -251,7 +308,19 @@ struct Visualizer {
 impl App for Visualizer {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
+            ctx.set_pixels_per_point(2.0);
             ui.ctx().request_repaint();
+
+            ui.horizontal(|ui| {
+
+                if ui.button("Play").clicked() {
+
+                }
+                if ui.button("Stop").clicked() {
+
+                }
+
+            });
 
 
             let square_available = ui.available_width().min(ui.available_height() );
@@ -354,7 +423,7 @@ fn main() {
 
     std::thread::spawn(move ||{
 
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().start_paused(true).build().unwrap();
         let ether = ether.clone();
         runtime.block_on(async {
 
@@ -373,6 +442,7 @@ fn main() {
         viewport: egui::ViewportBuilder::default().with_inner_size([800.0, 800.0]),
         ..Default::default()
     };
+
     eframe::run_native(
         "Visualizer",
         options,
