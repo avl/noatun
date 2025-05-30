@@ -680,14 +680,14 @@ pub struct QueryableOutbuffer {
 }
 
 impl QueryableOutbuffer {
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.outbuf.is_empty()
     }
-    pub(crate) fn pop_front(&mut self) -> Option<DistributorMessage> {
+    pub fn pop_front(&mut self) -> Option<DistributorMessage> {
         let msg = self.outbuf.pop_front();
         msg
     }
-    pub(crate) fn push_back(&mut self, msg: DistributorMessage) {
+    pub fn push_back(&mut self, msg: DistributorMessage) {
         self.outbuf.push_back(msg);
     }
 
@@ -779,7 +779,14 @@ pub struct SerializedMessage {
     parents: Vec<MessageId>,
     data: Vec<u8>,
 }
+
 impl SerializedMessage {
+    pub fn from_header_and_body<M:Message>(header: MessageHeader, payload: M) -> Result<SerializedMessage> {
+        Self::new(MessageFrame {
+            header,
+            payload,
+        })
+    }
     pub fn message_id(&self) -> MessageId {
         self.id
     }

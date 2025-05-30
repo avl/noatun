@@ -138,6 +138,8 @@ pub unsafe trait NoatunStorable: Sized + 'static {
     }
 }
 
+
+
 mod noatun_storable_impls {
     use super::NoatunStorable;
     macro_rules! make_noatun_storable {
@@ -981,6 +983,8 @@ pub trait Object {
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self>;
 }
 
+// TODO: Could we support a noatun_enum! macro?
+
 /// Define a noatun object.
 ///
 /// Example:
@@ -1062,7 +1066,7 @@ macro_rules! noatun_object {
     };
 
     ( declare_detached_struct $n_detached:ident fields { $($derive_item:ident),* }  $( $kind:ident $name: ident $typ:ty ),* ) => {
-        #[derive($($derive_item,)* Debug,Clone,$crate::serde_derive::Serialize, $crate::serde_derive::Deserialize, $crate::Savefile)]
+        #[derive($($derive_item,)* Debug,Clone,$crate::Savefile)]
         pub struct $n_detached
         {
             $( $name : noatun_object!(declare_detached_field $kind $typ) ),*
