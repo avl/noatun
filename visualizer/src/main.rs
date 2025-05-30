@@ -1,22 +1,24 @@
+use std::default::Default;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::io::{Cursor, Read, Write};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use eframe::{App, Frame};
-use egui::{vec2, Color32, Context, CornerRadius, Pos2, Rect, Shape, StrokeKind, TextBuffer, Vec2};
+use egui::{vec2, Color32, Context, CornerRadius, Pos2, Rect, Shape, StrokeKind, TextBuffer, TextEdit, Vec2};
 use egui::epaint::RectShape;
 use noatun::{msg_deserialize, msg_serialize, noatun_object, Application, CutOffDuration, Database, Message, MessageFrame, MessageId, NoatunCell, NoatunTime, Savefile};
 use anyhow::Result;
+use arcshift::ArcShift;
 use bytes::{Buf, BufMut};
+use datetime_literal::datetime;
 use savefile::{Deserializer, LittleEndian};
 use savefile::prelude::ReadBytesExt;
-use tokio::time::Instant;
-use noatun::communication::{CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket, DatabaseCommunication, DatabaseCommunicationConfig, NetworkPacket, TransmittedEntitySortable};
+
 use noatun::data_types::{NoatunHashMap, NoatunString};
 use noatun::database::DatabaseSettings;
-use noatun::distributor::{DistributorMessage, EphemeralNodeId};
+use noatun::distributor::{Address, Distributor, DistributorMessage, EphemeralNodeId, PeerSummaryInfo};
 
 #[derive(Debug, Savefile)]
 pub enum KeyUpdateMessage {
@@ -72,244 +74,197 @@ struct InflightPacket {
     start_time: Instant,
     velocity: f32,
     arrive_time: Instant,
-    data: Vec<u8>,
+    data: DistributorMessage,
     arrived: bool,
 }
 
 #[derive(Debug)]
-enum DecodedPacket {
-    Retransmit {
-        who: EphemeralNodeId,
-        what: Vec<u64>
-    },
-    Message{
-        push: bool,
-        seq: u16,
-        message: DistributorMessage,
-        src: EphemeralNodeId,
-        user_message: Option<MessageFrame<KeyUpdateMessage>>,
-    }
+struct DecodedPacket {
+    distributor_message: DistributorMessage,
+    user_message: Option<MessageFrame<KeyUpdateMessage>>,
 }
 
 impl InflightPacket {
-    pub fn decode(&self) -> Vec<DecodedPacket> {
-        let netpacket: NetworkPacket = Deserializer::bare_deserialize(&mut Cursor::new(&self.data), 0).unwrap();
-
-        match netpacket {
-            NetworkPacket::Data(push, TransmittedEntitySortable { seq, data, first_boundary, src }) => {
-                let mut reader = Cursor::new(&data);
-                let mut retval = vec![];
-                while reader.position() < data.len() as u64 {
-                    println!("Reader position: {}/{}", reader.position(), data.len());
-                    let size = reader.read_u16::<LittleEndian>().unwrap() as usize;
-                    println!("Got size: {}", size);
-                    let mut temp = vec![0u8; size];
-                    reader.read_exact(&mut temp).unwrap();
-                    let msg: DistributorMessage = Deserializer::bare_deserialize(&mut Cursor::new(&temp), 0).unwrap();
-                    let mut user_message = None;
-                    if let DistributorMessage::Message { source, message, demand_ack, origin } = &msg {
-                        user_message = Some(message.to_message_from_ref().unwrap());
-                    }
-                    retval.push(DecodedPacket::Message {
-                        push,
-                        seq,
-                        message: msg,
-                        src,
-                        user_message
-                    });
-                }
-                retval
-            }
-            NetworkPacket::RetransmitRequest { who, what } => {
-                vec![DecodedPacket::Retransmit {
-                    who,
-                    what
-                }]
-            }
+    pub fn decode(&self) -> DecodedPacket {
+        let mut user_message = None;
+        if let DistributorMessage::Message { source, message, demand_ack, origin } = &self.data {
+            user_message = Some(message.to_message_from_ref().unwrap());
+        }
+        DecodedPacket {
+            distributor_message: self.data.clone(),
+            user_message,
         }
     }
 }
 
+#[derive(Debug)]
 struct Node {
     whoami: u8,
-    pos: Vec2,
-    comm: Option<DatabaseCommunication<Document>>
+    db: Database<Document>,
+    comm: Distributor,
+    last_periodic: Instant,
 }
 
 impl Node {
-    pub fn new(id: u8, pos: Vec2) -> Node {
+    pub fn new(id: u8, now: Instant,) -> Node {
+
+        let peer_info = ArcShift::new(PeerSummaryInfo::default());
+        let db = Database::create_in_memory(1_000_000, DatabaseSettings {
+            mock_time: Some(datetime!(2020-01-01 T 00:00:00 Z).into()),
+            projection_time_limit: None,
+            auto_delete: false,
+            max_file_size: 100_000_000,
+            cutoff_interval: CutOffDuration::from_minutes(5),
+        }, ()).unwrap();
 
         Node {
             whoami: id,
-            pos,
-            comm: None,
+            db,
+            comm: Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(id as u16)),peer_info, now),
+            last_periodic: now,
         }
     }
-    pub async fn start(whoami: u8, ether: Arc<Mutex<Ether>>) -> DatabaseCommunication<Document> {
-        let mut driver = Driver {
-            whoami,
-            ether,
-        };
-
-        let mut db: Database<Document> = Database::create_in_memory(
-            2_500_000,
-            CutOffDuration::from_minutes(15),
-            DatabaseSettings {
-                projection_time_limit: None,
-                ..DatabaseSettings::default()
-            },
-            (),
-        )
-            .unwrap();
-
-
-        let mut config =  DatabaseCommunicationConfig {
-            listen_address: "dummy".to_string(),
-            multicast_address: "dummy".to_string(),
-            mtu: 1_000_000,
-            bandwidth_limit_bytes_per_second: 1000,
-            retransmit_interval_seconds: 1.0,
-            retransmit_buffer_size_bytes: 1_000_000,
-            debug_logger: Some(Box::new(move |ev| {
-                //let mut log = log.lock().unwrap();
-                //log.push(ev);
-            })),
-            periodic_message_interval: Duration::from_secs(5),
-            initial_ephemeral_node_id: None,
-            disable_retransmit: false,
-        };
-
-        let comm = DatabaseCommunication::async_tokio_new(
-            &mut driver,
-            db,
-            config,
-        )
-            .await
-            .unwrap();
-        comm
+    fn receive_message(&mut self, message: DistributorMessage, src: u8, now: Instant) {
+        self.comm.receive_message(&mut self.db, std::iter::once((Address::from(src), message)), now).unwrap();
+    }
+    fn step(&mut self, now: Instant, actual_ether: &mut ActualEther) {
+        if now >= self.last_periodic + self.comm.periodic_message_interval() {
+            let session = self.db.begin_session().unwrap();
+            let msgs = self.comm.get_periodic_message(&session).unwrap();
+            println!("Node {} get periodic: {:?}", self.whoami, msgs);
+            for msg in msgs {
+                actual_ether.send_to(self.whoami, msg, now).unwrap();
+            }
+            self.last_periodic = now;
+        }
     }
 }
 
-struct Sender {
-    whoami: u8,
-    ether: Arc<Mutex<Ether>>
-}
-struct Receiver {
-    whoami: u8,
-    ether: Arc<Mutex<Ether>>
-}
 
-impl CommunicationSendSocket<u8> for Sender {
-    fn local_addr(&self) -> anyhow::Result<u8> {
-        Ok(self.whoami)
-    }
+impl ActualEther {
 
-    async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        let mut ether = self.ether.lock().unwrap();
-        let mut ether = &mut *ether;
+    fn send_to(&mut self, src: u8, data: DistributorMessage, now: Instant) -> std::io::Result<()> {
 
-        let own_node = &ether.nodes[self.whoami as usize];
-        for (index, dest) in ether.nodes.iter().enumerate() {
-            if index as u8 != self.whoami {
-                println!("{} sending to {}", self.whoami, index);
+        let own_node = &self.node_metadata[src as usize];
+        for (index, dest) in self.node_metadata.iter().enumerate() {
+            if index as u8 != src {
+                //println!("{} sending to {}", src, index);
                 let velocity = 1.0;
                 let dist_time = (dest.pos - own_node.pos).length() / velocity;
-                let now = Instant::now();
+
                 let mut ifp = InflightPacket {
-                    from: self.whoami,
+                    from: src,
                     to: index as u8,
                     start_time: now,
                     velocity,
                     arrive_time: now + Duration::from_secs_f32(dist_time),
-                    data: buf.to_vec(),
+                    data: data.clone(),
                     arrived: false,
                 };
-                println!("Decoded: {:?}", ifp.decode());
-                ether.packets.push(ifp);
+                self.packets.push(ifp);
             }
         }
         Ok(())
     }
 }
+impl Ether {
+    fn step(&mut self, step_time: Duration) {
 
-impl CommunicationReceiveSocket<u8> for Receiver{
-    async fn recv_buf_from<B: BufMut + Send>(&mut self, buf: &mut B) -> std::io::Result<(usize, u8)> {
-
-        loop {
-            let mut result = None;
-            {
-                let mut ether = self.ether.lock().unwrap();
-                let mut ether = &mut *ether;
-
-                ether.packets.retain_mut(|x|{
-                    let retained = if x.to == self.whoami && !x.arrived {
-                        if x.arrive_time >= Instant::now() && result.is_none() {
-                            buf.put(&*x.data);
-                            x.arrived = true;
-                            result = Some((x.data.len(), x.from));
-                        }
-                        true
-                    } else {
-                        x.arrive_time.elapsed().as_secs() <= 5
-                    };
-                    retained
-                });
-            }
-            match result {
-                Some((size, src)) => {return Ok((size,src));}
-                None => {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
+        while let Some((msg, from, to)) = self.recv() {
+            self.nodes[to as usize].receive_message(msg, from, self.now);
         }
 
+        for node in &mut self.nodes {
+            node.step(self.now, &mut self.actual_ether);
+        }
+
+
+        self.now += step_time;
+    }
+
+    fn recv(&mut self) -> Option<(DistributorMessage, /*from*/u8, /*to*/ u8)> {
+
+        let mut result = None;
+        {
+
+            self.actual_ether.packets.retain_mut(|x|{
+                let retained = if !x.arrived {
+                    if x.arrive_time >= self.now && result.is_none() {
+                        x.arrived = true;
+                        result = Some((x.data.clone(), x.from, x.to));
+                    }
+                    true
+                } else {
+                    x.arrive_time.elapsed().as_secs() <= 5
+                };
+                retained
+            });
+        }
+        return result;
     }
 }
 
-struct Driver {
+struct NodeMetaData {
     whoami: u8,
-    ether: Arc<Mutex<Ether>>
-}
+    pos: Vec2,
 
-impl CommunicationDriver for Driver {
-    type Receiver = Receiver;
-    type Sender = Sender;
-    type Endpoint = u8;
-
-    async fn initialize(&mut self, bind_address: &str, multicast_group: &str, mtu: usize) -> anyhow::Result<(Self::Sender, Self::Receiver)> {
-        Ok((
-            Sender {
-                whoami: self.whoami,
-                ether: self.ether.clone()
-            },
-            Receiver {
-                whoami: self.whoami,
-                ether: self.ether.clone(),
-            }
-            ))
-    }
-
-    fn parse_endpoint(s: &str) -> anyhow::Result<Self::Endpoint> {
-        Ok(s.parse::<u8>()?)
-    }
 }
 
 #[derive(Default)]
-struct Ether {
+struct ActualEther {
+    node_metadata: Vec<NodeMetaData>,
     packets: Vec<InflightPacket>,
-    nodes: Vec<Node>
 }
 
-#[derive(Default)]
+struct Ether {
+    actual_ether: ActualEther,
+    nodes: Vec<Node>,
+    start: Instant,
+    now: Instant,
+}
+impl Default for Ether {
+    fn default() -> Ether  {
+        let now = Instant::now();
+        Ether {
+            actual_ether: Default::default(),
+            nodes: vec![],
+            start: now,
+            now,
+        }
+    }
+}
+impl Ether {
+    pub fn elapsed(&self) -> Duration {
+        self.now.saturating_duration_since(self.start)
+    }
+    pub fn add_node(&mut self, pos: Vec2) {
+        let node = Node::new(self.actual_ether.node_metadata.len().try_into().unwrap(),self.now);
+        self.actual_ether.node_metadata.push(NodeMetaData {
+            whoami: node.whoami,
+            pos,
+        });
+        self.nodes.push(node);
+    }
+}
+
 struct Visualizer {
-    ether: Arc<Mutex<Ether>>,
+    ether: Ether,
+    last_update: Instant,
+}
+
+impl Default for Visualizer {
+    fn default() -> Self {
+        Self {
+            ether: Default::default(),
+            last_update: Instant::now(),
+        }
+    }
 }
 
 impl App for Visualizer {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ctx.set_pixels_per_point(2.0);
-            ui.ctx().request_repaint();
 
             ui.horizontal(|ui| {
 
@@ -320,6 +275,10 @@ impl App for Visualizer {
 
                 }
 
+                ui.label("Time:");
+                let mut t = format!("{:?}", self.ether.elapsed());
+                use egui::Widget;
+                TextEdit::singleline(&mut t).interactive(false).ui(ui);
             });
 
 
@@ -334,13 +293,13 @@ impl App for Visualizer {
 
             let mut shapes = vec![];
 
-            let ether = self.ether.lock().unwrap();
-            for node in ether.nodes.iter() {
 
-                let mut pos_x1 = (canvas_rect.width()* (node.pos.x-0.025));
-                let mut pos_y1 = (canvas_rect.height()*(node.pos.y-0.025));
-                let mut pos_x2 = (canvas_rect.width()* (node.pos.x+0.025));
-                let mut pos_y2 = (canvas_rect.height()*(node.pos.y+0.025));
+            for (node, node_meta) in self.ether.nodes.iter().zip(self.ether.actual_ether.node_metadata.iter()) {
+
+                let mut pos_x1 = (canvas_rect.width()* (node_meta.pos.x-0.025));
+                let mut pos_y1 = (canvas_rect.height()*(node_meta.pos.y-0.025));
+                let mut pos_x2 = (canvas_rect.width()* (node_meta.pos.x+0.025));
+                let mut pos_y2 = (canvas_rect.height()*(node_meta.pos.y+0.025));
 
                 let mut rect = Rect {
                     min: Pos2::new(pos_x1, pos_y1),
@@ -360,9 +319,9 @@ impl App for Visualizer {
 
             }
 
-            for packet in ether.packets.iter() {
-                let from = &ether.nodes[packet.from as usize].pos;
-                let to = &ether.nodes[packet.to as usize].pos;
+            for packet in self.ether.actual_ether.packets.iter() {
+                let from = &self.ether.actual_ether.node_metadata[packet.from as usize].pos;
+                let to = &self.ether.actual_ether.node_metadata[packet.to as usize].pos;
                 let journey_time = (packet.arrive_time - packet.start_time).as_secs_f32();
                 let elapsed = (Instant::now() - packet.start_time).as_secs_f32();
                 let along = elapsed/journey_time;
@@ -392,52 +351,31 @@ impl App for Visualizer {
 
             }
 
+            if !self.ether.actual_ether.packets.is_empty() {
+                ui.ctx().request_repaint();
+            }  else {
+                ui.ctx().request_repaint_after(Duration::from_millis(50));
+            }
 
-            ui.painter().extend(shapes);
+            ui.painter().with_clip_rect(canvas_rect).extend(shapes);
+
+            let now = Instant::now();
+            let elapsed = now.saturating_duration_since(self.last_update);
+            self.last_update = now;
+            self.ether.step(elapsed);
 
         });
     }
 }
 
-async fn add_node(ether: Arc<Mutex<Ether>>, x: f32, y: f32) {
-
-    let node_id = ether.lock().unwrap().nodes.len().try_into().unwrap();
-    {
-        let node1 = Node::new(node_id, Vec2::new(x,y));
-        let mut ether = ether.lock().unwrap();
-        ether.nodes.push(node1);
-    }
-    let comm1 = Node::start(node_id, ether.clone()).await;
-    {
-        let mut ether = ether.lock().unwrap();
-        ether.nodes[node_id as usize].comm = Some(comm1);
-    }
-
-}
 fn main() {
-    let mut ether: Arc<Mutex<Ether>> = Arc::new(Default::default());
 
-    let mut visualizer = Visualizer {
-        ether: ether.clone(),
-    };
+    let mut visualizer = Visualizer::default();
 
-    std::thread::spawn(move ||{
-
-        let runtime = tokio::runtime::Builder::new_current_thread().start_paused(true).build().unwrap();
-        let ether = ether.clone();
-        runtime.block_on(async {
-
-            add_node(ether.clone(), 0.2,0.2).await;
-            add_node(ether.clone(), 0.7,0.1).await;
-            add_node(ether.clone(), 0.3,0.7).await;
-
-            std::future::pending::<()>().await;
-        });
-
-
-    });
-
-
+    visualizer.ether.add_node(Vec2::new(0.2,0.2));
+    visualizer.ether.add_node(Vec2::new(0.7,0.1));
+    visualizer.ether.add_node(Vec2::new(0.3,0.7));
+    println!("Nodes: {:#?}", visualizer.ether.nodes);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([800.0, 800.0]),
         ..Default::default()

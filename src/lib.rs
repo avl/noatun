@@ -44,6 +44,9 @@ use crate::undo_store::magic_initialize_ptr;
 pub use paste::paste;
 #[cfg(feature="tokio")]
 use tokio::time::Instant;
+#[cfg(not(feature="tokio"))]
+use std::time::Instant;
+
 use tracing::warn;
 
 
@@ -73,7 +76,6 @@ pub mod prelude {}
 #[cfg(feature = "tokio")]
 pub mod communication;
 
-#[cfg(feature = "tokio")]
 pub mod distributor;
 pub mod sequence_nr;
 
@@ -396,19 +398,25 @@ static FOR_TEST_NON_RANDOM_ID: bool = true;
 static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-#[cfg(feature="tokio")]
+
 thread_local! {
     pub static TEST_EPOCH: Cell<Option<Instant>> = const { Cell::new(None) };
 }
-#[cfg(feature="tokio")]
 pub fn test_epoch() -> Instant {
-    TEST_EPOCH.with(|epoch| epoch.get().unwrap_or(Instant::now()))
+    TEST_EPOCH.with(|mut epoch| {
+        match epoch.get() {
+            None => {
+                let now = Instant::now();
+                epoch.set(Some(now));
+                now
+            }
+            Some(val) => {val}
+        }
+    })
 }
-#[cfg(feature="tokio")]
 pub fn set_test_epoch(instant: Instant)  {
     TEST_EPOCH.with(|epoch| {epoch.set(Some(instant));})
 }
-#[cfg(feature="tokio")]
 pub fn test_elapsed() -> Duration {
     test_epoch().elapsed()
 }

@@ -1,3 +1,4 @@
+use std::fmt::{Debug, Formatter};
 use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
@@ -12,6 +13,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::pin::Pin;
 use tracing::{error, info, trace};
+use crate::distributor::Distributor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LoadingStatus {
@@ -38,6 +40,11 @@ pub struct Database<Base: Application> {
     load_status: LoadingStatus,
     auto_delete: bool,
 }
+impl<T:Application> Debug for Database<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Database<{}>", std::any::type_name::<T>())
+    }
+}
 
 /// Setting that control a database instance
 pub struct DatabaseSettings {
@@ -55,7 +62,11 @@ pub struct DatabaseSettings {
     /// Default value is true - automatically delete messages that no longer affect the
     /// state.
     pub auto_delete: bool,
-
+    /// The maximum size the noatun database can grow to.
+    /// This amount of virtual memory space will be reserved by noatun. Note,
+    /// the memory isn't actually used until data is put in the database.
+    /// It's perfectly reasonable to put a value of 100GB here, even if the database
+    /// is usually only a few gigabytes.
     pub max_file_size: usize,
     pub cutoff_interval: CutOffDuration,
 
@@ -861,7 +872,6 @@ impl<APP: Application> Database<APP> {
     /// This is mostly useful for tests
     pub fn create_in_memory(
         max_size: usize,
-        cutoff_interval: CutOffDuration,
         settings: DatabaseSettings,
         params: APP::Params,
     ) -> Result<Database<APP>> {
@@ -869,7 +879,7 @@ impl<APP: Application> Database<APP> {
         let target = Target::CreateNew(PathBuf::default());
         let mut ctx = DatabaseContextData::new(&mut disk, &target, max_size)
             .context("creating database in memory")?;
-        let mut message_store = Projector::new(&mut disk, &target, max_size, cutoff_interval)?;
+        let mut message_store = Projector::new(&mut disk, &target, max_size, settings.cutoff_interval)?;
 
         Self::recover_impl(&mut ctx, &mut message_store, &settings, &params)?;
         ctx.mark_hot_clean();

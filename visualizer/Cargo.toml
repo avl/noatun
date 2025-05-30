@@ -8,9 +8,10 @@ rust-version = "1.86"
 [dependencies]
 egui = "0.31"
 eframe = "0.31"
-noatun = {path = "..", features = ["tokio"]}
+noatun = {path = ".."}
 anyhow = "1.0"
 bytes = "1.10"
-tokio = { version = "1.44", features = ["full"] }
 savefile = {path = "../../savefile/savefile", features = ["emath", "ecolor"]}
 serde = "1.0"
+arcshift = { version = "0.4.0", path = "../../arcshift/arcshift" }
+datetime_literal = "0.1.3"

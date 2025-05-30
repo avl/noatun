@@ -71,7 +71,7 @@ impl RecentMessages {
 }
 
 #[derive(Default, Debug)]
-pub(crate) struct PeerSummaryInfo {
+pub struct PeerSummaryInfo {
     pub(crate) peers: IndexMap<EphemeralNodeId, Vec<EphemeralNodeId>/*neighbors in common with us*/>
 }
 
@@ -600,7 +600,7 @@ impl Neighborhood {
             }
             DistributorMessage::ReportHeads{heads, source,..}=> {
                 let peer = self.peers.get_insert_peer(*source, now);
-                println!("{:?}: Calling time_passed for {:?}", test_elapsed(), *source);
+                //println!("{:?}: Calling time_passed for {:?}", test_elapsed(), *source);
                 if let Some(inhibited) = self.inhibited_request_upstream_oldest.get(source) {
                     if let Some((age,val)) = inhibited.first_key_value() {
                         let periods = now.saturating_duration_since(*age).as_secs_f32() / periodic_message.as_secs_f32();
@@ -1100,8 +1100,14 @@ pub struct Distributor {
     periodic_message_interval: Duration,
     pub outbuf: QueryableOutbuffer,
     pub neighborhood: Neighborhood,
-
 }
+
+impl Debug for Distributor {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Distributor")
+    }
+}
+
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Status {
@@ -1159,8 +1165,11 @@ impl SquelchAction {
 }
 
 impl Distributor {
+    pub fn periodic_message_interval(&self) -> Duration {
+        self.periodic_message_interval
+    }
     const BATCH_SIZE: usize = 20;
-    pub(crate) fn new(periodic_message_interval: Duration, initial_node_id: ArcShift<EphemeralNodeId>, peer_info: ArcShift<PeerSummaryInfo>, now: Instant) -> Distributor {
+    pub fn new(periodic_message_interval: Duration, initial_node_id: ArcShift<EphemeralNodeId>, peer_info: ArcShift<PeerSummaryInfo>, now: Instant) -> Distributor {
         Self {
             sync_all_inprogress: SyncAllState::NotActive,
             distributor_state: DistributorStatus::default(),
@@ -1202,7 +1211,7 @@ impl Distributor {
     }
 
     /// Call this to retrieve a message that should be sent periodically
-    pub(crate) fn get_periodic_message<APP: Application>(
+    pub fn get_periodic_message<APP: Application>(
         &mut self,
         database: &DatabaseSession<APP>,
     ) -> Result<Vec<DistributorMessage>> {
@@ -1258,7 +1267,7 @@ impl Distributor {
         Ok(ret)
     }
 
-    pub(crate) fn receive_message<APP: Application>(
+    pub fn receive_message<APP: Application>(
         &mut self,
         database: &mut Database<APP>,
         input: impl Iterator<Item = (Address, DistributorMessage)>,
