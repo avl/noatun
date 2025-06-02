@@ -1562,7 +1562,6 @@ impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Iterator
             self.next_position += 1;
             let meta = get_meta(self.metas, BucketNr(pos));
             if meta.populated() {
-                println!("Bucket {pos} had populated meta: {meta:?}");
                 let bucket = unsafe { self.hash_buckets[pos].assume_init_ref() };
                 return Some((&bucket.key, &bucket.v));
             }

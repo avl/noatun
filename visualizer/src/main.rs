@@ -7,21 +7,24 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use eframe::{App, Frame};
-use egui::{vec2, Button, Color32, Context, CornerRadius, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, TextBuffer, TextEdit, Vec2, Widget};
-use egui::epaint::RectShape;
+use egui::{vec2, Button, Color32, Context, CornerRadius, FontDefinitions, FontFamily, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, TextBuffer, TextEdit, Vec2, Widget};
+use egui::epaint::{RectShape, TextShape};
 use noatun::{msg_deserialize, msg_serialize, noatun_object, Application, CutOffDuration, Database, Message, MessageFrame, MessageId, NoatunCell, NoatunStorable, NoatunTime, Object, Savefile};
 use anyhow::Result;
 use arcshift::ArcShift;
 use bytes::{Buf, BufMut};
 use datetime_literal::datetime;
+use eframe::epaint::{EllipseShape, FontId};
 use egui::scroll_area::ScrollBarVisibility;
+use egui::text::Fonts;
 use savefile::{Deserializer, LittleEndian};
 use savefile::prelude::ReadBytesExt;
 
 use noatun::data_types::{NoatunHashMap, NoatunKey, NoatunString};
 use noatun::database::DatabaseSettings;
-use noatun::distributor::{Address, Distributor, DistributorMessage, EphemeralNodeId, PeerSummaryInfo, SerializedMessage};
+use noatun::distributor::{Address, Distributor, DistributorMessage, EphemeralNodeId, ForwardingChange, PeerSummaryInfo, SerializedMessage};
 
+const RANGE: f32 = 0.5;
 
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Savefile, Debug)]
@@ -104,10 +107,12 @@ impl Message for KeyUpdateMessage {
                 root.key_values.insert(key, val);
             }
             KeyUpdateMessage::Change(key, msg_val) => {
-                if let Some(val) = root.key_values.get_mut_val(key) {
+                if let Some(val) = root.key_values.as_mut().get_mut_val(key) {
                     let prev = val.get();
                     let new = prev.saturating_add(*msg_val);
                     val.set(new);
+                } else {
+                    root.key_values.insert(key, msg_val);
                 }
             }
         }
@@ -136,16 +141,13 @@ struct InflightPacket {
     start_time: Instant,
     velocity: f32,
     arrive_time: Instant,
+    end_time: Instant,
     data: DistributorMessage,
     arrived: bool,
     packet_number: usize,
+    decoded: Option<MessageFrame<KeyUpdateMessage>>,
 }
 
-#[derive(Debug)]
-struct DecodedPacket {
-    distributor_message: DistributorMessage,
-    user_message: Option<MessageFrame<KeyUpdateMessage>>,
-}
 
 impl InflightPacket {
     pub fn color(&self) -> Color32 {
@@ -157,23 +159,18 @@ impl InflightPacket {
             DistributorMessage::RequestUpstream { .. } => Color32::GRAY,
             DistributorMessage::UpstreamResponse { .. } => Color32::GRAY,
             DistributorMessage::SendMessageAndAllDescendants { .. } => Color32::GRAY,
-            DistributorMessage::Message { source, message, demand_ack, origin } => {
+            DistributorMessage::Message { source, message, demand_ack, origin, explicit_retransmit } => {
                 match message.to_message_from_ref::<KeyUpdateMessage>().unwrap().payload {
                     KeyUpdateMessage::Set(rgb, _) => {(rgb).into()}
                     KeyUpdateMessage::Change(rgb, _) => {(rgb).into()}
                 }
             }
-            DistributorMessage::Forwarding { .. } => {Color32::GRAY}
-        }
-    }
-    pub fn decode(&self) -> DecodedPacket {
-        let mut user_message = None;
-        if let DistributorMessage::Message { source, message, demand_ack, origin } = &self.data {
-            user_message = Some(message.to_message_from_ref().unwrap());
-        }
-        DecodedPacket {
-            distributor_message: self.data.clone(),
-            user_message,
+            DistributorMessage::Forwarding { action, .. } => {
+                match action {
+                    ForwardingChange::Add => {Color32::RED}
+                    ForwardingChange::Remove => {Color32::DARK_RED}
+                }
+            }
         }
     }
 }
@@ -195,6 +192,7 @@ impl Node {
             message: SerializedMessage::from_header_and_body(header, msg).unwrap(),
             demand_ack: false,
             origin: EphemeralNodeId::new(self.whoami as u16),
+            explicit_retransmit: false,
         });
     }
     pub fn new(id: u8, now: Instant,) -> Node {
@@ -246,7 +244,14 @@ impl ActualEther {
         for (index, dest) in self.node_metadata.iter().enumerate() {
             if index as u8 != src {
                 let velocity = 0.4;
-                let dist_time = (dest.pos - own_node.pos).length() / velocity;
+                let dist = (dest.pos - own_node.pos).length();
+                let dist_time = dist / velocity;
+                let end_time = RANGE / velocity; 
+
+                let mut user_message = None;
+                if let DistributorMessage::Message {  message, .. } = &data {
+                    user_message = Some(message.to_message_from_ref().unwrap());
+                }
 
                 let mut ifp = InflightPacket {
                     from: src,
@@ -254,9 +259,11 @@ impl ActualEther {
                     start_time: now,
                     velocity,
                     arrive_time: now + Duration::from_secs_f32(dist_time),
+                    end_time: now + Duration::from_secs_f32(end_time),
                     data: data.clone(),
                     arrived: false,
                     packet_number: self.next_packet_number,
+                    decoded: user_message,
                 };
                 self.next_packet_number += 1;
                 self.packets.push(ifp);
@@ -286,19 +293,16 @@ impl Ether {
         {
 
             self.actual_ether.packets.retain_mut(|x|{
-                let retained = if !x.arrived {
+                if !x.arrived {
                     if x.arrive_time <= self.now && result.is_none() {
                         x.arrived = true;
                         result = Some((x.data.clone(), x.from, x.to));
                     }
-                    true
-                } else {
-                    (self.now.saturating_duration_since(x.arrive_time).as_secs() <= 5)
-                };
-                retained
+                }
+                self.now < x.end_time
             });
         }
-        return result;
+        result
     }
 }
 
@@ -357,10 +361,12 @@ struct Visualizer {
     last_update: Instant,
     selected: Selected,
 
+    drag: Option<(usize, Pos2/*drag start pos*/, Vec2/*node start pos*/)>,
+
     temp_col: Rgb,
     temp_set: f64,
     temp_inc: f64,
-    paused: bool
+    paused: bool,
 }
 
 impl Default for Visualizer {
@@ -373,6 +379,7 @@ impl Default for Visualizer {
             temp_set: 0.0,
             temp_inc: 0.0,
             paused: false,
+            drag: None,
         }
     }
 }
@@ -381,8 +388,6 @@ impl App for Visualizer {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ctx.set_pixels_per_point(2.0);
-
-
 
             ui.horizontal(|ui| {
 
@@ -393,10 +398,45 @@ impl App for Visualizer {
                     }
                 }
 
+                compile_error!("
+
+Remove non-used data structures.
+When nodes receive messages, check:
+ - Is it forwarded? If so - have we already received it through another path?
+   - If we have, see if we have an active subscription. If so, cancel the subscription
+ - Is it mentioned in a report heads?
+   - Check origin, see if we have direct connection there, otherwise, consider creating subscription,
+     if.
+      a) Not already subscribed for origin
+      b) This transmitter is at faster by at least say 0.1x beacon interval
+ - Is it something we requested transmission of, and it turned out we didn't have a parent?
+  - Handle the same as if it was in report heads?
+
+
+In general, for each origin, we want to have it forwarded from the fastest source.
+
+Make sure to send a forwarding message every time we detect that we're missing a forward
+(a node gave us a ReportHeads that contained something we didn't know).
+
+Make sure to send a non-forwarding message when we detect something we already have, at least
+if we've previously subscribed.
+
+Regularly send re-subscribe messages for all active subscriptions
+
+Regularly GC forwardings others have ordered from us (so they don't linger indefinitely). Do this
+at say, 2.5x the interval of of re-susbcription above.
+
+                ")
+
                 ui.label("Time:");
                 let mut t = format!("{:?}", self.ether.elapsed());
                 use egui::Widget;
                 TextEdit::singleline(&mut t).interactive(false).ui(ui);
+
+                if ui.button("New Node").clicked() {
+                    self.ether.add_node(Vec2::new(0.5,0.5));
+                }
+
             });
 
             let width_available = (ui.available_width()-300.0).max(50.0);
@@ -413,36 +453,101 @@ impl App for Visualizer {
 
                 let mut shapes = vec![];
 
-                let response = ui.interact(canvas_rect, id, Sense::click());
-                let click = if response.clicked() { response.interact_pointer_pos() } else {None};
+                let response = ui.interact(canvas_rect, id, Sense::drag());
+
+
+                let scale = Vec2::new(canvas_rect.width(), canvas_rect.height());
+
+                /*let to_logical = |screen_pos: Pos2| -> Pos2 {
+                    Pos2::new(
+                        (screen_pos.x - canvas_rect.min.x)/scale.x,
+                        (screen_pos.y - canvas_rect.min.y)/scale.y
+                    )
+                };*/
+                let to_pixels = |logical: Vec2| -> Pos2 {
+                    Pos2::new(
+                        (scale.x*logical.x + canvas_rect.min.x),
+                        (scale.y*logical.y + canvas_rect.min.y)
+                    )
+                };
+
+                if response.drag_stopped() {
+                    self.drag = None;
+                } else if let Some((dragged_node, last_pos, last_node_pos)) = self.drag {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let delta = (pos - last_pos)/scale;
+                        let mut new_pos = last_node_pos + delta;
+                        new_pos.x = new_pos.x.clamp(0.0,1.0);
+                        new_pos.y = new_pos.y.clamp(0.0,1.0);
+                        self.ether.actual_ether.node_metadata[dragged_node].pos = new_pos;
+                    }
+                }
 
                 for (node_index, (node, node_meta)) in self.ether.nodes.iter().zip(self.ether.actual_ether.node_metadata.iter()).enumerate() {
 
-                    let mut pos_x1 = canvas_rect.width()* (node_meta.pos.x-0.025);
-                    let mut pos_y1 = canvas_rect.height()*(node_meta.pos.y-0.025);
-                    let mut pos_x2 = canvas_rect.width()* (node_meta.pos.x+0.025);
-                    let mut pos_y2 = canvas_rect.height()*(node_meta.pos.y+0.025);
+                    let pixel_pos = to_pixels(node_meta.pos);
+                    let pixel_pos1 = to_pixels(node_meta.pos-Vec2::new(0.025,0.025));
+                    let pixel_pos2 = to_pixels(node_meta.pos+Vec2::new(0.025,0.025));
 
                     let mut rect = Rect {
-                        min: canvas_rect.min + Vec2::new(pos_x1, pos_y1),
-                        max: canvas_rect.min + Vec2::new(pos_x2, pos_y2),
+                        min: pixel_pos1,
+                        max: pixel_pos2
                     };
-                    if let Some(clicked) = click {
-                        if rect.contains(clicked) {
+                    if let Some(clicked) = response.interact_pointer_pos(){
+                        if rect.contains(clicked) && response.drag_started() {
                             self.selected = Selected::Node(node_index);
+                        }
+                    }
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        if rect.contains(pos) {
+                            if response.drag_started() {
+                                self.drag = Some((node_index, pos, node_meta.pos));
+                            }
                         }
                     }
 
                     shapes.push(Shape::Rect(RectShape {
                         rect,
-                        corner_radius: CornerRadius::from(5.0),
-                        fill: if Selected::Node(node_index) == self.selected {Color32::LIGHT_GRAY} else {Color32::GRAY},
-                        stroke: Default::default(),
+                        corner_radius: CornerRadius::from(4.0),
+                        fill: Color32::DARK_GRAY,
+                        stroke: Stroke::new(1.0, if Selected::Node(node_index) == self.selected {Color32::WHITE} else {Color32::GRAY}),
                         stroke_kind: StrokeKind::Inside,
                         round_to_pixels: None,
                         blur_width: 0.0,
                         brush: None,
                     }));
+
+
+                    shapes.push(Shape::Ellipse(EllipseShape {
+                        center: pixel_pos,
+                        radius: RANGE*scale,
+                        fill: Color32::TRANSPARENT,
+                        stroke: Stroke::new(2.0, Color32::from_rgba_unmultiplied(100,100,255,128)),
+                    }));
+
+                    ui.fonts(|fonts|{
+
+                        let session = node.db.begin_session().unwrap();
+                        let (r,g,b) = session.with_root(|root|{
+                            (root.key_values.get(&Rgb::RED).map(|x|x.detach()).unwrap_or(0),
+                             root.key_values.get(&Rgb::GREEN).map(|x|x.detach()).unwrap_or(0),
+                             root.key_values.get(&Rgb::BLUE).map(|x|x.detach()).unwrap_or(0))
+                        });
+                        let mut pixel_pos = pixel_pos1;
+                        for (value, color) in [
+                            (r, Rgb::RED.into()),
+                            (g, Rgb::GREEN.into()),
+                            (b, Rgb::BLUE.into())
+                        ] {
+                            let galley = fonts.layout_no_wrap(value.to_string(), FontId::new(10.0, FontFamily::Proportional), color);
+                            let stride = galley.rect.width()*1.1;
+                            shapes.push(Shape::Text(TextShape::new(
+                                pixel_pos,galley,color
+                            )));
+                            pixel_pos.x += stride;
+                        }
+                    });
+
 
                 }
 
@@ -455,19 +560,16 @@ impl App for Visualizer {
 
                     let pos = *from + (*to-*from)*along;
 
-                    let mut pos_x1 = canvas_rect.width()* (pos.x-0.015);
-                    let mut pos_y1 = canvas_rect.height()*(pos.y-0.015);
-                    let mut pos_x2 = canvas_rect.width()* (pos.x+0.015);
-                    let mut pos_y2 = canvas_rect.height()*(pos.y+0.015);
 
-
+                    let pixel_pos1 = to_pixels(pos-Vec2::new(0.015,0.015));
+                    let pixel_pos2 = to_pixels(pos+Vec2::new(0.015,0.015));
 
                     let mut rect = Rect {
-                        min: canvas_rect.min + Vec2::new(pos_x1, pos_y1),
-                        max: canvas_rect.min + Vec2::new(pos_x2, pos_y2),
+                        min: pixel_pos1,
+                        max: pixel_pos2,
                     };
-                    if let Some(clicked) = click {
-                        if rect.contains(clicked) {
+                    if let Some(clicked) = response.interact_pointer_pos() {
+                        if rect.contains(clicked) && response.drag_started() {
                             self.selected = Selected::Packet(packet.packet_number);
                         }
                     }
@@ -481,6 +583,23 @@ impl App for Visualizer {
                         blur_width: 0.0,
                         brush: None,
                     }));
+
+                    ui.fonts(|fonts|{
+                        match &packet.decoded {
+                            Some(msg) => {
+                                let (KeyUpdateMessage::Set(rgb, val) |
+                                    KeyUpdateMessage::Change(rgb, val)) = &msg.payload;
+
+                                let galley = fonts.layout_no_wrap(val.to_string(), FontId::new(10.0, FontFamily::Proportional), (*rgb).into());
+                                shapes.push(Shape::Text(TextShape::new(
+                                    pixel_pos1,galley,(*rgb).into()
+                                )));
+
+                            }
+                            _ =>  {}
+                        }
+                    })
+
 
                 }
 
@@ -498,12 +617,13 @@ impl App for Visualizer {
 
                             egui::Grid::new("node_properties").show(ui, |ui| {
                                 ui.label("Node:");
-                                let mut t = "test".to_string();
+                                let mut t = selected_node.to_string();
                                 TextEdit::singleline(&mut t).interactive(false).ui(ui);
                                 ui.end_row();
-                                ui.label("Some:");
-                                let mut t = "thing".to_string();
-                                TextEdit::singleline(&mut t).interactive(false).ui(ui);
+                                if ui.button("debug").clicked() {
+                                    let node = &self.ether.nodes[selected_node].comm;
+                                    println!("Distributor for node {}:\n{:#?}", selected_node, node);
+                                }
                                 ui.end_row();
 
 
@@ -537,8 +657,9 @@ impl App for Visualizer {
 
                                 ui.add(egui::Slider::new(&mut self.temp_inc, -5.0..=5.0).step_by(1.0).text("Change"));
                                 if ui.button("Inc").clicked() {
-                                    self.ether.nodes[selected_node].db.begin_session_mut()
-                                        .unwrap().append_local(KeyUpdateMessage::Change(self.temp_col, self.temp_inc.round() as i32)).unwrap();
+
+                                    self.ether.nodes[selected_node].add_local(KeyUpdateMessage::Change(self.temp_col, self.temp_inc.round() as i32));
+
                                 }
 
                                 ui.end_row();
@@ -563,7 +684,6 @@ impl App for Visualizer {
                                         }
 
                                     });
-                                // Add a lot of widgets here.
                             });
 
                         });
@@ -603,11 +723,11 @@ fn main() {
     let mut visualizer = Visualizer::default();
 
     visualizer.ether.add_node(Vec2::new(0.2,0.2));
-    visualizer.ether.add_node(Vec2::new(0.7,0.1));
-    visualizer.ether.add_node(Vec2::new(0.3,0.7));
+    visualizer.ether.add_node(Vec2::new(0.5,0.5));
+    visualizer.ether.add_node(Vec2::new(0.8,0.8));
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([800.0, 800.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 900.0]),
         ..Default::default()
     };
 

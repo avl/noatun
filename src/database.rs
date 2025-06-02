@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::pin::Pin;
 use tracing::{error, info, trace};
-use crate::distributor::Distributor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LoadingStatus {
