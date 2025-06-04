@@ -1,12 +1,15 @@
+use crate::colors::colored_int;
 use crate::communication::{
     CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
     DatabaseCommunication, DatabaseCommunicationConfig, DebugEvent, DebugEventMsg,
 };
-use std::collections::HashSet;
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
 use crate::distributor::Status;
-use crate::{set_test_epoch, test_elapsed, Application, Database, Message, MessageId, NoatunTime, Object};
+use crate::tests::setup_tracing;
+use crate::{
+    set_test_epoch, test_elapsed, Application, Database, Message, MessageId, NoatunTime, Object,
+};
 use crate::{Persistence, Savefile};
 use arcshift::ArcShift;
 use bytes::BufMut;
@@ -15,12 +18,13 @@ use chrono::TimeDelta;
 use chrono::Utc;
 use datetime_literal::datetime;
 use indexmap::IndexSet;
-use insta::{assert_snapshot};
+use insta::assert_snapshot;
 use rand::distributions::uniform::SampleUniform;
 use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::io::Write;
 use std::ops::Add;
@@ -32,8 +36,6 @@ use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::Instant;
 use tracing::info;
-use crate::colors::colored_int;
-use crate::tests::setup_tracing;
 
 thread_local! {
     pub static MY_THREAD_RNG: RefCell<Option<SmallRng>> = const { RefCell::new(None) };
@@ -96,12 +98,21 @@ impl Message for SyncMessage {
 
 #[derive(Clone, Default)]
 struct Partitionings {
-    partitionings: HashSet<(u8,u8)>
+    partitionings: HashSet<(u8, u8)>,
 }
 #[derive(Clone, Default)]
 struct TestDriverInner {
-    senders: Vec<(u8/*node nr*/, Sender<(u8 /*src*/, Vec<u8>)>)>,
-    raw_messages: Arc<Mutex<Vec<(Instant, u8 /*src*/, /*data:*/Vec<u8>, /*delivered to:*/ Vec<u8>)>>>,
+    senders: Vec<(u8 /*node nr*/, Sender<(u8 /*src*/, Vec<u8>)>)>,
+    raw_messages: Arc<
+        Mutex<
+            Vec<(
+                Instant,
+                u8, /*src*/
+                /*data:*/ Vec<u8>,
+                /*delivered to:*/ Vec<u8>,
+            )>,
+        >,
+    >,
     loss: f32,
 }
 
@@ -114,7 +125,7 @@ struct TestDriver {
 impl TestDriver {
     pub fn partition_all(&mut self) {
         let num_nodes = self.senders.get().senders.len();
-        self.partitionings.rcu(|prev|{
+        self.partitionings.rcu(|prev| {
             let mut res: Partitionings = prev.clone();
             for i in 0..num_nodes {
                 for j in 0..num_nodes {
@@ -129,21 +140,23 @@ impl TestDriver {
     }
     pub fn partition_node(&mut self, node: u8) {
         let num_nodes = self.senders.get().senders.len();
-        self.partitionings.rcu(|prev|{
+        self.partitionings.rcu(|prev| {
             let mut res: Partitionings = prev.clone();
             for i in 0..num_nodes as u8 {
-                if i == node { continue; }
-                res.partitionings.insert((i,node));
+                if i == node {
+                    continue;
+                }
+                res.partitionings.insert((i, node));
                 res.partitionings.insert((node, i));
             }
             res
         });
     }
-    pub fn unpartition_bidirectional_links(&mut self, pairs: impl IntoIterator<Item=(u8,u8)>) {
-        let vec: Vec<(u8,u8)> = pairs.into_iter().collect();
-        self.partitionings.rcu(move|prev|{
+    pub fn unpartition_bidirectional_links(&mut self, pairs: impl IntoIterator<Item = (u8, u8)>) {
+        let vec: Vec<(u8, u8)> = pairs.into_iter().collect();
+        self.partitionings.rcu(move |prev| {
             let mut res: Partitionings = prev.clone();
-            for (a,b) in vec.iter().copied() {
+            for (a, b) in vec.iter().copied() {
                 res.partitionings.remove(&(a, b));
                 res.partitionings.remove(&(b, a));
             }
@@ -153,11 +166,13 @@ impl TestDriver {
 
     pub fn unpartition_node(&mut self, node: u8) {
         let num_nodes = self.senders.get().senders.len();
-        self.partitionings.rcu(|prev|{
+        self.partitionings.rcu(|prev| {
             let mut res: Partitionings = prev.clone();
             for i in 0..num_nodes as u8 {
-                if i == node { continue; }
-                res.partitionings.remove(&(i,node));
+                if i == node {
+                    continue;
+                }
+                res.partitionings.remove(&(i, node));
                 res.partitionings.remove(&(node, i));
             }
             res
@@ -167,25 +182,37 @@ impl TestDriver {
         let ret = String::new();
 
         println!("TIME:       SRC: DST:         Len  Data");
-        for (t, src,msg,dst) in self.senders.get().raw_messages.lock().unwrap().iter() {
+        for (t, src, msg, dst) in self.senders.get().raw_messages.lock().unwrap().iter() {
             use itertools::Itertools;
 
-            let data: crate::communication::NetworkPacket = savefile::Deserializer::bare_deserialize(&mut std::io::Cursor::new(msg),0).unwrap();
+            let data: crate::communication::NetworkPacket =
+                savefile::Deserializer::bare_deserialize(&mut std::io::Cursor::new(msg), 0)
+                    .unwrap();
 
-            let rawlen = dst.iter().map(|x|format!("{}",x)).join(",");
+            let rawlen = dst.iter().map(|x| format!("{}", x)).join(",");
             let padcount = 12usize.saturating_sub(rawlen.len());
             let padding = " ".repeat(padcount);
 
-            println!("{:>10?}: {}    {}{} {} B {:?}", t.duration_since(self.driver_start), colored_int((*src).into()), dst.iter().map(|x|colored_int((*x).into())).join(","), padding, msg.len(), data);
+            println!(
+                "{:>10?}: {}    {}{} {} B {:?}",
+                t.duration_since(self.driver_start),
+                colored_int((*src).into()),
+                dst.iter().map(|x| colored_int((*x).into())).join(","),
+                padding,
+                msg.len(),
+                data
+            );
         }
 
         ret
     }
     pub fn sent_messages_count(&self) -> usize {
-        self.debug_events.lock().unwrap().iter()
-            .filter(|x|{
-                matches!(&x.msg, DebugEventMsg::Send(_))
-            }).count()
+        self.debug_events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|x| matches!(&x.msg, DebugEventMsg::Send(_)))
+            .count()
     }
     pub fn messages_snapshot(&self) -> String {
         self.messages_snapshot_impl(false)
@@ -193,7 +220,7 @@ impl TestDriver {
     pub fn sent_messages_snapshot(&self) -> String {
         self.messages_snapshot_impl(true)
     }
-    pub fn messages_snapshot_impl(&self, sent_only:bool) -> String {
+    pub fn messages_snapshot_impl(&self, sent_only: bool) -> String {
         let mut ret = String::new();
 
         let mut evs = self.debug_events.lock().unwrap();
@@ -233,7 +260,7 @@ impl TestDriver {
                         continue;
                     }
                     String::new()
-                },
+                }
             };
             writeln!(
                 &mut ret,
@@ -266,7 +293,11 @@ impl Default for TestDriver {
     }
 }
 struct TestDriverReceiver(Receiver<(u8 /*src*/, Vec<u8>)>);
-struct TestDriverSender(u8 /*own addr*/, ArcShift<TestDriverInner>, ArcShift<Partitionings>);
+struct TestDriverSender(
+    u8, /*own addr*/
+    ArcShift<TestDriverInner>,
+    ArcShift<Partitionings>,
+);
 
 impl CommunicationReceiveSocket<u8> for TestDriverReceiver {
     async fn recv_buf_from<B: BufMut + Send>(
@@ -304,7 +335,12 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
                 //println!("== SIMULATOR CAUSED PACKET LOSS ==: partitioned: {}", partitioned);
             }
         }
-        driver_inner.raw_messages.lock().unwrap().push((Instant::now(), self.0, data.clone(), delivered_to));
+        driver_inner.raw_messages.lock().unwrap().push((
+            Instant::now(),
+            self.0,
+            data.clone(),
+            delivered_to,
+        ));
         Ok(())
     }
 }
@@ -326,12 +362,18 @@ impl CommunicationDriver for TestDriver {
         self.senders.rcu(|prev| {
             let mut senders = prev.clone();
             index = Some(senders.senders.len());
-            senders.senders.push((index.unwrap().try_into().unwrap(), tx.clone()));
+            senders
+                .senders
+                .push((index.unwrap().try_into().unwrap(), tx.clone()));
             senders
         });
 
         Ok((
-            TestDriverSender(index.unwrap().try_into().unwrap(), self.senders.clone(), self.partitionings.clone()),
+            TestDriverSender(
+                index.unwrap().try_into().unwrap(),
+                self.senders.clone(),
+                self.partitionings.clone(),
+            ),
             TestDriverReceiver(rx),
         ))
     }
@@ -348,7 +390,10 @@ impl Application for SyncApp {
 
 const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
 
-async fn create_app(driver: &mut TestDriver, modify: Option<&mut dyn FnMut(&mut Database<SyncApp>, &mut DatabaseCommunicationConfig)>) -> DatabaseCommunication<SyncApp> {
+async fn create_app(
+    driver: &mut TestDriver,
+    modify: Option<&mut dyn FnMut(&mut Database<SyncApp>, &mut DatabaseCommunicationConfig)>,
+) -> DatabaseCommunication<SyncApp> {
     let mut db: Database<SyncApp> = Database::create_in_memory(
         2_500_000,
         CutOffDuration::from_minutes(15),
@@ -362,7 +407,7 @@ async fn create_app(driver: &mut TestDriver, modify: Option<&mut dyn FnMut(&mut 
     .unwrap();
 
     let log = driver.debug_events.clone();
-    let mut config =  DatabaseCommunicationConfig {
+    let mut config = DatabaseCommunicationConfig {
         listen_address: "dummy".to_string(),
         multicast_address: "dummy".to_string(),
         mtu: 1500,
@@ -370,8 +415,8 @@ async fn create_app(driver: &mut TestDriver, modify: Option<&mut dyn FnMut(&mut 
         retransmit_interval_seconds: 1.0,
         retransmit_buffer_size_bytes: 1_000_000,
         debug_logger: Some(Box::new(move |ev| {
-        let mut log = log.lock().unwrap();
-        log.push(ev);
+            let mut log = log.lock().unwrap();
+            log.push(ev);
         })),
         periodic_message_interval: Duration::from_secs(5),
         initial_ephemeral_node_id: None,
@@ -382,13 +427,9 @@ async fn create_app(driver: &mut TestDriver, modify: Option<&mut dyn FnMut(&mut 
         modify(&mut db, &mut config);
     }
 
-    let comm = DatabaseCommunication::async_tokio_new(
-        driver,
-        db,
-        config,
-    )
-    .await
-    .unwrap();
+    let comm = DatabaseCommunication::new_custom(driver, db, config)
+        .await
+        .unwrap();
     comm
 }
 
@@ -752,7 +793,6 @@ async fn all_up_general_update_sync_test_mid_age_messages_no_persist() {
 async fn all_up_special_seed() {
     super::setup_tracing();
     for seed in 0..1 {
-
         println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 15, false, 10, true).await;
     }
@@ -777,7 +817,8 @@ async fn all_up_general_update_sync_test_impl(
     let mut total_count = 0;
     let mut total_added = 0;
 
-    #[cfg(not(debug_assertions))] {
+    #[cfg(not(debug_assertions))]
+    {
         compile_error!("Dont' set loss to 0 below! That invalidates the test! Should be 0.15")
     }
     driver.set_loss(0.0); //0.15
@@ -899,7 +940,6 @@ async fn all_up_general_update_sync_test_impl(
     println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.messages_snapshot());
 
-
     assert_eq!(app1.get_status().await.unwrap(), Status::Nominal);
     assert_eq!(app2.get_status().await.unwrap(), Status::Nominal);
     /*app1.add_message(SyncMessage {
@@ -951,10 +991,12 @@ async fn all_up_big_severely_desynced_test() {
         .unwrap();
         app1.set_mock_time(NoatunTime::from_datetime(
             datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
-        )).unwrap();
+        ))
+        .unwrap();
         app2.set_mock_time(NoatunTime::from_datetime(
             datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
-        )).unwrap();
+        ))
+        .unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     tokio::time::sleep(Duration::from_secs(900)).await;
@@ -996,10 +1038,12 @@ async fn all_up_big_nominal_test() {
         .unwrap();
         app1.set_mock_time(NoatunTime::from_datetime(
             datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
-        )).unwrap();
+        ))
+        .unwrap();
         app2.set_mock_time(NoatunTime::from_datetime(
             datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
-        )).unwrap();
+        ))
+        .unwrap();
         tokio::time::sleep(Duration::from_secs(120)).await;
         if msg > 15 {
             driver.set_loss(0.0);
@@ -1052,10 +1096,12 @@ async fn all_up_huge_desynced_test() {
     for _msg in 0..200 {
         app1.set_mock_time(NoatunTime::from_datetime(
             datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
-        )).unwrap();
+        ))
+        .unwrap();
         app2.set_mock_time(NoatunTime::from_datetime(
             datetime!(2020-01-01 T 01:01:01 Z) + start.elapsed(),
-        )).unwrap();
+        ))
+        .unwrap();
         app1.add_message(SyncMessage {
             value: 1,
             persist: false,
@@ -1075,15 +1121,14 @@ async fn all_up_huge_desynced_test() {
     assert_eq!(root1, root2);
 }
 
-
 #[tokio::test(start_paused = true)]
 async fn all_up_three_node_resync() {
-/*
-    compile_error!("
-* Try to avoid sending RequestUpstream from multiple nodes
-* Automatic relay-routing-requests (unsquelch - rename?) (witrh also squelch if duplicates)
-    ")
-*/
+    /*
+        compile_error!("
+    * Try to avoid sending RequestUpstream from multiple nodes
+    * Automatic relay-routing-requests (unsquelch - rename?) (witrh also squelch if duplicates)
+        ")
+    */
 
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
@@ -1097,11 +1142,9 @@ async fn all_up_three_node_resync() {
     let start_time = datetime!(2020-01-01 T 00:00:00 Z);
 
     for app in [&mut app1, &mut app2, &mut app3] {
-        app.set_mock_time(NoatunTime::from_datetime(
-            start_time + start.elapsed(),
-        )).unwrap();
+        app.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+            .unwrap();
     }
-
 
     for i in 0..2 {
         app3.add_message(SyncMessage {
@@ -1109,72 +1152,69 @@ async fn all_up_three_node_resync() {
             persist: false,
             reset: false,
         })
-            .await
-            .unwrap();
-
+        .await
+        .unwrap();
     }
     tokio::time::sleep(Duration::from_millis(1000)).await;
-    app1.set_mock_time(NoatunTime::from_datetime(
-        start_time + start.elapsed(),
-    )).unwrap();
+    app1.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+        .unwrap();
     driver.set_loss(0.0);
 
-/*
-    compile_error!("
+    /*
+        compile_error!("
 
-Document the following behavior:
+    Document the following behavior:
 
-* When do we inhibit sending retransmit requests on the packet level (i.e, the low-level retransmit)
+    * When do we inhibit sending retransmit requests on the packet level (i.e, the low-level retransmit)
 
-* When do we inhibit sending the various retransmit-requests on the Message-layer
- - Response to RequestUpstream
- - Response to SendMessageAndAllDescendants
+    * When do we inhibit sending the various retransmit-requests on the Message-layer
+     - Response to RequestUpstream
+     - Response to SendMessageAndAllDescendants
 
-* Calmly observe the written documentation. What can be made simpler? Do we even need the
-heuristic, couldn't  we just delay a random amount based on the number of neighbors, combined
-with inhibiting sending stuff we've just seen sent anyway?
+    * Calmly observe the written documentation. What can be made simpler? Do we even need the
+    heuristic, couldn't  we just delay a random amount based on the number of neighbors, combined
+    with inhibiting sending stuff we've just seen sent anyway?
 
-* Implement Unsquelch/squelch based on detecting when a node emits an object with a parent
-we don't know, where we previously considered ourselves to be up-to-date with the node (i.e,
-initial sync complete). I.e, when the first sync-process started, completes. We then take
-note whenever we receive a Message with a parent unknown to us, and add an Unsquelch for that
-messages "original" source. We also check if we receive messages twice. If we do,
-we squelch the one that's usually slowest. Determine slowest by averaging or something, device
-some data structure for this!
+    * Implement Unsquelch/squelch based on detecting when a node emits an object with a parent
+    we don't know, where we previously considered ourselves to be up-to-date with the node (i.e,
+    initial sync complete). I.e, when the first sync-process started, completes. We then take
+    note whenever we receive a Message with a parent unknown to us, and add an Unsquelch for that
+    messages "original" source. We also check if we receive messages twice. If we do,
+    we squelch the one that's usually slowest. Determine slowest by averaging or something, device
+    some data structure for this!
 
-* Figure out how to even test this.
+    * Figure out how to even test this.
 
-* Add tests for EphemeralNodeId collisions (figure out how to cause them, probably
-by overriding default EphemeralNodeId in config)
+    * Add tests for EphemeralNodeId collisions (figure out how to cause them, probably
+    by overriding default EphemeralNodeId in config)
 
-* Create perf benchmarks, compare with other tools (which?)
+    * Create perf benchmarks, compare with other tools (which?)
 
 
-    ")
-*/
+        ")
+    */
 
     for _ in 0..35 {
         tokio::time::sleep(Duration::from_millis(1000)).await;
-        app1.set_mock_time(NoatunTime::from_datetime(
-            start_time + start.elapsed(),
-        )).unwrap();
+        app1.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+            .unwrap();
     }
-
 
     println!("Start time: {:?}", start_time);
     println!("{}", driver.messages_snapshot());
 
     assert_eq!(
         app1.get_update_heads().unwrap(),
-        app2.get_update_heads().unwrap());
+        app2.get_update_heads().unwrap()
+    );
     assert_eq!(
         app2.get_update_heads().unwrap(),
-        app3.get_update_heads().unwrap());
+        app3.get_update_heads().unwrap()
+    );
 
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
     let root3 = app3.with_root(|root| root.detach());
-
 
     assert_eq!(root1, root2);
     assert_eq!(root2, root3);
@@ -1193,17 +1233,21 @@ async fn all_up_three_node_partial_resync1() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig|{
+    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig| {
         let mut sess = db.begin_session_mut().unwrap();
-        sess.append_single(&crate::MessageFrame::new(
-            MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
-            vec![],
-            SyncMessage {
-                value: 0,
-                reset: false,
-                persist: false,
-            }
-        ), false).unwrap();
+        sess.append_single(
+            &crate::MessageFrame::new(
+                MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
+                vec![],
+                SyncMessage {
+                    value: 0,
+                    reset: false,
+                    persist: false,
+                },
+            ),
+            false,
+        )
+        .unwrap();
     };
     let mut app1 = create_app(&mut driver, None).await;
     let mut app2 = create_app(&mut driver, Some(&mut add)).await;
@@ -1214,24 +1258,19 @@ async fn all_up_three_node_partial_resync1() {
     let start_time = datetime!(2020-01-01 T 00:00:00 Z);
 
     for app in [&mut app1, &mut app2, &mut app3] {
-        app.set_mock_time(NoatunTime::from_datetime(
-            start_time + start.elapsed(),
-        )).unwrap();
+        app.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+            .unwrap();
     }
 
-
-
     tokio::time::sleep(Duration::from_millis(1000)).await;
-    app1.set_mock_time(NoatunTime::from_datetime(
-        start_time + start.elapsed(),
-    )).unwrap();
+    app1.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+        .unwrap();
     driver.set_loss(0.0);
 
     for _ in 0..25 {
         tokio::time::sleep(Duration::from_millis(1000)).await;
-        app1.set_mock_time(NoatunTime::from_datetime(
-            start_time + start.elapsed(),
-        )).unwrap();
+        app1.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+            .unwrap();
     }
 
     let root1 = app1.with_root(|root| root.detach());
@@ -1251,23 +1290,25 @@ async fn all_up_three_node_partial_resync1() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_three_node_partial_resync2() {
-
-
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig|{
+    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig| {
         let mut sess = db.begin_session_mut().unwrap();
-        sess.append_single(&crate::MessageFrame::new(
-            MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
-            vec![],
-            SyncMessage {
-                value: 0,
-                reset: false,
-                persist: false,
-            }
-        ), false).unwrap();
+        sess.append_single(
+            &crate::MessageFrame::new(
+                MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
+                vec![],
+                SyncMessage {
+                    value: 0,
+                    reset: false,
+                    persist: false,
+                },
+            ),
+            false,
+        )
+        .unwrap();
     };
     let mut app1 = create_app(&mut driver, Some(&mut add)).await;
     let mut app2 = create_app(&mut driver, None).await;
@@ -1278,24 +1319,19 @@ async fn all_up_three_node_partial_resync2() {
     let start_time = datetime!(2020-01-01 T 00:00:00 Z);
 
     for app in [&mut app1, &mut app2, &mut app3] {
-        app.set_mock_time(NoatunTime::from_datetime(
-            start_time + start.elapsed(),
-        )).unwrap();
+        app.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+            .unwrap();
     }
 
-
-
     tokio::time::sleep(Duration::from_millis(1000)).await;
-    app1.set_mock_time(NoatunTime::from_datetime(
-        start_time + start.elapsed(),
-    )).unwrap();
+    app1.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+        .unwrap();
     driver.set_loss(0.0);
 
     for _ in 0..25 {
         tokio::time::sleep(Duration::from_millis(1000)).await;
-        app1.set_mock_time(NoatunTime::from_datetime(
-            start_time + start.elapsed(),
-        )).unwrap();
+        app1.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+            .unwrap();
     }
 
     let root1 = app1.with_root(|root| root.detach());
@@ -1310,7 +1346,6 @@ async fn all_up_three_node_partial_resync2() {
     assert_eq!(root2, root3);
 }
 
-
 #[tokio::test(start_paused = true)]
 async fn all_up_four_node_partial_resync1() {
     /*
@@ -1324,17 +1359,21 @@ async fn all_up_four_node_partial_resync1() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig|{
+    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig| {
         let mut sess = db.begin_session_mut().unwrap();
-        sess.append_single(&crate::MessageFrame::new(
-            MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
-            vec![],
-            SyncMessage {
-                value: 0,
-                reset: false,
-                persist: false,
-            }
-        ), false).unwrap();
+        sess.append_single(
+            &crate::MessageFrame::new(
+                MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
+                vec![],
+                SyncMessage {
+                    value: 0,
+                    reset: false,
+                    persist: false,
+                },
+            ),
+            false,
+        )
+        .unwrap();
     };
     let mut app1 = create_app(&mut driver, Some(&mut add)).await;
     let app2 = create_app(&mut driver, None).await;
@@ -1344,12 +1383,10 @@ async fn all_up_four_node_partial_resync1() {
     let start = Instant::now();
     let start_time = datetime!(2020-01-01 T 00:00:00 Z);
 
-
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(1000)).await;
-        app1.set_mock_time(NoatunTime::from_datetime(
-            start_time + start.elapsed(),
-        )).unwrap();
+        app1.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+            .unwrap();
     }
 
     let root1 = app1.with_root(|root| root.detach());
@@ -1372,20 +1409,24 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig|{
+    let mut add = |db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig| {
         config.disable_retransmit = false;
         let mut sess = db.begin_session_mut().unwrap();
-        sess.append_single(&crate::MessageFrame::new(
-            MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
-            vec![],
-            SyncMessage {
-                value: 0,
-                reset: false,
-                persist: false,
-            }
-        ), false).unwrap();
+        sess.append_single(
+            &crate::MessageFrame::new(
+                MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
+                vec![],
+                SyncMessage {
+                    value: 0,
+                    reset: false,
+                    persist: false,
+                },
+            ),
+            false,
+        )
+        .unwrap();
     };
-    let mut noadd = |_db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig|{
+    let mut noadd = |_db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig| {
         config.disable_retransmit = false;
     };
     let mut app1 = create_app(&mut driver, Some(&mut add)).await;
@@ -1396,12 +1437,10 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
     let start = Instant::now();
     let start_time = datetime!(2020-01-01 T 00:00:00 Z);
 
-
     for i in 0..35 {
         tokio::time::sleep(Duration::from_millis(1000)).await;
-        app1.set_mock_time(NoatunTime::from_datetime(
-            start_time + start.elapsed(),
-        )).unwrap();
+        app1.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+            .unwrap();
 
         if i >= 20 {
             driver.unpartition_node(1);
@@ -1409,7 +1448,6 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
             driver.partition_node(1);
         }
     }
-
 
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
@@ -1425,46 +1463,47 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
     assert_eq!(root3, root4);
 }
 
-
 #[tokio::test(start_paused = true)]
 async fn ten_nodes_sync_test() {
-
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig|{
+    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig| {
         let mut sess = db.begin_session_mut().unwrap();
-        sess.append_single(&crate::MessageFrame::new(
-            MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
-            vec![],
-            SyncMessage {
-                value: 0,
-                reset: false,
-                persist: false,
-            }
-        ), false).unwrap();
+        sess.append_single(
+            &crate::MessageFrame::new(
+                MessageId::from_parts_for_test(datetime!(2020-01-01 T 01:01:01 Z).into(), 1),
+                vec![],
+                SyncMessage {
+                    value: 0,
+                    reset: false,
+                    persist: false,
+                },
+            ),
+            false,
+        )
+        .unwrap();
     };
     let mut apps = vec![];
     for i in 0..10 {
-        let inject: Option<&mut dyn for<'a> FnMut(&'a mut _, &mut crate::communication::DatabaseCommunicationConfig)> = if i != 7 {
-            Some(&mut add)
-        } else {
-            None
-        };
+        let inject: Option<
+            &mut dyn for<'a> FnMut(
+                &'a mut _,
+                &mut crate::communication::DatabaseCommunicationConfig,
+            ),
+        > = if i != 7 { Some(&mut add) } else { None };
         apps.push(create_app(&mut driver, inject).await);
     }
 
     let start = Instant::now();
     let start_time = datetime!(2020-01-01 T 00:00:00 Z);
 
-
     for i in 0..35 {
         tokio::time::sleep(Duration::from_millis(1000)).await;
         for app in apps.iter_mut() {
-            app.set_mock_time(NoatunTime::from_datetime(
-                start_time + start.elapsed(),
-            )).unwrap();
+            app.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))
+                .unwrap();
         }
 
         if i >= 20 {
@@ -1474,13 +1513,15 @@ async fn ten_nodes_sync_test() {
         }
     }
 
-
     println!("Start time: {:?}", start_time);
     println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.messages_snapshot());
 
     println!("Sent Messages: {} ", driver.sent_messages_count());
-    assert!(driver.sent_messages_count() < 75, "every one sends heads 7 times, plus a few messages to bring 7 up-to-date");
+    assert!(
+        driver.sent_messages_count() < 75,
+        "every one sends heads 7 times, plus a few messages to bring 7 up-to-date"
+    );
 
     let root0 = apps[0].with_root(|root| root.detach());
     for i in 1..10 {
@@ -1491,7 +1532,6 @@ async fn ten_nodes_sync_test() {
 
 #[tokio::test(start_paused = true)]
 async fn complex_forwarding_test() {
-
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
@@ -1507,21 +1547,40 @@ async fn complex_forwarding_test() {
     c* can hear everyone
     */
 
-    let a0 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
-    let a1 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
-    let b2 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
-    let b3 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
-    let c4 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
-    let c5 = {let t = apps.len() as u8;apps.push(create_app(&mut driver, None).await);t};
+    let a0 = {
+        let t = apps.len() as u8;
+        apps.push(create_app(&mut driver, None).await);
+        t
+    };
+    let a1 = {
+        let t = apps.len() as u8;
+        apps.push(create_app(&mut driver, None).await);
+        t
+    };
+    let b2 = {
+        let t = apps.len() as u8;
+        apps.push(create_app(&mut driver, None).await);
+        t
+    };
+    let b3 = {
+        let t = apps.len() as u8;
+        apps.push(create_app(&mut driver, None).await);
+        t
+    };
+    let c4 = {
+        let t = apps.len() as u8;
+        apps.push(create_app(&mut driver, None).await);
+        t
+    };
+    let c5 = {
+        let t = apps.len() as u8;
+        apps.push(create_app(&mut driver, None).await);
+        t
+    };
 
     driver.partition_all();
     // a/b can hear each other
-    driver.unpartition_bidirectional_links(
-        [
-            (a0,a1),
-            (b2,b3),
-        ]
-    );
+    driver.unpartition_bidirectional_links([(a0, a1), (b2, b3)]);
     //cs can hear everyone
     driver.unpartition_node(c4);
     driver.unpartition_node(c5);
@@ -1536,20 +1595,19 @@ async fn complex_forwarding_test() {
     for i in 0..14 {
         tokio::time::sleep(Duration::from_millis(5000)).await;
         for app in apps.iter_mut() {
-            app.set_mock_time(NoatunTime::from_datetime(
-                start_time + test_elapsed(),
-            )).unwrap();
+            app.set_mock_time(NoatunTime::from_datetime(start_time + test_elapsed()))
+                .unwrap();
         }
 
-        if i<5 {
+        if i < 5 {
             for app in apps.iter_mut() {
                 app.add_message(SyncMessage {
                     persist: true,
                     value: 1,
                     reset: false,
                 })
-                    .await
-                    .unwrap();
+                .await
+                .unwrap();
             }
         }
     }
@@ -1565,5 +1623,4 @@ async fn complex_forwarding_test() {
         let root = apps[i].with_root(|root| root.detach());
         assert_eq!(root0, root, "node {} and {} should have same state", 0, i);
     }
-
 }

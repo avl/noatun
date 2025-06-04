@@ -1,4 +1,3 @@
-use std::fmt::{Debug, Formatter};
 use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
@@ -9,6 +8,7 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use std::fmt::{Debug, Formatter};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::pin::Pin;
@@ -39,7 +39,7 @@ pub struct Database<Base: Application> {
     load_status: LoadingStatus,
     auto_delete: bool,
 }
-impl<T:Application> Debug for Database<T> {
+impl<T: Application> Debug for Database<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "Database<{}>", std::any::type_name::<T>())
     }
@@ -68,7 +68,6 @@ pub struct DatabaseSettings {
     /// is usually only a few gigabytes.
     pub max_file_size: usize,
     pub cutoff_interval: CutOffDuration,
-
 }
 impl Default for DatabaseSettings {
     fn default() -> Self {
@@ -105,7 +104,7 @@ impl<'a, APP: Application> DatabaseSession<'a, APP> {
 
     pub fn remove_cutoff_parents(&self, parents: &mut Vec<MessageId>) {
         if let Ok(cutoff) = self.db.current_cutoff_time() {
-            parents.retain(|x|x.timestamp() >= cutoff);
+            parents.retain(|x| x.timestamp() >= cutoff);
         }
     }
 
@@ -184,7 +183,7 @@ impl<'a, APP: Application> DatabaseSessionMut<'a, APP> {
 
     pub fn remove_cutoff_parents(&self, parents: &mut Vec<MessageId>) {
         if let Ok(cutoff) = self.db.current_cutoff_time() {
-            parents.retain(|x|x.timestamp() >= cutoff);
+            parents.retain(|x| x.timestamp() >= cutoff);
         }
     }
 
@@ -878,7 +877,8 @@ impl<APP: Application> Database<APP> {
         let target = Target::CreateNew(PathBuf::default());
         let mut ctx = DatabaseContextData::new(&mut disk, &target, max_size)
             .context("creating database in memory")?;
-        let mut message_store = Projector::new(&mut disk, &target, max_size, settings.cutoff_interval)?;
+        let mut message_store =
+            Projector::new(&mut disk, &target, max_size, settings.cutoff_interval)?;
 
         Self::recover_impl(&mut ctx, &mut message_store, &settings, &params)?;
         ctx.mark_hot_clean();

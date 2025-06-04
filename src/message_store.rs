@@ -850,11 +850,10 @@ impl<M> OnDiskMessageStore<M> {
     pub fn contains_message(&self, start: MessageId) -> Result<bool> {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
         match message_index.binary_search_by_key(&start, |x| x.message) {
-            Ok(index) => Ok(
-                {
-                    let del = !message_index[index].file_offset.is_deleted();
-                    del
-                }),
+            Ok(index) => Ok({
+                let del = !message_index[index].file_offset.is_deleted();
+                del
+            }),
             Err(_err) => Ok(false),
         }
     }
@@ -1841,7 +1840,8 @@ impl<M> OnDiskMessageStore<M> {
 
                     trace!(
                         "Inserting message {:?} at index {}",
-                        msg.header.id, cur_index
+                        msg.header.id,
+                        cur_index
                     );
                     index_header.cutoff.report_add(msg.header.id);
 

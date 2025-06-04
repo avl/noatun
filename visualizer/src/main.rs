@@ -168,7 +168,7 @@ impl InflightPacket {
             DistributorMessage::Forwarding { action, .. } => {
                 match action {
                     ForwardingChange::Add => {Color32::RED}
-                    ForwardingChange::Remove => {Color32::DARK_RED}
+                    ForwardingChange::Remove => {Color32::GREEN}
                 }
             }
         }
@@ -179,7 +179,7 @@ impl InflightPacket {
 struct Node {
     whoami: u8,
     db: Database<Document>,
-    comm: Distributor,
+    distributor: Distributor,
     last_periodic: Instant,
 }
 
@@ -187,7 +187,7 @@ impl Node {
     pub fn add_local(&mut self, msg: KeyUpdateMessage) {
         let header = self.db.begin_session_mut()
             .unwrap().append_local(msg.clone()).unwrap();
-        self.comm.outbuf.push_back(DistributorMessage::Message {
+        self.distributor.outbuf.push_back(DistributorMessage::Message {
             source: EphemeralNodeId::new(self.whoami as u16),
             message: SerializedMessage::from_header_and_body(header, msg).unwrap(),
             demand_ack: false,
@@ -209,26 +209,26 @@ impl Node {
         Node {
             whoami: id,
             db,
-            comm: Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(id as u16)),peer_info, now),
+            distributor: Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(id as u16)), peer_info, now),
             last_periodic: now,
         }
     }
     fn receive_message(&mut self, message: DistributorMessage, src: u8, now: Instant, actual_ether: &mut ActualEther) {
-        self.comm.receive_message(&mut self.db, std::iter::once((Address::from(src), message)), now).unwrap();
+        self.distributor.receive_message(&mut self.db, std::iter::once((Address::from(src), message)), now).unwrap();
 
     }
     fn step(&mut self, now: Instant, actual_ether: &mut ActualEther) {
-        if now >= self.last_periodic + self.comm.periodic_message_interval() {
+        if now >= self.last_periodic + self.distributor.periodic_message_interval() {
             let session = self.db.begin_session().unwrap();
-            let msgs = self.comm.get_periodic_message(&session).unwrap();
+            let msgs = self.distributor.get_periodic_message(&session).unwrap();
             for msg in msgs {
                 actual_ether.do_send(self.whoami, msg, now).unwrap();
             }
             self.last_periodic = now;
         }
 
-        while !self.comm.outbuf.is_empty() {
-            let msg = self.comm.outbuf.pop_front().unwrap();
+        while !self.distributor.outbuf.is_empty() {
+            let msg = self.distributor.outbuf.pop_front().unwrap();
             actual_ether.do_send(self.whoami, msg, now).unwrap();
         }
 
@@ -377,7 +377,7 @@ impl Default for Visualizer {
             selected: Selected::Node(0),
             temp_col: Rgb::GREEN,
             temp_set: 0.0,
-            temp_inc: 0.0,
+            temp_inc: 1.0,
             paused: false,
             drag: None,
         }
@@ -398,6 +398,7 @@ impl App for Visualizer {
                     }
                 }
 
+                /*
                 compile_error!("
 
 Remove non-used data structures.
@@ -427,6 +428,7 @@ Regularly GC forwardings others have ordered from us (so they don't linger indef
 at say, 2.5x the interval of of re-susbcription above.
 
                 ")
+*/
 
                 ui.label("Time:");
                 let mut t = format!("{:?}", self.ether.elapsed());
@@ -608,8 +610,34 @@ at say, 2.5x the interval of of re-susbcription above.
                 }  else {
                     ui.ctx().request_repaint_after(Duration::from_millis(50));
                 }
-
+                let mut thin = vec![];
+                for (node_index, node) in self.ether.nodes.iter().enumerate() {
+                    assert_eq!(node_index, node.distributor.ephemeral_node_id.shared_get().raw_u16() as usize);
+                    let node_pos = self.ether.actual_ether.node_metadata[node_index].pos;
+                    for (peer_id,peer_info) in &node.distributor.neighborhood.peers.peers {
+                        let forwarding_origin_pos = self.ether.actual_ether.node_metadata[peer_id.raw_u16() as usize].pos;
+                        for (forward_id,_) in peer_info.forwardings.iter() {
+                            let forwarding_destination_pos = self.ether.actual_ether.node_metadata[forward_id.raw_u16() as usize].pos;
+                            thin.push(Shape::LineSegment {
+                                points: [
+                                    to_pixels(forwarding_origin_pos),
+                                    to_pixels(node_pos),
+                                ],
+                                stroke: Stroke::new(0.5, Color32::from_rgb(100,100,155)),
+                            });
+                            shapes.push(Shape::LineSegment {
+                                points: [
+                                    to_pixels(node_pos),
+                                    to_pixels(forwarding_destination_pos),
+                                ],
+                                stroke: Stroke::new(1.0, Color32::from_rgb(200,255,200)),
+                            });
+                        }
+                    }
+                }
+                shapes.extend(thin);
                 ui.painter().with_clip_rect(canvas_rect).extend(shapes);
+
 
                 match self.selected {
                     Selected::Node(selected_node) => {
@@ -621,8 +649,9 @@ at say, 2.5x the interval of of re-susbcription above.
                                 TextEdit::singleline(&mut t).interactive(false).ui(ui);
                                 ui.end_row();
                                 if ui.button("debug").clicked() {
-                                    let node = &self.ether.nodes[selected_node].comm;
+                                    let node = &self.ether.nodes[selected_node].distributor;
                                     println!("Distributor for node {}:\n{:#?}", selected_node, node);
+                                    println!("Messages:\n{:#?}", self.ether.nodes[selected_node].db.begin_session().unwrap().get_all_messages());
                                 }
                                 ui.end_row();
 

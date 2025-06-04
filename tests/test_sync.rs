@@ -105,7 +105,7 @@ async fn test_sync_app() {
                     (),
                 )
                 .unwrap();
-                let comm = DatabaseCommunication::async_tokio_new(
+                let comm = DatabaseCommunication::new_custom(
                     &mut TokioUdpDriver,
                     db,
                     DatabaseCommunicationConfig::default(),

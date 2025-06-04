@@ -54,11 +54,7 @@ fn colored_int_impl(i: u32, hex: bool) -> ColoredString {
         g = 255 - p;
         b = 128 + p;
     }
-    if hex {
-        format!("{i:x}")
-    } else {
-        i.to_string()
-    }.truecolor(r as u8, g as u8, b as u8)
+    if hex { format!("{i:x}") } else { i.to_string() }.truecolor(r as u8, g as u8, b as u8)
 }
 pub fn colored_hex_int(i: u32) -> ColoredString {
     colored_int_impl(i, true)

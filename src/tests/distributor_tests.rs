@@ -1,13 +1,12 @@
-
 use crate::cutoff::CutOffDuration;
 use crate::database::DatabaseSettings;
 use crate::distributor::{Distributor, DistributorMessage, EphemeralNodeId, Neighborhood};
 use crate::tests::{CounterMessage, CounterObject};
 use crate::{set_test_epoch, Database, MessageId, NoatunTime};
+use arcshift::ArcShift;
 use datetime_literal::datetime;
 use std::iter::once;
 use std::time::Duration;
-use arcshift::ArcShift;
 use tokio::time::Instant;
 
 fn create_app<'a>(
@@ -216,19 +215,36 @@ fn test_distributor() {
     let mut app2 = create_app([(datetime!(2021-01-02 Z), [].as_slice(), 1, 0, true)]);
 
     let peer_info = ArcShift::default();
-    let mut dist1 = Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(1)), peer_info.clone(), Instant::now().into());
-    let mut dist2 = Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(2)), peer_info.clone(), Instant::now().into());
+    let mut dist1 = Distributor::new(
+        Duration::from_secs(5),
+        ArcShift::new(EphemeralNodeId::new(1)),
+        peer_info.clone(),
+        Instant::now().into(),
+    );
+    let mut dist2 = Distributor::new(
+        Duration::from_secs(5),
+        ArcShift::new(EphemeralNodeId::new(2)),
+        peer_info.clone(),
+        Instant::now().into(),
+    );
 
     dist1.neighborhood = Neighborhood::new(ArcShift::default(), Instant::now().into());
     dist2.neighborhood = Neighborhood::new(ArcShift::default(), Instant::now().into());
-    dist1.neighborhood.peers.get_insert_peer(EphemeralNodeId::new(2), Instant::now().into()).peer_neighbors.push(EphemeralNodeId::new(1));
+    dist1
+        .neighborhood
+        .peers
+        .get_insert_peer(EphemeralNodeId::new(2), Instant::now().into())
+        .peer_neighbors
+        .push(EphemeralNodeId::new(1));
     let sess1 = app1.begin_session().unwrap();
     let mut msg1 = dist1.get_periodic_message(&sess1).unwrap();
     assert_eq!(msg1.len(), 1, "no resync is in progress");
     let msg1 = msg1.pop().unwrap();
 
     println!("dist1 sent: {msg1:?}");
-    let mut result = dist2.receive_message2(&mut app2, once(msg1), Instant::now().into()).unwrap();
+    let mut result = dist2
+        .receive_message2(&mut app2, once(msg1), Instant::now().into())
+        .unwrap();
 
     println!("dist2 sent: {result:?}");
 
@@ -236,27 +252,49 @@ fn test_distributor() {
     assert_eq!(result.len(), 1);
 
     let mut result = dist1
-        .receive_message2(&mut app1, once(result.pop().unwrap()), Instant::now().into())
+        .receive_message2(
+            &mut app1,
+            once(result.pop().unwrap()),
+            Instant::now().into(),
+        )
         .unwrap();
     println!("dist1 sent: {result:?}");
     insta::assert_debug_snapshot!(result);
     assert_eq!(result.len(), 1);
 
     let mut result = dist2
-        .receive_message2(&mut app2, once(result.pop().unwrap()), Instant::now().into())
+        .receive_message2(
+            &mut app2,
+            once(result.pop().unwrap()),
+            Instant::now().into(),
+        )
         .unwrap();
     println!("dist2 sent: {result:?}");
     insta::assert_debug_snapshot!(result);
 
     let mut result = dist1
-        .receive_message2(&mut app1, once(result.pop().unwrap()), Instant::now().into())
+        .receive_message2(
+            &mut app1,
+            once(result.pop().unwrap()),
+            Instant::now().into(),
+        )
         .unwrap();
     println!("dist1 sent: {result:?}");
-    assert!(matches!(&result[0], DistributorMessage::Message{demand_ack: false, ..}));
+    assert!(matches!(
+        &result[0],
+        DistributorMessage::Message {
+            demand_ack: false,
+            ..
+        }
+    ));
     assert_eq!(result.len(), 1);
 
     let _result = dist2
-        .receive_message2(&mut app2, once(result.pop().unwrap()), Instant::now().into())
+        .receive_message2(
+            &mut app2,
+            once(result.pop().unwrap()),
+            Instant::now().into(),
+        )
         .unwrap();
     let sess2 = app2.begin_session().unwrap();
     println!("App2 all msgs: {:?}", sess2.get_all_message_ids().unwrap());

@@ -1,6 +1,9 @@
-use crate::distributor::{AccumulatedMessage, Address, Distributor, DistributorMessage, EphemeralNodeId, ForwardingChange, Neighborhood, PeerSummaryInfo, QueryableOutbuffer, SerializedMessage, Status};
+use crate::distributor::{
+    AccumulatedMessage, Address, Distributor, DistributorMessage, EphemeralNodeId,
+    ForwardingChange, Neighborhood, PeerSummaryInfo, QueryableOutbuffer, SerializedMessage, Status,
+};
 
-use crate::colors::{rgb};
+use crate::colors::rgb;
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 use crate::communication::udp::TokioUdpDriver;
 use crate::{test_elapsed, Application, Database, MessageId, NoatunTime};
@@ -8,13 +11,16 @@ use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayString;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
-use indexmap::{IndexMap};
+use indexmap::IndexMap;
 use savefile::{
     Deserialize, Deserializer, Introspect, IntrospectItem, Packed, SavefileError, Schema,
     Serialize, Serializer, WithSchema, WithSchemaContext,
 };
 use savefile_derive::Savefile;
 
+use arcshift::ArcShift;
+use indexmap::map::Entry;
+use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
@@ -22,9 +28,6 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::{io, thread};
-use arcshift::ArcShift;
-use indexmap::map::Entry;
-use smallvec::SmallVec;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
@@ -40,7 +43,10 @@ pub mod udp;
 #[derive(Savefile, Debug)]
 pub enum NetworkPacket {
     Data(bool /*push*/, TransmittedEntitySortable),
-    RetransmitRequest { who: EphemeralNodeId, what: Vec<u64> },
+    RetransmitRequest {
+        who: EphemeralNodeId,
+        what: Vec<u64>,
+    },
 }
 
 const IP_HEADER_SIZE: usize = 20;
@@ -104,13 +110,10 @@ pub trait CommunicationReceiveSocket<Endpoint: PartialEq + Debug + Send> {
 }
 #[allow(async_fn_in_trait)] //For now
 pub trait CommunicationSendSocket<Endpoint: PartialEq + Debug + Send> {
+    //TODO: We probably shouldn't require this
     fn local_addr(&self) -> Result<Endpoint>;
-    fn send_to(
-        &mut self,
-        buf: &[u8],
-    ) -> impl std::future::Future<Output = io::Result<()>> + Send;
+    fn send_to(&mut self, buf: &[u8]) -> impl std::future::Future<Output = io::Result<()>> + Send;
 }
-
 
 #[doc(hidden)]
 #[derive(Debug, Clone)]
@@ -123,7 +126,7 @@ pub struct TransmittedEntitySortable {
     #[doc(hidden)]
     pub first_boundary: u16,
     #[doc(hidden)]
-    pub src: EphemeralNodeId
+    pub src: EphemeralNodeId,
 }
 
 impl Introspect for TransmittedEntitySortable {
@@ -213,12 +216,11 @@ enum ReceiveResult {
     RestartTrack,
 }
 
-
 impl ReceiveTrack {
     /// How long are packets kept in the retransmit window.
     /// I.e, after this has passed, they're lost forever.
     pub const RECEIVER_RETRANSMIT_WINDOW: usize = 1000;
-    pub const SENDER_RETRANSMIT_WINDOW: usize = ReceiveTrack::RECEIVER_RETRANSMIT_WINDOW/5;
+    pub const SENDER_RETRANSMIT_WINDOW: usize = ReceiveTrack::RECEIVER_RETRANSMIT_WINDOW / 5;
     pub const RETRANSMIT_WINDOW_U16: u16 = if Self::RECEIVER_RETRANSMIT_WINDOW > u16::MAX as usize {
         panic!("RETRANSMIT_WINDOW constant value too large")
     } else {
@@ -262,7 +264,10 @@ impl ReceiveTrack {
         tx_finished_received_frame: &mut Sender<(Address, Vec<u8>)>,
         retransmit_requests: &mut IndexMap<EphemeralNodeId, RetransmitInfo>,
         push: bool,
-        retransmit_responsibility_query: &mut (dyn FnMut(EphemeralNodeId) -> Duration + 'static + Sync + Send),
+        retransmit_responsibility_query: &mut (dyn FnMut(EphemeralNodeId) -> Duration
+                  + 'static
+                  + Sync
+                  + Send),
         new_track: bool,
     ) -> Result<()> {
         let reconstructed_seq = self.reconstruct_seq(packet.seq);
@@ -288,7 +293,6 @@ impl ReceiveTrack {
             self.accum.clear();
         }
         while let Some(first) = self.sorted_packets.front() {
-
             if let Some(accum_retransmits) = retransmit_requests.get_mut(&packet_source) {
                 if accum_retransmits.items.remove(&reconstructed_seq) {
                     println!("{:?} retransmission received!", test_elapsed());
@@ -298,14 +302,15 @@ impl ReceiveTrack {
                 if accum_retransmits.items.is_empty() {
                     retransmit_requests.swap_remove(&packet_source);
                 }
-
             }
 
             if first.reconstructed_seq != self.expected_next {
                 let mut give_up_on_retransmit = false;
                 if let Some(accum_retransmits) = retransmit_requests.get_mut(&packet_source) {
                     if let Some(outstanding) = accum_retransmits.outstanding_retransmit {
-                        if Instant::now().saturating_duration_since(outstanding) > 2*self.retransmit_interval {
+                        if Instant::now().saturating_duration_since(outstanding)
+                            > 2 * self.retransmit_interval
+                        {
                             give_up_on_retransmit = true;
                             accum_retransmits.outstanding_retransmit = None;
                             accum_retransmits.items.clear();
@@ -314,12 +319,15 @@ impl ReceiveTrack {
                     }
                 }
 
-                if self.disable_retransmit || packet_count > Self::SENDER_RETRANSMIT_WINDOW || give_up_on_retransmit || new_track {
+                if self.disable_retransmit
+                    || packet_count > Self::SENDER_RETRANSMIT_WINDOW
+                    || give_up_on_retransmit
+                    || new_track
+                {
                     self.accum.clear();
                     self.have_valid_accum = false;
                     self.expected_next = first.reconstructed_seq;
                 } else {
-
                     trace!(
                         "Expected next: {}, actual (reconstructed) seq: {}",
                         self.expected_next,
@@ -337,7 +345,10 @@ impl ReceiveTrack {
                     debug_assert_eq!(first.entity.src, packet_source);
                     // See: #packet_retransmit_logic
                     let retransmission_delay = retransmit_responsibility_query(first.entity.src);
-                    println!("Re-transmit query believes we SHOULD transmit after {:?}", retransmission_delay);
+                    println!(
+                        "Re-transmit query believes we SHOULD transmit after {:?}",
+                        retransmission_delay
+                    );
 
                     trace!(
                         "Appending retransmit-request for {:?} {:?} (delay: {:?})",
@@ -349,8 +360,12 @@ impl ReceiveTrack {
                     for x in self.expected_next..first.reconstructed_seq {
                         accum_retransmits.items.insert(x);
                     }
-                    if !push && accum_retransmits.wait_until.is_none(){
-                        println!("{:?} Enqueue retransmit in {:?}", test_elapsed(), retransmission_delay);
+                    if !push && accum_retransmits.wait_until.is_none() {
+                        println!(
+                            "{:?} Enqueue retransmit in {:?}",
+                            test_elapsed(),
+                            retransmission_delay
+                        );
                         accum_retransmits.wait_until = Some(Instant::now() + retransmission_delay);
                     }
                     let mut cur = first.reconstructed_seq;
@@ -367,7 +382,6 @@ impl ReceiveTrack {
                     assert!(accum_retransmits.items.is_empty() == false);
 
                     return Ok(());
-
                 }
             }
 
@@ -427,23 +441,21 @@ struct RetransmitInfo {
 
     //TODO: Detect when hearing one's self. Possibly by blake-hashing the entire packets, and
     //detecting something we didn't transmit, but with our ephemerealid.
-
     /// When sending a retransmit message, this is set to Some(now) (if not already Some).
     /// Whenever a retransmission is received, we set it to None.
     /// If enough time passes without us hearing the requested messages retransmitted,
     /// we give up on the retransmission, and clear all retransmit items
-    outstanding_retransmit: Option<Instant>
+    outstanding_retransmit: Option<Instant>,
 }
 impl Default for RetransmitInfo {
     fn default() -> Self {
         Self {
             wait_until: None,
             items: Default::default(),
-            outstanding_retransmit: None
+            outstanding_retransmit: None,
         }
     }
 }
-
 
 struct MulticastSenderLoop<Socket: CommunicationDriver> {
     send_socket: Socket::Sender,
@@ -469,7 +481,8 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     retransmit_interval: Duration,
     disable_retransmit: bool,
     ephemeral_node_id: ArcShift<EphemeralNodeId>,
-    retransmit_responsibility_query: Box<dyn FnMut(/*src: */EphemeralNodeId) -> Duration + Sync + Send + 'static>
+    retransmit_responsibility_query:
+        Box<dyn FnMut(/*src: */ EphemeralNodeId) -> Duration + Sync + Send + 'static>,
 }
 impl<Socket: CommunicationDriver> Drop for MulticastSenderLoop<Socket> {
     fn drop(&mut self) {
@@ -528,7 +541,9 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         retransmit_buffer_size_bytes: usize,
         disable_retransmit: bool,
         ephemeral_node_id: ArcShift<EphemeralNodeId>,
-        retransmit_responsibility_query: Box<dyn FnMut(/*src: */EphemeralNodeId) -> Duration + 'static + Send + Sync>
+        retransmit_responsibility_query: Box<
+            dyn FnMut(/*src: */ EphemeralNodeId) -> Duration + 'static + Send + Sync,
+        >,
     ) -> Result<MulticastSenderLoop<Socket>> {
         let (send_socket, receive_socket) = driver
             .initialize(bind_address, multicast_group, mtu)
@@ -559,7 +574,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             next_send_seq: 0,
             retransmit_interval,
             ephemeral_node_id,
-            retransmit_responsibility_query
+            retransmit_responsibility_query,
         })
     }
     pub(crate) fn send_buf(
@@ -567,7 +582,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         max_payload_per_packet: usize,
         next_send_seq: &mut u64,
         buffer: Vec<u8>,
-        own_id: EphemeralNodeId
+        own_id: EphemeralNodeId,
     ) -> Result<()> {
         let mut is_first;
         let buffer: &[u8] = if let Some(last) = queue.back_mut() {
@@ -648,8 +663,12 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             let (Ok(insert_point) | Err(insert_point)) = self
                 .queue
                 .binary_search_by_key(what, |x| x.reconstructed_seq);
-            println!("Node {:?} enqueing retransmit {:?} at position {} in send queue",
-                self.ephemeral_node_id.get(),history_item.reconstructed_seq, insert_point);
+            println!(
+                "Node {:?} enqueing retransmit {:?} at position {} in send queue",
+                self.ephemeral_node_id.get(),
+                history_item.reconstructed_seq,
+                insert_point
+            );
             self.queue.insert(insert_point, history_item);
         }
     }
@@ -667,8 +686,16 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                 if self.outgoing_retransmit_requests.is_empty() == false {
                     let mut temp = vec![];
                     let now = Instant::now();
-                    let first_key = *self.outgoing_retransmit_requests.iter().min_by_key(|(_k,v)|v.wait_until).unwrap().0;
-                    let first_val = self.outgoing_retransmit_requests.get_mut(&first_key).unwrap();
+                    let first_key = *self
+                        .outgoing_retransmit_requests
+                        .iter()
+                        .min_by_key(|(_k, v)| v.wait_until)
+                        .unwrap()
+                        .0;
+                    let first_val = self
+                        .outgoing_retransmit_requests
+                        .get_mut(&first_key)
+                        .unwrap();
                     if first_val.wait_until <= Some(now) {
                         let mut what = Vec::with_capacity(20);
                         while what.len() < 20 {
@@ -679,7 +706,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         }
                         let packet = NetworkPacket::RetransmitRequest {
                             who: first_key,
-                            what
+                            what,
                         };
                         Serializer::bare_serialize(&mut temp, 0, &packet).unwrap();
                         trace!("Sending raw retransmit {:?} ({} bytes)", packet, temp.len());
@@ -691,7 +718,10 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         // This if is probably dead code, since we only get here if wait_until > Some(_),
                         // which actually implies wait_until != None
                         if let Some(wait) = first_val.wait_until {
-                            trace!("Scheduling raw retransmit in {:?}",wait.duration_since(Instant::now()));
+                            trace!(
+                                "Scheduling raw retransmit in {:?}",
+                                wait.duration_since(Instant::now())
+                            );
                             next_retransmit = wait;
                             next_retransmit_active = true;
                         }
@@ -705,10 +735,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         Serializer::bare_serialize(
                             &mut temp,
                             0,
-                            &NetworkPacket::Data(
-                                self.queue.is_empty(),
-                                x.entity.clone(),
-                            ),
+                            &NetworkPacket::Data(self.queue.is_empty(), x.entity.clone()),
                         )
                         .unwrap();
                         let (Ok(insert_point) | Err(insert_point)) = self
@@ -832,12 +859,8 @@ pub enum DebugEventMsg {
 impl DebugEvent {
     pub fn is_send_of(&self, receive: &DebugEvent) -> bool {
         match (&self.msg, &receive.msg) {
-            (DebugEventMsg::Send(s), DebugEventMsg::Receive(r)) => {
-                s == r
-            }
-            (_s, _r) => {
-                false
-            }
+            (DebugEventMsg::Send(s), DebugEventMsg::Receive(r)) => s == r,
+            (_s, _r) => false,
         }
     }
 }
@@ -869,20 +892,14 @@ enum Cmd<APP: Application> {
     ),
 }
 
-
 struct FillInFrequency {
     who: Address,
 }
 
-
 struct SeenBy {
     who: Address,
-    when: Instant
+    when: Instant,
 }
-
-
-
-
 
 struct DatabaseCommunicationLoop<APP: Application + Send>
 where
@@ -985,7 +1002,7 @@ where
         self.distributor.receive_message(
             &mut *database,
             self.buffered_incoming_messages.drain(..),
-            now
+            now,
         )?;
         drop(database);
         Ok(())
@@ -1319,8 +1336,10 @@ where
         sess.set_projection_time_limit(limit)
     }
 
-    /// Spawns the communication system as a future on the current tokio runtime.
-    pub async fn async_tokio_new<Driver: CommunicationDriver + 'static>(
+    /// Spawns the communication system as a future on the current tokio runtime, using
+    /// the communication driver `driver`. By implementing [`CommunicationDriver`], you can
+    /// use noatun with any kind of message based transport.
+    pub async fn new_custom<Driver: CommunicationDriver + 'static>(
         driver: &mut Driver,
         database: Database<APP>,
         config: DatabaseCommunicationConfig,
@@ -1328,7 +1347,11 @@ where
         let (sender_tx, sender_rx) = tokio::sync::mpsc::channel(1);
         let (quit_tx, quit_rx) = tokio::sync::oneshot::channel();
         let (receiver_tx, receiver_rx) = tokio::sync::mpsc::channel(1000);
-        let our_node_id = ArcShift::new(config.initial_ephemeral_node_id.unwrap_or_else(EphemeralNodeId::random));
+        let our_node_id = ArcShift::new(
+            config
+                .initial_ephemeral_node_id
+                .unwrap_or_else(EphemeralNodeId::random),
+        );
         let node_peer_info = ArcShift::new(PeerSummaryInfo::default());
 
         let mut node_peer_info2 = node_peer_info.clone();
@@ -1336,15 +1359,21 @@ where
 
         let retransmit_interval = Duration::from_secs_f32(config.retransmit_interval_seconds);
 
-        let should_retransmit: Box<dyn FnMut(EphemeralNodeId) -> Duration + Send + Sync> = Box::new(move |peer| -> Duration {
-            // #packet_retransmit_logic
-            let info = node_peer_info2.get();
-            println!("--------------------------------------------------------");
-            println!("Peer summary: {:?}", info);
-            let t = info.we_should_retransmit(*our_node_id2.get(), peer, retransmit_interval);
-            println!("Conclusion: {:?} (for peer: {}, we:'re: {}", t, peer, our_node_id2.get());
-            t
-        });
+        let should_retransmit: Box<dyn FnMut(EphemeralNodeId) -> Duration + Send + Sync> =
+            Box::new(move |peer| -> Duration {
+                // #packet_retransmit_logic
+                let info = node_peer_info2.get();
+                println!("--------------------------------------------------------");
+                println!("Peer summary: {:?}", info);
+                let t = info.we_should_retransmit(*our_node_id2.get(), peer, retransmit_interval);
+                println!(
+                    "Conclusion: {:?} (for peer: {}, we:'re: {}",
+                    t,
+                    peer,
+                    our_node_id2.get()
+                );
+                t
+            });
         let sender_loop = MulticastSenderLoop::new(
             driver,
             &config.listen_address,
@@ -1358,7 +1387,7 @@ where
             config.retransmit_buffer_size_bytes,
             config.disable_retransmit,
             our_node_id.clone(),
-            should_retransmit
+            should_retransmit,
         )
         .await?;
         let node = sender_loop.bind_address.to_string();
@@ -1369,7 +1398,12 @@ where
         let database = Arc::new(Mutex::new(database));
 
         let main = DatabaseCommunicationLoop {
-            distributor: Distributor::new(config.periodic_message_interval, our_node_id, node_peer_info, Instant::now().into()),
+            distributor: Distributor::new(
+                config.periodic_message_interval,
+                our_node_id,
+                node_peer_info,
+                Instant::now().into(),
+            ),
             node: node.clone(),
             database: database.clone(),
             jh,
@@ -1401,10 +1435,11 @@ where
     ) -> Result<(Runtime, DatabaseCommunication<APP>)> {
         let runtime = Runtime::new()?;
         let com: DatabaseCommunication<APP> =
-            runtime.block_on(Self::async_tokio_new(driver, database, config))?;
+            runtime.block_on(Self::new_custom(driver, database, config))?;
         Ok((runtime, com))
     }
 
+    /// Create a new instance for communication over UDP multicast.
     pub fn new(
         database: Database<APP>,
         config: DatabaseCommunicationConfig,
@@ -1436,11 +1471,11 @@ where
 mod tests {
     use crate::communication::udp::TokioUdpDriver;
     use crate::communication::{MulticastSenderLoop, ReceiveTrack};
+    use crate::distributor::EphemeralNodeId;
     use crate::tests::setup_tracing;
+    use arcshift::ArcShift;
     use std::time::Duration;
     use tokio::spawn;
-    use crate::distributor::EphemeralNodeId;
-    use arcshift::ArcShift;
 
     #[test]
     fn reconstruct_seq_logic() {
@@ -1478,7 +1513,7 @@ mod tests {
             1_000_000,
             false,
             ArcShift::new(EphemeralNodeId::new(1)),
-            Box::new(|_|Duration::ZERO),
+            Box::new(|_| Duration::ZERO),
         )
         .await
         .unwrap();
@@ -1500,7 +1535,7 @@ mod tests {
             1_000_000,
             false,
             ArcShift::new(EphemeralNodeId::new(2)),
-            Box::new(|_|Duration::ZERO),
+            Box::new(|_| Duration::ZERO),
         )
         .await
         .unwrap();
@@ -1547,7 +1582,7 @@ mod tests {
             100,
             false,
             ArcShift::new(EphemeralNodeId::new(1)),
-            Box::new(|_|Duration::ZERO),
+            Box::new(|_| Duration::ZERO),
         )
         .await
         .unwrap();
@@ -1569,7 +1604,7 @@ mod tests {
             100,
             false,
             ArcShift::new(EphemeralNodeId::new(2)),
-            Box::new(|_|Duration::ZERO),
+            Box::new(|_| Duration::ZERO),
         )
         .await
         .unwrap();

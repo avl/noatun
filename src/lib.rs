@@ -17,11 +17,14 @@
 #![allow(clippy::needless_late_init)]
 
 pub use crate::data_types::NoatunCell;
+use crate::private::Sealed;
 use crate::sequence_nr::SequenceNr;
+use crate::undo_store::magic_initialize_ptr;
 use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 pub use cutoff::{CutOffDuration, CutOffState};
 pub use database::Database;
+pub use paste::paste;
 pub(crate) use projection_store::DatabaseContextData;
 use rand::RngCore;
 use savefile::Deserializer;
@@ -39,23 +42,19 @@ use std::pin::Pin;
 use std::ptr::null_mut;
 use std::slice;
 use std::time::Duration;
-use crate::private::Sealed;
-use crate::undo_store::magic_initialize_ptr;
-pub use paste::paste;
-#[cfg(feature="tokio")]
-use tokio::time::Instant;
-#[cfg(not(feature="tokio"))]
+#[cfg(not(feature = "tokio"))]
 use std::time::Instant;
+#[cfg(feature = "tokio")]
+use tokio::time::Instant;
 
 use tracing::warn;
-
 
 mod disk_abstraction;
 mod message_store;
 mod projection_store;
-mod undo_store;
 #[cfg(feature = "debug")]
 mod term_colors;
+mod undo_store;
 
 #[cfg(feature = "debug")]
 use term_colors as colors;
@@ -137,8 +136,6 @@ pub unsafe trait NoatunStorable: Sized + 'static {
         }
     }
 }
-
-
 
 mod noatun_storable_impls {
     use super::NoatunStorable;
@@ -400,30 +397,27 @@ static FOR_TEST_NON_RANDOM_ID: bool = true;
 static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-
 thread_local! {
     pub static TEST_EPOCH: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 pub fn test_epoch() -> Instant {
-    TEST_EPOCH.with(|mut epoch| {
-        match epoch.get() {
-            None => {
-                let now = Instant::now();
-                epoch.set(Some(now));
-                now
-            }
-            Some(val) => {val}
+    TEST_EPOCH.with(|mut epoch| match epoch.get() {
+        None => {
+            let now = Instant::now();
+            epoch.set(Some(now));
+            now
         }
+        Some(val) => val,
     })
 }
-pub fn set_test_epoch(instant: Instant)  {
-    TEST_EPOCH.with(|epoch| {epoch.set(Some(instant));})
+pub fn set_test_epoch(instant: Instant) {
+    TEST_EPOCH.with(|epoch| {
+        epoch.set(Some(instant));
+    })
 }
 pub fn test_elapsed() -> Duration {
     test_epoch().elapsed()
 }
-
-
 
 impl MessageId {
     pub const ZERO: MessageId = MessageId { data: [0u32; 4] };
@@ -944,7 +938,7 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
     note = "For primitives, try wrapping in NoatunCell.",
     note = "For structs, use `noatun_object!`-macro.",
     note = "For collections, try `NoatunHashMap` or `NoatunVec`.",
-    note = "Manually implementing this trait is not recommended, but can be possible. See trait docs.",
+    note = "Manually implementing this trait is not recommended, but can be possible. See trait docs."
 )]
 pub trait Object {
     /// This is meant to be either ThinPtr for sized objects, or
@@ -1466,8 +1460,6 @@ impl Drop for ContextGuardMut {
         CONTEXT.set(null_mut());
     }
 }
-
-
 
 noatun_object!(
         struct Kalle {

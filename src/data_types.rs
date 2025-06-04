@@ -1972,11 +1972,18 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         unsafe { Some(&context.buckets[bucket.0].assume_init_ref().v) }
     }
 
-    pub fn get_mut_val<'a>(self: Pin<&'a mut Self>, key: &K::DetachedType) -> Option<Pin<&'a mut V>> {
+    pub fn get_mut_val<'a>(
+        self: Pin<&'a mut Self>,
+        key: &K::DetachedType,
+    ) -> Option<Pin<&'a mut V>> {
         let tself = unsafe { self.get_unchecked_mut() };
         let context = tself.data_meta_len_mut();
         let bucket = Self::probe_read(context.readonly(), key)?;
-        unsafe { Some(Pin::new_unchecked(&mut context.buckets[bucket.0].assume_init_mut().v)) }
+        unsafe {
+            Some(Pin::new_unchecked(
+                &mut context.buckets[bucket.0].assume_init_mut().v,
+            ))
+        }
     }
 
     /// Return true if a value was removed
