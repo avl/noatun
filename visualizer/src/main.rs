@@ -220,7 +220,7 @@ impl Node {
     fn step(&mut self, now: Instant, actual_ether: &mut ActualEther) {
         if now >= self.last_periodic + self.distributor.periodic_message_interval() {
             let session = self.db.begin_session().unwrap();
-            let msgs = self.distributor.get_periodic_message(&session).unwrap();
+            let msgs = self.distributor.get_periodic_message(&session, now).unwrap();
             for msg in msgs {
                 actual_ether.do_send(self.whoami, msg, now).unwrap();
             }

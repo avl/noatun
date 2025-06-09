@@ -240,6 +240,7 @@ pub struct PeerInfo {
     pub(crate) peer_neighbors: Vec<EphemeralNodeId>,
 
     //TODO: Add GC
+    /// Messages whose origin is `peer`, should be sent to `destination`.
     pub forwardings: IndexMap<EphemeralNodeId /*destination*/, Instant /*live*/>,
 
     pub(crate) last_seen: Instant,
@@ -340,8 +341,24 @@ impl Peers {
         if now.saturating_duration_since(self.last_gc) > periodic_message {
             self.last_gc = now;
             let peers_before = self.peers.len();
+
+            let mut removed = vec![];
             self.peers
-                .retain(|_k, v| now.saturating_duration_since(v.last_seen) < 4 * periodic_message);
+                .retain(|k, v| {
+                    let retained = now.saturating_duration_since(v.last_seen) < 3 * periodic_message;
+                    if !retained {
+                        removed.push(*k);
+                    }
+                    retained
+                });
+            if !removed.is_empty() {
+                for peer in self.peers.values_mut() {
+                    peer.forwardings.retain(|target,_|{
+                        !removed.contains(target)
+                    });
+                }
+            }
+
             if peers_before != self.peers.len() {
                 self.recalculate_summary(our_node_id);
             }
@@ -735,6 +752,7 @@ struct OriginForwardingData {
 pub(crate) struct OriginData {
     /// How many times have we observed this path appearing missing?
     pub(crate) missing_paths_count: usize,
+    compile_error!("Figure out when to purge this info. Doing so is needed, since otherwise we may not send a StartForwarding when needed")
     // TODO: Rename to forwarded?
     /// Who have we asked to forward us stuff from this origin?
     pub(crate) forwarding_from: Option<OriginForwardingData>,
@@ -767,7 +785,7 @@ impl QueryableOutbuffer {
         let pathdata = self.origin_paths.entry(origin).or_default();
         pathdata.missing_paths_count += 1;
         println!("Missing path: {:?}", pathdata.missing_paths_count);
-        if pathdata.missing_paths_count > 0 {
+        if pathdata.missing_paths_count > 1 {
             println!(
                 "Adding forwarding {} -> {}",
                 origin,
@@ -1401,7 +1419,12 @@ impl Distributor {
     pub fn get_periodic_message<APP: Application>(
         &mut self,
         database: &DatabaseSession<APP>,
+        now: Instant
     ) -> Result<Vec<DistributorMessage>> {
+
+        self.neighborhood.peers
+            .gc_if_necessary(*self.ephemeral_node_id.get(), self.periodic_message_interval, now);
+
         let mut heads = database
             .get_update_heads()
             .into_iter()
@@ -1524,7 +1547,19 @@ impl Distributor {
                                 // If the neighbor has no neighbors of its own, it's just starting up.
                                 // Let's wait a bit before acting on its messages
 
+                                // Find all forwardings that forward _to_ 'source' (this ReportHeads transmitter)
+                                for (peer_id, peer) in self.neighborhood.peers.peers.iter_mut() {
+                                    if *peer_id == source || !neighbors.contains(peer_id) {
+                                        continue;
+                                    }
+                                    // `peer_id` is a peer that 'source' itself thinks is its neighbor.
+                                    // we shouldn't forward from `peer_id` to 'source'
+                                    peer.forwardings.swap_remove(&source);
+                                }
+
                                 let peer = self.neighborhood.peers.get_insert_peer(source, now);
+
+
                                 match &mut peer.up_to_speed {
                                     UpToSpeed::Uninitialized => {
                                         peer.up_to_speed = UpToSpeed::HeadsNeeded(heads.iter().map(|x|x.msg).collect());
@@ -2014,14 +2049,6 @@ impl Distributor {
         if unknowns.is_empty() == false {
             for (src_node, unknowns) in unknowns {
 
-
-                compile_error!("Figure out how to avoid duplicate paths after a bit of churn.
-
-Like, how do we detect that one of our subscriptions isn't actually necessary?
-
-
-                ")
-
                 let unknowns = unknowns.into_iter().map(|x| x.0).collect::<Vec<_>>();
                 self.outbuf.request_upstream(
                     &unknowns,
@@ -2193,12 +2220,6 @@ Like, how do we detect that one of our subscriptions isn't actually necessary?
                 }
             }
 
-            /*println!(
-                "{} Received message directly from {}, out forwarding paths: {:?}",
-                self.ephemeral_node_id.get(),
-                source,
-                self.outbuf.origin_paths
-            );*/
 
             // Apparently we now hear directly from this origin, surely we don't need any forwarding
             match self.outbuf.origin_paths.entry(source) {

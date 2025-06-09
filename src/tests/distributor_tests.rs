@@ -237,7 +237,7 @@ fn test_distributor() {
         .peer_neighbors
         .push(EphemeralNodeId::new(1));
     let sess1 = app1.begin_session().unwrap();
-    let mut msg1 = dist1.get_periodic_message(&sess1).unwrap();
+    let mut msg1 = dist1.get_periodic_message(&sess1, Instant::now().into()).unwrap();
     assert_eq!(msg1.len(), 1, "no resync is in progress");
     let msg1 = msg1.pop().unwrap();
 

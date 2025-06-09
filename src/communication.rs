@@ -1100,7 +1100,7 @@ where
                 _periodic = tokio::time::sleep_until(self.next_periodic) => {
                     let database = self.database.lock().unwrap();
                     let session = database.begin_session()?;
-                    let msgs = self.distributor.get_periodic_message(&session)?;
+                    let msgs = self.distributor.get_periodic_message(&session, Instant::now())?;
                     trace!("Time for periodic messages: {:?}", msgs);
                     self.distributor.outbuf.extend(msgs);
                     self.next_periodic += self.report_head_interval;
