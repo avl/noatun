@@ -2276,7 +2276,6 @@ mod tests {
         let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 10000,
-                CutOffDuration::from_minutes(15),
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     projection_time_limit: None,
@@ -2305,7 +2304,6 @@ mod tests {
         let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 10000,
-                CutOffDuration::from_minutes(15),
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
@@ -2327,7 +2325,6 @@ mod tests {
         let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 10000,
-                CutOffDuration::from_minutes(15),
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
@@ -2349,7 +2346,6 @@ mod tests {
         let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 10000,
-                CutOffDuration::from_minutes(15),
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
@@ -2380,7 +2376,6 @@ mod tests {
         let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunString>>> =
             Database::create_in_memory(
                 10000,
-                CutOffDuration::from_minutes(15),
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
@@ -2405,7 +2400,6 @@ mod tests {
         let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 10000,
-                CutOffDuration::from_minutes(15),
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
@@ -2444,7 +2438,6 @@ mod tests {
         let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 100000,
-                CutOffDuration::from_minutes(15),
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
@@ -2481,7 +2474,6 @@ mod tests {
         let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 200000,
-                CutOffDuration::from_minutes(15),
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
@@ -2509,7 +2501,6 @@ mod tests {
         let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 5000000,
-                CutOffDuration::from_minutes(15),
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
@@ -2556,7 +2547,6 @@ mod tests {
         let mut db: Database<DummyTestApp<NoatunBox<NoatunHashMap<u32, NoatunCell<u32>>>>> =
             Database::create_in_memory(
                 10000,
-                CutOffDuration::from_minutes(15),
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     projection_time_limit: None,

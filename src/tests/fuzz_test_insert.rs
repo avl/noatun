@@ -92,10 +92,10 @@ fn test() {
         let limit_time = fake_time + Duration::from_secs(TIME_LIMIT as u64);
         let mut db = Database::create_in_memory(
             1_000_000,
-            CutOffDuration::from_hours(1).unwrap(),
             DatabaseSettings {
                 mock_time: Some(fake_time),
                 projection_time_limit: Some(limit_time),
+                cutoff_interval:         CutOffDuration::from_hours(1).unwrap(), // 2 days
                 ..Default::default()
             },
             (),

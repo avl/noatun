@@ -396,7 +396,6 @@ async fn create_app(
 ) -> DatabaseCommunication<SyncApp> {
     let mut db: Database<SyncApp> = Database::create_in_memory(
         2_500_000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings {
             mock_time: Some(START_TIME.into()),
             projection_time_limit: None,
@@ -479,9 +478,9 @@ fn random<T: SampleUniform + PartialOrd>(range: std::ops::Range<T>) -> T {
 fn old_local_messages_without_effect_are_removed0() {
     let mut db: Database<SyncApp> = Database::create_in_memory(
         10000,
-        CutOffDuration::from_days(2).unwrap(), // 2 days
         DatabaseSettings {
             mock_time: Some(datetime!(2020-01-01 00:01:00 Z).into()),
+            cutoff_interval: CutOffDuration::from_days(2).unwrap(), // 2 days
             ..Default::default()
         },
         (),
@@ -532,9 +531,9 @@ fn old_transmitted_messages_without_effect_are_removed1() {
     super::setup_tracing();
     let mut db: Database<SyncApp> = Database::create_in_memory(
         10000,
-        CutOffDuration::from_days(2).unwrap(), // 2 days
         DatabaseSettings {
             mock_time: Some(datetime!(2020-01-01 00:01:00 Z).into()),
+            cutoff_interval:         CutOffDuration::from_days(2).unwrap(), // 2 days
             ..Default::default()
         },
         (),
@@ -582,7 +581,6 @@ fn old_transmitted_messages_without_effect_are_removed1() {
 fn old_transmitted_messages_without_effect_are_removed2() {
     let mut db: Database<SyncApp> = Database::create_in_memory(
         100000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings {
             mock_time: Some(START_TIME.into()),
             ..Default::default()

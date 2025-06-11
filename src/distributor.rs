@@ -21,7 +21,6 @@ use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
-use itertools::Itertools;
 use tracing::{debug, error, info, trace, warn};
 
 #[derive(Debug)]
@@ -752,7 +751,7 @@ struct OriginForwardingData {
 pub(crate) struct OriginData {
     /// How many times have we observed this path appearing missing?
     pub(crate) missing_paths_count: usize,
-    compile_error!("Figure out when to purge this info. Doing so is needed, since otherwise we may not send a StartForwarding when needed")
+    //compile_error!("Figure out when to purge this info. Doing so is needed, since otherwise we may not send a StartForwarding when needed")
     // TODO: Rename to forwarded?
     /// Who have we asked to forward us stuff from this origin?
     pub(crate) forwarding_from: Option<OriginForwardingData>,
@@ -770,7 +769,6 @@ pub struct QueryableOutbuffer {
     pub(crate) recently_sent_upstream_responses_for: DuplicationChecker<MessageId>,
     pub(crate) recently_sent_message_ids: DuplicationChecker<MessageId>,
 
-    //TODO: Add gc for this
     pub(crate) parentless_messages:
         IndexMap</*missing parent*/ MessageId, Vec<AccumulatedMessage>>,
 
@@ -1741,7 +1739,7 @@ impl Distributor {
             }
         }
 
-        let self_node_id = *self.ephemeral_node_id.get();
+        //let self_node_id = *self.ephemeral_node_id.get();
 
         let mut forwarding_cmds = vec![];
         self.process_reported_heads(&mut database, accumulated_heads, &mut forwarding_cmds, now)?;
@@ -1878,7 +1876,7 @@ impl Distributor {
         forward_cmds: &mut Vec<ForwardingAction>,
         now: Instant,
     ) -> Result<()> {
-        let self_node_id = *self.ephemeral_node_id.get();
+        //let self_node_id = *self.ephemeral_node_id.get();
 
         self.distributor_state.nominal = true;
 

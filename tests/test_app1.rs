@@ -92,7 +92,6 @@ impl Application for CounterObject {
 fn test_counter_object_miri() {
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10_000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings {
             mock_time: Some(datetime!(2023-01-01 Z).into()),
             ..Default::default()

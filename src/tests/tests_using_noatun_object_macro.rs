@@ -63,9 +63,9 @@ impl Application for Bank {
 fn init_bank_miri() {
     let mut db: Database<Bank> = Database::create_in_memory(
         10_000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings {
             mock_time: Some(datetime!(2023-01-01 Z).into()),
+            cutoff_interval:         CutOffDuration::from_minutes(15),
             ..Default::default()
         },
         (),

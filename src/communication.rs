@@ -1100,7 +1100,7 @@ where
                 _periodic = tokio::time::sleep_until(self.next_periodic) => {
                     let database = self.database.lock().unwrap();
                     let session = database.begin_session()?;
-                    let msgs = self.distributor.get_periodic_message(&session, Instant::now())?;
+                    let msgs = self.distributor.get_periodic_message(&session, Instant::now().into())?;
                     trace!("Time for periodic messages: {:?}", msgs);
                     self.distributor.outbuf.extend(msgs);
                     self.next_periodic += self.report_head_interval;
@@ -1143,7 +1143,8 @@ where
                                             source: my_node_id,
                                             message:SerializedMessage::new(msg)?,
                                             demand_ack: false,
-                                            origin: my_node_id
+                                            origin: my_node_id,
+                                            explicit_retransmit: false
                                     });
                                     _ = result.send(Ok(()));
                                 }

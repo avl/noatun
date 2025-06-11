@@ -45,9 +45,10 @@ mod test_types_rewind {
     {
         let mut db: Database<DummyTestApp<T>> = Database::create_in_memory(
             10000,
-            CutOffDuration::from_days(365).unwrap(),
             DatabaseSettings {
                 mock_time: Some(datetime!(2020-01-01 Z).into()),
+                cutoff_interval:             CutOffDuration::from_days(365).unwrap(),
+
                 auto_delete: false,
                 ..Default::default()
             },
@@ -653,7 +654,6 @@ fn test_msg_store_real() {
 fn test_msg_store_inmem_miri() {
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings {
             mock_time: Some(datetime!(2021-01-01 Z).into()),
             ..Default::default()
@@ -713,7 +713,6 @@ fn test_msg_store_after_cutoff_inmem_miri() {
     setup_tracing();
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings {
             mock_time: Some(datetime!(2024-01-01 Z).into()),
             ..Default::default()
@@ -778,7 +777,6 @@ fn test_msg_store_after_cutoff_inmem_miri() {
 fn test_cutoff_handling() {
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings::default(),
         (),
     )
@@ -863,7 +861,6 @@ impl Application for NoatunBox<[NoatunCell<u8>]> {
 fn test_handle_to_unsized_miri() {
     let db: Database<NoatunBox<[NoatunCell<u8>]>> = Database::create_in_memory(
         1000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings {
             mock_time: Some(datetime!(2021-01-01 Z).into()),
             ..Default::default()
@@ -881,7 +878,6 @@ fn test_handle_to_unsized_miri() {
 fn test_noatun_box_miri() {
     let mut db: Database<NoatunBox<NoatunCell<u32>>> = Database::create_in_memory(
         1000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings {
             mock_time: Some(datetime!(2021-01-01 Z).into()),
             ..Default::default()
@@ -973,7 +969,6 @@ fn test_vec0() {
 fn test_vec_miri0() {
     let mut db: Database<NoatunVec<CounterObject>> = Database::create_in_memory(
         10000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings {
             mock_time: Some(datetime!(2021-01-01 Z).into()),
             ..Default::default()

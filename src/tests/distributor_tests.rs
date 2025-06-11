@@ -22,7 +22,6 @@ fn create_app<'a>(
 ) -> Database<CounterObject> {
     let mut db: Database<CounterObject> = Database::create_in_memory(
         10000,
-        CutOffDuration::from_minutes(15),
         DatabaseSettings {
             mock_time: Some(datetime!(2021-01-01 Z).into()),
             ..Default::default()

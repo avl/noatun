@@ -401,7 +401,7 @@ thread_local! {
     pub static TEST_EPOCH: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 pub fn test_epoch() -> Instant {
-    TEST_EPOCH.with(|mut epoch| match epoch.get() {
+    TEST_EPOCH.with(|epoch| match epoch.get() {
         None => {
             let now = Instant::now();
             epoch.set(Some(now));
