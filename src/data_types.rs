@@ -557,7 +557,7 @@ impl<T: FixedSizeObject + 'static> NoatunVec<T> {
             index: 0,
         }
     }
-    pub fn iter_mut<'a>(self: Pin<&'a mut Self>) -> NoatunVecIteratorMut<'a, T> {
+    pub fn iter_mut(self: Pin<&mut Self>) -> NoatunVecIteratorMut<T> {
         NoatunVecIteratorMut {
             vec: self,
             index: 0,
@@ -1569,8 +1569,8 @@ impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Iterator
     }
 }
 
-impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Iterator
-    for DatabaseHashOwningIterator<'a, K, V>
+impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Iterator
+    for DatabaseHashOwningIterator<'_, K, V>
 {
     type Item = (K, V);
 
@@ -1597,13 +1597,13 @@ struct HashAccessContext<'a, K: NoatunStorable + NoatunKey + PartialEq, V: Fixed
     buckets: &'a [MaybeUninit<NoatunHashBucket<K, V>>],
 }
 
-impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Copy
-    for HashAccessContext<'a, K, V>
+impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Copy
+    for HashAccessContext<'_, K, V>
 {
 }
 
-impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Clone
-    for HashAccessContext<'a, K, V>
+impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Clone
+    for HashAccessContext<'_, K, V>
 {
     fn clone(&self) -> Self {
         *self
@@ -2246,7 +2246,7 @@ mod tests {
     use crate::database::DatabaseSettings;
     use crate::tests::DummyTestApp;
     use crate::tests::DummyTestMessageApply;
-    use crate::{CutOffDuration, Database, NoatunCell, NoatunTime, Object};
+    use crate::{Database, NoatunCell, NoatunTime, Object};
     use datetime_literal::datetime;
     use std::hint::black_box;
     use std::pin::Pin;

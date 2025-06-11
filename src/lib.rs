@@ -15,6 +15,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::expect_fun_call)]
 #![allow(clippy::needless_late_init)]
+#![allow(clippy::derivable_impls)]
 
 pub use crate::data_types::NoatunCell;
 use crate::private::Sealed;
@@ -55,9 +56,13 @@ mod projection_store;
 #[cfg(feature = "debug")]
 mod term_colors;
 mod undo_store;
+mod mini_pather;
+
 
 #[cfg(feature = "debug")]
 use term_colors as colors;
+
+
 
 #[cfg(not(feature = "debug"))]
 mod dummy_term_colors;
@@ -1112,7 +1117,7 @@ macro_rules! noatun_object {
                 )*
 
                 $crate::paste! {
-                    pub fn pin_project<'a>(self: ::std::pin::Pin<&'a mut Self>) -> [<$n PinProject>]<'a> {
+                    pub fn pin_project(self: ::std::pin::Pin<&mut Self>) -> [<$n PinProject>]<'_> {
                         unsafe {
                             let $n {
                                 $($name),* , ..

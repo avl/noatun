@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 use crate::colors::colored_int;
 use crate::communication::{
     CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
@@ -817,7 +818,8 @@ async fn all_up_general_update_sync_test_impl(
 
     #[cfg(not(debug_assertions))]
     {
-        compile_error!("Dont' set loss to 0 below! That invalidates the test! Should be 0.15")
+        //TODO: re-enable the packet loss in this test!
+        compile_error!("Don't set loss to 0 below! That invalidates the test! Should be 0.15")
     }
     driver.set_loss(0.0); //0.15
     for i in 0..MY_THREAD_RNG
@@ -1621,4 +1623,7 @@ async fn complex_forwarding_test() {
         let root = apps[i].with_root(|root| root.detach());
         assert_eq!(root0, root, "node {} and {} should have same state", 0, i);
     }
+
+    assert_snapshot!(driver.sent_messages_snapshot());
+
 }

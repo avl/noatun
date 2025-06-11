@@ -50,3 +50,4 @@ divan  = "0.1"
 noatun = { path = ".", features = ["tokio"] }
 datetime_literal = "0.1.3"
 insta = "1.42"
+proptest = "1.7"

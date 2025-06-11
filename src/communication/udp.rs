@@ -6,7 +6,7 @@ use socket2::{Domain, Protocol, Type};
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
-use tracing::{error, info};
+use tracing::{info};
 
 impl CommunicationDriver for TokioUdpDriver {
     type Receiver = UdpSocket;

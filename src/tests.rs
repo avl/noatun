@@ -5,7 +5,6 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use byteorder::{LittleEndian, WriteBytesExt};
 
-use crate::cutoff::CutOffDuration;
 use crate::database::DatabaseSettings;
 use data_types::NoatunBox;
 use data_types::NoatunCell;

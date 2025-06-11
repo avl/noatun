@@ -22,6 +22,7 @@ use std::hash::Hash;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
+use crate::mini_pather::FastPather;
 
 #[derive(Debug)]
 pub(crate) struct MessageSourceInfo {
@@ -133,7 +134,7 @@ impl DecayingKnowledge {
         self.short_term + self.long_term + self.epic_term > 0.0
     }
     fn decay(&mut self, now: Instant) {
-        let now = now;
+
         let elapsed_secs = now.duration_since(self.last_update).as_secs_f32();
         let short_k = elapsed_secs / self.interval_seconds;
         let long_k = 0.1 * short_k;
@@ -210,19 +211,19 @@ pub(crate) struct NeighborNeighborInfo {
 }
 
 #[derive(Debug, Default)]
-enum UpToSpeed {
+enum UpToSpeedStatus {
     #[default]
     Uninitialized,
     HeadsNeeded(Vec<MessageId>),
     UpToSpeed
 }
 
-impl UpToSpeed {
+impl UpToSpeedStatus {
     pub(crate) fn is_up_to_speed(&self) -> bool {
         match self {
-            UpToSpeed::Uninitialized |
-            UpToSpeed::HeadsNeeded(_) => {false}
-            UpToSpeed::UpToSpeed => {true}
+            UpToSpeedStatus::Uninitialized |
+            UpToSpeedStatus::HeadsNeeded(_) => {false}
+            UpToSpeedStatus::UpToSpeed => {true}
         }
     }
 }
@@ -231,7 +232,7 @@ impl UpToSpeed {
 #[derive(Debug)]
 pub struct PeerInfo {
     pub(crate) peer: EphemeralNodeId,
-    pub up_to_speed: UpToSpeed,
+    up_to_speed: UpToSpeedStatus,
     /// For messages we first observed from key (`Address`), this peer is usually filled in
     /// by messages from `SeenBy`.
     /// TODO: Remove this unless we use it?
@@ -311,11 +312,11 @@ impl PeerInfo {
     ) {
         match forwarding_action {
             ForwardingChange::Add => {
-                println!("Node adding forwarding {} -> {}", self.peer, destination);
+                //println!("Node adding forwarding {} -> {}", self.peer, destination);
                 self.forwardings.insert(destination, now);
             }
             ForwardingChange::Remove => {
-                println!("Removing forwarding {} -> {}", self.peer, destination);
+                //println!("Removing forwarding {} -> {}", self.peer, destination);
                 self.forwardings.swap_remove(&destination);
             }
         }
@@ -327,6 +328,7 @@ pub struct Peers {
     //TODO: GC this, remove stale entries
     pub peers: IndexMap<EphemeralNodeId, PeerInfo>,
     peer_summary_info: ArcShift<PeerSummaryInfo>,
+    pub(crate) fast_pather: FastPather,
     last_gc: Instant,
 }
 
@@ -461,24 +463,24 @@ impl NodeNumberBasedInhibit {
         neighbors_of_requester: &[EphemeralNodeId],
     ) -> bool {
         let mut patience = Patience(self.inhibit_with_no_one_else_taking_up_the_slack_count);
-        println!(
+        /*println!(
             "is_inhibited {:?}: our: {:?} neigh: {:?}",
             self_node, our_neighbor_list, neighbors_of_requester
-        );
+        );*/
         for our_neighbor in our_neighbor_list {
             if *our_neighbor >= self_node {
                 continue;
             }
 
-            if neighbors_of_requester.contains(&our_neighbor) {
+            if neighbors_of_requester.contains(our_neighbor) {
                 if patience.tax() {
                     self.was_inhibited = true;
-                    trace!("#{:?}: was inhibited", self_node);
-                    println!("Inhibited because we ({:?}), consider {:?} to be a neighbor of requester, and patience is taxed: {:?}", self_node, our_neighbor, patience);
+                    //trace!("#{:?}: was inhibited", self_node);
+                    //println!("Inhibited because we ({:?}), consider {:?} to be a neighbor of requester, and patience is taxed: {:?}", self_node, our_neighbor, patience);
                     // This other neighbor should do the request instead
                     return true;
                 } else {
-                    println!("Not inhibited yet because {:?}, considers {:?} to be a neighbor of requester, and patience isn't taxed: {:?}", self_node, our_neighbor, patience);
+                    //println!("Not inhibited yet because {:?}, considers {:?} to be a neighbor of requester, and patience isn't taxed: {:?}", self_node, our_neighbor, patience);
                 }
             }
         }
@@ -486,7 +488,7 @@ impl NodeNumberBasedInhibit {
 
         self.inhibit_with_no_one_else_taking_up_the_slack_count = 0;
         self.was_inhibited = false;
-        println!("#{:?}: was not inhibited", self_node);
+        //println!("#{:?}: was not inhibited", self_node);
         false
     }
 }
@@ -583,7 +585,7 @@ impl Neighborhood {
         match self.inhibited_request_upstream.entry(msg_id) {
             Entry::Occupied(_e) => {}
             Entry::Vacant(e) => {
-                let now = now;
+
                 e.insert((now, source));
                 self.inhibited_request_upstream_oldest
                     .entry(source)
@@ -594,11 +596,12 @@ impl Neighborhood {
             }
         }
     }
-    pub fn new(peer_summary_info: ArcShift<PeerSummaryInfo>, now: Instant) -> Neighborhood {
+    pub fn new(peer_summary_info: ArcShift<PeerSummaryInfo>, now: Instant, own_id: &mut ArcShift<EphemeralNodeId>) -> Neighborhood {
         Self {
             peers: Peers {
                 peers: Default::default(),
                 peer_summary_info,
+                fast_pather: FastPather::new(own_id.get().raw_u16()), //TODO: Detect change of ephemeral id and clear FastPath
                 last_gc: now,
             },
             recent_messages: Default::default(),
@@ -669,7 +672,8 @@ impl Neighborhood {
                     }
                 }
             }
-            DistributorMessage::ReportHeads { heads, source, .. } => {
+            DistributorMessage::ReportHeads { cutoff, heads, source, neighbors } => {
+
                 let peer = self.peers.get_insert_peer(*source, now);
                 //println!("{:?}: Calling time_passed for {:?}", test_elapsed(), *source);
                 if let Some(inhibited) = self.inhibited_request_upstream_oldest.get(source) {
@@ -750,34 +754,33 @@ struct OriginForwardingData {
 #[derive(Debug, Default)]
 pub(crate) struct OriginData {
     /// How many times have we observed this path appearing missing?
-    pub(crate) missing_paths_count: usize,
+    missing_paths_count: usize,
     //compile_error!("Figure out when to purge this info. Doing so is needed, since otherwise we may not send a StartForwarding when needed")
     // TODO: Rename to forwarded?
     /// Who have we asked to forward us stuff from this origin?
-    pub(crate) forwarding_from: Option<OriginForwardingData>,
+    forwarding_from: Option<OriginForwardingData>,
 }
 
 
 const MAX_RECENT_SENT_KEPT: usize = 1000;
 #[derive(Debug)]
 pub struct QueryableOutbuffer {
-    pub(crate) outbuf: VecDeque<DistributorMessage>,
+    outbuf: VecDeque<DistributorMessage>,
 
-    pub(crate) request_upstream_message_inhibit: DuplicationChecker<MessageId>,
-    pub(crate) periodic_message_interval: Duration,
+    request_upstream_message_inhibit: DuplicationChecker<MessageId>,
+    periodic_message_interval: Duration,
+    recently_sent_upstream_responses_for: DuplicationChecker<MessageId>,
 
-    pub(crate) recently_sent_upstream_responses_for: DuplicationChecker<MessageId>,
-    pub(crate) recently_sent_message_ids: DuplicationChecker<MessageId>,
-
-    pub(crate) parentless_messages:
+    recently_sent_message_ids: DuplicationChecker<MessageId>,
+    parentless_messages:
         IndexMap</*missing parent*/ MessageId, Vec<AccumulatedMessage>>,
 
-    pub(crate) origin_paths: IndexMap<EphemeralNodeId /*origin*/, OriginData>,
+    origin_paths: IndexMap<EphemeralNodeId /*origin*/, OriginData>,
 }
 
 impl QueryableOutbuffer {
 
-    pub fn observe_missing_path(&mut self,
+    fn observe_missing_path(&mut self,
                                 self_node_id: EphemeralNodeId,
                                 origin: EphemeralNodeId, src: EphemeralNodeId, forward_cmds: &mut Vec<ForwardingAction>, now: Instant) {
         let pathdata = self.origin_paths.entry(origin).or_default();
@@ -824,13 +827,13 @@ impl QueryableOutbuffer {
 }
 
 impl QueryableOutbuffer {
-    pub fn new(periodic_message_interval: Duration) -> Self {
+    fn new(periodic_message_interval: Duration) -> Self {
         Self {
             outbuf: Default::default(),
             request_upstream_message_inhibit: DuplicationChecker::new(
                 2 * periodic_message_interval,
             ),
-            periodic_message_interval: periodic_message_interval,
+            periodic_message_interval,
             recently_sent_upstream_responses_for: DuplicationChecker::new(
                 2 * periodic_message_interval,
             ),
@@ -840,24 +843,24 @@ impl QueryableOutbuffer {
         }
     }
     //TODO: Implement detection of node id duplicates
-    pub(crate) fn request_upstream_blocked(&mut self, id: MessageId, now: Instant) -> bool {
+    fn request_upstream_blocked(&mut self, id: MessageId, now: Instant) -> bool {
         self.recently_sent_upstream_responses_for
             .is_duplicate(id, now)
     }
 
-    pub(crate) fn upstream_response_blocked(&mut self, id: MessageId, now: Instant) -> bool {
+    fn upstream_response_blocked(&mut self, id: MessageId, now: Instant) -> bool {
         self.recently_sent_upstream_responses_for
             .is_duplicate(id, now)
     }
-    pub(crate) fn message_already_sent(&mut self, id: MessageId, now: Instant) -> bool {
+    fn message_already_sent(&mut self, id: MessageId, now: Instant) -> bool {
         self.recently_sent_message_ids.is_duplicate(id, now)
     }
 
-    pub(crate) fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.outbuf.len()
     }
 
-    pub(crate) fn request_upstream(
+    fn request_upstream(
         &mut self,
         messages_to_request: &[MessageId],
         self_node: EphemeralNodeId,
@@ -883,21 +886,21 @@ impl QueryableOutbuffer {
                     .request_upstream_message_inhibit
                     .is_duplicate(*msg, now);
                 if is_dup {
-                    println!(
+                    /*println!(
                         "{:?} at {:?}: But {:?} was a duplicate, so not sent",
                         test_elapsed(),
                         self_node,
                         msg
-                    );
+                    );*/
                     None
                 } else {
-                    println!(
+                    /*println!(
                         "{:?} at {:?}: But {:?} was NOT a duplicate, so sent",
                         test_elapsed(),
                         self_node,
                         msg
-                    );
-                    Some((msg.clone(), 4))
+                    );*/
+                    Some((*msg, 4))
                 }
             })
             .collect();
@@ -1170,7 +1173,7 @@ impl DistributorMessage {
             } => {
                 format!(
                     "{}: source: {source} transmitter: {transmitter}, origin: {origin}, action: {action:?}",
-                    brightred("Squelch"),
+                    brightred("Forwarding"),
                 )
             }
             DistributorMessage::SyncAllQuery(messages) => {
@@ -1370,7 +1373,7 @@ impl Distributor {
     const BATCH_SIZE: usize = 20;
     pub fn new(
         periodic_message_interval: Duration,
-        initial_node_id: ArcShift<EphemeralNodeId>,
+        mut initial_node_id: ArcShift<EphemeralNodeId>,
         peer_info: ArcShift<PeerSummaryInfo>,
         now: Instant,
     ) -> Distributor {
@@ -1378,9 +1381,10 @@ impl Distributor {
             sync_all_inprogress: SyncAllState::NotActive,
             distributor_state: DistributorStatus::default(),
             periodic_message_interval,
+            neighborhood: Neighborhood::new(peer_info, now, &mut initial_node_id),
             ephemeral_node_id: initial_node_id,
             outbuf: QueryableOutbuffer::new(periodic_message_interval),
-            neighborhood: Neighborhood::new(peer_info, now),
+
         }
     }
 
@@ -1425,7 +1429,7 @@ impl Distributor {
 
         let mut heads = database
             .get_update_heads()
-            .into_iter()
+            .iter()
             .map(|msg_id| {
                 let origin = self
                     .neighborhood
@@ -1545,6 +1549,8 @@ impl Distributor {
                                 // If the neighbor has no neighbors of its own, it's just starting up.
                                 // Let's wait a bit before acting on its messages
 
+                                self.neighborhood.peers.fast_pather.report_neighbors(source.raw_u16(), neighbors.iter().map(|x|x.raw_u16()));
+
                                 // Find all forwardings that forward _to_ 'source' (this ReportHeads transmitter)
                                 for (peer_id, peer) in self.neighborhood.peers.peers.iter_mut() {
                                     if *peer_id == source || !neighbors.contains(peer_id) {
@@ -1559,18 +1565,18 @@ impl Distributor {
 
 
                                 match &mut peer.up_to_speed {
-                                    UpToSpeed::Uninitialized => {
-                                        peer.up_to_speed = UpToSpeed::HeadsNeeded(heads.iter().map(|x|x.msg).collect());
+                                    UpToSpeedStatus::Uninitialized => {
+                                        peer.up_to_speed = UpToSpeedStatus::HeadsNeeded(heads.iter().map(|x|x.msg).collect());
                                     }
-                                    UpToSpeed::HeadsNeeded(needed) => {
+                                    UpToSpeedStatus::HeadsNeeded(needed) => {
                                         needed.retain(|x|{
                                             !database.contains_message(*x).unwrap_or(false)
                                         });
                                         if needed.is_empty() {
-                                            peer.up_to_speed = UpToSpeed::UpToSpeed;
+                                            peer.up_to_speed = UpToSpeedStatus::UpToSpeed;
                                         }
                                     }
-                                    UpToSpeed::UpToSpeed => {}
+                                    UpToSpeedStatus::UpToSpeed => {}
                                 }
 
                                 if self.sync_all_inprogress.idle() && neighbors.is_empty() == false
@@ -1775,13 +1781,9 @@ impl Distributor {
         self.process_sync_all_requests(&mut database, accumulated_sync_all_requests, now)?;
 
         {
-            let origins = vec![];
+
             for squelch in forwarding_cmds.iter().rev() {
                 let origin = squelch.origin();
-                if origins.contains(&origin) {
-                    continue;
-                }
-                /* TODO: Impl*/
                 let self_node_id = self.node_id();
                 self.outbuf.push_back(DistributorMessage::Forwarding {
                     source: self_node_id,
@@ -2221,7 +2223,7 @@ impl Distributor {
 
             // Apparently we now hear directly from this origin, surely we don't need any forwarding
             match self.outbuf.origin_paths.entry(source) {
-                Entry::Occupied(mut o) => {
+                Entry::Occupied(o) => {
                     println!(
                         "A forwarding path was found, with forwarding from: {:?}",
                         o.get().forwarding_from
@@ -2240,8 +2242,10 @@ impl Distributor {
 
             let already_present = database.contains_message(msg.id)?;
             if !already_present {
-                if let Some(peer) = self.neighborhood.peers.get_peer_mut(source) {
-                    if !peer.forwardings.is_empty() {
+                //if let Some(peer) = self.neighborhood.peers.get_peer_mut(source) {
+
+                    //if !peer.forwardings.is_empty() {
+                    if self.neighborhood.peers.fast_pather.should_i_forward(origin.raw_u16(), source.raw_u16()) {
                         println!("Forwarding message from {:?}", source);
                         self.outbuf.push_back(DistributorMessage::Message {
                             source: *self.ephemeral_node_id.get(),
@@ -2251,7 +2255,7 @@ impl Distributor {
                             explicit_retransmit,
                         });
                     }
-                }
+                //}
             }
 
             if let Some(released) = self.outbuf.parentless_messages.swap_remove(&msg.id) {

@@ -1,4 +1,3 @@
-use crate::cutoff::CutOffDuration;
 use crate::database::DatabaseSettings;
 use crate::distributor::{Distributor, DistributorMessage, EphemeralNodeId, Neighborhood};
 use crate::tests::{CounterMessage, CounterObject};
@@ -227,8 +226,8 @@ fn test_distributor() {
         Instant::now().into(),
     );
 
-    dist1.neighborhood = Neighborhood::new(ArcShift::default(), Instant::now().into());
-    dist2.neighborhood = Neighborhood::new(ArcShift::default(), Instant::now().into());
+    dist1.neighborhood = Neighborhood::new(ArcShift::default(), Instant::now().into(), &mut ArcShift::new(EphemeralNodeId::new(1)));
+    dist2.neighborhood = Neighborhood::new(ArcShift::default(), Instant::now().into(), &mut ArcShift::new(EphemeralNodeId::new(2)));
     dist1
         .neighborhood
         .peers

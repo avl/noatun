@@ -89,7 +89,7 @@ pub struct DatabaseSession<'a, APP: Application> {
     db: &'a Database<APP>,
 }
 
-impl<'a, APP: Application> Drop for DatabaseSessionMut<'a, APP> {
+impl<APP: Application> Drop for DatabaseSessionMut<'_, APP> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
             self.db.mark_clean();
@@ -97,7 +97,7 @@ impl<'a, APP: Application> Drop for DatabaseSessionMut<'a, APP> {
     }
 }
 
-impl<'a, APP: Application> DatabaseSession<'a, APP> {
+impl< APP: Application> DatabaseSession<'_, APP> {
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
     }
@@ -176,7 +176,7 @@ impl<'a, APP: Application> DatabaseSession<'a, APP> {
     }
 }
 
-impl<'a, APP: Application> DatabaseSessionMut<'a, APP> {
+impl<APP: Application> DatabaseSessionMut<'_, APP> {
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
     }

@@ -1,6 +1,6 @@
 use crate::distributor::{
-    AccumulatedMessage, Address, Distributor, DistributorMessage, EphemeralNodeId,
-    ForwardingChange, Neighborhood, PeerSummaryInfo, QueryableOutbuffer, SerializedMessage, Status,
+    Address, Distributor, DistributorMessage, EphemeralNodeId,
+    PeerSummaryInfo, SerializedMessage, Status,
 };
 
 use crate::colors::rgb;
@@ -20,8 +20,7 @@ use savefile_derive::Savefile;
 
 use arcshift::ArcShift;
 use indexmap::map::Entry;
-use smallvec::SmallVec;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
