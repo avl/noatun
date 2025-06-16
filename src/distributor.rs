@@ -22,7 +22,7 @@ use std::hash::Hash;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
-use crate::mini_pather::FastPather;
+use crate::mini_pather::MiniPather;
 
 #[derive(Debug)]
 pub(crate) struct MessageSourceInfo {
@@ -328,7 +328,8 @@ pub struct Peers {
     //TODO: GC this, remove stale entries
     pub peers: IndexMap<EphemeralNodeId, PeerInfo>,
     peer_summary_info: ArcShift<PeerSummaryInfo>,
-    pub(crate) fast_pather: FastPather,
+    //TODO: GC
+    pub(crate) fast_pather: MiniPather,
     last_gc: Instant,
 }
 
@@ -601,7 +602,7 @@ impl Neighborhood {
             peers: Peers {
                 peers: Default::default(),
                 peer_summary_info,
-                fast_pather: FastPather::new(own_id.get().raw_u16()), //TODO: Detect change of ephemeral id and clear FastPath
+                fast_pather: MiniPather::new(own_id.get().raw_u16()), //TODO: Detect change of ephemeral id and clear FastPath
                 last_gc: now,
             },
             recent_messages: Default::default(),
@@ -690,6 +691,16 @@ impl Neighborhood {
                             .time_passed((periods + 1.0) as usize);
                     }
                 }
+                compile_error!("Remove all the non-mini-path based forwaring mechanisms\
+
+Add gc:ing to mini path
+
+Optimize minipath (by caching lookup!)
+
+Remove the compile_error from all-up-test!
+                \
+                ")
+
 
                 //peer.resend_actual_message_based_on_node_numbers.time_passed();
                 for head in heads {
@@ -703,6 +714,7 @@ impl Neighborhood {
                 }
                 self.peers
                     .gc_if_necessary(our_node_id, periodic_message, now);
+                self.peers.fast_pather.report_own_neighbors(self.peers.peers.keys().map(|x|x.raw_u16()));
             }
             DistributorMessage::SyncAllQuery(_) => {}
             DistributorMessage::SyncAllRequest(_) => {}
@@ -2251,7 +2263,7 @@ impl Distributor {
                             source: *self.ephemeral_node_id.get(),
                             message: msg.clone(),
                             demand_ack: false,
-                            origin: source,
+                            origin,
                             explicit_retransmit,
                         });
                     }
