@@ -306,7 +306,7 @@ pub struct Peers {
     pub peers: IndexMap<EphemeralNodeId, PeerInfo>,
     peer_summary_info: ArcShift<PeerSummaryInfo>,
     //TODO: GC
-    pub(crate) fast_pather: MiniPather,
+    pub fast_pather: MiniPather,
     last_gc: Instant,
 }
 
@@ -1716,7 +1716,7 @@ impl Distributor {
                 continue;
             }
 
-            let (min_src, origin) =
+            let (min_src, _origin) =
                 if srcs.len() == 1 {srcs[0]} else {
                     srcs.iter().min_by_key(|(src,_)|
                         {
@@ -1947,7 +1947,7 @@ impl Distributor {
         &mut self,
         database: &mut DatabaseSessionMut<APP>,
         mut message_list: Vec<AccumulatedMessage>,
-        now: Instant,
+        _now: Instant,
     ) -> Result<Vec<AccumulatedMessage>> {
         let mut released_list = Vec::new();
         database.maybe_advance_cutoff()?;
@@ -2004,14 +2004,14 @@ impl Distributor {
                     continue 'msg_iter;
                 }
             }
-            
+
             let already_present = database.contains_message(msg.id)?;
             if !already_present {
                 //if let Some(peer) = self.neighborhood.peers.get_peer_mut(source) {
 
                     //if !peer.forwardings.is_empty() {
                     if self.neighborhood.peers.fast_pather.should_i_forward(origin.raw_u16(), source.raw_u16()) {
-                        println!("Forwarding message from {:?}", source);
+                        //println!("#{}: Forwarding message from {:?}.{:?}", self.ephemeral_node_id.get(), origin, source);
                         self.outbuf.push_back(DistributorMessage::Message {
                             source: *self.ephemeral_node_id.get(),
                             message: msg.clone(),
@@ -2019,6 +2019,8 @@ impl Distributor {
                             origin,
                             explicit_retransmit,
                         });
+                    } else {
+                        //println!("#{}: NOT Forwarding message from {:?}.{:?}", self.ephemeral_node_id.get(), origin, source);
                     }
                 //}
             }

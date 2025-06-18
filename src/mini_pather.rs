@@ -7,6 +7,7 @@ mod known_good_mini_pather;
 #[derive(Debug, Default)]
 struct Peer {
     visited: AtomicBool,
+    /// Each node that this node hears
     neighbors: Vec<u16>,
 }
 
@@ -18,6 +19,8 @@ pub struct MiniPather {
     /// Mapping from node, to each node that hears it
     reverse: IndexMap<u16, Vec<u16>>,
     memoization: IndexMap<(u16,u16), bool>,
+
+    correct_pather: known_good_mini_pather::MiniPather,
 }
 
 
@@ -28,6 +31,7 @@ impl MiniPather {
             nodes: Default::default(),
             reverse: Default::default(),
             memoization: Default::default(),
+            correct_pather: known_good_mini_pather::MiniPather::new(whoami),
         }
     }
     fn add_reverse(node: u16, reverse: &mut IndexMap<u16, Vec<u16>>, added: &[u16]) {
@@ -53,6 +57,7 @@ impl MiniPather {
 
     pub fn report_neighbors(&mut self, node: u16, hears_neighbors: impl Iterator<Item=u16>) {
         let mut hears_neighbors : Vec<u16> = hears_neighbors.collect();
+        self.correct_pather.report_neighbors(node, hears_neighbors.iter().copied());
 
 
         match self.nodes.entry(node) {
@@ -101,11 +106,14 @@ impl MiniPather {
 
     pub fn should_i_forward(&mut self, origin: u16, received_from: u16) -> bool {
         if origin == self.whoami || received_from == self.whoami {
+            assert!(!self.correct_pather.should_i_forward(origin, received_from));
             return false;
         }
         if let Some(memoized ) = self.memoization.get(&(origin, received_from)) {
+            assert_eq!(self.correct_pather.should_i_forward(origin, received_from), *memoized);
             return *memoized;
         }
+
         for peer in self.nodes.values_mut() {
             if !peer.neighbors.contains(&self.whoami) {
                 // Since it can't hear us, we can't help it.
@@ -116,11 +124,6 @@ impl MiniPather {
             }
         }
 
-        /*let mut recipients_solved = IndexSet::new();
-        recipients_solved.insert(origin);
-        recipients_solved.insert(received_from);
-        recipients_solved.extend(self.who_can_hear(origin));
-        recipients_solved.extend(self.who_can_hear(received_from));*/
         if let Some(temp) = self.nodes.get_mut(&origin) {
             temp.visited = AtomicBool::new(true);
         }
@@ -165,6 +168,10 @@ impl MiniPather {
             self.memoization.drain(0..l);
         }
         self.memoization.insert((origin, received_from), !all_visited);
+        assert_eq!(self.correct_pather.should_i_forward(origin, received_from), !all_visited,
+            "#{}: difference between correct pather value: {} and actual: {} for input {}.{}",
+                   self.whoami, self.correct_pather.should_i_forward(origin, received_from), !all_visited, origin, received_from,
+            );
         !all_visited
         /*
 
@@ -193,7 +200,7 @@ impl MiniPather {
 #[cfg(test)]
 mod tests {
     use indexmap::IndexSet;
-    
+
     use super::{known_good_mini_pather, MiniPather};
 
     use proptest::prelude::*;
@@ -241,15 +248,17 @@ mod tests {
                     if node.should_i_forward(src as u16, received_from) {
                         //println!("Node {} decided to forward msg from {} via {}", dest, src, received_from);
 
+                        assert_eq!(node.should_i_forward(src as u16, received_from), true);
                         for hearing_node in get_who_hears(dest, &node_neighbors) {
                             front.insert((hearing_node, dest));
                         }
                     } else {
+                        assert_eq!(node.should_i_forward(src as u16, received_from), false);
                         //println!("Node {} decided NOT to forward msg from {} via {}", dest, src, received_from);
                     }
                 }
             }
-
+            
             for (node_index, node) in pathers.iter().enumerate() {
 
                 if node_index == src {
@@ -271,7 +280,7 @@ mod tests {
         }
     }
     fn neighborhood() -> impl Strategy<Value = Vec<Vec<u16>>> {
-        let n = 8 as usize;
+        let n = 4 as usize;
         proptest::collection::vec(proptest::collection::vec(any::<u16>().prop_map(move |x|x%(n as u16)), n..n+1),n..n+1)
     }
 
@@ -303,6 +312,9 @@ mod tests {
                     for j in 0..node_count {
                         assert_eq!(pather.should_i_forward(i as u16, j as u16),
                             ref_pather.should_i_forward(i as u16, j as u16));
+
+                        assert_eq!(pather.should_i_forward(i as u16, j as u16),
+                            ref_pather.should_i_forward(i as u16, j as u16));
                     }
                 }
             }
@@ -314,6 +326,41 @@ mod tests {
     fn regression_verify_someone_always_forwards1() {
         let input = vec! [vec![0, 2, 0], vec![0, 1, 2], vec![0, 0, 1]];
         verify_someone_always_forwards(input);
+    }
+    #[test]
+    fn regression_verify_someone_always_forwards2() {
+        let input = vec![
+        vec![
+            0u16,
+            0,
+            0,
+            0,
+        ],
+        vec![
+            1,
+            2,
+            3,
+            1,
+        ],
+        vec![
+            2,
+            0,
+            0,
+            2,
+        ],
+        vec![
+            0,
+            2,
+            1,
+            0,
+        ]
+        ];
+
+        let mut pather = MiniPather::new(3);
+        for i in 0..4 {
+            pather.report_neighbors(i as u16, input[i].iter().copied());
+        }
+        assert!(pather.should_i_forward(0,0));
     }
 
     fn islands(node_neighbors: &Vec<Vec<u16>>) -> Vec<u8> {

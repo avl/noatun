@@ -819,9 +819,9 @@ async fn all_up_general_update_sync_test_impl(
     #[cfg(not(debug_assertions))]
     {
         //TODO: re-enable the packet loss in this test!
-        //compile_error!("Don't set loss to 0 below! That invalidates the test! Should be 0.15")
+        compile_error!("Make things work even with packet loss 0.15 below!")
     }
-    driver.set_loss(0.0); //0.15
+    driver.set_loss(0.15); //0.15
     for i in 0..MY_THREAD_RNG
         .with(|x| x.borrow_mut().as_mut().unwrap().gen_range(1..20))
         .min(maxlen)

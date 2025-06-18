@@ -1,28 +1,22 @@
-use std::default::Default;
-use std::fmt::{Debug, Formatter};
-use std::future::Future;
-use std::hash::Hasher;
-use std::io::{Cursor, Read, Write};
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use eframe::{App, Frame};
-use egui::{vec2, Button, Color32, Context, CornerRadius, FontDefinitions, FontFamily, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, TextBuffer, TextEdit, Vec2, Widget};
-use egui::epaint::{RectShape, TextShape};
-use noatun::{msg_deserialize, msg_serialize, noatun_object, Application, CutOffDuration, Database, Message, MessageFrame, MessageId, NoatunCell, NoatunStorable, NoatunTime, Object, Savefile};
 use anyhow::Result;
 use arcshift::ArcShift;
-use bytes::{Buf, BufMut};
 use datetime_literal::datetime;
 use eframe::epaint::{EllipseShape, FontId};
+use eframe::{App, Frame};
+use egui::epaint::{RectShape, TextShape};
 use egui::scroll_area::ScrollBarVisibility;
-use egui::text::Fonts;
-use savefile::{Deserializer, LittleEndian};
-use savefile::prelude::ReadBytesExt;
+use egui::{Button, Color32, Context, CornerRadius, FontFamily, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, TextEdit, Vec2, Widget};
+use noatun::{msg_deserialize, msg_serialize, noatun_object, Application, CutOffDuration, Database, Message, MessageFrame, NoatunCell, NoatunStorable, NoatunTime, Object, Savefile};
+use std::default::Default;
+use std::fmt::Debug;
+use std::hash::Hasher;
+use std::io::Write;
+use std::pin::Pin;
+use std::time::{Duration, Instant};
 
-use noatun::data_types::{NoatunHashMap, NoatunKey, NoatunString};
+use noatun::data_types::{NoatunHashMap, NoatunKey};
 use noatun::database::DatabaseSettings;
-use noatun::distributor::{Address, Distributor, DistributorMessage, EphemeralNodeId, ForwardingChange, PeerSummaryInfo, SerializedMessage};
+use noatun::distributor::{Address, Distributor, DistributorMessage, EphemeralNodeId, PeerSummaryInfo, SerializedMessage};
 
 const RANGE: f32 = 0.5;
 
@@ -100,7 +94,7 @@ noatun_object!{
 impl Message for KeyUpdateMessage {
     type Root = Document;
 
-    fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let mut root = root.pin_project();
         match self {
             KeyUpdateMessage::Set(key, val) => {
@@ -139,7 +133,6 @@ struct InflightPacket {
     from: u8,
     to: u8,
     start_time: Instant,
-    velocity: f32,
     arrive_time: Instant,
     end_time: Instant,
     data: DistributorMessage,
@@ -159,16 +152,10 @@ impl InflightPacket {
             DistributorMessage::RequestUpstream { .. } => Color32::GRAY,
             DistributorMessage::UpstreamResponse { .. } => Color32::GRAY,
             DistributorMessage::SendMessageAndAllDescendants { .. } => Color32::GRAY,
-            DistributorMessage::Message { source, message, demand_ack, origin, explicit_retransmit } => {
+            DistributorMessage::Message { message, .. } => {
                 match message.to_message_from_ref::<KeyUpdateMessage>().unwrap().payload {
                     KeyUpdateMessage::Set(rgb, _) => {(rgb).into()}
                     KeyUpdateMessage::Change(rgb, _) => {(rgb).into()}
-                }
-            }
-            DistributorMessage::Forwarding { action, .. } => {
-                match action {
-                    ForwardingChange::Add => {Color32::RED}
-                    ForwardingChange::Remove => {Color32::GREEN}
                 }
             }
         }
@@ -213,7 +200,7 @@ impl Node {
             last_periodic: now,
         }
     }
-    fn receive_message(&mut self, message: DistributorMessage, src: u8, now: Instant, actual_ether: &mut ActualEther) {
+    fn receive_message(&mut self, message: DistributorMessage, src: u8, now: Instant, _actual_ether: &mut ActualEther) {
         self.distributor.receive_message(&mut self.db, std::iter::once((Address::from(src), message)), now).unwrap();
 
     }
@@ -253,11 +240,10 @@ impl ActualEther {
                     user_message = Some(message.to_message_from_ref().unwrap());
                 }
 
-                let mut ifp = InflightPacket {
+                let ifp = InflightPacket {
                     from: src,
                     to: index as u8,
                     start_time: now,
-                    velocity,
                     arrive_time: now + Duration::from_secs_f32(dist_time),
                     end_time: now + Duration::from_secs_f32(end_time),
                     data: data.clone(),
@@ -307,9 +293,9 @@ impl Ether {
 }
 
 struct NodeMetaData {
+    #[allow(unused)]
     whoami: u8,
     pos: Vec2,
-
 }
 
 #[derive(Default)]
@@ -385,7 +371,7 @@ impl Default for Visualizer {
 }
 
 impl App for Visualizer {
-    fn update(&mut self, ctx: &Context, frame: &mut Frame) {
+    fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ctx.set_pixels_per_point(2.0);
 
@@ -394,7 +380,7 @@ impl App for Visualizer {
                 if ui.button(if self.paused {"Play"} else {"Stop"}).clicked() {
                     self.paused= !self.paused;
                     if !self.paused {
-                        self.last_update = Instant::now();;
+                        self.last_update = Instant::now();
                     }
                 }
 
@@ -446,7 +432,7 @@ at say, 2.5x the interval of of re-susbcription above.
             let square_available = width_available.min(ui.available_height() ) - 2.0*ui.spacing().item_spacing.y;
 
             ui.horizontal(|ui| {
-                let (id, mut allocated_rect) = ui.allocate_space(Vec2::new(width_available, height_available));
+                let (id, allocated_rect) = ui.allocate_space(Vec2::new(width_available, height_available));
                 let canvas_rect = Rect::from_min_max(
                     allocated_rect.min, allocated_rect.min+Vec2::new(square_available, square_available)
                 );
@@ -468,8 +454,8 @@ at say, 2.5x the interval of of re-susbcription above.
                 };*/
                 let to_pixels = |logical: Vec2| -> Pos2 {
                     Pos2::new(
-                        (scale.x*logical.x + canvas_rect.min.x),
-                        (scale.y*logical.y + canvas_rect.min.y)
+                        scale.x*logical.x + canvas_rect.min.x,
+                        scale.y*logical.y + canvas_rect.min.y
                     )
                 };
 
@@ -491,7 +477,7 @@ at say, 2.5x the interval of of re-susbcription above.
                     let pixel_pos1 = to_pixels(node_meta.pos-Vec2::new(0.025,0.025));
                     let pixel_pos2 = to_pixels(node_meta.pos+Vec2::new(0.025,0.025));
 
-                    let mut rect = Rect {
+                    let rect = Rect {
                         min: pixel_pos1,
                         max: pixel_pos2
                     };
@@ -566,7 +552,7 @@ at say, 2.5x the interval of of re-susbcription above.
                     let pixel_pos1 = to_pixels(pos-Vec2::new(0.015,0.015));
                     let pixel_pos2 = to_pixels(pos+Vec2::new(0.015,0.015));
 
-                    let mut rect = Rect {
+                    let rect = Rect {
                         min: pixel_pos1,
                         max: pixel_pos2,
                     };
@@ -611,30 +597,39 @@ at say, 2.5x the interval of of re-susbcription above.
                     ui.ctx().request_repaint_after(Duration::from_millis(50));
                 }
                 let mut thin = vec![];
-                for (node_index, node) in self.ether.nodes.iter().enumerate() {
+                if let Selected::Node(node_index) = self.selected {
+                    let node = &mut self.ether.nodes[node_index];
                     assert_eq!(node_index, node.distributor.ephemeral_node_id.shared_get().raw_u16() as usize);
                     let node_pos = self.ether.actual_ether.node_metadata[node_index].pos;
-                    for (peer_id,peer_info) in &node.distributor.neighborhood.peers.peers {
-                        let forwarding_origin_pos = self.ether.actual_ether.node_metadata[peer_id.raw_u16() as usize].pos;
-                        for (forward_id,_) in peer_info.forwardings.iter() {
-                            let forwarding_destination_pos = self.ether.actual_ether.node_metadata[forward_id.raw_u16() as usize].pos;
+                    for (a_peer_id, a_peer_info) in &node.distributor.neighborhood.peers.peers {
+                        for (b_peer_id, b_peer_info) in &node.distributor.neighborhood.peers.peers {
+
+                            let origin_pos = self.ether.actual_ether.node_metadata[a_peer_id.raw_u16() as usize].pos;
+                            let recv_from_pos = self.ether.actual_ether.node_metadata[b_peer_id.raw_u16() as usize].pos;
+                            if !node.distributor.neighborhood.peers.fast_pather.should_i_forward(a_peer_id.raw_u16(), b_peer_id.raw_u16()) {
+                                continue;
+                            }
+
                             thin.push(Shape::LineSegment {
                                 points: [
-                                    to_pixels(forwarding_origin_pos),
-                                    to_pixels(node_pos),
+                                    to_pixels(origin_pos),
+                                    to_pixels(recv_from_pos),
                                 ],
-                                stroke: Stroke::new(0.5, Color32::from_rgb(100,100,155)),
+                                stroke: Stroke::new(1.0, Color32::from_rgb(100,100,155)),
                             });
                             shapes.push(Shape::LineSegment {
                                 points: [
+                                    to_pixels(recv_from_pos),
                                     to_pixels(node_pos),
-                                    to_pixels(forwarding_destination_pos),
                                 ],
-                                stroke: Stroke::new(1.0, Color32::from_rgb(200,255,200)),
+                                stroke: Stroke::new(3.0, Color32::from_rgb(200,255,200)),
                             });
                         }
+
+
                     }
                 }
+
                 shapes.extend(thin);
                 ui.painter().with_clip_rect(canvas_rect).extend(shapes);
 
@@ -726,7 +721,7 @@ at say, 2.5x the interval of of re-susbcription above.
                                     let mut t = packet.packet_number.to_string();
                                     TextEdit::singleline(&mut t).interactive(false).ui(ui);
                                 });
-                                let mut t= format!("{:#?}", packet.data);
+                                let t= format!("{:#?}", packet.data);
                                 ui.label(&t);
                             });
                         }
@@ -763,7 +758,7 @@ fn main() {
     eframe::run_native(
         "Visualizer",
         options,
-        Box::new(|cc| {
+        Box::new(|_cc| {
             Ok(Box::new(visualizer))
         }),
     ).unwrap()

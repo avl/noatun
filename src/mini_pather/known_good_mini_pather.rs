@@ -33,7 +33,12 @@ impl MiniPather {
         ret
     }
     fn ranking(&self, of: u16) -> (isize, u16) {
-        let neighbors = self.nodes.get(&of).map(|x|x.len()).unwrap_or(0);
+        let neighbors = self.nodes.get(&of).map(|x|{
+            let mut x = x.clone();
+            x.sort();
+            x.dedup();
+            x.len()
+        }).unwrap_or(0);
         (-(neighbors as isize), of)
     }
 
@@ -47,6 +52,7 @@ impl MiniPather {
         recipients_solved.insert(received_from);
         recipients_solved.extend(self.who_can_hear(origin));
         recipients_solved.extend(self.who_can_hear(received_from));
+        
         //println!("Node {} decided origin {}.{} reaches {:?} naturally", self.whoami, origin, received_from, recipients_solved);
         for (other_forwarder, other_forwarder_hears) in self.nodes.iter().filter(|(x,_)|
             self.ranking(**x)
@@ -56,7 +62,9 @@ impl MiniPather {
 
             if other_forwarder_hears.contains(&origin) || other_forwarder_hears.contains(&received_from) {
 //                    println!("Node {} will forward from {}.{}", *other_forwarder, origin, received_from);
+                
                 recipients_solved.extend(self.who_can_hear(*other_forwarder));
+                
             }
         }
 
