@@ -691,15 +691,6 @@ impl Neighborhood {
                             .time_passed((periods + 1.0) as usize);
                     }
                 }
-                compile_error!("Remove all the non-mini-path based forwaring mechanisms\
-
-Add gc:ing to mini path
-
-Optimize minipath (by caching lookup!)
-
-Remove the compile_error from all-up-test!
-                \
-                ")
 
 
                 //peer.resend_actual_message_based_on_node_numbers.time_passed();

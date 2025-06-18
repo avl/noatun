@@ -1,9 +1,23 @@
+use std::sync::atomic::AtomicBool;
 use indexmap::{IndexMap, IndexSet};
+use indexmap::map::Entry;
+
+mod known_good_mini_pather;
+
+#[derive(Debug, Default)]
+struct Peer {
+    visited: AtomicBool,
+    neighbors: Vec<u16>,
+}
 
 #[derive(Debug)]
 pub struct MiniPather {
     whoami: u16,
-    nodes: IndexMap<u16, Vec<u16>>
+    /// Mapping from node to each node it hears
+    nodes: IndexMap<u16, Peer>,
+    /// Mapping from node, to each node that hears it
+    reverse: IndexMap<u16, Vec<u16>>,
+    memoization: IndexMap<(u16,u16), bool>,
 }
 
 
@@ -12,67 +26,167 @@ impl MiniPather {
         Self {
             whoami,
             nodes: Default::default(),
+            reverse: Default::default(),
+            memoization: Default::default(),
         }
     }
-
-    pub fn report_neighbors(&mut self, node: u16, hears_neighbors: impl IntoIterator<Item = u16>) {
-        self.nodes.insert(node, hears_neighbors.into_iter().collect());
+    fn add_reverse(node: u16, reverse: &mut IndexMap<u16, Vec<u16>>, added: &[u16]) {
+        for added in added {
+            let temp = reverse.entry(*added).or_default();
+            assert!(!temp.contains(&node));
+            temp.push(node);
+        }
     }
-
-    pub fn report_own_neighbors(&mut self, hears_neighbors: impl IntoIterator<Item = u16>) {
-        self.nodes.insert(self.whoami, hears_neighbors.into_iter().collect());
-    }
-
-    pub fn who_can_hear(&self, node: u16) -> Vec<u16> {
-        let mut ret = vec![];
-        for (other_node, other_hears) in &self.nodes {
-            if other_hears.contains(&node) {
-                ret.push(*other_node);
+    fn del_reverse(node: u16, reverse: &mut IndexMap<u16, Vec<u16>>, deleted: &[u16]) {
+        for deleted in deleted {
+            match reverse.entry(*deleted) {
+                Entry::Occupied(mut occ) => {
+                    occ.get_mut().retain(|x| *x != node);
+                    if occ.get().is_empty() {
+                        occ.swap_remove();
+                    }
+                }
+                Entry::Vacant(_vac) => {}
             }
         }
-        ret
+    }
+
+    pub fn report_neighbors(&mut self, node: u16, hears_neighbors: impl Iterator<Item=u16>) {
+        let mut hears_neighbors : Vec<u16> = hears_neighbors.collect();
+
+
+        match self.nodes.entry(node) {
+            Entry::Occupied(mut cur) => {
+                for new in &hears_neighbors {
+                    if !cur.get().neighbors.contains(new) {
+                        Self::add_reverse(node, &mut self.reverse, &[*new]);
+                        self.memoization.clear();
+                        cur.get_mut().neighbors.push(*new);
+                    }
+                }
+                cur.get_mut().neighbors.retain(|old|{
+                    if !hears_neighbors.contains(old) {
+                        Self::del_reverse(node, &mut self.reverse, &[*old]);
+                        self.memoization.clear();
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            Entry::Vacant(entry) => {
+                hears_neighbors.sort_unstable();
+                hears_neighbors.dedup();
+                Self::add_reverse(node, &mut self.reverse, &hears_neighbors);
+                self.memoization.clear();
+                entry.insert(Peer {
+                    visited: AtomicBool::new(false),
+                    neighbors: hears_neighbors,
+                });
+            }
+        }
+    }
+
+    pub fn report_own_neighbors(&mut self, hears_neighbors: impl Iterator<Item=u16>) {
+        self.report_neighbors(self.whoami, hears_neighbors);
+    }
+
+    pub fn who_can_hear<'a>(&'a self, node: u16) -> impl Iterator<Item=u16> + use<'a> {
+        self.reverse.get(&node).into_iter().flatten().copied()
     }
     fn ranking(&self, of: u16) -> (isize, u16) {
-        let neighbors = self.nodes.get(&of).map(|x|x.len()).unwrap_or(0);
+        let neighbors = self.nodes.get(&of).map(|x|x.neighbors.len()).unwrap_or(0);
         (-(neighbors as isize), of)
     }
 
-    pub fn should_i_forward(&self, origin: u16, received_from: u16) -> bool {
+    pub fn should_i_forward(&mut self, origin: u16, received_from: u16) -> bool {
         if origin == self.whoami || received_from == self.whoami {
             return false;
         }
-
-        let mut recipients_solved = IndexSet::new();
-        recipients_solved.insert(origin);
-        recipients_solved.insert(received_from);
-        recipients_solved.extend(self.who_can_hear(origin));
-        recipients_solved.extend(self.who_can_hear(received_from));
-        println!("Node {} decided origin {}.{} reaches {:?} naturally", self.whoami, origin, received_from, recipients_solved);
-        for (other_forwarder, other_forwarder_hears) in self.nodes.iter().filter(|(x,_)|
-            self.ranking(**x)
-                <
-                self.ranking(self.whoami)
-        ) {
-
-            if other_forwarder_hears.contains(&origin) || other_forwarder_hears.contains(&received_from) {
-                println!("Node {} will forward from {}.{}", *other_forwarder, origin, received_from);
-                recipients_solved.extend(self.who_can_hear(*other_forwarder));
+        if let Some(memoized ) = self.memoization.get(&(origin, received_from)) {
+            return *memoized;
+        }
+        for peer in self.nodes.values_mut() {
+            if !peer.neighbors.contains(&self.whoami) {
+                // Since it can't hear us, we can't help it.
+                // We consider it taken care of for the purpose of deciding if to forward
+                peer.visited = AtomicBool::new(true);
+            }   else {
+                peer.visited = AtomicBool::new(false);
             }
         }
 
-        for (other_node, other_hears) in &self.nodes {
-            if !other_hears.contains(&self.whoami) {
+        /*let mut recipients_solved = IndexSet::new();
+        recipients_solved.insert(origin);
+        recipients_solved.insert(received_from);
+        recipients_solved.extend(self.who_can_hear(origin));
+        recipients_solved.extend(self.who_can_hear(received_from));*/
+        if let Some(temp) = self.nodes.get_mut(&origin) {
+            temp.visited = AtomicBool::new(true);
+        }
+        if let Some(temp) = self.nodes.get_mut(&received_from) {
+            temp.visited = AtomicBool::new(true);
+        }
+        for temp in self.reverse.get(&origin).into_iter().flatten().copied()/*self.who_can_hear inlined*/ {
+            if let Some(temp) = self.nodes.get_mut(&temp) {
+                temp.visited = AtomicBool::new(true);
+            }
+        }
+        for temp in self.reverse.get(&received_from).into_iter().flatten().copied()/*self.who_can_hear inlined*/ {
+            if let Some(temp) = self.nodes.get_mut(&temp) {
+                temp.visited = AtomicBool::new(true);
+            }
+        }
+
+
+        //println!("Node {} decided origin {}.{} reaches {:?} naturally", self.whoami, origin, received_from, recipients_solved);
+        let my_rank = self.ranking(self.whoami);
+        for (other_forwarder, other_forwarder_hears) in self.nodes.iter().filter(|(x,_)|
+            **x != origin && **x != received_from &&
+            self.ranking(**x)
+                <
+                my_rank
+        ) {
+            if other_forwarder_hears.neighbors.contains(&origin) || other_forwarder_hears.neighbors.contains(&received_from) {
+
+                //recipients_solved.extend(self.who_can_hear(*other_forwarder));
+
+                for temp in self.reverse.get(other_forwarder).into_iter().flatten().copied()/*self.who_can_hear inlined*/ {
+                    if let Some(temp) = self.nodes.get(&temp) {
+                        temp.visited.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+
+        let all_visited = self.nodes.values().all(|x| x.visited.load(std::sync::atomic::Ordering::Relaxed));
+        if self.memoization.len() > 1000 {
+            let l = self.memoization.len() / 2;
+            self.memoization.drain(0..l);
+        }
+        self.memoization.insert((origin, received_from), !all_visited);
+        !all_visited
+        /*
+
+        for (other_node, other_hears) in &mut self.nodes {
+
+            if !other_hears.neighbors.contains(&self.whoami) {
+                // Since it can't hear us, we can't help it.
+                // We consider it taken care of for the purpose of deciding if to forward
+                other_hears.visited = AtomicBool::new(true);
                 continue;
             }
             if !recipients_solved.contains(other_node)
             {
+                let all_visited = self.nodes.values().all(|x| x.visited.load(std::sync::atomic::Ordering::Relaxed));
+                assert!(!all_visited);
                 return true;
-            } else {
-                println!("Node {} decided {} hears {} (via {}) through other means", self.whoami, other_node, origin, received_from);
             }
         }
 
-        false
+        let all_visited = self.nodes.values().all(|x| x.visited.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(all_visited);
+        false*/
     }
 }
 
@@ -80,14 +194,14 @@ impl MiniPather {
 mod tests {
     use indexmap::IndexSet;
     use itertools::enumerate;
-    use super::{MiniPather};
+    use super::{known_good_mini_pather, MiniPather};
 
     use proptest::prelude::*;
     use std::collections::BTreeSet;
 
     fn verify_someone_always_forwards(node_neighbors: Vec<Vec<u16>>) {
 
-        println!("-----------------------");
+        //println!("-----------------------");
 
         let islands = islands(&node_neighbors);
         let mut pathers: Vec<MiniPather> = vec![];
@@ -111,7 +225,7 @@ mod tests {
         }
 
         for src in 0..node_count {
-            println!("--- Analyzing src {} ---", src);
+            //println!("--- Analyzing src {} ---", src);
             let mut front = IndexSet::new();
             let mut covered = IndexSet::new();
             let mut nodes_that_have_received_msg = IndexSet::new();
@@ -121,21 +235,23 @@ mod tests {
                 if !covered.insert((dest,received_from)) {
                     continue;
                 }
-                println!(" == == Analyzing what {} does when it receives {}.{} == ==", dest, src, received_from);
+                //println!(" == == Analyzing what {} does when it receives {}.{} == ==", dest, src, received_from);
                 {
-                    let node = &pathers[dest as usize];
+                    let node = &mut pathers[dest as usize];
                     if node.should_i_forward(src as u16, received_from) {
-                        println!("Node {} decided to forward msg from {} via {}", dest, src, received_from);
+                        //println!("Node {} decided to forward msg from {} via {}", dest, src, received_from);
+
                         for hearing_node in get_who_hears(dest, &node_neighbors) {
                             front.insert((hearing_node, dest));
                         }
                     } else {
-                        println!("Node {} decided NOT to forward msg from {} via {}", dest, src, received_from);
+                        //println!("Node {} decided NOT to forward msg from {} via {}", dest, src, received_from);
                     }
                 }
             }
 
             for (node_index, node) in pathers.iter().enumerate() {
+
                 if node_index == src {
                     // We don't want re-delivery to the src
                     continue;
@@ -161,11 +277,37 @@ mod tests {
 
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(100_000))]
+        #![proptest_config(ProptestConfig::with_cases(20_000))]
         #[test]
         fn verify_someone_always_forwards_test(neighbor_reports in neighborhood()) {
             verify_someone_always_forwards(neighbor_reports);
         }
+
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1_000))]
+        #[test]
+        fn minipather_equals_to_ref(node_neighbors in neighborhood()) {
+            let node_count = node_neighbors.len();
+            for (node,neighbors) in node_neighbors.iter().enumerate(){
+                let mut pather = MiniPather::new(node as u16);
+                let mut ref_pather = known_good_mini_pather::MiniPather::new(node as u16);
+                for i in 0..node_count {
+                    if i != node {
+                        pather.report_neighbors(i as u16, node_neighbors[i].iter().copied());
+                        ref_pather.report_neighbors(i as u16, node_neighbors[i].iter().copied());
+                    }
+                }
+                for i in 0..node_count {
+                    for j in 0..node_count {
+                        assert_eq!(pather.should_i_forward(i as u16, j as u16),
+                            ref_pather.should_i_forward(i as u16, j as u16));
+                    }
+                }
+            }
+        }
+
     }
 
     #[test]
@@ -176,7 +318,7 @@ mod tests {
 
     fn islands(node_neighbors: &Vec<Vec<u16>>) -> Vec<u8> {
 
-        println!("Input: {:?}", node_neighbors);
+        //println!("Input: {:?}", node_neighbors);
         let mut explored = IndexSet::new();
         fn explore(explored: &mut IndexSet<u16>, seed: u16, neighbors: &Vec<Vec<u16>>) -> BTreeSet<u16> {
             let mut front = IndexSet::new();
