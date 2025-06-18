@@ -239,9 +239,6 @@ pub struct PeerInfo {
     pub(crate) source_info: IndexMap<EphemeralNodeId, PeerOriginInfo>,
     pub(crate) peer_neighbors: Vec<EphemeralNodeId>,
 
-    //TODO: Add GC
-    /// Messages whose origin is `peer`, should be sent to `destination`.
-    pub forwardings: IndexMap<EphemeralNodeId /*destination*/, Instant /*live*/>,
 
     pub(crate) last_seen: Instant,
 
@@ -258,7 +255,6 @@ impl PeerInfo {
             up_to_speed: Default::default(),
             source_info: Default::default(),
             peer_neighbors: vec![],
-            forwardings: Default::default(),
             last_seen: now,
             request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit::default(),
             //send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit::default(),
@@ -302,25 +298,6 @@ impl PeerInfo {
         source_info.can_hear_source.observe_true();
     }
 
-    /// Record that `destination` wants us to forward everything that originates at `Self`.
-    /// (Or remove such forwarding, depending on `forwarding_action`
-    pub fn record_forwarding_for(
-        &mut self,
-        destination: EphemeralNodeId,
-        forwarding_action: ForwardingChange,
-        now: Instant,
-    ) {
-        match forwarding_action {
-            ForwardingChange::Add => {
-                //println!("Node adding forwarding {} -> {}", self.peer, destination);
-                self.forwardings.insert(destination, now);
-            }
-            ForwardingChange::Remove => {
-                //println!("Removing forwarding {} -> {}", self.peer, destination);
-                self.forwardings.swap_remove(&destination);
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -353,13 +330,6 @@ impl Peers {
                     }
                     retained
                 });
-            if !removed.is_empty() {
-                for peer in self.peers.values_mut() {
-                    peer.forwardings.retain(|target,_|{
-                        !removed.contains(target)
-                    });
-                }
-            }
 
             if peers_before != self.peers.len() {
                 self.recalculate_summary(our_node_id);
@@ -656,24 +626,7 @@ impl Neighborhood {
     ) {
         //TODO Finish epohemeralnodeid stuff, make sure to implement re-randomization on conflicts! And clean up old history
         match message {
-            DistributorMessage::Forwarding {
-                source,
-                origin,
-                forwarder,
-                action,
-            } => {
-                /*println!(
-                    "Received forwarding packet for {}, we are {}, action:{:?}",
-                    *forwarder, our_node_id, action
-                );*/
-                if *forwarder == our_node_id {
-                    let peer = self.peers.get_peer_mut(*origin);
-                    if let Some(peer) = peer {
-                        peer.record_forwarding_for(*source, *action, now);
-                    }
-                }
-            }
-            DistributorMessage::ReportHeads { cutoff, heads, source, neighbors } => {
+            DistributorMessage::ReportHeads { heads, source, .. } => {
 
                 let peer = self.peers.get_insert_peer(*source, now);
                 //println!("{:?}: Calling time_passed for {:?}", test_elapsed(), *source);
@@ -754,16 +707,6 @@ struct OriginForwardingData {
     last_heard: Instant,
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct OriginData {
-    /// How many times have we observed this path appearing missing?
-    missing_paths_count: usize,
-    //compile_error!("Figure out when to purge this info. Doing so is needed, since otherwise we may not send a StartForwarding when needed")
-    // TODO: Rename to forwarded?
-    /// Who have we asked to forward us stuff from this origin?
-    forwarding_from: Option<OriginForwardingData>,
-}
-
 
 const MAX_RECENT_SENT_KEPT: usize = 1000;
 #[derive(Debug)]
@@ -777,41 +720,9 @@ pub struct QueryableOutbuffer {
     recently_sent_message_ids: DuplicationChecker<MessageId>,
     parentless_messages:
         IndexMap</*missing parent*/ MessageId, Vec<AccumulatedMessage>>,
-
-    origin_paths: IndexMap<EphemeralNodeId /*origin*/, OriginData>,
 }
 
 impl QueryableOutbuffer {
-
-    fn observe_missing_path(&mut self,
-                                self_node_id: EphemeralNodeId,
-                                origin: EphemeralNodeId, src: EphemeralNodeId, forward_cmds: &mut Vec<ForwardingAction>, now: Instant) {
-        let pathdata = self.origin_paths.entry(origin).or_default();
-        pathdata.missing_paths_count += 1;
-        println!("Missing path: {:?}", pathdata.missing_paths_count);
-        if pathdata.missing_paths_count > 1 {
-            println!(
-                "Adding forwarding {} -> {}",
-                origin,
-                self_node_id
-            );
-            if let Some(existing_forwarding) = &pathdata.forwarding_from {
-                if now.saturating_duration_since(existing_forwarding.last_heard) < self.periodic_message_interval {
-                    // There's already an active forwarding, that seems reasonably recent
-                    return;
-                }
-            }
-            forward_cmds.push(ForwardingAction::StartForwarding {
-                origin,
-                forwarder: src,
-            });
-            // TODO: Don't overwrite here, at least not without cancelling the forwarding
-            pathdata.forwarding_from = Some(OriginForwardingData{
-                forwarder: src,
-                last_heard: now,
-            });
-        }
-    }
 
     pub fn is_empty(&self) -> bool {
         self.outbuf.is_empty()
@@ -842,7 +753,6 @@ impl QueryableOutbuffer {
             ),
             recently_sent_message_ids: DuplicationChecker::new(2 * periodic_message_interval),
             parentless_messages: Default::default(),
-            origin_paths: Default::default(),
         }
     }
     //TODO: Implement detection of node id duplicates
@@ -1071,12 +981,6 @@ impl EphemeralNodeId {
 //extra ReportHeads, after which the newly joined nodes sends one of its own. Thus we
 //get rid of the 1-periodic msg delay of waiting for ReportHeads-messages
 
-#[derive(Debug, Savefile, Clone, Copy)]
-#[repr(u8)]
-pub enum ForwardingChange {
-    Add,
-    Remove,
-}
 
 #[derive(Debug, Savefile, Clone)]
 pub struct Head {
@@ -1130,19 +1034,6 @@ pub enum DistributorMessage {
         /// True if this message was transmitted because it was explicitly requested
         explicit_retransmit: bool,
     },
-    /// Inform 'transmitter' that messages from 'origin' should not be
-    /// transmitted when 'source' asks for them (because 'source' knows
-    /// that some other node is responding to this.
-    Forwarding {
-        /// The node requesting the forwarding
-        source: EphemeralNodeId,
-        /// The origin from which this forwarding request concerns itself with
-        origin: EphemeralNodeId,
-        /// The node that is to create the forwading path,
-        forwarder: EphemeralNodeId,
-        /// True if the forward should be removed
-        action: ForwardingChange,
-    },
 }
 
 impl DistributorMessage {
@@ -1166,17 +1057,6 @@ impl DistributorMessage {
                     heads,
                     source,
                     neighbors
-                )
-            }
-            DistributorMessage::Forwarding {
-                source,
-                origin,
-                forwarder: transmitter,
-                action,
-            } => {
-                format!(
-                    "{}: source: {source} transmitter: {transmitter}, origin: {origin}, action: {action:?}",
-                    brightred("Forwarding"),
                 )
             }
             DistributorMessage::SyncAllQuery(messages) => {
@@ -1344,31 +1224,6 @@ pub(crate) struct AccumulatedMessage {
     explicit_retransmit: bool,
 }
 
-enum ForwardingAction {
-    StartForwarding {
-        forwarder: EphemeralNodeId,
-        origin: EphemeralNodeId,
-    },
-    CancelForwardering {
-        forwarder: EphemeralNodeId,
-        origin: EphemeralNodeId,
-    },
-}
-impl ForwardingAction {
-    fn origin(&self) -> EphemeralNodeId {
-        match self {
-            ForwardingAction::StartForwarding { origin, .. } => *origin,
-            ForwardingAction::CancelForwardering { origin, .. } => *origin,
-        }
-    }
-    fn forwarder(&self) -> EphemeralNodeId {
-        match self {
-            ForwardingAction::StartForwarding { forwarder, .. } => *forwarder,
-            ForwardingAction::CancelForwardering { forwarder, .. } => *forwarder,
-        }
-    }
-}
-
 impl Distributor {
     pub fn periodic_message_interval(&self) -> Duration {
         self.periodic_message_interval
@@ -1532,7 +1387,6 @@ impl Distributor {
 
             self.distributor_state.have_heard_peer = true;
             match item {
-                DistributorMessage::Forwarding { .. } => {}
                 DistributorMessage::SyncAllQuery(query) => {
                     accumulated_sync_all_queries.extend(query);
                 }
@@ -1553,16 +1407,6 @@ impl Distributor {
                                 // Let's wait a bit before acting on its messages
 
                                 self.neighborhood.peers.fast_pather.report_neighbors(source.raw_u16(), neighbors.iter().map(|x|x.raw_u16()));
-
-                                // Find all forwardings that forward _to_ 'source' (this ReportHeads transmitter)
-                                for (peer_id, peer) in self.neighborhood.peers.peers.iter_mut() {
-                                    if *peer_id == source || !neighbors.contains(peer_id) {
-                                        continue;
-                                    }
-                                    // `peer_id` is a peer that 'source' itself thinks is its neighbor.
-                                    // we shouldn't forward from `peer_id` to 'source'
-                                    peer.forwardings.swap_remove(&source);
-                                }
 
                                 let peer = self.neighborhood.peers.get_insert_peer(source, now);
 
@@ -1750,8 +1594,7 @@ impl Distributor {
 
         //let self_node_id = *self.ephemeral_node_id.get();
 
-        let mut forwarding_cmds = vec![];
-        self.process_reported_heads(&mut database, accumulated_heads, &mut forwarding_cmds, now)?;
+        self.process_reported_heads(&mut database, accumulated_heads, now)?;
 
         accumulated_request_upstream.sort_keys();
 
@@ -1772,7 +1615,6 @@ impl Distributor {
             let temp = self.process_received_messages(
                 &mut database,
                 std::mem::take(&mut accumulated_serialized),
-                &mut forwarding_cmds,
                 now,
             )?;
             if temp.is_empty() {
@@ -1782,23 +1624,6 @@ impl Distributor {
         }
         self.process_sync_all_queries(&mut database, accumulated_sync_all_queries)?;
         self.process_sync_all_requests(&mut database, accumulated_sync_all_requests, now)?;
-
-        {
-
-            for squelch in forwarding_cmds.iter().rev() {
-                let origin = squelch.origin();
-                let self_node_id = self.node_id();
-                self.outbuf.push_back(DistributorMessage::Forwarding {
-                    source: self_node_id,
-                    origin,
-                    forwarder: squelch.forwarder(),
-                    action: match squelch {
-                        ForwardingAction::StartForwarding { .. } => ForwardingChange::Add,
-                        ForwardingAction::CancelForwardering { .. } => ForwardingChange::Remove,
-                    },
-                })
-            }
-        }
 
         Ok(())
     }
@@ -1878,7 +1703,6 @@ impl Distributor {
                 /*origin:*/ Option<EphemeralNodeId>,
             )>,
         >,
-        forward_cmds: &mut Vec<ForwardingAction>,
         now: Instant,
     ) -> Result<()> {
         //let self_node_id = *self.ephemeral_node_id.get();
@@ -1902,13 +1726,6 @@ impl Distributor {
                         }
                     ).copied().unwrap()
                 };
-            if let Some(origin) = origin {
-                if let Some(peer) = self.neighborhood.peers.get_peer(min_src) {
-                    if peer.up_to_speed.is_up_to_speed() {
-                        self.outbuf.observe_missing_path(*self.ephemeral_node_id.get(), origin, min_src, forward_cmds, now);
-                    }
-                }
-            }
 
             messages_to_request_from_source
                 .entry(min_src)
@@ -2130,7 +1947,6 @@ impl Distributor {
         &mut self,
         database: &mut DatabaseSessionMut<APP>,
         mut message_list: Vec<AccumulatedMessage>,
-        forward_cmds: &mut Vec<ForwardingAction>,
         now: Instant,
     ) -> Result<Vec<AccumulatedMessage>> {
         let mut released_list = Vec::new();
@@ -2165,11 +1981,6 @@ impl Distributor {
                         msg.id, parent
                     );
 
-                    if !explicit_retransmit {
-                        self.outbuf.observe_missing_path(*self.ephemeral_node_id.get(), origin,
-                                                         source, forward_cmds, now);
-                    }
-
 
                     let parent = *parent;
 
@@ -2193,56 +2004,7 @@ impl Distributor {
                     continue 'msg_iter;
                 }
             }
-
-            if !explicit_retransmit {
-                match self.outbuf.origin_paths.entry(origin) {
-                    // We got something with original source 'origin', so maybe we have a forwarding path
-                    Entry::Occupied(mut o) => {
-                        let data = o.get_mut();
-                        if let Some(forward_from) = &mut data.forwarding_from {
-                            // source == forward_from, this was just the forwarding
-                            // at work.
-                            if source != forward_from.forwarder {
-                                // Seems there's an alternate path, cancel previous forwarding path
-                                forward_cmds.push(ForwardingAction::CancelForwardering {
-                                    forwarder: forward_from.forwarder,
-                                    origin,
-                                });
-                                println!(
-                                    "Removing forwarding, because of non-retransmit from other node detected"
-                                );
-                                o.swap_remove();
-                            } else {
-                                forward_from.last_heard = now;
-                            }
-                        } else {
-                            o.swap_remove();
-                        }
-                    }
-                    Entry::Vacant(_) => {}
-                }
-            }
-
-
-            // Apparently we now hear directly from this origin, surely we don't need any forwarding
-            match self.outbuf.origin_paths.entry(source) {
-                Entry::Occupied(o) => {
-                    println!(
-                        "A forwarding path was found, with forwarding from: {:?}",
-                        o.get().forwarding_from
-                    );
-                    if let Some(forward_from) = &o.get().forwarding_from {
-                        println!("Cancelling forwarding from {} for {}", origin, forward_from.forwarder);
-                        forward_cmds.push(ForwardingAction::CancelForwardering {
-                            origin,
-                            forwarder: forward_from.forwarder,
-                        });
-                    }
-                    o.swap_remove();
-                }
-                Entry::Vacant(_) => {}
-            }
-
+            
             let already_present = database.contains_message(msg.id)?;
             if !already_present {
                 //if let Some(peer) = self.neighborhood.peers.get_peer_mut(source) {

@@ -1,5 +1,5 @@
 use std::sync::atomic::AtomicBool;
-use indexmap::{IndexMap, IndexSet};
+use indexmap::{IndexMap};
 use indexmap::map::Entry;
 
 mod known_good_mini_pather;
@@ -193,7 +193,7 @@ impl MiniPather {
 #[cfg(test)]
 mod tests {
     use indexmap::IndexSet;
-    use itertools::enumerate;
+    
     use super::{known_good_mini_pather, MiniPather};
 
     use proptest::prelude::*;
@@ -207,7 +207,7 @@ mod tests {
         let mut pathers: Vec<MiniPather> = vec![];
         let mut all_nodes = IndexSet::new();
         let node_count = node_neighbors.len();
-        for (node,neighbors) in node_neighbors.iter().enumerate(){
+        for (node, neighbors) in node_neighbors.iter().enumerate(){
             all_nodes.insert(node as u16);
             let mut pather = MiniPather::new(node as u16);
             for i in 0..node_count {
@@ -290,7 +290,7 @@ mod tests {
         #[test]
         fn minipather_equals_to_ref(node_neighbors in neighborhood()) {
             let node_count = node_neighbors.len();
-            for (node,neighbors) in node_neighbors.iter().enumerate(){
+            for (node, neighbors) in node_neighbors.iter().enumerate(){
                 let mut pather = MiniPather::new(node as u16);
                 let mut ref_pather = known_good_mini_pather::MiniPather::new(node as u16);
                 for i in 0..node_count {
@@ -338,7 +338,7 @@ mod tests {
         }
         let mut islands = BTreeSet::new();
         for seed in 0..node_neighbors.len() {
-            let mut seed = seed as u16;
+            let seed = seed as u16;
             if !explored.contains(&seed) {
                 islands.insert(explore(&mut explored, seed, node_neighbors));
             }
