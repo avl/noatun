@@ -38,6 +38,8 @@ use tracing::{debug, error, info, instrument, trace, warn};
 pub mod size_limit_vec_deque;
 pub mod udp;
 
+
+
 #[doc(hidden)]
 #[derive(Savefile, Debug)]
 pub enum NetworkPacket {
@@ -345,7 +347,8 @@ impl ReceiveTrack {
                     // See: #packet_retransmit_logic
                     let retransmission_delay = retransmit_responsibility_query(first.entity.src);
                     println!(
-                        "Re-transmit query believes we SHOULD transmit after {:?}",
+                        "{:?} Re-transmit query believes we SHOULD request retransmit after {:?}",
+                        test_elapsed(),
                         retransmission_delay
                     );
 

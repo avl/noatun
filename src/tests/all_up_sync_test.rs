@@ -762,9 +762,19 @@ async fn all_up_general_update_sync_test_mid_age_messages_persist() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_newer_messages_no_persist() {
+async fn all_up_general_update_sync_test_newer_messages_no_persist_all() {
     //setup_tracing();
     for seed in 0..100 {
+        println!("Seed = {seed}");
+        all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, true).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn all_up_general_update_sync_test_newer_messages_no_persist84() {
+    //setup_tracing();
+    {
+        let seed = 84;
         println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, true).await;
     }
@@ -889,11 +899,17 @@ async fn all_up_general_update_sync_test_impl(
         }
     }
     info!(" -------------- NETWORK HEALED -----------------");
+    println!("{:?} -------------- NETWORK HEALED -----------------", test_elapsed());
     driver.set_loss(0.0);
     tokio::time::sleep(Duration::from_secs(20)).await;
 
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
+
+    info!("Test case done");
+    println!("{}", driver.raw_frames_snapshot());
+    println!("{}", driver.messages_snapshot());
+
 
     let msgs1 = app1
         .inner_database()
@@ -936,9 +952,6 @@ async fn all_up_general_update_sync_test_impl(
 
     let correct_root = root1;
 
-    info!("Test case done");
-    println!("{}", driver.raw_frames_snapshot());
-    println!("{}", driver.messages_snapshot());
 
     assert_eq!(app1.get_status().await.unwrap(), Status::Nominal);
     assert_eq!(app2.get_status().await.unwrap(), Status::Nominal);
