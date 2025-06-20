@@ -1566,7 +1566,7 @@ impl<M> OnDiskMessageStore<M> {
         Ok(())
     }
 
-    fn add_remove_parents_and_children(
+    pub(crate) fn add_remove_parents_and_children(
         &mut self,
         id: MessageId,
         new_parents: &[MessageId],

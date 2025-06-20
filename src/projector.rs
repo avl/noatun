@@ -35,9 +35,6 @@ impl<APP: Application> Projector<APP> {
         context: &mut DatabaseContextData,
     ) -> Result<()> {
 
-        compile_error!("all_up_general_update_sync_test_old_messages_seed2 test shows parents aren't correctly stripped away from old entries. Check why.")
-        println!("Advancing cutoff from {:?} to {:?}", self.messages.current_cutoff_time()?, new_cutoff_at);
-
         let mut prev_cutoff_state = self.messages.prev_cutoff_hash()?;
         let mut cutoff_state = self.messages.current_cutoff_hash()?;
 
@@ -91,7 +88,6 @@ impl<APP: Application> Projector<APP> {
                 .messages
                 .read_message_header_and_children(index_entry.message)?
             {
-                children_to_remove.retain(|x| x.timestamp() < new_cutoff_at_noatun_time);
                 remove_orders.push((index_entry.message, children_to_remove));
             } else {
                 error!("Encountered deleted message in cutoff-processing");
@@ -102,6 +98,10 @@ impl<APP: Application> Projector<APP> {
         for (message, children_to_remove) in remove_orders {
             self.messages
                 .remove_all_parents_and_some_children(message, &children_to_remove)?;
+            for child in children_to_remove {
+                self.messages.add_remove_parents_and_children(
+                    child,&[],Some(message),&[],None)?;
+            }
         }
         for item in &unused_list[..unused_list_last] {
             debug_assert!(item.last_overwriter < cutoff_index);
@@ -254,7 +254,7 @@ impl<APP: Application> Projector<APP> {
                 #[cfg(debug_assertions)]
                 {
                     if !message.header.parents.is_empty() {
-                        println!("oops");
+                        println!("oops"); //TODO: Remove
                     }
                 }
                 assert!(message.header.parents.is_empty());
