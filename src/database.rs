@@ -481,7 +481,7 @@ impl<APP: Application> Database<APP> {
             return Ok(());
         }
         self.message_store
-            .advance_cutoff(new_cutoff, &mut self.context)
+            .advance_cutoff(new_cutoff,  &mut self.context)
     }
 
     fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {

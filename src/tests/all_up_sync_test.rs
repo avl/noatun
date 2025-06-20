@@ -765,17 +765,17 @@ async fn all_up_general_update_sync_test_mid_age_messages_persist() {
 async fn all_up_general_update_sync_test_newer_messages_no_persist_all() {
     //setup_tracing();
     for seed in 0..100 {
-        println!("Seed = {seed}");
+        println!("\n\n============ Seed {seed} ==============\n\n");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, true).await;
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_newer_messages_no_persist84() {
+async fn all_up_general_update_sync_test_newer_messages_no_persist22() {
     //setup_tracing();
     {
-        let seed = 84;
-        println!("Seed = {seed}");
+        let seed = 22;
+        println!("\n\n============ Seed {seed} ==============\n\n");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, true).await;
     }
 }
@@ -923,6 +923,8 @@ async fn all_up_general_update_sync_test_impl(
         .unwrap()
         .get_all_messages()
         .unwrap();
+    println!("Node 1 messages:\n{:#?}", msgs1);
+    println!("Node 2 messages:\n{:#?}", msgs2);
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
     /*let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();

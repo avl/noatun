@@ -299,7 +299,7 @@ mod tests {
         #[test]
         fn minipather_equals_to_ref(node_neighbors in neighborhood()) {
             let node_count = node_neighbors.len();
-            for (node, neighbors) in node_neighbors.iter().enumerate(){
+            for (node, _neighbors) in node_neighbors.iter().enumerate(){
                 let mut pather = MiniPather::new(node as u16);
                 let mut ref_pather = known_good_mini_pather::MiniPather::new(node as u16);
                 for i in 0..node_count {

@@ -34,11 +34,18 @@ impl<APP: Application> Projector<APP> {
         new_cutoff_at: CutOffTime,
         context: &mut DatabaseContextData,
     ) -> Result<()> {
+        let mut prev_cutoff_state = self.messages.prev_cutoff_hash()?;
         let mut cutoff_state = self.messages.current_cutoff_hash()?;
+
+        let old_prev_cutoff_index = self
+            .messages
+            .get_index_after(prev_cutoff_state.before_time.to_noatun_time())?;
 
         let old_cutoff_index = self
             .messages
             .get_index_after(cutoff_state.before_time.to_noatun_time())?;
+
+
         let cutoff_index = self
             .messages
             .get_index_after(new_cutoff_at.to_noatun_time())?;
@@ -56,12 +63,22 @@ impl<APP: Application> Projector<APP> {
 
         //println!("Last index: {}, last overwriter: {:?}", unused_list_last, cutoff_index);
         let mut process_now = vec![];
+        assert!(new_cutoff_at > cutoff_state.before_time);
         cutoff_state.before_time = new_cutoff_at;
+        prev_cutoff_state.before_time = new_cutoff_at.saturating_sub(self.cut_off_config.stride);
 
         let messages_slice = self.messages.get_messages_slice()?;
         let new_cutoff_at_noatun_time = new_cutoff_at.to_noatun_time();
         //println!("Advancing {:?}", old_cutoff_index.index()..cutoff_index.index());
         let mut remove_orders = Vec::new();
+
+        for index_entry in &messages_slice[old_prev_cutoff_index.index()..old_cutoff_index.index()] {
+            if index_entry.file_offset.is_deleted() {
+                continue;
+            }
+            prev_cutoff_state.apply(index_entry.message, "advance add");
+        }
+
         for index_entry in &messages_slice[old_cutoff_index.index()..cutoff_index.index()] {
             if index_entry.file_offset.is_deleted() {
                 continue;
@@ -77,6 +94,7 @@ impl<APP: Application> Projector<APP> {
             }
             cutoff_state.apply(index_entry.message, "advance add");
         }
+
         for (message, children_to_remove) in remove_orders {
             self.messages
                 .remove_all_parents_and_some_children(message, &children_to_remove)?;
@@ -85,7 +103,7 @@ impl<APP: Application> Projector<APP> {
             debug_assert!(item.last_overwriter < cutoff_index);
             process_now.push(*item);
         }
-        self.messages.set_cutoff_hash(cutoff_state)?;
+        self.messages.advance_cutoff_hash(prev_cutoff_state, cutoff_state)?;
 
         //println!("Advance cutoff batch: {:?}", process_now);
         let must_remove =
@@ -98,7 +116,7 @@ impl<APP: Application> Projector<APP> {
         self.head_tracker
             .remove_before_cutoff(cutoff_state.before_time.to_noatun_time())?;
 
-        self.messages.set_cutoff_time(new_cutoff_at)?;
+        self.messages.deprecated_set_cutoff_time(new_cutoff_at)?;
         Ok(())
     }
 

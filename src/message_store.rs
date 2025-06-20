@@ -420,7 +420,13 @@ struct StoreHeader {
     padding: u32,
     // Compact file=1 + old file being compacted=0
     data_files: [DataFileEntry; 2],
+    /// Current cutoff information
+    ///
+    /// That is, the timestamp before which no new messages are ever expected
+    /// to be encountered, plus the hash of all messages prior to this timestamp.
     cutoff: CutOffHashPos,
+    /// Cutoff data for the previous period, i.e, one era earlier
+    prev_cutoff: CutOffHashPos,
 }
 
 unsafe impl NoatunStorable for StoreHeader {}
@@ -835,13 +841,16 @@ impl<M> OnDiskMessageStore<M> {
     ) -> Result<()> {
         let cutoff_time = config.nominal_cutoff(CutOffTime::from_noatun_time(time_now));
         index_header.cutoff.before_time = cutoff_time;
+        index_header.prev_cutoff.before_time = cutoff_time.saturating_sub(config.stride);
         index_header.cutoff.hash = CutoffHash::ZERO;
+        index_header.prev_cutoff.hash = CutoffHash::ZERO;
         let cutoff_time_noatun: NoatunTime = cutoff_time.into();
         for item in index.iter() {
             if item.message.timestamp() >= cutoff_time_noatun {
                 break;
             }
             index_header.cutoff.apply(item.message, "recovery");
+            index_header.prev_cutoff.apply(item.message, "recovery");
         }
 
         Ok(())
@@ -1226,6 +1235,7 @@ impl<M> OnDiskMessageStore<M> {
 
         if let Some((file, _offset)) = entry.file_offset.file_and_offset() {
             header.cutoff.report_delete(entry.message);
+            header.prev_cutoff.report_delete(entry.message);
 
             let id = entry.message;
             header.data_files[file.index()].bytes_used -= entry.file_total_size;
@@ -1249,10 +1259,12 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
-    pub fn set_cutoff_hash(&mut self, cutoff: CutOffHashPos) -> Result<()> {
+    /// Advance the cutoff hash to a new later state
+    pub fn advance_cutoff_hash(&mut self, new_prev_cutoff: CutOffHashPos, new_cutoff: CutOffHashPos) -> Result<()> {
         let (header, _message_index) =
             Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
-        header.cutoff = cutoff;
+        header.prev_cutoff = new_prev_cutoff;
+        header.cutoff = new_cutoff;
         Ok(())
     }
 
@@ -1844,6 +1856,7 @@ impl<M> OnDiskMessageStore<M> {
                         cur_index
                     );
                     index_header.cutoff.report_add(msg.header.id);
+                    index_header.prev_cutoff.report_add(msg.header.id);
 
                     message_inserted(msg.id(), &msg.header.parents)?;
                     if index_we_must_rewind_db_to.is_none() {
@@ -2175,6 +2188,10 @@ impl<M> OnDiskMessageStore<M> {
         let (header, _index) = self.header_and_index()?;
         Ok(header.cutoff)
     }
+    pub fn prev_cutoff_hash(&self) -> Result<CutOffHashPos> {
+        let (header, _index) = self.header_and_index()?;
+        Ok(header.prev_cutoff)
+    }
     pub fn current_cutoff_time(&self) -> Result<NoatunTime> {
         let (header, _index) = self.header_and_index()?;
         Ok(header.cutoff.before_time.to_noatun_time())
@@ -2184,9 +2201,14 @@ impl<M> OnDiskMessageStore<M> {
         let (header, index) = self.header_and_index()?;
         Ok(&index[0..header.entries as usize])
     }
-    pub(crate) fn set_cutoff_time(&mut self, time: CutOffTime) -> Result<()> {
+    pub(crate) fn deprecated_set_cutoff_time(&mut self, time: CutOffTime) -> Result<()> {
         let (header, _index) = Self::header_and_index_mut(&mut self.index_mmap)?;
-        header.cutoff.before_time = time;
+        if header.cutoff.before_time != time {
+            eprintln!("internal error, deprecated set cutoff time would have needed to make an actual change");
+            println!("internal error, deprecated set cutoff time would have needed to make an actual change");
+            //TODO: Remove this method!
+            std::process::abort();
+        }
         Ok(())
     }
 

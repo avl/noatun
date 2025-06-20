@@ -998,9 +998,13 @@ pub enum DistributorMessage {
         neighbors: Vec<EphemeralNodeId>,
     },
     /// A query to tell if the listed messages are known.
-    /// If they are, they should be requested by SyncAllRequest.
+    /// 
+    /// If they are not, they should be requested by SyncAllRequest.
+    /// I.e, if the node receiving a SyncAllRequest doesn't have any of the messages
+    /// listed, they should be requested using SyncAllRequest.
     SyncAllQuery(Vec<MessageId>),
     /// The given messages should be sent.
+    // TODO: Add dst?
     SyncAllRequest(Vec<MessageId>),
     /// Sent only when doing a full sync
     SyncAllAck(Vec<MessageId>),
@@ -1451,6 +1455,7 @@ impl Distributor {
                             }
                             Acceptability::Unacceptable => {
                                 debug!("Acceptability: Unacceptable");
+                                println!("{:?} Acceptability: Unacceptable (node {})", test_elapsed(), self.ephemeral_node_id.get());
                                 self.distributor_state
                                     .most_recent_unsynced
                                     .insert(src, database.noatun_now());

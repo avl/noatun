@@ -38,12 +38,10 @@ use tracing::{debug, error, info, instrument, trace, warn};
 pub mod size_limit_vec_deque;
 pub mod udp;
 
-
-
 #[doc(hidden)]
 #[derive(Savefile, Debug)]
 pub enum NetworkPacket {
-    Data(bool /*push*/, TransmittedEntitySortable),
+    Data(TransmittedEntitySortable),
     RetransmitRequest {
         who: EphemeralNodeId,
         what: Vec<u64>,
@@ -264,7 +262,7 @@ impl ReceiveTrack {
         packet_source: EphemeralNodeId,
         tx_finished_received_frame: &mut Sender<(Address, Vec<u8>)>,
         retransmit_requests: &mut IndexMap<EphemeralNodeId, RetransmitInfo>,
-        push: bool,
+        
         retransmit_responsibility_query: &mut (dyn FnMut(EphemeralNodeId) -> Duration
                   + 'static
                   + Sync
@@ -362,7 +360,7 @@ impl ReceiveTrack {
                     for x in self.expected_next..first.reconstructed_seq {
                         accum_retransmits.items.insert(x);
                     }
-                    if !push && accum_retransmits.wait_until.is_none() {
+                    if accum_retransmits.wait_until.is_none() {
                         println!(
                             "{:?} Enqueue retransmit in {:?}",
                             test_elapsed(),
@@ -737,7 +735,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         Serializer::bare_serialize(
                             &mut temp,
                             0,
-                            &NetworkPacket::Data(self.queue.is_empty(), x.entity.clone()),
+                            &NetworkPacket::Data(x.entity.clone()),
                         )
                         .unwrap();
                         let (Ok(insert_point) | Err(insert_point)) = self
@@ -812,7 +810,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                     };
 
                     match packet {
-                        NetworkPacket::Data(push, entity) => {
+                        NetworkPacket::Data(entity) => {
                             let src_node = entity.src;
 
                             let (track, new_track) = match self.receive_track.entry((src_node, src_addr)) {
@@ -824,7 +822,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                                 }
                             };
 
-                            match track.process(entity, src_node, &mut self.message_tx, &mut self.outgoing_retransmit_requests, push, &mut self.retransmit_responsibility_query, new_track).await {
+                            match track.process(entity, src_node, &mut self.message_tx, &mut self.outgoing_retransmit_requests, &mut self.retransmit_responsibility_query, new_track).await {
                                     Ok(()) => {}
                                     Err(err) => {
                                         error!("Receive error: {:?}", err);
