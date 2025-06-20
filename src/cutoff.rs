@@ -194,6 +194,8 @@ unsafe impl NoatunStorable for CutOffState {}
 pub enum Acceptability {
     /// The hashes are identical. This is the nominal case
     Nominal,
+    /// The peer hash is equal to our hash for the preceding era
+    Previous,
     /// The hashes are definitely incompatible
     Unacceptable,
     /// A peer clock appears to be more than one 'stride' off. I.e, if the
@@ -217,7 +219,7 @@ impl CutOffHashPos {
         if *self == peer_hash {
             return Acceptability::Nominal;
         }
-        compile_error!("Handle the case where self time > peer hash, and check that peer hash matches prev cutoff hash!")
+        //compile_error!("Handle the case where self time > peer hash, and check that peer hash matches prev cutoff hash!")
         if self.before_time < peer_hash.before_time {
             if self.before_time < peer_hash.before_time.saturating_sub(config.stride) {
                 return Acceptability::UnacceptablePeerClockDrift;

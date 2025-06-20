@@ -34,6 +34,10 @@ impl<APP: Application> Projector<APP> {
         new_cutoff_at: CutOffTime,
         context: &mut DatabaseContextData,
     ) -> Result<()> {
+
+        compile_error!("all_up_general_update_sync_test_old_messages_seed2 test shows parents aren't correctly stripped away from old entries. Check why.")
+        println!("Advancing cutoff from {:?} to {:?}", self.messages.current_cutoff_time()?, new_cutoff_at);
+
         let mut prev_cutoff_state = self.messages.prev_cutoff_hash()?;
         let mut cutoff_state = self.messages.current_cutoff_hash()?;
 

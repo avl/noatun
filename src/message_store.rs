@@ -2235,6 +2235,9 @@ impl<M> OnDiskMessageStore<M> {
         now: NoatunTime,
     ) -> Result<Acceptability> {
         let (header, _index) = self.header_and_index()?;
+        if header.prev_cutoff == hash {
+            return Ok(Acceptability::Previous)
+        }
         Ok(header
             .cutoff
             .is_acceptable_cutoff_hash(hash, cutoff_config, now))

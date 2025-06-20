@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::pin::Pin;
 use tracing::{error, info, trace};
+use crate::distributor::EphemeralNodeId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LoadingStatus {
@@ -736,7 +737,7 @@ impl<APP: Application> Database<APP> {
             params,
         )
     }
-
+    
     /// Local is true if this message has been locally created. I.e, it isn't a message that
     /// has been received from some other node.
     fn append_single(&mut self, message: &MessageFrame<APP::Message>, local: bool) -> Result<()> {

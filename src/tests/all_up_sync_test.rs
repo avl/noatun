@@ -735,10 +735,20 @@ async fn all_up_gradual_update_sync_test() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_old_messages() {
+async fn all_up_general_update_sync_test_old_messages_all() {
     //setup_tracing();
     for seed in 0..100 {
-        println!("Seed = {seed}");
+        println!("=========== Seed = {seed} ===========");
+        all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn all_up_general_update_sync_test_old_messages_seed2() {
+    //setup_tracing();
+    {
+        let seed = 2;
+            println!("=========== Seed = {seed} ===========");
         all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
     }
 }
@@ -747,7 +757,7 @@ async fn all_up_general_update_sync_test_old_messages() {
 async fn all_up_general_update_sync_test_newer_messages_persist() {
     //setup_tracing();
     for seed in 0..100 {
-        println!("Seed = {seed}");
+        println!("=========== Seed = {seed} ===========");
         all_up_general_update_sync_test_impl(seed, 10, true, usize::MAX, true).await;
     }
 }
@@ -756,7 +766,7 @@ async fn all_up_general_update_sync_test_newer_messages_persist() {
 async fn all_up_general_update_sync_test_mid_age_messages_persist() {
     //setup_tracing();
     for seed in 0..100 {
-        println!("Seed = {seed}");
+        println!("=========== Seed = {seed} ===========");
         all_up_general_update_sync_test_impl(seed, 900, true, usize::MAX, true).await;
     }
 }
@@ -832,9 +842,11 @@ async fn all_up_general_update_sync_test_impl(
         compile_error!("Make things work even with packet loss 0.15 below!")
     }
     driver.set_loss(0.15); //0.15
-    for i in 0..MY_THREAD_RNG
+    let steps = MY_THREAD_RNG
         .with(|x| x.borrow_mut().as_mut().unwrap().gen_range(1..20))
-        .min(maxlen)
+        .min(maxlen);
+    println!("Steps: {}", steps);
+    for i in 0..steps
     {
         info!("==== write {} =====", i);
         let time_now = noatun_start_time + start_instant.elapsed();
@@ -901,7 +913,7 @@ async fn all_up_general_update_sync_test_impl(
     info!(" -------------- NETWORK HEALED -----------------");
     println!("{:?} -------------- NETWORK HEALED -----------------", test_elapsed());
     driver.set_loss(0.0);
-    tokio::time::sleep(Duration::from_secs(20)).await;
+    tokio::time::sleep(Duration::from_secs(60)).await;
 
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
@@ -935,6 +947,16 @@ async fn all_up_general_update_sync_test_impl(
     println!("Only in 2: {:?}", smsgs2.sub(&smsgs1));*/
     if persist {
         assert_eq!(msgs1.len(), msgs2.len());
+        if msgs1 != msgs2 {
+            println!("App1 cutoff time: {:?}", app1.get_cutoff_time());
+            println!("App2 cutoff time: {:?}", app2.get_cutoff_time());
+            for (i,(msg1,msg2)) in msgs1.iter().zip(msgs2.iter()).enumerate() {
+                assert_eq!(msg1, msg2,
+                    "message mismatch for msg #{i}, comparing node {} and {}",
+                    app1.ephemeral_node_id().await.unwrap() ,app2.ephemeral_node_id().await.unwrap(),
+                );
+            }
+        }
         assert_eq!(msgs1, msgs2, "Failed for seed {seed}");
     }
 

@@ -1406,7 +1406,7 @@ impl Distributor {
                 } => {
                     for pass in 0..2 {
                         match database.is_acceptable_cutoff_hash(cutoff_hash)? {
-                            Acceptability::Nominal => {
+                            Acceptability::Previous | Acceptability::Nominal => {
                                 // If the neighbor has no neighbors of its own, it's just starting up.
                                 // Let's wait a bit before acting on its messages
 

@@ -890,6 +890,7 @@ enum Cmd<APP: Application> {
         Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>,
         oneshot::Sender<()>,
     ),
+    GetEphemeralNodeId(oneshot::Sender<EphemeralNodeId>),
 }
 
 struct FillInFrequency {
@@ -1153,6 +1154,9 @@ where
                                 }
                             }
                         }
+                        Cmd::GetEphemeralNodeId(sender) => {
+                            _ = sender.send(*self.distributor.ephemeral_node_id.get());
+                        }
                     }
                 }
                 recv_pkt = self.receiver_rx.recv() => {
@@ -1180,6 +1184,21 @@ where
     <APP as Application>::Params: Send,
     <APP as Application>::Message: Send,
 {
+
+    /// This is just available for debugging
+    pub async fn ephemeral_node_id(&self) -> Result<EphemeralNodeId> {
+        let (oneshot_tx, oneshot_rx) = oneshot::channel();
+        let send_result = self.cmd_tx.send(Cmd::GetEphemeralNodeId(oneshot_tx)).await;
+        match send_result {
+            Ok(()) => {
+                Ok(oneshot_rx.await?)
+            }
+            Err(err) => {
+                bail!("Failed to send command to background thread {:?}", err);
+            }
+        }
+    }
+
     pub async fn get_status(&self) -> Result<Status> {
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
         let status = self.cmd_tx.send(Cmd::GetStatus(oneshot_tx)).await;
