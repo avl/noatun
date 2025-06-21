@@ -18,8 +18,11 @@ pub struct MiniPather {
     nodes: IndexMap<u16, Peer>,
     /// Mapping from node, to each node that hears it
     reverse: IndexMap<u16, Vec<u16>>,
+    /// Map from `(origin, received_from) tuple to result of
+    /// calling 'should_i_forward(origin, received_from)`
     memoization: IndexMap<(u16,u16), bool>,
-
+    /// back-to-back testing against simple, known-to-be-correct pather
+    // TODO: Remove this
     correct_pather: known_good_mini_pather::MiniPather,
 }
 
@@ -104,11 +107,55 @@ impl MiniPather {
         (-(neighbors as isize), of)
     }
 
+    /// Returns the ordinal for ourselves, regarding retransmission requests. Some(0) means
+    /// we should ask for retransmission immediately. Some(5) means there are 5 others
+    /// that we believe will ask for retransmission. Some(1) means that one other is believed
+    /// to do so. In general, we should wait longer the more there are before us that should
+    /// retransmit. If retransmission is carried out, we should, of course, cancel our request,
+    /// regardless of whether anyone else actually managed to get a request in.
+    ///
+    /// Returns None if we should *not* ask for retransmission
+    pub fn should_i_ask_for_retransmission(&mut self, received_from: u16) -> Option<usize> {
+        if received_from == self.whoami {
+            return None;
+        }
+        let Some(neighbor ) = self.nodes.get(&received_from)
+         else {
+            // We *do* ask for retransmission even for nodes we've never actually established
+            // contact with, but we do it with some delay to try and avoid storms when connectivity
+            // is bad.
+            return Some(2 + self.whoami as usize %10);
+        };
+
+        if neighbor.neighbors.is_empty() {
+            return Some(2 + self.whoami as usize %10);
+        }
+        if !neighbor.neighbors.contains(&self.whoami) {
+            return None;
+        }
+
+        let my_rank = self.ranking(self.whoami);
+        let mut count = 0;
+        for (other_forwarder, other_forwarder_hears) in self.nodes.iter().filter(|(x,_)|
+            **x != received_from &&
+            neighbor.neighbors.contains(x) &&
+                self.ranking(**x)
+                    <
+                    my_rank
+        ) {
+            //println!("{} is a better sender", other_forwarder);
+            count += 1;
+        }
+
+        Some(count)
+    }
+
     pub fn should_i_forward(&mut self, origin: u16, received_from: u16) -> bool {
         if origin == self.whoami || received_from == self.whoami {
             assert!(!self.correct_pather.should_i_forward(origin, received_from));
             return false;
         }
+
         if let Some(memoized ) = self.memoization.get(&(origin, received_from)) {
             assert_eq!(self.correct_pather.should_i_forward(origin, received_from), *memoized);
             return *memoized;
@@ -278,6 +325,37 @@ mod tests {
                 assert!(ok);
             }
         }
+
+        for src in 0..node_count {
+            let mut num_in_same_island = 0;
+            let mut some_ask = false;
+            let mut some_ask0 = false;
+            let mut have_same_island = 0;
+            for dst in 0..node_count {
+                if src == dst {
+                    continue;
+                }
+                compile_error!("Start using this!")
+                let ask = pathers[dst].should_i_ask_for_retransmission(src as u16);
+                println!("{} -> {} Ask: {:?} (islands: {} {})",src,dst,ask, islands[src], islands[dst]);
+                if islands[src] == islands[dst] {
+                    have_same_island+=1;
+                }
+                num_in_same_island += 1;
+                if ask.is_some() {
+                    some_ask = true;
+                }
+                if ask == Some(0) {
+                    println!("Set asome_ask0 = true");
+                    some_ask0 = true;
+                }
+            }
+            if have_same_island >= 2 {
+                assert!(some_ask);
+                assert!(some_ask0);
+            }
+        }
+
     }
     fn neighborhood() -> impl Strategy<Value = Vec<Vec<u16>>> {
         let n = 4 as usize;
@@ -330,37 +408,33 @@ mod tests {
     #[test]
     fn regression_verify_someone_always_forwards2() {
         let input = vec![
-        vec![
-            0u16,
-            0,
-            0,
-            0,
-        ],
-        vec![
-            1,
-            2,
-            3,
-            1,
-        ],
-        vec![
-            2,
-            0,
-            0,
-            2,
-        ],
-        vec![
-            0,
-            2,
-            1,
-            0,
-        ]
+            vec![
+                0,
+                0,
+                0,
+                1,
+            ],
+            vec![
+                0,
+                0,
+                0,
+                0,
+            ],
+            vec![
+                0,
+                0,
+                3,
+                0,
+            ],
+            vec![
+                2,
+                2,
+                2,
+                0,
+            ]
         ];
 
-        let mut pather = MiniPather::new(3);
-        for i in 0..4 {
-            pather.report_neighbors(i as u16, input[i].iter().copied());
-        }
-        assert!(pather.should_i_forward(0,0));
+        verify_someone_always_forwards(input);
     }
 
     fn islands(node_neighbors: &Vec<Vec<u16>>) -> Vec<u8> {

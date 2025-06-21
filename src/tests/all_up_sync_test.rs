@@ -1660,7 +1660,5 @@ async fn complex_forwarding_test() {
         let root = apps[i].with_root(|root| root.detach());
         assert_eq!(root0, root, "node {} and {} should have same state", 0, i);
     }
-
     assert_snapshot!(driver.sent_messages_snapshot());
-
 }

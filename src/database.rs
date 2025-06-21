@@ -737,7 +737,7 @@ impl<APP: Application> Database<APP> {
             params,
         )
     }
-    
+
     /// Local is true if this message has been locally created. I.e, it isn't a message that
     /// has been received from some other node.
     fn append_single(&mut self, message: &MessageFrame<APP::Message>, local: bool) -> Result<()> {
@@ -946,6 +946,7 @@ impl<APP: Application> Database<APP> {
             }
         }
         //println!("Load status: {:?}", load_status);
+
         let mut db = Database {
             params,
             prev_local: None,
