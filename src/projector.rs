@@ -69,7 +69,7 @@ impl<APP: Application> Projector<APP> {
         prev_cutoff_state.before_time = new_cutoff_at.saturating_sub(self.cut_off_config.stride);
 
         let messages_slice = self.messages.get_messages_slice()?;
-        let new_cutoff_at_noatun_time = new_cutoff_at.to_noatun_time();
+        //let new_cutoff_at_noatun_time = new_cutoff_at.to_noatun_time();
         //println!("Advancing {:?}", old_cutoff_index.index()..cutoff_index.index());
         let mut remove_orders = Vec::new();
 
@@ -84,7 +84,7 @@ impl<APP: Application> Projector<APP> {
             if index_entry.file_offset.is_deleted() {
                 continue;
             }
-            if let Some((_hdr, mut children_to_remove)) = self
+            if let Some((_hdr, children_to_remove)) = self
                 .messages
                 .read_message_header_and_children(index_entry.message)?
             {

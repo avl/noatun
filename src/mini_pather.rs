@@ -136,7 +136,8 @@ impl MiniPather {
 
         let my_rank = self.ranking(self.whoami);
         let mut count = 0;
-        for (other_forwarder, other_forwarder_hears) in self.nodes.iter().filter(|(x,_)|
+        //TODO: Simplify, use 'count' or something
+        for (_other_forwarder, _other_forwarder_hears) in self.nodes.iter().filter(|(x,_)|
             **x != received_from &&
             neighbor.neighbors.contains(x) &&
                 self.ranking(**x)
@@ -261,7 +262,8 @@ mod tests {
         let mut pathers: Vec<MiniPather> = vec![];
         let mut all_nodes = IndexSet::new();
         let node_count = node_neighbors.len();
-        for (node, neighbors) in node_neighbors.iter().enumerate(){
+        // TODO: Just iterate over indices
+        for (node, _neighbors) in node_neighbors.iter().enumerate(){
             all_nodes.insert(node as u16);
             let mut pather = MiniPather::new(node as u16);
             for i in 0..node_count {
@@ -306,7 +308,8 @@ mod tests {
                 }
             }
             
-            for (node_index, node) in pathers.iter().enumerate() {
+            // TODO: Just iterate over indices
+            for (node_index, _node) in pathers.iter().enumerate() {
 
                 if node_index == src {
                     // We don't want re-delivery to the src
@@ -335,7 +338,6 @@ mod tests {
                 if src == dst {
                     continue;
                 }
-                compile_error!("Start using this!")
                 let ask = pathers[dst].should_i_ask_for_retransmission(src as u16);
                 println!("{} -> {} Ask: {:?} (islands: {} {})",src,dst,ask, islands[src], islands[dst]);
                 if islands[src] == islands[dst] {

@@ -2,7 +2,7 @@ use crate::{cast_slice, cast_storable, MessageId, NoatunStorable, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use savefile_derive::Savefile;
 use std::fmt::{Debug, Display, Formatter};
-use std::ops::Sub;
+
 
 pub(crate) struct CutOffConfig {
     /// The approximate time in history at which all nodes must have been in sync.

@@ -744,10 +744,10 @@ async fn all_up_general_update_sync_test_old_messages_all() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_old_messages_seed2() {
+async fn all_up_general_update_sync_test_old_messages_seed13() {
     //setup_tracing();
     {
-        let seed = 2;
+        let seed = 13;
             println!("=========== Seed = {seed} ===========");
         all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
     }
@@ -781,10 +781,10 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist_all() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_newer_messages_no_persist22() {
+async fn all_up_general_update_sync_test_newer_messages_no_persist87() {
     //setup_tracing();
     {
-        let seed = 22;
+        let seed = 87;
         println!("\n\n============ Seed {seed} ==============\n\n");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, true).await;
     }
@@ -800,9 +800,18 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist_no_reset() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_mid_age_messages_no_persist() {
+async fn all_up_general_update_sync_test_mid_age_messages_no_persist_all() {
     //setup_tracing();
     for seed in 0..100 {
+        println!("Seed = {seed}");
+        all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX, true).await;
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn all_up_general_update_sync_test_mid_age_messages_no_persist87() {
+    //setup_tracing();
+    {
+        let seed = 87;
         println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX, true).await;
     }

@@ -261,6 +261,7 @@ impl ReceiveTrack {
         packet: TransmittedEntitySortable,
         packet_source: EphemeralNodeId,
         tx_finished_received_frame: &mut Sender<(Address, Vec<u8>)>,
+        message_tx: &mut Vec<(Address, Vec<u8>)>,
         retransmit_requests: &mut IndexMap<EphemeralNodeId, RetransmitInfo>,
         
         retransmit_responsibility_query: &mut (dyn FnMut(EphemeralNodeId) -> Duration
@@ -397,12 +398,17 @@ impl ReceiveTrack {
                         .extend(&first.entity.data[0..first.entity.first_boundary as usize]);
                 }
                 if !self.accum.is_empty() {
-                    tx_finished_received_frame
+                    /*tx_finished_received_frame
                         .try_send((
                             Address::from(packet_source),
                             self.accum.iter().copied().collect(),
                         ))
-                        .unwrap();
+                        .unwrap();*/
+                    message_tx
+                        .push((
+                            Address::from(packet_source),
+                            self.accum.iter().copied().collect(),
+                        ));
                     self.accum.clear();
                 }
                 self.have_valid_accum = true;
@@ -419,9 +425,11 @@ impl ReceiveTrack {
                     let mut temp = vec![0; next_size];
                     reader.read_exact(&mut temp)?;
                     if !temp.is_empty() {
-                        tx_finished_received_frame
-                            .try_send((Address::from(packet_source), temp))
-                            .unwrap();
+                        /*tx_finished_received_frame
+                            .try_send((Address::from(packet_source), temp.clone()))
+                            .unwrap();*/
+                        message_tx
+                            .push((Address::from(packet_source), temp));
                     }
 
                     cur_boundary += next_size;
@@ -454,6 +462,16 @@ impl Default for RetransmitInfo {
             items: Default::default(),
             outstanding_retransmit: None,
         }
+    }
+}
+
+impl<Socket:CommunicationDriver> SenderLoopTrait<Socket::Endpoint> for MulticastSenderLoop<Socket> {
+    fn make_context(&self) -> Result<ExecutionContext<Socket::Endpoint>> {
+        self.create_context()
+    }
+
+    async fn pump(&mut self, context: &mut ExecutionContext<Socket::Endpoint>, message_tx: &mut Vec<(Address, Vec<u8>)>) -> Result<bool> {
+        self.run(context, message_tx).await
     }
 }
 
@@ -524,6 +542,13 @@ impl BwLimiter {
         self.debt = self.debt.saturating_sub(payment) + new_debt;
         self.last_update = now;
     }
+}
+
+pub struct ExecutionContext<T> {
+    cursend: Option<Vec<u8>>,
+    send_local_addr: T,
+    next_retransmit: Instant,
+    next_retransmit_active: bool,
 }
 
 impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
@@ -672,17 +697,34 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             self.queue.insert(insert_point, history_item);
         }
     }
-    #[instrument(skip(self),fields(local=?self.bind_address))]
-    pub async fn run(mut self) -> Result<()> {
-        let mut cursend: Option<Vec<u8>> = None;
-        let send_local_addr = self.send_socket.local_addr()?;
-        let mut next_retransmit = Instant::now();
-        let mut next_retransmit_active = false;
-        loop {
+
+    pub fn create_context(&self) -> Result<ExecutionContext<Socket::Endpoint>> {
+        Ok(ExecutionContext {
+            cursend: None,
+            send_local_addr: self.send_socket.local_addr()?,
+            next_retransmit: Instant::now(),
+            next_retransmit_active: false,
+        })
+    }
+
+    pub async fn run_loop(mut self) -> Result<()> {
+        let mut ctx = self.create_context()?;
+        let mut message_tx = Vec::new();
+        while self.run(&mut ctx, &mut message_tx).await? == false {
+            for msg in message_tx.drain(..) {
+                //self.message_tx.send(msg).await?;
+            }
+        }
+        Ok(())
+    }
+
+    #[instrument(skip(self, context),fields(local=?self.bind_address))]
+    pub async fn run(&mut self, context: &mut ExecutionContext<Socket::Endpoint>, message_tx: &mut Vec<(Address,Vec<u8>)>) -> Result<bool/*quit*/> {
+        {
             self.recvbuf.clear();
             let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
 
-            if cursend.is_none() {
+            if context.cursend.is_none() {
                 if self.outgoing_retransmit_requests.is_empty() == false {
                     let mut temp = vec![];
                     let now = Instant::now();
@@ -710,7 +752,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         };
                         Serializer::bare_serialize(&mut temp, 0, &packet).unwrap();
                         trace!("Sending raw retransmit {:?} ({} bytes)", packet, temp.len());
-                        cursend = Some(temp);
+                        context.cursend = Some(temp);
                         if first_val.items.is_empty() {
                             self.outgoing_retransmit_requests.swap_remove(&first_key);
                         }
@@ -722,14 +764,14 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                                 "Scheduling raw retransmit in {:?}",
                                 wait.duration_since(Instant::now())
                             );
-                            next_retransmit = wait;
-                            next_retransmit_active = true;
+                            context.next_retransmit = wait;
+                            context.next_retransmit_active = true;
                         }
                     }
                 }
-                if cursend.is_none() {
+                if context.cursend.is_none() {
                     let mut temp = vec![];
-                    cursend = self.queue.pop_front().map(|x| {
+                    context.cursend = self.queue.pop_front().map(|x| {
                         // Consider if savefile really is the best here. Some more space efficiency
                         // wouldn't hurt!
                         Serializer::bare_serialize(
@@ -748,10 +790,10 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                 }
             }
 
-            let send_queue_empty = cursend.is_none();
+            let send_queue_empty = context.cursend.is_none();
 
             let send = async {
-                if let Some(tosend) = cursend.as_mut() {
+                if let Some(tosend) = context.cursend.as_mut() {
                     let send_size = tosend.len();
                     self.limiter.wait_debt_free().await;
 
@@ -760,12 +802,12 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                             self.limiter.incur_debt(send_size as u64);
 
                             //trace!("Actually sent {} raw bytes", sent);
-                            cursend.take();
+                            context.cursend.take();
                         }
                         Err(err) => {
                             // Apply rate limit even on failure
                             self.limiter.incur_debt(send_size as u64);
-                            cursend.take();
+                            context.cursend.take();
                             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                             error!("Send error: {:?}", err);
                         }
@@ -779,9 +821,10 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                 biased;
                 _ = &mut self.quit_rx => {
                     info!("quit_rx signalled, background task shutting down");
-                    return Ok(());
+                    return Ok(true);
                 }
                 _ = send => {
+                    Ok(false)
                 }
                 buf = get_cmd, if send_queue_empty => {
                     if let Some(buf) = buf {
@@ -792,21 +835,22 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                             buf,
                             *self.ephemeral_node_id.get()
                         )?;
+                        Ok(false)
                     } else {
                         info!("cmd-channel gone, background task shutting down");
-                        return Ok(());
+                        Ok(true)
                     }
                 }
                 msg = receive => {
                     let (size, src_addr) = msg.expect("network should not fail");
-                    if src_addr == send_local_addr {
-                        continue;
+                    if src_addr == context.send_local_addr {
+                        return Ok(false);
                     }
 
                     assert_eq!(size, self.recvbuf.len());
                     let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0)  else {
                         error!("Invalid packet received");
-                        continue;
+                        return Ok(false);
                     };
 
                     match packet {
@@ -822,10 +866,11 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                                 }
                             };
 
-                            match track.process(entity, src_node, &mut self.message_tx, &mut self.outgoing_retransmit_requests, &mut self.retransmit_responsibility_query, new_track).await {
-                                    Ok(()) => {}
+                            match track.process(entity, src_node, &mut self.message_tx, message_tx, &mut self.outgoing_retransmit_requests, &mut self.retransmit_responsibility_query, new_track).await {
+                                    Ok(()) => {Ok(false)}
                                     Err(err) => {
                                         error!("Receive error: {:?}", err);
+                                        return Ok(false);
                                 }
                             }
                         }
@@ -833,11 +878,13 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                             if who == *self.ephemeral_node_id.get() {
                                 self.queue_retransmits(&what);
                             }
+                            Ok(false)
                         }
                     }
                 }
-                _ = tokio::time::sleep_until(next_retransmit), if next_retransmit_active => {
-                    next_retransmit_active = false;
+                _ = tokio::time::sleep_until(context.next_retransmit), if context.next_retransmit_active => {
+                    context.next_retransmit_active = false;
+                    Ok(false)
                 }
             }
         }
@@ -909,7 +956,7 @@ where
 {
     database: Arc<Mutex<Database<APP>>>,
     /// Join handle for MulticastSenderLoop
-    jh: tokio::task::JoinHandle<Result<()>>,
+    //jh: tokio::task::JoinHandle<Result<()>>,
     sender_tx: Sender<Vec<u8>>,
     receiver_rx: Receiver<(Address, Vec<u8>)>,
     distributor: Distributor,
@@ -973,6 +1020,13 @@ impl Default for DatabaseCommunicationConfig {
     }
 }
 
+
+#[allow(async_fn_in_trait)]
+pub(crate) trait SenderLoopTrait<E> {
+    fn make_context(&self) -> Result<ExecutionContext<E>>;
+    async fn pump(&mut self, context: &mut ExecutionContext<E>, message_tx: &mut Vec<(Address, Vec<u8>)>) -> Result<bool/*quit*/>;
+}
+
 impl<APP: Application + 'static + Send> DatabaseCommunicationLoop<APP>
 where
     <APP as Application>::Params: Send,
@@ -1020,8 +1074,8 @@ where
         Ok(())
     }
 
-    pub(crate) async fn run(self, senderloop_quit_tx: oneshot::Sender<()>) -> Result<()> {
-        let result = self.run2().await;
+    pub(crate) async fn run<E>(self, senderloop_quit_tx: oneshot::Sender<()>, sender: &mut impl SenderLoopTrait<E>) -> Result<()> {
+        let result = self.run2(sender).await;
         _ = senderloop_quit_tx.send(());
         info!("Communication terminated: {:?}", result);
         match result {
@@ -1034,18 +1088,35 @@ where
         }
     }
 
-    #[instrument(skip(self), fields(node=?self.node))]
-    pub(crate) async fn run2(mut self) -> Result<Option<tokio::sync::oneshot::Sender<()>>> {
+    #[instrument(skip(self, sender), fields(node=?self.node))]
+    pub(crate) async fn run2<E>(mut self, sender: &mut impl SenderLoopTrait<E>) -> Result<Option<tokio::sync::oneshot::Sender<()>>> {
         self.nextsend.clear();
         let mut buffer_timer_instant = None;
+        let mut context = sender.make_context()?;
+        let mut message_tx: Vec<(Address, Vec<u8>)> = Vec::new();
         loop {
+
+            while let Some(check) = message_tx.first() {
+                //_ = self.receiver_rx.try_recv();
+                self.process_packet(check.0, check.1.clone())?;
+                message_tx.remove(0);
+                /*
+                _ = self.receiver_rx.try_recv();
+                if let Some(recv_pkt) = self.receiver_rx.recv().await {
+                    assert_eq!(&recv_pkt, check);
+                    message_tx.remove(0);
+                } else {
+                    bail!("sender loop quit");
+                }*/
+            }
+
             // For buffered incoming messages
             let buffer_len = self.buffered_incoming_messages.len();
             let buffer_life_start = self.buffer_life_start;
 
             let buffering_timer = async move {
                 if buffer_len > 0 {
-                    if buffer_len > 1000 || buffer_life_start.elapsed() > Duration::from_secs(2) {
+                    if buffer_len > 1000 || buffer_life_start.elapsed() > Duration::from_secs(1) {
                     } else {
                         info!("Sleeping 10ms, waiting for buffer to fill");
                         let sleep_target = buffer_timer_instant
@@ -1091,6 +1162,9 @@ where
 
             select!(
                 biased;
+                _ = sender.pump(&mut context, &mut message_tx) => {
+
+                }
                 res = sendtask => {
                     res?;
                 }
@@ -1159,14 +1233,18 @@ where
                         }
                     }
                 }
-                recv_pkt = self.receiver_rx.recv() => {
+                /*recv_pkt = self.receiver_rx.recv() => {
+                    let check = message_tx.remove(0);
                     let Some(recv_pkt) = recv_pkt else {
                         bail!("sender loop quit");
                     };
+                    assert_eq!(recv_pkt, check);
                     self.process_packet(recv_pkt.0, recv_pkt.1)?;
-                }
-
+                }*/
             );
+
+
+
         }
     }
 }
@@ -1382,6 +1460,7 @@ where
         let should_retransmit: Box<dyn FnMut(EphemeralNodeId) -> Duration + Send + Sync> =
             Box::new(move |peer| -> Duration {
                 // #packet_retransmit_logic
+
                 let info = node_peer_info2.get();
                 println!("--------------------------------------------------------");
                 println!("Peer summary: {:?}", info);
@@ -1394,7 +1473,7 @@ where
                 );
                 t
             });
-        let sender_loop = MulticastSenderLoop::new(
+        let mut sender_loop = MulticastSenderLoop::new(
             driver,
             &config.listen_address,
             &config.multicast_address,
@@ -1410,8 +1489,9 @@ where
             should_retransmit,
         )
         .await?;
+
         let node = sender_loop.bind_address.to_string();
-        let jh = spawn(sender_loop.run());
+        //let jh = spawn(sender_loop.run());
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(100);
 
@@ -1426,7 +1506,7 @@ where
             ),
             node: node.clone(),
             database: database.clone(),
-            jh,
+            //jh,
             sender_tx,
             receiver_rx,
             cmd_rx,
@@ -1439,7 +1519,9 @@ where
             report_head_interval: config.periodic_message_interval,
         };
 
-        spawn(main.run(quit_tx));
+        spawn(async move {
+            main.run(quit_tx, &mut sender_loop).await
+        });
 
         Ok(DatabaseCommunication {
             database,
@@ -1560,8 +1642,8 @@ mod tests {
         .await
         .unwrap();
 
-        let jh1 = spawn(mloop1.run());
-        let jh2 = spawn(mloop2.run());
+        let jh1: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(mloop1.run_loop());
+        let jh2: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(mloop2.run_loop());
 
         for packet in [
             vec![1u8; 1],
@@ -1629,8 +1711,8 @@ mod tests {
         .await
         .unwrap();
 
-        let jh1 = spawn(mloop1.run());
-        let jh2 = spawn(mloop2.run());
+        let jh1 = spawn(mloop1.run_loop());
+        let jh2 = spawn(mloop2.run_loop());
 
         for packet in [vec![1u8; 1], vec![2u8; 10]] {
             sender_tx1.send(packet.clone()).await.unwrap();
