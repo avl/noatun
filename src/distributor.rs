@@ -1968,6 +1968,7 @@ impl Distributor {
             explicit_retransmit,
         } in message_list.into_iter()
         {
+            println!("{:?} process receiving {:?}", test_elapsed(), msg.id);
             for parent in msg.parents.iter() {
                 if database.contains_message(*parent)? == false
                     && !chosen_messages.contains_key(parent)
@@ -2013,7 +2014,7 @@ impl Distributor {
             let already_present = database.contains_message(msg.id)?;
             if !already_present {
                 //if let Some(peer) = self.neighborhood.peers.get_peer_mut(source) {
-
+                
                     //if !peer.forwardings.is_empty() {
                     if self.neighborhood.peers.fast_pather.should_i_forward(origin.raw_u16(), source.raw_u16()) {
                         //println!("#{}: Forwarding message from {:?}.{:?}", self.ephemeral_node_id.get(), origin, source);
@@ -2028,6 +2029,8 @@ impl Distributor {
                         //println!("#{}: NOT Forwarding message from {:?}.{:?}", self.ephemeral_node_id.get(), origin, source);
                     }
                 //}
+            } else {
+                println!("{:?} IGnoring message because we already have it {:?}", test_elapsed(), msg.id);
             }
 
             if let Some(released) = self.outbuf.parentless_messages.swap_remove(&msg.id) {

@@ -4,10 +4,7 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::{sha2, sha2_message};
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{
-    bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut,
-    Message, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime, Target,
-};
+use crate::{bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, test_elapsed, Message, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime, Target};
 use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::cmp::Ordering;
@@ -1050,6 +1047,7 @@ impl<M> OnDiskMessageStore<M> {
         let header: &mut FileHeaderEntry = unsafe { file.access_pod_mut(offset as usize)? };
 
         header.set_deleted();
+        println!("{:?} deleting {:?}", test_elapsed(), entry.message);
         entry.file_offset.set_deleted();
 
         Ok(())
@@ -1707,6 +1705,19 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
+   /* fn do_append_many_sorted2<'a>(
+        &mut self,
+        messages: impl ExactSizeIterator<Item = &'a MessageFrame<M>>,
+        mut message_inserted: impl FnMut(MessageId, &[MessageId] /*parents*/) -> Result<()>,
+        local: bool,
+    ) -> Result<Option<usize>>
+    where
+        M: Message + Debug + 'a,
+    {
+
+    }*/
+
+
     fn do_append_many_sorted<'a>(
         &mut self,
         messages: impl ExactSizeIterator<Item = &'a MessageFrame<M>>,
@@ -1722,7 +1733,7 @@ impl<M> OnDiskMessageStore<M> {
 
         let mut messages = messages.inspect(|test| {
             trace!("Inspecting for insert: {:?}", test);
-            println!("Inspecting for insert: {:?}", test);
+            println!("Inserting message: {:?}", test.header.id);
             if prev.is_none() {
                 prev = Some(test.header.id);
             } else {
@@ -1775,11 +1786,15 @@ impl<M> OnDiskMessageStore<M> {
         let (Ok(mut first_index) | Err(mut first_index)) = mmap_index[0..index_header.entries as usize]
             .binary_search_by_key(&first_input_message.id(), |x| x.message);
 
+        /*
+        NO! Don't do the below: We've decided that duplicates must not exist at all (for binary search,
+        and general easier-to-reason-about
         // If there are duplicates (which can only exist for deleted items), make sure we
         // deterministically start at the first
         while first_index > 0 && mmap_index[first_index-1].message == mmap_index[first_index].message {
             first_index -= 1;
         };
+         */
 
         let mut cur_index = first_index;
         let mut index_we_must_rewind_db_to = None;
@@ -1806,27 +1821,8 @@ impl<M> OnDiskMessageStore<M> {
             //dbg!(&cur_input_message);
             let cur_index_entry = &mmap_index[cur_index];
 
-            let mut future_id = None;
-            let mut future_index = None;
             let present_id = if cur_index < index_header.entries as usize {
-                if !cur_index_entry.file_offset.is_deleted() {
-                    Some(cur_index_entry.message)
-                } else {
-                    let future_pos = mmap_index[cur_index+1..index_header.entries as usize].iter().position(|x|!x.is_deleted());
-                    if let Some(future_pos) = future_pos {
-                        future_id = Some(mmap_index[cur_index+1+future_pos].message);
-                        future_index = Some(cur_index+1+future_pos);
-                    } else {
-                        // To ensure the index remains sorted at all times, we still need to
-                        // make sure we execute the 'Cases::NextFromFuture` here, since it
-                        // needs to rewrite the stamps of deleted entries to ensure sortedness
-                        if cur_index + 1 < index_header.entries as usize {
-                            future_id = Some(mmap_index[cur_index+1].message);
-                            future_index = Some(cur_index+1);
-                        }
-                    }
-                    None
-                }
+                Some(cur_index_entry.message)
             } else {
                 None
             };
@@ -1845,10 +1841,6 @@ impl<M> OnDiskMessageStore<M> {
                 NextFromCarry,
                 /// The next that should be written is the current input message
                 NextFromInput,
-                /// The next id to be written is from a future location in the index
-                /// This only happens if the current position is deleted, and a later
-                /// position has a timestamp earlier than all of the other alternatives
-                NextFromFuture
             }
 
             let cases = [
@@ -1861,8 +1853,6 @@ impl<M> OnDiskMessageStore<M> {
                     Cases::NextFromInput,
                     cur_input_message.as_ref().map(|x| x.id()),
                 ),
-                ( Cases::NextFromFuture,
-                  future_id)
             ];
             let (now_case, _now_message_id) = cases
                 .iter()
@@ -1870,31 +1860,16 @@ impl<M> OnDiskMessageStore<M> {
                 .min_by_key(|x| x.1)
                 .expect("There must always be some case present");
 
-            println!("At #{}: Present {:?}, next_input: {:?}, case: {:?} (carry = {:?})", cur_index, present_id,
+            /*println!("At #{}: Present {:?}, next_input: {:?}, case: {:?} (carry = {:?})", cur_index, present_id,
                      cur_input_message.as_ref().map(|x| x.id()),
-                     now_case, carry_buffer);
+                     now_case, carry_buffer);*/
 
             match now_case {
-                Cases::NextFromFuture => {
-                    let future_index = future_index.unwrap();
-                    println!("Swapping {} & {}", cur_index, future_index);
-                    mmap_index.swap(cur_index, future_index);
-                    let dummy_id = mmap_index[cur_index].message;
-                    for idx in cur_index+1 ..=future_index {
-                        assert!(mmap_index[idx].is_deleted());
-                        let msg = &mut mmap_index[idx].message;
-                        if *msg >= dummy_id {
-                            break;
-                        }
-                        *msg = dummy_id;
-                    }
-
-                    cur_index += 1;
-                    continue;
-                }
                 Cases::NextFromPresent => {
                     let input_message_id = cur_input_message.as_ref().map(|x| x.id());
                     if present_id == input_message_id {
+                        compile_error!("Fix this - if we overwrite the exact slot where this message was previously, we erroneously reuse it though it's deleted")
+                        assert!(!mmap_index[cur_index].is_deleted());
                         //info!("Duplicate detected");
                         cur_input_message = messages.next();
                         cur_index += 1;
@@ -2045,7 +2020,8 @@ impl<M> OnDiskMessageStore<M> {
         Ok(index_we_must_rewind_db_to)
     }
     fn check_duplicates(mmap_index: &[IndexEntry]) {
-        for (index,(window0,window1)) in mmap_index.iter().filter(|x|!x.is_deleted()).tuple_windows().enumerate() {
+        //TODO: Make this method not run in release mode
+        for (index,(window0,window1)) in mmap_index.iter().tuple_windows().enumerate() {
             #[allow(clippy::nonminimal_bool)]
             if !(window0.message < window1.message) {
                 panic!(
@@ -2345,6 +2321,7 @@ mod tests {
     use crate::cutoff::CutOffConfig;
     use crate::update_head_tracker::UpdateHeadTracker;
     use std::pin::Pin;
+    use std::sync::atomic::compiler_fence;
     use std::time::Instant;
     use rand::Rng;
     use rand::rngs::SmallRng;
@@ -2754,7 +2731,12 @@ mod tests {
 
     #[test]
     fn add_and_delete_many_fuzz_all() {
-        for seed in 0..10000 {
+        #[cfg(debug_assertions)]
+        const COUNT: usize = 5000;
+        #[cfg(not(debug_assertions))]
+        const COUNT: usize = 100000;
+
+        for seed in 0..100000 {
             println!("===== add_and_delete_many_fuzz seed: {} =======", seed);
             add_and_delete_fuzz_seed(seed);
         }
@@ -2779,7 +2761,7 @@ mod tests {
         )
             .unwrap();
 
-        const COUNT:u32 = 5;
+        const COUNT:u32 = 20;
 
         let mut head_tracker = UpdateHeadTracker::new(&mut InMemoryDisk::default(), &target).unwrap();
 
@@ -2789,15 +2771,16 @@ mod tests {
             let mut to_insert = Vec::new();
             let take = total_created_messages.retain(|x|
                 if rng.gen_range(0..3)==0 {
-                    to_insert.push(                    MessageFrame::new(
-                        MessageId::new_debug(*x),
-                        vec![],
-                        OnDiskMessage {
-                            id: *x as u64,
-                            seq: *x as u64,
-                            data: vec![42u8; 4],
-                        },
-                    )
+                    to_insert.push(
+                        MessageFrame::new(
+                            MessageId::new_debug(*x),
+                            vec![],
+                            OnDiskMessage {
+                                id: *x as u64,
+                                seq: *x as u64,
+                                data: vec![42u8; 4],
+                            },
+                        )
                     );
                     false
                 }  else {
@@ -2805,7 +2788,6 @@ mod tests {
                 }
             );
 
-            println!("-------------------------------------------");
             store
                 .append_many_sorted(to_insert.iter(), |_, _| Ok(()), true)
                 .unwrap();

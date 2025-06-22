@@ -712,7 +712,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         let mut message_tx = Vec::new();
         while self.run(&mut ctx, &mut message_tx).await? == false {
             for msg in message_tx.drain(..) {
-                //self.message_tx.send(msg).await?;
+                self.message_tx.send(msg).await?;
             }
         }
         Ok(())
@@ -1211,7 +1211,7 @@ where
 
                             match msg {
                                 Ok(msg) => {
-                                    println!("Node {} adding message {:?}", self.distributor.node_id(), msg.header.id);
+                                    println!("{:?} Node {} adding message {:?}", test_elapsed(), self.distributor.node_id(), msg.header.id);
                                     let my_node_id =self.distributor.node_id();
                                     self.distributor.outbuf.push_back(
                                         DistributorMessage::Message{
