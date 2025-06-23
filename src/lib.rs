@@ -502,6 +502,9 @@ impl MessageId {
         let t: u64 = time.as_ms();
         Self::from_parts_raw(t, random)
     }
+    pub fn is_time_valid_for_message(time: NoatunTime) -> bool {
+        time.as_ms() < 1<< 48
+    }
     pub fn from_parts_raw(time: u64, random: [u8; 10]) -> Result<MessageId> {
         if time >= 1 << 48 {
             bail!("Time value is too large");
@@ -618,6 +621,9 @@ impl NoatunTime {
     }
     pub fn successor(&self) -> NoatunTime {
         NoatunTime(self.0 + 1)
+    }
+    pub fn saturating_predecessor(&self) -> NoatunTime {
+        NoatunTime(self.0.saturating_sub(1))
     }
     pub const ZERO: NoatunTime = NoatunTime(0);
     pub const MAX: NoatunTime = NoatunTime(u64::MAX);

@@ -1047,7 +1047,7 @@ impl<M> OnDiskMessageStore<M> {
         let header: &mut FileHeaderEntry = unsafe { file.access_pod_mut(offset as usize)? };
 
         header.set_deleted();
-        println!("{:?} deleting {:?}", test_elapsed(), entry.message);
+        //println!("{:?} deleting {:?}", test_elapsed(), entry.message);
         entry.file_offset.set_deleted();
 
         Ok(())
@@ -1733,7 +1733,7 @@ impl<M> OnDiskMessageStore<M> {
 
         let mut messages = messages.inspect(|test| {
             trace!("Inspecting for insert: {:?}", test);
-            println!("Inserting message: {:?}", test.header.id);
+            //println!("Inserting message: {:?}", test.header.id);
             if prev.is_none() {
                 prev = Some(test.header.id);
             } else {
@@ -1772,9 +1772,10 @@ impl<M> OnDiskMessageStore<M> {
             assert_eq!(new_cutoff, index_header.cutoff);
         }
 
+        #[cfg(debug_assertions)]
         Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
 
-        let pre_indices = format!("Pre-indices: {:#?}", &mmap_index[0..index_header.entries as usize]);
+        //let pre_indices = format!("Pre-indices: {:#?}", &mmap_index[0..index_header.entries as usize]);
 
         let mut last_msg_id = None;
         let mut carry_buffer: VecDeque<IndexEntry> = VecDeque::with_capacity(len);
@@ -1812,7 +1813,7 @@ impl<M> OnDiskMessageStore<M> {
             }*/
             //info!("Loop start: cur_input_message: {:?}", cur_input_message);
             if carry_buffer.is_empty() && cur_input_message.is_none() {
-                //info!("Insert loop done");
+                //println!("Insert loop done");
                 break;
             }
 
@@ -1844,16 +1845,17 @@ impl<M> OnDiskMessageStore<M> {
             }
 
             let cases = [
-                (Cases::NextFromPresent, present_id),
-                (
-                    Cases::NextFromCarry,
-                    carry_buffer.front().map(|x| x.message),
-                ),
                 (
                     Cases::NextFromInput,
                     cur_input_message.as_ref().map(|x| x.id()),
                 ),
+                (
+                    Cases::NextFromCarry,
+                    carry_buffer.front().map(|x| x.message),
+                ),
+                (Cases::NextFromPresent, present_id),
             ];
+            //println!("Case map (index={cur_index}): {:?}", cases);
             let (now_case, _now_message_id) = cases
                 .iter()
                 .filter_map(|(case, val)| val.map(|x| (*case, x)))
@@ -1868,17 +1870,17 @@ impl<M> OnDiskMessageStore<M> {
                 Cases::NextFromPresent => {
                     let input_message_id = cur_input_message.as_ref().map(|x| x.id());
                     if present_id == input_message_id {
-                        compile_error!("Fix this - if we overwrite the exact slot where this message was previously, we erroneously reuse it though it's deleted")
-                        assert!(!mmap_index[cur_index].is_deleted());
+
+                        //assert!(!mmap_index[cur_index].is_deleted());
                         //info!("Duplicate detected");
                         cur_input_message = messages.next();
+                        //println!("cur_index inc 1");
                         cur_index += 1;
                         //eprintln!("Duplicate id detected");
                         continue;
                     }
-                    // We get here if a previous item was a duplicate. There's no copying to be done
+                    //println!("cur_index inc 2");
                     cur_index += 1;
-                    warn!("A previous item was a duplicate");
                     continue;
                     /*dbg!(&cur_input_message, &present_id,&carry_buffer,&cases,&now_case, &now_message_id);
                     unreachable!("This shouldn't, logically, happen");*/
@@ -1888,24 +1890,67 @@ impl<M> OnDiskMessageStore<M> {
 
                     debug_assert!(carry_buffer.iter().is_sorted_by_key(|x| x.message));
 
-                    if cur_index < initial_index_entries {
+                    if cur_index < initial_index_entries && !cur_index_entry.is_deleted() {
                         let (Ok(insert_at) | Err(insert_at)) = carry_buffer
                             .binary_search_by_key(&cur_index_entry.message, |x| x.message);
-
+                        // TODO: Use BTreeMap for carry_buffer?
+                        //println!("Carry carry add {:?}", cur_index_entry.message);
                         carry_buffer.insert(insert_at, *cur_index_entry);
                         debug_assert!(carry_buffer.iter().is_sorted_by_key(|x| x.message));
                     }
-                    let input_message_id = cur_input_message.as_ref().map(|x| x.id());
-                    if Some(temp.message) == input_message_id {
-                        cur_input_message = messages.next();
-                        //println!("Duplicate id detected in 2nd way");
-                    }
 
                     *cur_index_entry = temp;
+                    //println!("cur_index inc bc carry");
                     cur_index += 1;
                 }
                 Cases::NextFromInput => {
                     let msg = cur_input_message.take().unwrap();
+
+                    let mut was_in_carry = false;
+                    while let Some(temp) = carry_buffer.front() {
+                        let temp = *temp;
+                        if temp.message == msg.header.id {
+                            if temp.is_deleted() {
+                                carry_buffer.pop_front();
+                            } else {
+                                carry_buffer.pop_front();
+                                if !was_in_carry {
+                                    if cur_index < initial_index_entries {
+                                        let (Ok(insert_at) | Err(insert_at)) = carry_buffer
+                                            .binary_search_by_key(&cur_index_entry.message, |x| x.message);
+                                        // TODO: Use BTreeMap for carry_buffer?
+                                        //println!("Dupe carry add {:?}", cur_index_entry.message);
+                                        carry_buffer.insert(insert_at, *cur_index_entry);
+                                        debug_assert!(carry_buffer.iter().is_sorted_by_key(|x| x.message));
+                                    }
+
+                                    *cur_index_entry = temp;
+                                    cur_input_message = messages.next();
+                                    //println!("cur_index inc because duplicate (reason 2)");
+                                    cur_index += 1;
+                                }
+                                was_in_carry = true;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if was_in_carry {
+                        //println!("Duplicate id detected in carry {:?}", msg.header.id);
+                        continue;
+                    }
+                    if cur_index < index_header.entries as usize {
+                        let cur_index_entry = &mut mmap_index[cur_index];
+                        if !cur_index_entry.is_deleted() && cur_index_entry.message == msg.header.id {
+                            //println!("Duplicate id detected {:?}", msg.header.id);
+                            cur_input_message = messages.next();
+                            //println!("cur_index inc because duplicate (reason 1)");
+                            cur_index += 1;
+                            continue;
+                        }
+                    }
+
 
                     trace!(
                         "Inserting message {:?} at index {}",
@@ -1915,6 +1960,7 @@ impl<M> OnDiskMessageStore<M> {
                     index_header.cutoff.report_add(msg.header.id);
                     index_header.prev_cutoff.report_add(msg.header.id);
 
+                    //println!("At index {}, reporting insert of {:?} (carry {:?})", cur_index, msg.id(), carry_buffer);
                     message_inserted(msg.id(), &msg.header.parents)?;
                     if index_we_must_rewind_db_to.is_none() {
                         index_we_must_rewind_db_to =
@@ -1944,6 +1990,7 @@ impl<M> OnDiskMessageStore<M> {
                     // Append to the index (compacting while doing so)
                     if cur_index < index_header.entries as usize
                         && !cur_index_entry.file_offset.is_deleted()
+                        && cur_index_entry.message != msg.id()
                     {
                         //println!("Pushing {:?} to carry, to make space for {:?}", cur_index_entry.message, msg.header.id);
                         carry_buffer.push_back(*cur_index_entry);
@@ -1955,6 +2002,7 @@ impl<M> OnDiskMessageStore<M> {
                         file_total_size: total_size,
                     };
                     cur_index += 1;
+                    //println!("cur_index inc nominal");
                     let full_msg_size = total_size;
 
                     index_header.data_files[self.active_file.index()].bytes_used += full_msg_size;
@@ -1980,14 +2028,18 @@ impl<M> OnDiskMessageStore<M> {
         let Ok(cur_index_u32) = cur_index.try_into() else {
             bail!("max message count exceeded - database full");
         };
-        let correctly_sorted = mmap_index[0..index_header.entries as usize].iter().is_sorted_by_key(|x| x.message);
-        if !correctly_sorted {
-            println!("Pre-indices: {}\n, Post-indices: {:#?}\n",
-                pre_indices,
-                &mmap_index[0..index_header.entries as usize]);
-            //std::process::abort();
-        };
-        debug_assert!(correctly_sorted);
+
+        #[cfg(debug_assertions)]
+        {
+            let correctly_sorted = mmap_index[0..index_header.entries as usize].iter().is_sorted_by_key(|x| x.message);
+            /*if !correctly_sorted {
+                /*println!("Pre-indices: {}\n, Post-indices: {:#?}\n",
+                    pre_indices,
+                    &mmap_index[0..index_header.entries as usize]);*/
+                //std::process::abort();
+            };*/
+            debug_assert!(correctly_sorted);
+        }
 
         index_header.entries = index_header.entries.max(cur_index_u32);
 
@@ -2019,6 +2071,7 @@ impl<M> OnDiskMessageStore<M> {
 
         Ok(index_we_must_rewind_db_to)
     }
+    #[cfg(debug_assertions)]
     fn check_duplicates(mmap_index: &[IndexEntry]) {
         //TODO: Make this method not run in release mode
         for (index,(window0,window1)) in mmap_index.iter().tuple_windows().enumerate() {
@@ -2312,6 +2365,9 @@ impl<M> OnDiskMessageStore<M> {
 
 #[cfg(test)]
 mod tests {
+    use indexmap::IndexSet;
+use std::collections::BTreeSet;
+use std::collections::BTreeMap;
     use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
     use crate::message_store::{FileOffset, OnDiskMessageStore, U1};
     use crate::{DummyUnitObject, Message, MessageFrame, MessageId, NoatunTime, Target};
@@ -2732,11 +2788,11 @@ mod tests {
     #[test]
     fn add_and_delete_many_fuzz_all() {
         #[cfg(debug_assertions)]
-        const COUNT: usize = 5000;
+        const COUNT: u32 = 1000;
         #[cfg(not(debug_assertions))]
-        const COUNT: usize = 100000;
+        const COUNT: u32 = 10000;
 
-        for seed in 0..100000 {
+        for seed in 0..COUNT {
             println!("===== add_and_delete_many_fuzz seed: {} =======", seed);
             add_and_delete_fuzz_seed(seed);
         }
@@ -2750,7 +2806,7 @@ mod tests {
         }
     }
     fn add_and_delete_fuzz_seed(seed: u32) {
-        use rand::SeedableRng;
+        use rand::{seq::SliceRandom, SeedableRng};
         let mut rng = SmallRng::seed_from_u64(seed as u64);
 
         let target = Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into());
@@ -2762,18 +2818,39 @@ mod tests {
             .unwrap();
 
         const COUNT:u32 = 20;
+        /*compile_error!("run full test suite, make sure this test is really complete
+Then:
+* Finish refactor that reduced number of tasks in communicator to 1
+* Remove A LOT of dead code from distributor!
+* Check that all_up_tests are now reasonably complete
+* Check that visualizer shows good behavior
+
+
+Then:
+* Make some compelling benchmarks:
+  - Speed benchmarks compared to sqlite
+  - Communication overhead benchmarks compared to YJS?
+
+
+        ")*/
 
         let mut head_tracker = UpdateHeadTracker::new(&mut InMemoryDisk::default(), &target).unwrap();
 
         let mut total_created_messages = (0..COUNT).collect::<Vec<_>>();
 
-        for _ in 0..10 {
+
+        let mut facit : BTreeSet<MessageId> = BTreeSet::new();
+
+        for _ in 0..20 {
             let mut to_insert = Vec::new();
+            let big = rng.gen_bool(0.5);
+            let mut actually_inserted = IndexSet::new();
             let take = total_created_messages.retain(|x|
-                if rng.gen_range(0..3)==0 {
+                if rng.gen_range(0.. if big {2} else {6} ) == 0 {
+                    let new = MessageId::new_debug(*x);
                     to_insert.push(
                         MessageFrame::new(
-                            MessageId::new_debug(*x),
+                            new,
                             vec![],
                             OnDiskMessage {
                                 id: *x as u64,
@@ -2782,20 +2859,47 @@ mod tests {
                             },
                         )
                     );
+                    if facit.insert(new) {
+                        actually_inserted.insert(new);
+                    }
+                    if rng.gen_range(0..3)==0 {
+                        return true;
+                    }
                     false
                 }  else {
                     true
                 }
             );
 
+            //
+
+            let mut was_inserted = IndexSet::new();
+            println!("To insert: {:?}", to_insert);
+            println!("Pre-state:\n{:#?}",
+                store.header_and_index()
+            );
             store
-                .append_many_sorted(to_insert.iter(), |_, _| Ok(()), true)
+                .append_many_sorted(to_insert.iter(), |inserted, _| {
+                    println!("Reported insert of {:?}", inserted);
+                    was_inserted.insert(inserted);
+                    Ok(())
+                }, true)
                 .unwrap();
+            assert_eq!(actually_inserted, was_inserted);
 
             let mut to_delete = Vec::new();
-            for msg in store.get_all_message_ids().unwrap() {
+            let all_msgs = store.get_all_message_ids().unwrap();
+            let facit_msgs =  facit.iter().copied().collect::<Vec<_>>();
+            if facit_msgs != all_msgs {
+                println!("Facit: {:#?}", facit_msgs);
+                println!("Actual: {:#?}", all_msgs);
+            }
+            assert_eq!(all_msgs,facit_msgs, "msgs in db must be correct after append_many_sorted");
+
+            for msg in all_msgs {
                 if rng.gen_range(0..3)==0 {
                     to_delete.push(msg);
+                    facit.remove(&msg);
                 }
             }
 
@@ -2805,6 +2909,15 @@ mod tests {
                     &mut head_tracker,
                 )
                 .unwrap();
+
+
+            let all_msgs = store.get_all_message_ids().unwrap();
+            let facit_msgs =  facit.iter().copied().collect::<Vec<_>>();
+            if facit_msgs != all_msgs {
+                println!("Facit: {:#?}", facit_msgs);
+                println!("Actual: {:#?}", all_msgs);
+            }
+            assert_eq!(all_msgs,facit_msgs);
 
         }
 

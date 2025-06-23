@@ -158,7 +158,7 @@ mod test_types_rewind {
     fn rewind_test_hashmap_insert() {
         impl DummyTestMessageApply for crate::data_types::NoatunHashMap<u16, NoatunCell<u16>> {
             fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
-                root.insert(time.0 as u16, &(time.0 as u16))
+                root.insert_internal(time.0 as u16, &(time.0 as u16))
             }
         }
 
@@ -170,7 +170,7 @@ mod test_types_rewind {
         impl DummyTestMessageApply for NoatunHashMap<u64, NoatunCell<u32>> {
             fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
                 if root.is_empty() {
-                    root.insert(time.0, &(time.0 as u32))
+                    root.insert_internal(time.0, &(time.0 as u32))
                 } else {
                     let key = *root.iter().next().unwrap().0;
                     root.remove(&key);

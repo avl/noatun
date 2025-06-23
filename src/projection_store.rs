@@ -1370,7 +1370,7 @@ impl DatabaseContextData {
         let mut cur = unsafe { uses.get_mut(self, registrar.index()) };
         let cur_use = cur.get_use();
         if cur_use == 0 {
-            panic!("Corrupt use count for sequence nr {registrar:?}");
+            panic!("Corrupt use count for sequence nr {registrar:?}, use = {cur_use}");
         }
 
         unsafe {

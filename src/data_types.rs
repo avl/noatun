@@ -16,6 +16,7 @@ use std::ops::{Add, Deref, Index, Range};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
+use savefile_derive::Savefile;
 use tracing::trace;
 
 mod noatun_hash_impls;
@@ -133,45 +134,55 @@ impl NoatunString {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Savefile)]
 #[repr(C)]
-pub struct NoatunOption<T: Copy> {
+pub struct NoatunOption<T: NoatunStorable> {
     value: T,
-    registrar: SequenceNr,
     present: u8,
 }
 
-impl<T: Copy + NoatunStorable> NoatunOption<T> {
-    pub fn set(&mut self, new_value: Option<T>) {
-        let c = CONTEXT.get();
-        if c.is_null() {
-            if let Some(new_value) = new_value {
-                self.value = new_value;
-                self.present = 1;
-            } else {
-                self.present = 0;
-            }
-            return;
-        }
-        let c = unsafe { &mut *c };
-        if let Some(new_value) = new_value {
-            NoatunContext.write_ptr(new_value, std::ptr::addr_of_mut!(self.value));
-            NoatunContext.write(1, Pin::new(&mut self.present));
-        } else {
-            NoatunContext.write(0, Pin::new(&mut self.present));
-        }
+unsafe impl<T:NoatunStorable> NoatunStorable for NoatunOption<T> {
 
-        c.update_registrar_ptr(addr_of_mut!(self.registrar));
+}
+
+impl<T:NoatunStorable> NoatunOption<T> {
+    pub fn into_option(self) -> Option<T> {
+        self.into()
     }
-    pub fn get(&self) -> Option<T> {
-        NoatunContext.observe_registrar(self.registrar);
-        if self.present != 0 {
-            Some(self.value)
-        } else {
-            None
+    pub fn is_some(&self) -> bool {
+        self.present == 1
+    }
+    pub fn is_none(&self) -> bool {
+        self.present == 0
+    }
+}
+
+impl<T:NoatunStorable> From<Option<T>> for NoatunOption<T> {
+    fn from(value: Option<T>) -> Self {
+        match value {
+            None => {Self {
+                value: T::zeroed(),
+                present: 0,
+            }}
+            Some(t) => {
+                Self {
+                    value: t,
+                    present: 1,
+                }
+            }
         }
     }
 }
+impl<T:NoatunStorable> From<NoatunOption<T>> for Option<T> {
+    fn from(value: NoatunOption<T>) -> Self {
+        if value.present == 0 {
+            None
+        } else {
+            Some(value.value)
+        }
+    }
+}
+
 
 #[repr(C)]
 pub struct NoatunCell<T> {
@@ -2066,8 +2077,12 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
         true
     }
-
-    pub fn insert(&mut self, key: impl Borrow<K::DetachedType>, val: &V::DetachedType) {
+    pub fn insert(self: Pin<&mut Self>, key: impl Borrow<K::DetachedType>, val: &V::DetachedType) {
+        unsafe {
+            self.get_unchecked_mut().insert_internal(key, val)
+        }
+    }
+    pub(crate) fn insert_internal(&mut self, key: impl Borrow<K::DetachedType>, val: &V::DetachedType) {
         let key = key.borrow();
         let context = self.data_meta_len_mut();
         let probe_result = Self::probe(context.readonly(), key);
@@ -2077,7 +2092,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                     self.capacity + 2
                 );
                 // Will not give infinite recursion, since 'new' has a capacity of at least 2 more
-                self.insert(key, val);
+                self.insert_internal(key, val);
             }
             ProbeRunResult::FoundUnoccupied(bucket, meta)| //Optimization: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
             ProbeRunResult::FoundPopulated(bucket, meta) => {
@@ -2229,7 +2244,7 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         let tself = unsafe { self.get_unchecked_mut() };
         for (k, v) in detached {
-            tself.insert(k.borrow(), v.borrow());
+            tself.insert_internal(k.borrow(), v.borrow());
         }
     }
 
@@ -2255,19 +2270,19 @@ mod tests {
     impl DummyTestMessageApply for NoatunHashMap<u32, NoatunCell<u32>> {
         fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
             let x = (time.0 % (1u64 << 32)) as u32;
-            root.insert(x, &x);
+            root.insert_internal(x, &x);
         }
     }
     impl DummyTestMessageApply for NoatunHashMap<NoatunString, NoatunCell<u32>> {
         fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
             let x = (time.0 % (1u64 << 32)) as u32;
-            root.insert(x.to_string(), &x);
+            root.insert_internal(x.to_string(), &x);
         }
     }
     impl DummyTestMessageApply for NoatunHashMap<NoatunString, NoatunString> {
         fn test_message_apply(time: NoatunTime, mut root: Pin<&mut Self>) {
             let x = (time.0 % (1u64 << 32)) as u32;
-            root.insert(x.to_string(), &x.to_string());
+            root.insert_internal(x.to_string(), &x.to_string());
         }
     }
 
@@ -2289,7 +2304,7 @@ mod tests {
             let map = unsafe { map.get_unchecked_mut() };
             assert_eq!(map.0.len(), 0);
 
-            map.0.insert(42, &42);
+            map.0.insert_internal(42, &42);
 
             let val = map.0.get(&42).unwrap();
             assert_eq!(val.get(), 42);
@@ -2313,7 +2328,7 @@ mod tests {
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|mut map| {
-            map.0.insert("hello", &42);
+            map.0.insert_internal("hello", &42);
             assert_eq!(map.0.get("hello").unwrap().value, 42);
             assert_eq!(map.0.pop("hello"), Some(42));
             assert!(map.0.get("hello").is_none());
@@ -2334,7 +2349,7 @@ mod tests {
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|mut map| {
-            map.0.insert("hello", &42);
+            map.0.insert_internal("hello", &42);
 
             let reg_map: Vec<_> = map.0.detach().into_iter().collect();
             assert_eq!(&[("hello".to_string(), 42)], &*reg_map);
@@ -2356,7 +2371,7 @@ mod tests {
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
             let mut map = map.inner_mut();
-            map.insert("hello", &42);
+            map.insert_internal("hello", &42);
 
             let mut hm = std::collections::HashMap::new();
             hm.insert("world".to_string(), 43);
@@ -2385,7 +2400,7 @@ mod tests {
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|mut map| {
-            map.0.insert("hello", "world");
+            map.0.insert_internal("hello", "world");
 
             let reg_map: Vec<_> = map.0.detach().into_iter().collect();
             assert_eq!(&[("hello".to_string(), "world".to_string())], &*reg_map);
@@ -2412,7 +2427,7 @@ mod tests {
             let map = unsafe { map.get_unchecked_mut() };
             assert_eq!(map.0.len(), 0);
 
-            map.0.insert(42, &42);
+            map.0.insert_internal(42, &42);
 
             let val = map.0.get(&42).unwrap();
             assert_eq!(val.get(), 42);
@@ -2451,7 +2466,7 @@ mod tests {
             assert_eq!(map.0.len(), 0);
 
             for i in 0..N {
-                map.0.insert(i, &i);
+                map.0.insert_internal(i, &i);
             }
 
             for i in 0..N {
@@ -2486,7 +2501,7 @@ mod tests {
             let map = unsafe { map.get_unchecked_mut() };
             assert_eq!(map.0.len(), 0);
             for i in 0..300 {
-                map.0.insert(i, &i);
+                map.0.insert_internal(i, &i);
             }
             for i in 0..300 {
                 let val = map.0.get(&i).unwrap();
@@ -2513,7 +2528,7 @@ mod tests {
             let map = unsafe { map.get_unchecked_mut() };
             assert_eq!(map.0.len(), 0);
             for i in 0..10000 {
-                map.0.insert(i, &i);
+                map.0.insert_internal(i, &i);
             }
             let bef = Instant::now();
             for i in 0..10000 {

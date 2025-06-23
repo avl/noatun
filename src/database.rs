@@ -6,7 +6,7 @@ use crate::{
     Application, ContextGuard, ContextGuardMut, DatabaseContextData, MessageFrame, MessageHeader,
     MessageId, NoatunContext, NoatunTime, Object, Pointer, Target,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::fmt::{Debug, Formatter};
 use std::path::{Path, PathBuf};
@@ -334,6 +334,14 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
         message: APP::Message,
     ) -> Result<MessageHeader> {
         self.db.append_local_at(time, message)
+    }
+
+    pub fn append_many_local_at(
+        &mut self,
+        time: NoatunTime,
+        messages: impl Iterator<Item=APP::Message>,
+    ) -> Result<()> {
+        self.db.append_many_local_at(time, messages)
     }
 
     pub fn create_message_frame(
@@ -710,6 +718,8 @@ impl<APP: Application> Database<APP> {
     /// Note: You can set max_file_size to something very large, like 100_000_000_000.
     /// The max-size is reserved in the process' address space, but not actually allocated
     /// until needed.
+    ///
+    /// params - Can be anything. Will be provided at initialization time
     pub fn create_new(
         path: impl AsRef<Path>,
         overwrite_existing: bool,
@@ -783,6 +793,14 @@ impl<APP: Application> Database<APP> {
         self.append_local_opt(Some(time), message)
     }
 
+    fn append_many_local_at(
+        &mut self,
+        time: NoatunTime,
+        messages: impl Iterator<Item=APP::Message>,
+    ) -> Result<()> {
+        self.append_local_many_opt(Some(time), messages)
+    }
+
     fn create_message_frame(
         &mut self,
         time: Option<NoatunTime>,
@@ -827,6 +845,7 @@ impl<APP: Application> Database<APP> {
 
         Ok(t)
     }
+
     fn append_local_opt(
         &mut self,
         time: Option<NoatunTime>,
@@ -837,6 +856,28 @@ impl<APP: Application> Database<APP> {
         let header = t.header.clone();
         self.append_many_impl(std::iter::once(&t), true, true)?;
         Ok(header)
+    }
+
+
+    // Returns first message header
+    fn append_local_many_opt(
+        &mut self,
+        time: Option<NoatunTime>,
+        messages: impl Iterator<Item=APP::Message>,
+    ) -> Result<()> {
+        let cutoff_time = self.message_store.current_cutoff_time()?;
+
+        let time = time.unwrap_or_else(|| self.noatun_now());
+        let mut temp = Vec::new();
+        for message in messages {
+            temp.push(self.create_message_frame_impl(Some(time), message, cutoff_time)?);
+        }
+
+
+        self.append_many_impl(
+            temp.iter()
+            , true, true)?;
+        Ok(())
     }
 
     /// For messages before the cutoff-time, all parents are removed.

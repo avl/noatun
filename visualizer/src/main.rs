@@ -98,7 +98,7 @@ impl Message for KeyUpdateMessage {
         let mut root = root.pin_project();
         match self {
             KeyUpdateMessage::Set(key, val) => {
-                root.key_values.insert(key, val);
+                root.key_values.insert_internal(key, val);
             }
             KeyUpdateMessage::Change(key, msg_val) => {
                 if let Some(val) = root.key_values.as_mut().get_mut_val(key) {
@@ -106,7 +106,7 @@ impl Message for KeyUpdateMessage {
                     let new = prev.saturating_add(*msg_val);
                     val.set(new);
                 } else {
-                    root.key_values.insert(key, msg_val);
+                    root.key_values.insert_internal(key, msg_val);
                 }
             }
         }
