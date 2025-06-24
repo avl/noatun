@@ -699,7 +699,7 @@ where
         tself.get_mut_internal(tself.length - 1)
     }
 
-    pub fn shift_remove(self: Pin<&mut Self>, index: usize) {
+    pub fn swap_remove(self: Pin<&mut Self>, index: usize) {
         if index >= self.length {
             return;
         }

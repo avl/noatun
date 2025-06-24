@@ -1143,10 +1143,14 @@ impl DatabaseContextData {
         if current_registrar == registrar_point_value {
             return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
         }
-        if registrar_point_value.is_valid() {
+        let is_valid = registrar_point_value.is_valid();
+        if is_valid {
             self.rt_decrease_use(registrar_point_value, current_registrar, actor_tainted);
         }
         if current_registrar.is_invalid() {
+            if is_valid {
+                self.write_storable_ptr(current_registrar, registrar_point);
+            }
             // We're in the 'initialize root' method
             return;
         }

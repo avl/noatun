@@ -869,10 +869,44 @@ impl<APP: Application> Database<APP> {
 
         let time = time.unwrap_or_else(|| self.noatun_now());
         let mut temp = Vec::new();
-        for message in messages {
-            temp.push(self.create_message_frame_impl(Some(time), message, cutoff_time)?);
+
+        let mut new_id;
+        if let Some(prev_local) = self.prev_local {
+            if time == prev_local.timestamp() {
+                new_id = prev_local.successor();
+            } else {
+                new_id = MessageId::generate_for_time(time)?;
+            }
+        } else {
+            new_id = MessageId::generate_for_time(time)?;
         }
 
+        let mut parents : Vec<_> = self.get_update_heads()
+            .iter()
+            .copied()
+            .filter(|x| *x < new_id)
+            .collect();
+
+        for message in messages {
+
+            self.prev_local = Some(new_id);
+
+            let t = MessageFrame::new(
+                new_id,
+                if new_id.timestamp() >= cutoff_time {
+                    parents.clone()
+                } else {
+                    vec![]
+                },
+                message,
+            );
+
+            temp.push(t);
+
+            parents.clear();
+            parents.push(new_id);
+            new_id = new_id.successor();
+        }
 
         self.append_many_impl(
             temp.iter()

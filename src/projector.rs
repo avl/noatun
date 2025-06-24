@@ -273,7 +273,9 @@ impl<APP: Application> Projector<APP> {
         let cutoff = self.current_cutoff_time()?;
         if let Some(insert_point) = self.messages.append_many_sorted(
             messages,
-            |id, parents| self.head_tracker.add_new_update_head(id, parents, cutoff),
+            |id, parents| {
+                self.head_tracker.add_new_update_head(id, parents, cutoff)
+            },
             local,
         )? {
             if let Some(cur_main_db_next_index) = context.next_seqnr().try_index() {

@@ -147,7 +147,7 @@ mod test_types_rewind {
                 if root.is_empty() {
                     root.push(time.0 as u32);
                 } else {
-                    root.shift_remove(0);
+                    root.swap_remove(0);
                 }
             }
         }
@@ -1007,7 +1007,7 @@ fn test_vec_miri0() {
         assert_eq!(item.counter.get(), 48);
         assert_eq!(counter_vec.len(), 12);
 
-        counter_vec.as_mut().shift_remove(1);
+        counter_vec.as_mut().swap_remove(1);
         assert_eq!(counter_vec.len(), 11);
         assert_eq!(counter_vec.as_mut()[0].counter.get(), 47);
 

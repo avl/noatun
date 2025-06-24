@@ -70,6 +70,7 @@ impl UpdateHeadTracker {
         let mut i = 0;
         let mut file_len = id_mapping.len();
         let mut maplen = id_mapping.len();
+        
         while i < maplen {
             if subsumed.contains(&id_mapping[i]) {
                 if i != maplen - 1 {
