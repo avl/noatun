@@ -1187,6 +1187,8 @@ pub struct Distributor {
     distributor_state: DistributorStatus,
 
     periodic_message_interval: Duration,
+    // TODO: Clean this up. The repsonsibilities of `QueryableOutbuffer` vs `Neighborhood`
+    // are very unclear
     pub outbuf: QueryableOutbuffer,
     pub neighborhood: Neighborhood,
 }

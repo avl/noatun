@@ -1096,6 +1096,7 @@ where
         let mut message_tx: Vec<(Address, Vec<u8>)> = Vec::new();
         loop {
 
+            //TODO: Clean this up. Remove the `message_tx` completely.
             while let Some(check) = message_tx.first() {
                 //_ = self.receiver_rx.try_recv();
                 self.process_packet(check.0, check.1.clone())?;
