@@ -104,6 +104,9 @@ mod registrar_info {
         /// None of the overwriters were tainted (i.e, all of them did the overwrite without
         /// having read any of the current state of the db, making them immune to changes
         /// caused by earlier (by time) messages not yet present at the current node.
+        // TODO:
+        // However, there's a problem. Some as-of-yet not observed read could come and
+        // _read_ the value at an _earlier_ point than now.
         pub unconditionally_overwritten: u32,
     }
 

@@ -17,7 +17,7 @@
 #![allow(clippy::needless_late_init)]
 #![allow(clippy::derivable_impls)]
 
-pub use crate::data_types::NoatunCell;
+pub use crate::data_types::{OpaqueNoatunCell,NoatunCell};
 use crate::private::Sealed;
 use crate::sequence_nr::SequenceNr;
 use crate::undo_store::magic_initialize_ptr;
@@ -45,6 +45,7 @@ use std::slice;
 use std::time::Duration;
 #[cfg(not(feature = "tokio"))]
 use std::time::Instant;
+use datetime_literal::datetime;
 #[cfg(feature = "tokio")]
 use tokio::time::Instant;
 
@@ -460,10 +461,22 @@ impl MessageId {
     }
 
     /// Create an artificial MessageId, mostly useful for tests and possibly debugging.
+    ///
+    /// The time will be in 1970-01-01 T 00:00:00
     pub fn new_debug(nr: u32) -> Self {
         Self {
             data: [0, 0, 0, nr],
         }
+    }
+
+    /// Create an artificial MessageId, mostly useful for tests and possibly debugging.
+    ///
+    /// Like new_debug, but creates an id with a timestamp of '2020-01-01 T 00:00:00'
+    pub fn new_debug2(nr: u64) -> Self {
+        MessageId::from_parts_for_test(NoatunTime::from_datetime(
+            datetime!(2020-01-01 T 00:00:00 Z)
+        ),
+                                       nr)
     }
 
     pub fn generate_for_time(time: NoatunTime) -> Result<MessageId> {
@@ -1040,6 +1053,35 @@ macro_rules! noatun_object {
             }
         );
     };
+
+
+    ( bounded_type opod $typ:ty) => {
+        $crate::OpaqueNoatunCell<$typ>
+    };
+    ( declare_field opod $typ: ty ) => {
+        $crate::OpaqueNoatunCell<$typ>
+    };
+    ( declare_detached_field opod $typ: ty ) => {
+        $typ
+    };
+    ( new_declare_param opod $typ: ty ) => {
+        $typ
+    };
+    ( new_assign_field opod $self: ident $name: ident $typ: ty ) => {
+        unsafe { ::std::pin::Pin::new_unchecked(&mut $self.$name).set($name); }
+    };
+    ( getter opod $name:ident $typ: ty  ) => {
+        
+    };
+    ( setter opod $name:ident $typ: ty  ) => {
+        $crate::paste!(
+            pub fn [<set_ $name>](self: ::std::pin::Pin<&mut Self>, val: $typ) {
+                unsafe { ::std::pin::Pin::new_unchecked(&mut self.get_unchecked_mut().$name).set(val); }
+            }
+        );
+    };
+
+
 
     ( bounded_type object $typ:ty) => {
         $typ

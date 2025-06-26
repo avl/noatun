@@ -12,10 +12,11 @@ use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use std::ops::{Add, Deref, Index, Range};
+use std::ops::{Add, AddAssign, Deref, Index, Range};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
+use std::sync::atomic::compiler_fence;
 use savefile_derive::Savefile;
 use tracing::trace;
 
@@ -184,11 +185,24 @@ impl<T:NoatunStorable> From<NoatunOption<T>> for Option<T> {
 }
 
 
+/// A wrapper around a regular plain old data type. T must implement
+/// `NoatunStorable`, which basically means it must be a Copy type that does
+/// not contain any pointers.
 #[repr(C)]
 pub struct NoatunCell<T> {
     value: T,
+    /// The most recent message that did a write to this cell
     registrar: SequenceNr,
 }
+
+#[repr(C)]
+pub struct OpaqueNoatunCell<T> {
+    value: T,
+    /// The most recent message that did a write to this cell
+    registrar: SequenceNr,
+}
+
+unsafe impl<T: NoatunStorable> NoatunStorable for OpaqueNoatunCell<T> {}
 
 unsafe impl<T: NoatunStorable> NoatunStorable for NoatunCell<T> {}
 
@@ -198,6 +212,14 @@ impl<T: Copy + Debug> Debug for NoatunCell<T> {
         value.fmt(f)
     }
 }
+
+impl<T: Copy + Debug> Debug for OpaqueNoatunCell<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let value = self.value;
+        value.fmt(f)
+    }
+}
+
 
 pub trait NoatunCellArrayExt<T: NoatunStorable> {
     fn observe(&self) -> Vec<T>;
@@ -250,14 +272,94 @@ impl<T: NoatunStorable> NoatunCell<T> {
     }
 }
 
-impl<T: NoatunStorable> NoatunCell<T> {
+impl<T: NoatunStorable> OpaqueNoatunCell<T> {
+
+    /// WARNING!
+    /// This must only be called from queries, not from message apply.
+    ///
+    /// I.e, you can call this from within `with_root`, but not from within
+    /// `Message::apply`.
+    pub fn query(&self) -> T
+    where
+        T: Copy,
+    {
+        let context_ptr = CONTEXT.get();
+        if !context_ptr.is_null() {
+            if unsafe { (*(context_ptr as *const DatabaseContextData)).is_mutable } {
+                panic!("Attempt to observe OpaqueNoatunCell from within Message::apply. Use a regular NoatunCell instead.");
+            }
+        }
+        self.value
+    }
+
+    pub fn set(self: Pin<&mut Self>, new_value: T) {
+        let cptr = CONTEXT.get();
+        let c = unsafe { &mut *cptr };
+        let tself = unsafe { self.get_unchecked_mut() };
+        c.assert_mutable();
+        c.write_storable_ptr(new_value, addr_of_mut!(tself.value));
+        c.update_registrar_ptr(addr_of_mut!(tself.registrar));
+
+        compiler_error!(
+"
+An extremely subtle check remains to implement.
+
+A message can be deleted if it can not possibly effect any subsequent state.
+
+This is possible if:
+ - All information it ever wrote has been overwritten
+ - It didn't consult any existing state before doings its own writes
+
+
+Complications
+Q: What if it wrote nothing?
+A: It *might* write something if a new messages is inserted earlier.
+
+Q: What if it read no state, and wrote nothing?
+A: It is an inert message and can be dropped.
+
+Q: What if it wrote stuff without reading any state, then reads state?
+A: Well, we know those writes are certain. But it could possibly do other writes new messages are
+inserted earlier. So any messages it overwrote could be safely deleted. Those side effects are
+guarantee. But itself cannot be deleted.
+
+Missing logic:
+ - If a message X reads no state, and writes only OpaqueCells, then when those opaque cells have
+been overwritten, the message X can be deleted even if later than cutoff. We need to track this
+'reads no state, writes only OpaqueCells and is guaranteed for sure overwritten'.
+
+Is it the case that the last part is only guaranteed if everything that overwrites it are also
+unconditional overwrites?
+
+Do we need to track both conditional _and_ unconditional overwrites everywhere? Consider this.
+
+"
+
+
+
+        )
+    }
+}
+
+
+impl<T: NoatunStorable + AddAssign<T> + Copy > AddAssign<T> for Pin<&mut OpaqueNoatunCell<T>> {
+    fn add_assign(&mut self, rhs: T) {
+        NoatunContext.observe_registrar(self.registrar);
+        let mut new_value = self.value;
+        new_value += rhs;
+        self.as_mut().set(new_value);
+    }
+}
+
+
+/*impl<T: NoatunStorable> NoatunCell<T> {
     pub fn new(value: T) -> NoatunCell<T> {
         NoatunCell {
             value,
             registrar: Default::default(),
         }
     }
-}
+}*/
 
 impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
     type Ptr = ThinPtr;
@@ -271,6 +373,32 @@ impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
     fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         trace!("NoatunCell::clear: {:?}", tself.value);
+        NoatunContext.clear_registrar_ptr(&mut tself.registrar);
+    }
+
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        self.set(*detached);
+    }
+
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+        let mut ret: Pin<&mut Self> = NoatunContext.allocate();
+        ret.as_mut().init_from_detached(detached);
+        ret
+    }
+}
+
+impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
+    type Ptr = ThinPtr;
+    type DetachedType = T;
+    type DetachedOwnedType = T;
+
+    fn detach(&self) -> Self::DetachedOwnedType {
+        self.value
+    }
+
+    fn clear(self: Pin<&mut Self>) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        trace!("OpaqueNoatunCell::clear: {:?}", tself.value);
         NoatunContext.clear_registrar_ptr(&mut tself.registrar);
     }
 

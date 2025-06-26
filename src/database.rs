@@ -285,6 +285,8 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
         self.db.with_root_preview(time, preview, f)
     }
 
+    // This method allows modifying the state outside of the message apply loop.
+    // This is completely broken and only useful in tests.
     #[cfg(test)]
     pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
         self.db.with_root_mut(f)
