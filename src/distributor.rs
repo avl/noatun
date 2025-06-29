@@ -159,27 +159,6 @@ impl DecayingKnowledge {
     }
 }
 
-/*
-compile_error!("Do this:\
-Each node has a randomized back-off interval of 10s (or periodic message interval) + 10s * [num nodes].
-When it fires, the node observes for a while after if anyone else answered the same query.
-If not, it reduces its delay to 0. It keeps looking for other nodes answering the same query.
-If it sees that, it compares the node-id:s. If it's smaller, it resets its state to the regular
-back-off interval.
-
-This is all kept per "original source". So nodes keep track of which node they first observed
-having each message-id. This means we can handle situations where different messages need be
-treated differently.
-
-We also introduce a squelch-message. A node that gets multiple answers to the same query sends
-a squelch to one of them. This is for the case where the nodes cannot hear each other, and can't
-themselves figure out that a squelch is needed.
-
-The squelch is also "per source". The squelch has a lifetime. It's also possible to un-squelch,
-which is done if duplicate partner is unavailable.
-
-There is also force-un-squelch, which forces transmission of a channel
-")*/
 
 //TODO: Consider the responsibilities of 'communciation.rs' and 'distributor.rs'
 // I think possibly this should be put in 'distributor.rs'. And the latter should perhaps
@@ -455,11 +434,11 @@ impl NodeNumberBasedInhibit {
                 }
             }
         }
-        //compile_error!("Understand why it doesn't always converge!")
+
 
         self.inhibit_with_no_one_else_taking_up_the_slack_count = 0;
         self.was_inhibited = false;
-        //println!("#{:?}: was not inhibited", self_node);
+
         false
     }
 }

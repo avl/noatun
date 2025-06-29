@@ -31,6 +31,8 @@ mod registrar_info {
     #[derive(Clone, Copy, Default)]
     #[repr(C)]
     pub(crate) struct RegistrarInfo {
+        // mask 0x8000_0000 = tainted
+        // mask 0x4000_0000 = wrote non-opaque. I.e, didn't just write opaque values.
         uses: u32,
     }
 
@@ -43,27 +45,30 @@ mod registrar_info {
     }
     impl RegistrarInfo {
         pub fn tainted(&self) -> bool {
-            self.uses >= 0x8000_0000
+            self.uses & 0x8000_0000 != 0
+        }
+        pub fn wrote_non_opaques(&self) -> bool {
+            self.uses & 0x4000_0000 != 0
         }
         pub fn get_use(&self) -> u32 {
-            self.uses & 0x7FFF_FFFF
+            self.uses & 0x3FFF_FFFF
         }
         pub fn increase_use(&mut self, context: &mut DatabaseContextData) {
-            if self.get_use() >= 0x7FFF_FFFF {
+            if self.get_use() >= 0x3FFF_FFFF {
                 return;
             }
             //TODO(future): We could have a special "increment 1" noatun primitive.
             context.write_storable(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
-        pub fn decrease_use(&mut self, context: &mut DatabaseContextData, tainted: bool) {
+        pub fn decrease_use(&mut self, context: &mut DatabaseContextData, tainted: bool, wrote_non_opaques: bool) {
             let mut raw_uses = self.uses;
             let cur_uses = self.get_use();
             if cur_uses == 0 {
                 panic!("Internal error, use count wrong");
             }
-            if cur_uses >= 0x7FFF_FFFF {
+            if cur_uses >= 0x3FFF_FFFF {
                 // Since we saturate at 0x7FFF_FFFF when adding, we cannot safely decrement.
-                // The effect is that a message that touched equal or more than 0x7FFF_FFFF places
+                // The effect is that a message that touched equal or more than 0x3FFF_FFFF places
                 // in memory will never be deleted.
                 return;
             }
@@ -75,12 +80,22 @@ mod registrar_info {
                 );
                 raw_uses |= 0x8000_0000;
             }
+            if wrote_non_opaques {
+                debug!(
+                    "mark wrote non-opaque (raw use={}, ptr = {:x?})",
+                    self.uses, &self.uses as *const u32
+                );
+                raw_uses |= 0x4000_0000;
+            }
             // TODO(future): We could have a special "decrement 1" noatun primitive.
 
             context.write_storable(raw_uses, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
     }
 
+    /// Information about a message that has been deemed unused. I.e, it is a candidate
+    /// to be pruned. We have detected that none of the data it wrote to the document
+    /// remains.
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     #[repr(C)]
     pub struct UnusedInfo {
@@ -97,17 +112,28 @@ mod registrar_info {
         /// messages that now have their last-overwriter overtaken by the cutoff-frontier,
         /// so that we can prune messages for the long-term pre-cutoff-life.
         pub last_overwriter: SequenceNr,
-        /// The message that is no longer used (to be deleted, possibly)
-        /// This is sometimes known as a 'registrar'
-        /// is strange here).
+        /// The message that is no longer used (to be deleted, possibly).
+        /// This is sometimes known as a 'registrar'.
+        /// Yes, registrar is a funny word here.
         pub seq: SequenceNr,
-        /// None of the overwriters were tainted (i.e, all of them did the overwrite without
+        /// None of the overwriters were tainted (i.e., all of them did the overwrite without
         /// having read any of the current state of the db, making them immune to changes
         /// caused by earlier (by time) messages not yet present at the current node.
-        // TODO:
-        // However, there's a problem. Some as-of-yet not observed read could come and
-        // _read_ the value at an _earlier_ point than now.
-        pub unconditionally_overwritten: u32,
+        ///
+        /// Note, this is not sufficient to guarantee that this message could be pruned.
+        /// Some as-of-yet not observed read could come and
+        /// _read_ the value at an _earlier_ point than now, and smuggle the information
+        /// over to some other field. See `wrote_only_opaques`.
+        pub unconditionally_overwritten: bool,
+
+        /// True if this message only wrote opaque data. I.e, it only wrote data that
+        /// cannot be read during message apply. Example: `OpaqueNoatunCell`.
+        ///
+        /// This must be set to false for messages that have wrote non-opaque cells.
+        pub wrote_only_opaques: bool,
+        /// Padding, just to make sure this struct has no compiler provided padding,
+        /// but rather has explicit padding.
+        pub padding: u16,
     }
 
     impl PartialOrd for UnusedInfo {
@@ -215,6 +241,12 @@ pub struct DatabaseContextData {
     /// the cutoff frontier passes, because some other node _could_ insert data that causes
     /// the tainted message to not overwrite the data in question.
     tainted: bool,
+
+    // Flag that keeps track of whether the current message has written a
+    // non-opaque value. I.e, if it's written something that could be observed
+    // by a later message.
+    //TODO: REmove!
+    //wrote_non_opaque: bool,
 }
 
 // This has been shamelessly lifted from the rust std
@@ -613,6 +645,7 @@ impl DatabaseContextData {
             is_mutable: false,
             filesystem_sync_disabled: false,
             tainted: false,
+
         };
         // It's a bit of a code smell that at this precise point in the execution,
         // a DatabaseContext exists, but it's not actually fully initialized until we write the
@@ -1118,13 +1151,13 @@ impl DatabaseContextData {
             .collect())
     }
 
-    pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr) {
+    pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr, opaque: bool) {
         let current_registrar = self.next_seqnr();
         if current_registrar == *registrar_point {
             return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
         }
         if registrar_point.is_valid() {
-            self.rt_decrease_use(*registrar_point, current_registrar, self.tainted);
+            self.rt_decrease_use(*registrar_point, current_registrar, self.tainted, !opaque);
         }
         if current_registrar.is_invalid() {
             // We're in the 'initialize root' method
@@ -1140,6 +1173,7 @@ impl DatabaseContextData {
         registrar_point: *mut SequenceNr,
         actor: SequenceNr,
         actor_tainted: bool,
+        actor_wrote_non_opaque: bool,
     ) {
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
         let current_registrar = actor;
@@ -1148,7 +1182,7 @@ impl DatabaseContextData {
         }
         let is_valid = registrar_point_value.is_valid();
         if is_valid {
-            self.rt_decrease_use(registrar_point_value, current_registrar, actor_tainted);
+            self.rt_decrease_use(registrar_point_value, current_registrar, actor_tainted, actor_wrote_non_opaque);
         }
         if current_registrar.is_invalid() {
             if is_valid {
@@ -1161,11 +1195,11 @@ impl DatabaseContextData {
 
         self.write_storable_ptr(current_registrar, registrar_point)
     }
-    pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr) {
-        self.update_registrar_ptr_impl(registrar_point, self.next_seqnr(), self.tainted);
+    pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
+        self.update_registrar_ptr_impl(registrar_point, self.next_seqnr(), self.tainted, !opaque);
     }
-    pub fn clear_registrar_ptr(&mut self, registrar_point: *mut SequenceNr) {
-        self.update_registrar_ptr_impl(registrar_point, SequenceNr::INVALID, self.tainted);
+    pub fn clear_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
+        self.update_registrar_ptr_impl(registrar_point, SequenceNr::INVALID, self.tainted, !opaque);
     }
 
     // Signify that the current message has observed data previously written
@@ -1203,7 +1237,9 @@ impl DatabaseContextData {
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
-                unconditionally_overwritten: (!self.tainted) as u32,
+                unconditionally_overwritten: !self.tainted,
+                wrote_only_opaques: true,
+                padding: 0,
             });
             return;
         }
@@ -1220,7 +1256,9 @@ impl DatabaseContextData {
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
-                unconditionally_overwritten: (!self.tainted) as u32,
+                unconditionally_overwritten: !self.tainted,
+                wrote_only_opaques: true,
+                padding: 0,
             });
         }
     }
@@ -1281,7 +1319,7 @@ impl DatabaseContextData {
             );
             if !messages.may_have_been_transmitted(msg.seq)?
                 || before_cutoff
-                || msg.unconditionally_overwritten != 0
+                || (msg.unconditionally_overwritten && msg.wrote_only_opaques)
             {
                 for observer in self.read_dependency(msg.seq) {
                     debug!("considered its observer {:?}", observer);
@@ -1321,7 +1359,9 @@ impl DatabaseContextData {
                 unused_messages.push(UnusedInfo {
                     seq: revdep,
                     last_overwriter,
-                    unconditionally_overwritten: 0, //Unconditional overwrite doesn't matter at this stage
+                    unconditionally_overwritten: false, //Unconditional overwrite doesn't matter at this stage. TODO: Why??
+                    wrote_only_opaques: false,//TODO: Is this right? Think through, what's `wrote_only_opaques` used for in the lifetime of UnusedInfo beginning here? Should this be a different type altogether if it isn't used for anything?
+                    padding: 0,
                 });
             }
 
@@ -1372,6 +1412,8 @@ impl DatabaseContextData {
         registrar: SequenceNr,
         overwriter: SequenceNr,
         overwriter_tainted: bool,
+        wrote_non_opaque: bool,
+
     ) {
         let uses = unsafe { self.get_uses() };
         let mut cur = unsafe { uses.get_mut(self, registrar.index()) };
@@ -1383,7 +1425,7 @@ impl DatabaseContextData {
         unsafe {
             cur.as_mut()
                 .get_unchecked_mut()
-                .decrease_use(self, overwriter_tainted)
+                .decrease_use(self, overwriter_tainted, wrote_non_opaque)
         };
         trace!(
             "decreased use of {:?} is {} (taint:{}) (because overwriter: {:?}(tainted:{}))",
@@ -1405,7 +1447,11 @@ impl DatabaseContextData {
                 seq: registrar,
                 //opaque: cur.get_opaque() as u32,
                 last_overwriter: overwriter,
-                unconditionally_overwritten: !cur.tainted() as u32,
+                // ALL overwriters mut be non-tainted. There can't be a single oen that is.
+                // `cur.tainted()` tracks this per registrar.
+                unconditionally_overwritten: !cur.tainted(),
+                wrote_only_opaques: !cur.wrote_non_opaques(),
+                padding: 0,
             });
         }
     }

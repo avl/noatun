@@ -219,7 +219,7 @@ impl CutOffHashPos {
         if *self == peer_hash {
             return Acceptability::Nominal;
         }
-        //compile_error!("Handle the case where self time > peer hash, and check that peer hash matches prev cutoff hash!")
+        //TODO check this (maybe it's already fixed): "Handle the case where self time > peer hash, and check that peer hash matches prev cutoff hash!"
         if self.before_time < peer_hash.before_time {
             if self.before_time < peer_hash.before_time.saturating_sub(config.stride) {
                 return Acceptability::UnacceptablePeerClockDrift;

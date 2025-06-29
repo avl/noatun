@@ -118,7 +118,7 @@ impl NoatunString {
         let raw_index = NoatunContext.index_of_ptr(raw);
         NoatunContext.write_internal(raw_index, &mut tself.start);
         NoatunContext.write_internal(value.len(), &mut tself.length);
-        NoatunContext.update_registrar_ptr(addr_of_mut!(tself.registrar));
+        NoatunContext.update_registrar_ptr(addr_of_mut!(tself.registrar), false);
     }
     pub(crate) fn assign_untracked(&mut self, value: &str) {
         if self.get().starts_with(value) {
@@ -264,11 +264,13 @@ impl<T: NoatunStorable> NoatunCell<T> {
         let tself = unsafe { self.get_unchecked_mut() };
         c.assert_mutable();
         c.write_storable_ptr(new_value, addr_of_mut!(tself.value));
-        c.update_registrar_ptr(addr_of_mut!(tself.registrar));
+        c.update_registrar_ptr(addr_of_mut!(tself.registrar), false);
     }
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
-        NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.registrar));
+        // TODO: Should this also set the `opaque` flag, as above? Is `clear` really
+        // observable?
+        NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.registrar), false);
     }
 }
 
@@ -298,22 +300,33 @@ impl<T: NoatunStorable> OpaqueNoatunCell<T> {
         let tself = unsafe { self.get_unchecked_mut() };
         c.assert_mutable();
         c.write_storable_ptr(new_value, addr_of_mut!(tself.value));
-        c.update_registrar_ptr(addr_of_mut!(tself.registrar));
+        c.update_registrar_ptr(addr_of_mut!(tself.registrar), true);
 
-        compiler_error!(
+        /*compiler_error!( TODO: Remove this text after checking off things
 "
 An extremely subtle check remains to implement.
 
 A message can be deleted if it can not possibly effect any subsequent state.
 
 This is possible if:
- - All information it ever wrote has been overwritten
- - It didn't consult any existing state before doings its own writes
+ - All information it ever wrote has been overwritten (so the message no longer directly contributes
+   to the database end state)
+ - It didn't consult any existing state before doings its own writes. Because if so, inserting
+   another message *before* it may cause it to write some other arbitrary location, which amy
+   *NOT* have been overwritten by some other message. (Optimization possibility: Messages could
+   promise that what fields they write is only a function of the message, not the state, or we could
+   even expose this somehow by allowing creating some sort of Cell-handles that can only be used
+   to set the values.
+ - No later message reads the data that was overwritten, because if so, they could smuggle
+   this information out by writing it to some other arbitrary location.
+ - Is this enough?
+
+
 
 
 Complications
 Q: What if it wrote nothing?
-A: It *might* write something if a new messages is inserted earlier.
+A: It *might* write something if a new message is inserted earlier.
 
 Q: What if it read no state, and wrote nothing?
 A: It is an inert message and can be dropped.
@@ -324,6 +337,7 @@ inserted earlier. So any messages it overwrote could be safely deleted. Those si
 guarantee. But itself cannot be deleted.
 
 Missing logic:
+THe following is wrong, isn't it??? It doesn't matter if it writes opaque cells or not?
  - If a message X reads no state, and writes only OpaqueCells, then when those opaque cells have
 been overwritten, the message X can be deleted even if later than cutoff. We need to track this
 'reads no state, writes only OpaqueCells and is guaranteed for sure overwritten'.
@@ -338,6 +352,7 @@ Do we need to track both conditional _and_ unconditional overwrites everywhere? 
 
 
         )
+         */
     }
 }
 
@@ -373,7 +388,7 @@ impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
     fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         trace!("NoatunCell::clear: {:?}", tself.value);
-        NoatunContext.clear_registrar_ptr(&mut tself.registrar);
+        NoatunContext.clear_registrar_ptr(&mut tself.registrar, false);
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -399,7 +414,7 @@ impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
     fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         trace!("OpaqueNoatunCell::clear: {:?}", tself.value);
-        NoatunContext.clear_registrar_ptr(&mut tself.registrar);
+        NoatunContext.clear_registrar_ptr(&mut tself.registrar, true);
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -790,7 +805,7 @@ where
         val: impl Borrow<<T as Object>::DetachedType>,
     ) {
         let tself = unsafe { self.get_unchecked_mut() };
-        if index <= tself.length {
+        if index >= tself.length {
             let new_length = index + 1;
             if new_length > tself.capacity {
                 // Reallocate
@@ -812,7 +827,7 @@ where
             self.as_mut().get_index_mut(i).clear();
         }
         let tself = unsafe { self.get_unchecked_mut() };
-        NoatunContext.update_registrar(&mut tself.length_registrar);
+        NoatunContext.update_registrar(&mut tself.length_registrar, false);
         NoatunContext.write_ptr(0, addr_of_mut!(tself.length));
     }
 
@@ -823,7 +838,8 @@ where
         } else {
             NoatunContext.write_ptr(tself.length + 1, addr_of_mut!(tself.length));
         }
-        NoatunContext.update_registrar(&mut tself.length_registrar);
+        NoatunContext.update_registrar(&mut tself.length_registrar, false);
+
         tself.get_mut_internal(tself.length - 1)
     }
 
@@ -834,7 +850,7 @@ where
         let tself = unsafe { self.get_unchecked_mut() };
 
         if index == tself.length - 1 {
-            NoatunContext.update_registrar(&mut tself.length_registrar);
+            NoatunContext.update_registrar(&mut tself.length_registrar, false);
             NoatunContext.write_ptr(tself.length - 1, addr_of_mut!(tself.length));
             return;
         }
@@ -845,7 +861,7 @@ where
         }
         NoatunContext.copy_ptr(FatPtr::from_idx_count(src_ptr.0, 1), dst_ptr);
 
-        NoatunContext.update_registrar(&mut tself.length_registrar);
+        NoatunContext.update_registrar(&mut tself.length_registrar, false);
         NoatunContext.write_ptr(tself.length - 1, addr_of_mut!(tself.length));
     }
 
@@ -872,7 +888,7 @@ where
             }
         }
         let self_mut = unsafe { self.get_unchecked_mut() };
-        NoatunContext.update_registrar(&mut self_mut.length_registrar);
+        NoatunContext.update_registrar(&mut self_mut.length_registrar, false);
         NoatunContext.write_ptr(new_len, addr_of_mut!(self_mut.length));
     }
 
@@ -1824,6 +1840,7 @@ impl<'a, K: NoatunKey + PartialEq, V: FixedSizeObject> HashAccessContextMut<'a, 
 
 impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMap<K, V> {
     pub fn len(&self) -> usize {
+        //TODO: We need to register this observation. Unfortunately.
         self.length
     }
     pub fn is_empty(&self) -> bool {

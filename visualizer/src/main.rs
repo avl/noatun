@@ -385,36 +385,6 @@ impl App for Visualizer {
                 }
 
                 /*
-                compile_error!("
-
-Remove non-used data structures.
-When nodes receive messages, check:
- - Is it forwarded? If so - have we already received it through another path?
-   - If we have, see if we have an active subscription. If so, cancel the subscription
- - Is it mentioned in a report heads?
-   - Check origin, see if we have direct connection there, otherwise, consider creating subscription,
-     if.
-      a) Not already subscribed for origin
-      b) This transmitter is at faster by at least say 0.1x beacon interval
- - Is it something we requested transmission of, and it turned out we didn't have a parent?
-  - Handle the same as if it was in report heads?
-
-
-In general, for each origin, we want to have it forwarded from the fastest source.
-
-Make sure to send a forwarding message every time we detect that we're missing a forward
-(a node gave us a ReportHeads that contained something we didn't know).
-
-Make sure to send a non-forwarding message when we detect something we already have, at least
-if we've previously subscribed.
-
-Regularly send re-subscribe messages for all active subscriptions
-
-Regularly GC forwardings others have ordered from us (so they don't linger indefinitely). Do this
-at say, 2.5x the interval of of re-susbcription above.
-
-                ")
-*/
 
                 ui.label("Time:");
                 let mut t = format!("{:?}", self.ether.elapsed());

@@ -1164,12 +1164,6 @@ async fn all_up_huge_desynced_test() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_three_node_resync() {
-    /*
-        compile_error!("
-    * Try to avoid sending RequestUpstream from multiple nodes
-    * Automatic relay-routing-requests (unsquelch - rename?) (witrh also squelch if duplicates)
-        ")
-    */
 
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
@@ -1216,23 +1210,11 @@ async fn all_up_three_node_resync() {
     heuristic, couldn't  we just delay a random amount based on the number of neighbors, combined
     with inhibiting sending stuff we've just seen sent anyway?
 
-    * Implement Unsquelch/squelch based on detecting when a node emits an object with a parent
-    we don't know, where we previously considered ourselves to be up-to-date with the node (i.e,
-    initial sync complete). I.e, when the first sync-process started, completes. We then take
-    note whenever we receive a Message with a parent unknown to us, and add an Unsquelch for that
-    messages "original" source. We also check if we receive messages twice. If we do,
-    we squelch the one that's usually slowest. Determine slowest by averaging or something, device
-    some data structure for this!
-
-    * Figure out how to even test this.
-
     * Add tests for EphemeralNodeId collisions (figure out how to cause them, probably
     by overriding default EphemeralNodeId in config)
 
-    * Create perf benchmarks, compare with other tools (which?)
+    * Create perf benchmarks, compare with other tools (which?). Maybe "Sled"?
 
-
-        ")
     */
 
     for _ in 0..35 {
@@ -1263,13 +1245,7 @@ async fn all_up_three_node_resync() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_three_node_partial_resync1() {
-    /*
-        compile_error!("
-    * Try to avoid sending RequestUpstream from multiple nodes
-    * Automatic relay-routing-requests (unsquelch - rename?) (witrh also squelch if duplicates)
-        ")
-    */
-
+    
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
@@ -1389,13 +1365,6 @@ async fn all_up_three_node_partial_resync2() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_four_node_partial_resync1() {
-    /*
-        compile_error!("
-    * Try to avoid sending RequestUpstream from multiple nodes
-    * Automatic relay-routing-requests (unsquelch - rename?) (witrh also squelch if duplicates)
-        ")
-    */
-
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();

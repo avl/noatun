@@ -1,7 +1,7 @@
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
 use crate::{
-    msg_deserialize, msg_serialize, Application, Database, Message, NoatunCell, NoatunTime,
+    msg_deserialize, msg_serialize, Application, Database, Message, OpaqueNoatunCell, NoatunTime,
 };
 use savefile_derive::Savefile;
 use std::io::Write;
@@ -9,7 +9,7 @@ use std::pin::Pin;
 
 noatun_object!(
     struct VecDoc {
-        object items: NoatunVec<NoatunCell<u32>>,
+        object items: NoatunVec<OpaqueNoatunCell<u32>>,
     }
 );
 
@@ -33,11 +33,7 @@ impl Message for VecMessage {
         if self.reset {
             root.items.clear();
         } else {
-            if self.index >= root.items.len() {
-                root.items.push(self.val);
-            } else {
-                root.items.set_item_infallible(self.index, self.val);
-            }
+            root.items.set_item_infallible(self.index, self.val);
         }
     }
 
@@ -87,6 +83,7 @@ fn test_vec1() {
 }
 #[test]
 fn test_vec2() {
+
     super::setup_tracing();
     let mut db: Database<VecDoc> = Database::create_new(
         "test/test_subsumption2",
@@ -94,7 +91,7 @@ fn test_vec2() {
         DatabaseSettings::default(),
         (),
     )
-    .unwrap();
+        .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
 
@@ -104,6 +101,34 @@ fn test_vec2() {
                 index: 0,
                 val: 0,
                 reset: true,
+            })
+            .unwrap();
+        db.mark_transmitted(msg.id).unwrap();
+    }
+    assert_eq!(db.count_messages(), 2);
+}
+
+
+#[test]
+fn test_vec3() {
+
+    super::setup_tracing();
+    let mut db: Database<VecDoc> = Database::create_new(
+        "test/test_subsumption3",
+        true,
+        DatabaseSettings::default(),
+        (),
+    )
+        .unwrap();
+    let mut db = db.begin_session_mut().unwrap();
+    db.disable_filesystem_sync().unwrap();
+
+    for i in 0..2 {
+        let msg = db
+            .append_local(VecMessage {
+                index: 0,
+                val: i,
+                reset: false,
             })
             .unwrap();
         db.mark_transmitted(msg.id).unwrap();

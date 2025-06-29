@@ -2818,21 +2818,33 @@ use std::collections::BTreeMap;
             .unwrap();
 
         const COUNT:u32 = 20;
-        /*compile_error!("run full test suite, make sure this test is really complete
+
+        /*
+        //TODO:
+
+        compile_error!("run full test suite, make sure this test is really complete
 Then:
 * Finish refactor that reduced number of tasks in communicator to 1
 * Remove A LOT of dead code from distributor!
 * Check that all_up_tests are now reasonably complete
 * Check that visualizer shows good behavior
 
-
 Then:
 * Make some compelling benchmarks:
-  - Speed benchmarks compared to sqlite
-  - Communication overhead benchmarks compared to YJS?
+  - Find that CRDT benchmark you read a while back, from some sort of
+
+Measure metrics:
+
+ - LDH - Last Delivery Hop (The number of hops to reach every recipient)
+ - Relative Message Redundancy (a measurement of the over-transmit of messages).
+   With our algorithm, this should be 0 as long as there are no loops. With loops,
+   slightly higher
+ - Reliability (% of nodes that actually receive a message)
+
+[these all seem to be defined with respect to a single message added at some node]
 
 
-        ")*/
+")*/
 
         let mut head_tracker = UpdateHeadTracker::new(&mut InMemoryDisk::default(), &target).unwrap();
 

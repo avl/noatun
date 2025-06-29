@@ -915,7 +915,6 @@ dependencies = [
  "bit-vec 0.6.3",
  "bit-vec 0.8.0",
  "byteorder",
- "chrono",
  "indexmap",
  "memoffset",
  "parking_lot",

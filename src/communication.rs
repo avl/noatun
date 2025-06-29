@@ -85,9 +85,6 @@ pub trait CommunicationDriver: Sync + Send {
     type Endpoint: Eq
         + Debug
         + Hash
-        + Serialize
-        + Deserialize
-        + Packed
         + Send
         + Sync
         + Copy
@@ -260,7 +257,7 @@ impl ReceiveTrack {
         &mut self,
         packet: TransmittedEntitySortable,
         packet_source: EphemeralNodeId,
-        tx_finished_received_frame: &mut Sender<(Address, Vec<u8>)>,
+        tx_finished_received_frame: &mut Sender<(Address, Vec<u8>)>, //TODO: Remove!
         message_tx: &mut Vec<(Address, Vec<u8>)>,
         retransmit_requests: &mut IndexMap<EphemeralNodeId, RetransmitInfo>,
         

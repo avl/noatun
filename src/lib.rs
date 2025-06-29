@@ -201,13 +201,13 @@ fn get_context_ptr() -> *const DatabaseContextData {
 pub enum Undetachable {}
 
 impl NoatunContext {
-    pub fn update_registrar_ptr(self, seq: *mut SequenceNr) {
+    pub fn update_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool,) {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).update_registrar_ptr(seq) }
+        unsafe { (*context_ptr).update_registrar_ptr(seq, opaque) }
     }
-    pub fn clear_registrar_ptr(self, seq: *mut SequenceNr) {
+    pub fn clear_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool,) {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).clear_registrar_ptr(seq) }
+        unsafe { (*context_ptr).clear_registrar_ptr(seq, opaque) }
     }
     pub fn start_ptr_mut(self) -> *mut u8 {
         let context_ptr = get_context_mut_ptr();
@@ -268,10 +268,10 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_raw(size, align) }
     }
-    pub fn update_registrar(&self, registrar: &mut SequenceNr) {
+    pub fn update_registrar(&self, registrar: &mut SequenceNr, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
         unsafe {
-            (*context_ptr).update_registrar(registrar);
+            (*context_ptr).update_registrar(registrar, opaque);
         }
     }
     pub fn write<T: NoatunStorable>(&self, value: T, dest: Pin<&mut T>) {
