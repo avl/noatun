@@ -116,6 +116,10 @@ mod registrar_info {
         /// This is sometimes known as a 'registrar'.
         /// Yes, registrar is a funny word here.
         pub seq: SequenceNr,
+
+        /// There are two required properties for a message to qualify for early deletion:
+        ///
+        /// #1
         /// None of the overwriters were tainted (i.e., all of them did the overwrite without
         /// having read any of the current state of the db, making them immune to changes
         /// caused by earlier (by time) messages not yet present at the current node.
@@ -124,13 +128,13 @@ mod registrar_info {
         /// Some as-of-yet not observed read could come and
         /// _read_ the value at an _earlier_ point than now, and smuggle the information
         /// over to some other field. See `wrote_only_opaques`.
-        pub unconditionally_overwritten: bool,
-
-        /// True if this message only wrote opaque data. I.e, it only wrote data that
+        ///
+        /// #2
+        /// If this message only wrote opaque data. I.e, it only wrote data that
         /// cannot be read during message apply. Example: `OpaqueNoatunCell`.
         ///
-        /// This must be set to false for messages that have wrote non-opaque cells.
-        pub wrote_only_opaques: bool,
+        /// This is false for messages that have written non-opaque cells.
+        pub can_be_deleted_early: bool,
         /// Padding, just to make sure this struct has no compiler provided padding,
         /// but rather has explicit padding.
         pub padding: u16,
@@ -288,7 +292,7 @@ unsafe impl NoatunStorable for DepTrackLinkedListEntry {}
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct ReverseDepTrackLinkedListEntry {
-    pub next: ThinPtr,
+    pub next_and_flag: u64,
     pub seq: SequenceNr,
     pub last_overwriter: SequenceNr,
 }
@@ -356,6 +360,7 @@ impl DatabaseContextData {
         observee: SequenceNr,
         observer: SequenceNr,
         last_overwriter: SequenceNr,
+        can_be_deleted_early: bool
     ) {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
@@ -377,8 +382,10 @@ impl DatabaseContextData {
 
         // TODO(future): Create more efficient undo-construct for adjacent fields. Can be used
         // here and in other places.
-        self.write_storable(*key_place, unsafe {
-            Pin::new_unchecked(&mut new_entry.next)
+
+        let next_and_flag = (*key_place).0 as u64 | (if can_be_deleted_early { 1<<63 } else { 0 });
+        self.write_storable(next_and_flag, unsafe {
+            Pin::new_unchecked(&mut new_entry.next_and_flag)
         });
         self.write_storable(observee, unsafe { Pin::new_unchecked(&mut new_entry.seq) });
         self.write_storable(last_overwriter, unsafe {
@@ -414,7 +421,7 @@ impl DatabaseContextData {
     pub(crate) fn read_reverse_dependency(
         &self,
         observer: SequenceNr,
-    ) -> impl Iterator<Item = (SequenceNr, SequenceNr /* last overwriter */)> + '_ {
+    ) -> impl Iterator<Item = (SequenceNr, SequenceNr /* last overwriter */, bool /*can be deleted early*/)> + '_ {
         let keys: &RawDatabaseVec<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observer.index() < keys.len() {
@@ -428,8 +435,9 @@ impl DatabaseContextData {
                 return None;
             }
             let entry: &ReverseDepTrackLinkedListEntry = unsafe { self.access_storable(cur) };
-            cur = entry.next;
-            Some((entry.seq, entry.last_overwriter))
+            cur = ThinPtr((entry.next_and_flag&(i64::MAX as u64)) as usize);
+            let can_be_deleted_early = entry.next_and_flag&(1<<63) != 0;
+            Some((entry.seq, entry.last_overwriter, can_be_deleted_early))
         })
     }
 
@@ -1223,7 +1231,7 @@ impl DatabaseContextData {
 
         // #SAFETY
         // We only hold this for this method, and we call no other code that
-        // uses the same memory. So does all other users of 'get_uses'.
+        // uses the same memory. So do all other users of 'get_uses'.
         let uses = unsafe { self.get_uses() };
 
         if uses.len() <= message_id.index() {
@@ -1237,8 +1245,7 @@ impl DatabaseContextData {
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
-                unconditionally_overwritten: !self.tainted,
-                wrote_only_opaques: true,
+                can_be_deleted_early: !self.tainted,
                 padding: 0,
             });
             return;
@@ -1247,7 +1254,9 @@ impl DatabaseContextData {
 
         if track.get_use() == 0 {
             // Same special case as above - message is not in use, even immediately
-            // after having been projected.
+            // after having been projected. This is currently impossible, since 'uses'
+            // was increased, this must mean that data was written, but since the 'use' is
+            // 0, this means something else overwrote that data. Which is not possible.
             trace!(
                 "Message modified nothing2: {:?} (tainted: {})",
                 message_id,
@@ -1256,8 +1265,7 @@ impl DatabaseContextData {
             self.unused_messages.push(UnusedInfo {
                 seq: message_id,
                 last_overwriter: message_id,
-                unconditionally_overwritten: !self.tainted,
-                wrote_only_opaques: true,
+                can_be_deleted_early: !self.tainted,
                 padding: 0,
             });
         }
@@ -1269,22 +1277,14 @@ impl DatabaseContextData {
     We can delete messages that no longer have any effect on the state, but only in these
     circumstances:
 
-     1: Messages that only update OpaqueData
+     1: Messages that only updated OpaqueData, did not read from the database, and whose
+        written data was itself overwritten unconditionally (overwritten by a message before that
+        message raid any database state).
      2: Messages that have never been transmitted, and upon which no existing message depends
      3: Messages that are older than MAX_PARTITION_TIME, and have no trace in the state at
-        MAX_PARTITION_TIME, and upon which no message depends
-
+        MAX_PARTITION_TIME
     */
 
-    /*pub(crate) fn do_record_stale_messages<M: MessagePayload + Debug>(&mut self,
-                                        messages: &mut OnDiskMessageStore<M>) {
-
-        let unused = unsafe { self.get_unused_list() };
-        let unused_messages = take(&mut self.unused_messages);
-        for msg in unused_messages {
-            unused.push_untracked(self, msg);
-        }
-    }*/
 
     /// Called in two situations:
     /// 1) Immediately when noticing a message is stale
@@ -1311,19 +1311,26 @@ impl DatabaseContextData {
             );
         }
         'outer: while let Some(msg) = unused_messages.pop() {
+
+            //TODO: Don't do this read here? It's only used for logging, which seems inefficient
             let msgobj = messages.read_message_header_and_children_by_index(msg.seq);
             debug!("considering {:?} = {:?} for deletion", msgobj, msg);
             debug!(
                 "unconditionally overwritten: {:?}",
-                msg.unconditionally_overwritten
+                msg.can_be_deleted_early
             );
+
+            // Condition 1 (referenced below)
             if !messages.may_have_been_transmitted(msg.seq)?
                 || before_cutoff
-                || (msg.unconditionally_overwritten && msg.wrote_only_opaques)
+                || msg.can_be_deleted_early
             {
                 for observer in self.read_dependency(msg.seq) {
                     debug!("considered its observer {:?}", observer);
                     if !deleted.contains(&observer) {
+
+                        debug_assert!(!msg.can_be_deleted_early, "opaque data can't be observed, so a message that wrote only opaques must have no observers. And a message that didn't write only opaques, will have can_be_deleted_early == false");
+
                         // 'msg' can't be deleted, because it's observed by
                         // 'observer' - i.e a later message that has not been deleted.
                         debug!(
@@ -1335,8 +1342,8 @@ impl DatabaseContextData {
 
                         // The things 'deferred' are carried out at the end of this function (i.e, quickly)
                         deferred.push(move |tself: &mut DatabaseContextData| {
-                            // Remember
-                            tself.record_reverse_dependency(msg.seq, observer, msg.last_overwriter);
+                            // Remember/record_reverse_dependency
+                            tself.record_reverse_dependency(msg.seq, observer, msg.last_overwriter, msg.can_be_deleted_early);
                         });
 
                         continue 'outer;
@@ -1354,13 +1361,12 @@ impl DatabaseContextData {
                 before_cutoff,
                 messages.may_have_been_transmitted(msg.seq)?
             );
-            for (revdep, last_overwriter) in self.read_reverse_dependency(msg.seq) {
-                // Get messages
+            for (revdep, last_overwriter, can_be_deleted_early) in self.read_reverse_dependency(msg.seq) {
+                // Get messages that depend on the message that we just decided to delete
                 unused_messages.push(UnusedInfo {
                     seq: revdep,
                     last_overwriter,
-                    unconditionally_overwritten: false, //Unconditional overwrite doesn't matter at this stage. TODO: Why??
-                    wrote_only_opaques: false,//TODO: Is this right? Think through, what's `wrote_only_opaques` used for in the lifetime of UnusedInfo beginning here? Should this be a different type altogether if it isn't used for anything?
+                    can_be_deleted_early,
                     padding: 0,
                 });
             }
@@ -1449,8 +1455,7 @@ impl DatabaseContextData {
                 last_overwriter: overwriter,
                 // ALL overwriters mut be non-tainted. There can't be a single oen that is.
                 // `cur.tainted()` tracks this per registrar.
-                unconditionally_overwritten: !cur.tainted(),
-                wrote_only_opaques: !cur.wrote_non_opaques(),
+                can_be_deleted_early: !cur.tainted() && !cur.wrote_non_opaques(),
                 padding: 0,
             });
         }
