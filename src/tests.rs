@@ -24,7 +24,9 @@ mod distributor_tests;
 mod fuzz_test_insert;
 mod recovery_tests;
 mod test_rotation;
-mod test_subsumption;
+mod test_subsumption_vec;
+mod test_subsumption_hashmap;
+
 mod tests_using_noatun_object_macro;
 mod test_subsumption_nonlocal;
 

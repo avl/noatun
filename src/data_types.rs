@@ -68,7 +68,8 @@ impl Object for NoatunString {
     }
 
     fn clear(self: Pin<&mut Self>) {
-        NoatunContext.observe_registrar(SequenceNr::INVALID);
+        let tself = unsafe { self.get_unchecked_mut() };
+        NoatunContext.clear_registrar_ptr(&mut tself.registrar, false);
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -799,6 +800,8 @@ where
     /// Write the given value to the given index.
     ///
     /// If the vector isn't large enough, it will be extended with zeroed elements.
+    // TODO: We should name these methods with names that make users understand their
+    // purpose is to write stuff to a collection without causing any observation of the collection.
     pub fn set_item_infallible(
         self: Pin<&mut Self>,
         index: usize,
@@ -1838,12 +1841,38 @@ impl<'a, K: NoatunKey + PartialEq, V: FixedSizeObject> HashAccessContextMut<'a, 
     }
 }
 
+struct LengthGuard {
+    new_length: usize,
+    length_field: *mut usize,
+}
+
+impl LengthGuard {
+    fn new(length_field: &mut usize) -> LengthGuard {
+        LengthGuard {
+            new_length: *length_field,
+            length_field: length_field as *mut usize,
+        }
+    }
+    fn record_delete(&mut self) {
+        self.new_length -= 1;
+    }
+}
+
+impl Drop for LengthGuard {
+    fn drop(&mut self) {
+        println!("Dropping DeleteGuard, writing {}", self.new_length);
+        NoatunContext.write_ptr(self.new_length, self.length_field);
+    }
+}
+
+
 impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMap<K, V> {
     pub fn len(&self) -> usize {
         //TODO: We need to register this observation. Unfortunately.
         self.length
     }
     pub fn is_empty(&self) -> bool {
+        //TODO: We need to register this observation. Unfortunately.
         self.length == 0
     }
     pub fn iter(&self) -> NoatunHashMapIterator<K, V> {
@@ -1982,6 +2011,56 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             }
             bucket_nr.advance(self.capacity);
         }*/
+    }
+
+    pub fn retain(self: Pin<&mut Self>, mut predicate: impl FnMut(&K, Pin<&mut V>) -> bool ) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        let mut length_guard = LengthGuard::new(&mut tself.length);
+        let mut context = tself.data_meta_len_mut();
+
+        let buckets_count = context.buckets.len();
+        let mut i = 0;
+        while i < buckets_count {
+            let meta_group_index = i/HASH_META_GROUP_SIZE;
+            let meta_group_offset = i%HASH_META_GROUP_SIZE;
+            let meta = &mut context.metas[meta_group_index].0[meta_group_offset];
+            if meta.populated() {
+                let bucket = unsafe { context.buckets[i].assume_init_mut() };
+                let val = unsafe { Pin::new_unchecked(&mut bucket.v) };
+                if !predicate(&bucket.key, val) {
+                    let bucket_nr = BucketNr(i);
+                    length_guard.record_delete();
+                    println!("Record delete");
+                    Self::remove_impl_by_bucket_nr(&mut context, bucket_nr, |_|{});
+                } else {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        // Drop of length_guard will decrease length field value.
+    }
+
+    pub fn clear(self: Pin<&mut Self>) {
+        let tself = unsafe { self.get_unchecked_mut() };
+
+        NoatunContext.write_internal(0, &mut tself.length);
+
+        let mut context = tself.data_meta_len_mut();
+        let buckets_count = context.buckets.len();
+        for i in 0..buckets_count {
+            let meta_group_index = i / HASH_META_GROUP_SIZE;
+            let meta_group_offset = i % HASH_META_GROUP_SIZE;
+            let meta = &mut context.metas[meta_group_index].0[meta_group_offset];
+            if meta.populated() {
+                NoatunContext.write_internal(Meta::EMPTY, meta);
+                let mut val = unsafe { Pin::new_unchecked(&mut context.buckets[i].assume_init_mut().v) };
+                val.clear();
+            } else if *meta != Meta::EMPTY {
+                NoatunContext.write_internal(Meta::EMPTY, meta);
+            }
+        }
     }
 
     /// General purpose bucket probe
@@ -2128,6 +2207,12 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         unsafe { Some(&context.buckets[bucket.0].assume_init_ref().v) }
     }
 
+    pub fn contains_key(&self,
+                        key: &K::DetachedType) -> bool {
+        let context = self.data_meta_len();
+        Self::probe_read(context, key).is_some()
+    }
+
     pub fn get_mut_val<'a>(
         self: Pin<&'a mut Self>,
         key: &K::DetachedType,
@@ -2140,6 +2225,34 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 &mut context.buckets[bucket.0].assume_init_mut().v,
             ))
         }
+    }
+
+    pub fn get_value_infallible<'a>(
+        mut self: Pin<&'a mut Self>,
+        key: &K::DetachedType,
+    ) -> Pin<&'a mut V> {
+
+
+        let context = self.data_meta_len();
+        if let Some(bucket) = Self::probe_read(context, key) {
+            unsafe {
+                let context = self.get_unchecked_mut().data_meta_len_mut();
+                return
+                    Pin::new_unchecked(
+                        &mut context.buckets[bucket.0].assume_init_mut().v,
+                    );
+            }
+        }
+
+        {
+            let tself = unsafe { self.as_mut().get_unchecked_mut() };
+
+            unsafe { tself.insert_internal_impl(key,|_target|{
+                // Leave as zero
+            })};
+        }
+
+        return self.get_mut_val(key).unwrap();
     }
 
     /// Return true if a value was removed
@@ -2167,14 +2280,39 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         let Some(bucket) = Self::probe_read(context.readonly(), key) else {
             return false;
         };
+        let mut context = self.data_meta_len_mut();
+        Self::remove_impl_by_bucket_nr(&mut context, bucket, getval);
 
+        println!("Metas now: {:?}", context.metas);
+
+        #[cfg(debug_assertions)]
+        {
+            for group in context.metas {
+                group.validate();
+            }
+        }
+
+        // TODO: Doing this last means the length would be off if we are aborted during
+        // the remove (perhaps by some other thread terminating the process).
+        let new_length = self.length - 1;
+        NoatunContext.write_internal(new_length, &mut self.length);
+        true
+
+    }
+
+    /// This does not update `self.length`
+    fn remove_impl_by_bucket_nr(
+        context: &mut HashAccessContextMut<K,V>,
+        bucket_nr: BucketNr,
+        getval: impl FnOnce(&mut Pin<&mut V>),
+    ) {
         unsafe {
-            let mut val = Pin::new_unchecked(&mut context.buckets[bucket.0].assume_init_mut().v);
+            let mut val = Pin::new_unchecked(&mut context.buckets[bucket_nr.0].assume_init_mut().v);
             getval(&mut val);
             val.clear();
         };
 
-        match get_meta_mut_and_emptyable(context.metas, bucket) {
+        match get_meta_mut_and_emptyable(context.metas, bucket_nr) {
             MetaMutAndEmpty::NoEmpty(meta) => {
                 println!("No empty found");
                 NoatunContext.write_internal(Meta::DELETED, meta);
@@ -2207,20 +2345,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 }
             }
         }
-
-        println!("Metas now: {:?}", context.metas);
-
-        #[cfg(debug_assertions)]
-        {
-            for group in context.metas {
-                group.validate();
-            }
-        }
-
-        let new_length = self.length - 1;
-        NoatunContext.write_internal(new_length, &mut self.length);
-
-        true
     }
     pub fn insert(self: Pin<&mut Self>, key: impl Borrow<K::DetachedType>, val: &V::DetachedType) {
         unsafe {
@@ -2228,6 +2352,11 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         }
     }
     pub(crate) fn insert_internal(&mut self, key: impl Borrow<K::DetachedType>, val: &V::DetachedType) {
+        self.insert_internal_impl(key, |target|
+            V::init_from_detached(target, val)
+        );
+    }
+    fn insert_internal_impl(&mut self, key: impl Borrow<K::DetachedType>, mut val: impl FnMut(Pin<&mut V>)) {
         let key = key.borrow();
         let context = self.data_meta_len_mut();
         let probe_result = Self::probe(context.readonly(), key);
@@ -2237,13 +2366,14 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                     self.capacity + 2
                 );
                 // Will not give infinite recursion, since 'new' has a capacity of at least 2 more
-                self.insert_internal(key, val);
+                self.insert_internal_impl(key, val);
             }
             ProbeRunResult::FoundUnoccupied(bucket, meta)| //Optimization: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
             ProbeRunResult::FoundPopulated(bucket, meta) => {
                 let bucket_obj = unsafe { context.buckets[bucket.0].assume_init_mut() };
                 let old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
-                V::init_from_detached(old_v, val);
+                val(old_v);
+                //V::init_from_detached(old_v, val);
                 if matches!(probe_result, ProbeRunResult::FoundUnoccupied(_, _)) {
                     let bucket_meta = get_meta_mut(context.metas, bucket);
                     NoatunContext.write_internal(meta, bucket_meta);
@@ -2255,6 +2385,8 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             }
         }
     }
+
+
     fn insert_impl(&mut self, key: K, val: V) {
         let context = self.data_meta_len_mut();
         let probe_result = Self::probe(context.readonly(), key.detach_key_ref());
@@ -2648,12 +2780,77 @@ mod tests {
             for i in 0..300 {
                 map.0.insert_internal(i, &i);
             }
+
+            assert_eq!(map.0.len(), 300);
+            assert_eq!(**unsafe{Pin::new_unchecked(&mut map.0)}.get_value_infallible(&10), 10);
+
             for i in 0..300 {
                 let val = map.0.get(&i).unwrap();
                 assert_eq!(val.get(), i);
             }
         })
         .unwrap();
+    }
+
+    #[test]
+    fn test_hashmap_miri_retain() {
+        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
+            Database::create_in_memory(
+                200000,
+                DatabaseSettings {
+                    mock_time: Some(datetime!(2021-01-01 Z).into()),
+                    ..Default::default()
+                },
+                (),
+            )
+                .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
+        db.with_root_mut(|map| {
+            let map = unsafe { map.get_unchecked_mut() };
+            assert_eq!(map.0.len(), 0);
+            for i in 0..10 {
+                map.0.insert_internal(i, &i);
+            }
+            assert_eq!(map.0.len(), 10);
+            unsafe { Pin::new_unchecked(&mut map.0).retain(|k, _v|{
+                println!("retain cb: {}", k);
+                *k%2==0
+            }) };
+            assert_eq!(map.0.len(), 5);
+            for (k,v) in map.0.iter() {
+                assert_eq!(*k%2, 0, "the odd elements have ben removed by `retain`");
+            }
+        })
+            .unwrap();
+    }
+
+
+    #[test]
+    fn test_hashmap_miri_clear() {
+        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
+            Database::create_in_memory(
+                200000,
+                DatabaseSettings {
+                    mock_time: Some(datetime!(2021-01-01 Z).into()),
+                    ..Default::default()
+                },
+                (),
+            )
+                .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
+        db.with_root_mut(|map| {
+            let map = unsafe { map.get_unchecked_mut() };
+            assert_eq!(map.0.len(), 0);
+            for i in 0..10 {
+                map.0.insert_internal(i, &i);
+            }
+            assert_eq!(map.0.len(), 10);
+            unsafe { Pin::new_unchecked(&mut map.0).clear() };
+            assert_eq!(map.0.len(), 0);
+            assert!(map.0.iter().next().is_none());
+
+        })
+            .unwrap();
     }
 
     #[test]

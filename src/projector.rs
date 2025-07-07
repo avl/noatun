@@ -317,6 +317,7 @@ impl<APP: Application> Projector<APP> {
         if context.next_seqnr() != seqnr {
             context.set_next_seqnr(seqnr);
         }
+        context.clear_wrote_tombstone();
         match msg.payload.persistence() {
             Persistence::UntilOverwritten => {
                 context.clear_tainted();

@@ -50,24 +50,27 @@ mod registrar_info {
         pub fn wrote_non_opaques(&self) -> bool {
             self.uses & 0x4000_0000 != 0
         }
+        pub fn wrote_tombstones(&self) -> bool {
+            self.uses & 0x2000_0000 != 0
+        }
         pub fn get_use(&self) -> u32 {
-            self.uses & 0x3FFF_FFFF
+            self.uses & 0x1FFF_FFFF
         }
         pub fn increase_use(&mut self, context: &mut DatabaseContextData) {
-            if self.get_use() >= 0x3FFF_FFFF {
+            if self.get_use() >= 0x1FFF_FFFF {
                 return;
             }
             //TODO(future): We could have a special "increment 1" noatun primitive.
             context.write_storable(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
-        pub fn decrease_use(&mut self, context: &mut DatabaseContextData, tainted: bool, wrote_non_opaques: bool) {
+        pub fn decrease_use(&mut self, context: &mut DatabaseContextData, tainted: bool, wrote_non_opaques: bool, wrote_tombstones: bool) {
             let mut raw_uses = self.uses;
             let cur_uses = self.get_use();
             if cur_uses == 0 {
                 panic!("Internal error, use count wrong");
             }
-            if cur_uses >= 0x3FFF_FFFF {
-                // Since we saturate at 0x7FFF_FFFF when adding, we cannot safely decrement.
+            if cur_uses >= 0x1FFF_FFFF {
+                // Since we saturate at 0x1FFF_FFFF when adding, we cannot safely decrement.
                 // The effect is that a message that touched equal or more than 0x3FFF_FFFF places
                 // in memory will never be deleted.
                 return;
@@ -86,6 +89,9 @@ mod registrar_info {
                     self.uses, &self.uses as *const u32
                 );
                 raw_uses |= 0x4000_0000;
+            }
+            if wrote_tombstones {
+                raw_uses |= 0x2000_0000;
             }
             // TODO(future): We could have a special "decrement 1" noatun primitive.
 
@@ -135,6 +141,7 @@ mod registrar_info {
         ///
         /// This is false for messages that have written non-opaque cells.
         pub can_be_deleted_early: bool,
+        pub wrote_tombstone: bool,
         /// Padding, just to make sure this struct has no compiler provided padding,
         /// but rather has explicit padding.
         pub padding: u16,
@@ -245,13 +252,18 @@ pub struct DatabaseContextData {
     /// the cutoff frontier passes, because some other node _could_ insert data that causes
     /// the tainted message to not overwrite the data in question.
     tainted: bool,
-
-    // Flag that keeps track of whether the current message has written a
-    // non-opaque value. I.e, if it's written something that could be observed
-    // by a later message.
-    //TODO: REmove!
-    //wrote_non_opaque: bool,
+    /// Messages that cleared an item (for example, in a map), must not be pruned.
+    ///
+    /// The reason is that such messages don't actually have any use count remaining
+    /// in the database, but still cannot be removed. The reason they cannot be removed
+    /// is that doing so would cause the deleted item to reappear.
+    ///
+    /// Note, that the act of deleting an item will allow pruning the message that originally
+    /// wrote said item. After that has occurred, it is okay to prune the tombstone writer
+    /// (because it's not actually writing anything anymore).
+    wrote_tombstone: bool,
 }
+
 
 // This has been shamelessly lifted from the rust std
 #[inline]
@@ -292,6 +304,9 @@ unsafe impl NoatunStorable for DepTrackLinkedListEntry {}
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct ReverseDepTrackLinkedListEntry {
+    /// MSB = true if this entry (with sequence number = `seq`) can
+    /// be deleted early.
+    /// Bits 0..62 = ThinPtr (index into backing disk storage) of `seq`
     pub next_and_flag: u64,
     pub seq: SequenceNr,
     pub last_overwriter: SequenceNr,
@@ -311,8 +326,11 @@ impl DatabaseContextData {
         info!("mark self tainted2");
         self.tainted = true;
     }
-    fn tainted(&self) -> bool {
-        self.tainted
+    fn wrote_tombstone(&self) -> bool {
+        self.wrote_tombstone
+    }
+    pub fn clear_wrote_tombstone(&mut self) {
+        self.wrote_tombstone = false;
     }
     pub fn assert_mutable(&self) {
         if !self.is_mutable {
@@ -360,7 +378,8 @@ impl DatabaseContextData {
         observee: SequenceNr,
         observer: SequenceNr,
         last_overwriter: SequenceNr,
-        can_be_deleted_early: bool
+        can_be_deleted_early: bool,
+        wrote_tombstone: bool,
     ) {
         assert!(observee.is_valid());
         assert!(observer.is_valid());
@@ -383,7 +402,12 @@ impl DatabaseContextData {
         // TODO(future): Create more efficient undo-construct for adjacent fields. Can be used
         // here and in other places.
 
-        let next_and_flag = (*key_place).0 as u64 | (if can_be_deleted_early { 1<<63 } else { 0 });
+        assert!((*key_place).0 < 1<<62);
+
+        let next_and_flag = (*key_place).0 as u64
+            | (if can_be_deleted_early { 1<<63 } else { 0 })
+            | (if wrote_tombstone { 1<<62 } else { 0 })
+            ;
         self.write_storable(next_and_flag, unsafe {
             Pin::new_unchecked(&mut new_entry.next_and_flag)
         });
@@ -421,7 +445,7 @@ impl DatabaseContextData {
     pub(crate) fn read_reverse_dependency(
         &self,
         observer: SequenceNr,
-    ) -> impl Iterator<Item = (SequenceNr, SequenceNr /* last overwriter */, bool /*can be deleted early*/)> + '_ {
+    ) -> impl Iterator<Item = (SequenceNr, SequenceNr /* last overwriter */, bool /*can be deleted early*/, bool /*wrote tombstone*/)> + '_ {
         let keys: &RawDatabaseVec<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
 
         let mut cur: ThinPtr = if observer.index() < keys.len() {
@@ -435,9 +459,10 @@ impl DatabaseContextData {
                 return None;
             }
             let entry: &ReverseDepTrackLinkedListEntry = unsafe { self.access_storable(cur) };
-            cur = ThinPtr((entry.next_and_flag&(i64::MAX as u64)) as usize);
+            cur = ThinPtr((entry.next_and_flag&(0x3fff_ffff_ffff_ffff)) as usize);
             let can_be_deleted_early = entry.next_and_flag&(1<<63) != 0;
-            Some((entry.seq, entry.last_overwriter, can_be_deleted_early))
+            let wrote_tombstone = entry.next_and_flag&(1<<62) != 0;
+            Some((entry.seq, entry.last_overwriter, can_be_deleted_early, wrote_tombstone))
         })
     }
 
@@ -653,7 +678,7 @@ impl DatabaseContextData {
             is_mutable: false,
             filesystem_sync_disabled: false,
             tainted: false,
-
+            wrote_tombstone: false,
         };
         // It's a bit of a code smell that at this precise point in the execution,
         // a DatabaseContext exists, but it's not actually fully initialized until we write the
@@ -1165,7 +1190,7 @@ impl DatabaseContextData {
             return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
         }
         if registrar_point.is_valid() {
-            self.rt_decrease_use(*registrar_point, current_registrar, self.tainted, !opaque);
+            self.rt_decrease_use(*registrar_point, current_registrar, self.tainted, !opaque, self.wrote_tombstone);
         }
         if current_registrar.is_invalid() {
             // We're in the 'initialize root' method
@@ -1182,6 +1207,7 @@ impl DatabaseContextData {
         actor: SequenceNr,
         actor_tainted: bool,
         actor_wrote_non_opaque: bool,
+        wrote_tombstone: bool,
     ) {
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
         let current_registrar = actor;
@@ -1190,7 +1216,7 @@ impl DatabaseContextData {
         }
         let is_valid = registrar_point_value.is_valid();
         if is_valid {
-            self.rt_decrease_use(registrar_point_value, current_registrar, actor_tainted, actor_wrote_non_opaque);
+            self.rt_decrease_use(registrar_point_value, current_registrar, actor_tainted, actor_wrote_non_opaque, wrote_tombstone);
         }
         if current_registrar.is_invalid() {
             if is_valid {
@@ -1204,10 +1230,12 @@ impl DatabaseContextData {
         self.write_storable_ptr(current_registrar, registrar_point)
     }
     pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
-        self.update_registrar_ptr_impl(registrar_point, self.next_seqnr(), self.tainted, !opaque);
+        self.update_registrar_ptr_impl(registrar_point, self.next_seqnr(), self.tainted, !opaque, self.wrote_tombstone);
     }
     pub fn clear_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
-        self.update_registrar_ptr_impl(registrar_point, SequenceNr::INVALID, self.tainted, !opaque);
+
+        self.wrote_tombstone = true;
+        self.update_registrar_ptr_impl(registrar_point, SequenceNr::INVALID, self.tainted, !opaque, self.wrote_tombstone);
     }
 
     // Signify that the current message has observed data previously written
@@ -1246,6 +1274,7 @@ impl DatabaseContextData {
                 seq: message_id,
                 last_overwriter: message_id,
                 can_be_deleted_early: !self.tainted,
+                wrote_tombstone: self.wrote_tombstone,
                 padding: 0,
             });
             return;
@@ -1266,6 +1295,7 @@ impl DatabaseContextData {
                 seq: message_id,
                 last_overwriter: message_id,
                 can_be_deleted_early: !self.tainted,
+                wrote_tombstone: self.wrote_tombstone,
                 padding: 0,
             });
         }
@@ -1293,7 +1323,7 @@ impl DatabaseContextData {
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
         mut unused_messages: Vec<UnusedInfo>,
-        before_cutoff: bool,
+        before_cutoff: bool, //TODO: This should probably be determined by looking at id:s, not by boolean!
     ) -> anyhow::Result<Vec<SequenceNr>> {
         let mut deleted = Vec::new();
         let mut deferred = Vec::new();
@@ -1343,7 +1373,7 @@ impl DatabaseContextData {
                         // The things 'deferred' are carried out at the end of this function (i.e, quickly)
                         deferred.push(move |tself: &mut DatabaseContextData| {
                             // Remember/record_reverse_dependency
-                            tself.record_reverse_dependency(msg.seq, observer, msg.last_overwriter, msg.can_be_deleted_early);
+                            tself.record_reverse_dependency(msg.seq, observer, msg.last_overwriter, msg.can_be_deleted_early, msg.wrote_tombstone);
                         });
 
                         continue 'outer;
@@ -1361,12 +1391,13 @@ impl DatabaseContextData {
                 before_cutoff,
                 messages.may_have_been_transmitted(msg.seq)?
             );
-            for (revdep, last_overwriter, can_be_deleted_early) in self.read_reverse_dependency(msg.seq) {
+            for (revdep, last_overwriter, can_be_deleted_early, wrote_tombstone) in self.read_reverse_dependency(msg.seq) {
                 // Get messages that depend on the message that we just decided to delete
                 unused_messages.push(UnusedInfo {
                     seq: revdep,
                     last_overwriter,
                     can_be_deleted_early,
+                    wrote_tombstone,
                     padding: 0,
                 });
             }
@@ -1419,6 +1450,7 @@ impl DatabaseContextData {
         overwriter: SequenceNr,
         overwriter_tainted: bool,
         wrote_non_opaque: bool,
+        wrote_tombstones: bool,
 
     ) {
         let uses = unsafe { self.get_uses() };
@@ -1431,7 +1463,7 @@ impl DatabaseContextData {
         unsafe {
             cur.as_mut()
                 .get_unchecked_mut()
-                .decrease_use(self, overwriter_tainted, wrote_non_opaque)
+                .decrease_use(self, overwriter_tainted, wrote_non_opaque, wrote_tombstones)
         };
         trace!(
             "decreased use of {:?} is {} (taint:{}) (because overwriter: {:?}(tainted:{}))",
@@ -1456,6 +1488,8 @@ impl DatabaseContextData {
                 // ALL overwriters mut be non-tainted. There can't be a single oen that is.
                 // `cur.tainted()` tracks this per registrar.
                 can_be_deleted_early: !cur.tainted() && !cur.wrote_non_opaques(),
+                wrote_tombstone: cur.wrote_tombstones(),
+                compile_error!("Figure out if the tombstone-tracking even works!")
                 padding: 0,
             });
         }

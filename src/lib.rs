@@ -973,6 +973,17 @@ pub trait Object {
 
     fn detach(&self) -> Self::DetachedOwnedType;
 
+    /// Clear this object.
+    ///
+    /// This is called when an object disappears because it is no longer
+    /// observable. For example, this happens when an element is deleted from a collection
+    /// like [`data_types::NoatunVec`] or [`data_types::NoatunHashMap`] .
+    ///
+    /// From a correctness perspective, this method doesn't need to do anything.
+    /// Since the value will not be observable again, its contents don't matter.
+    ///
+    /// However, any observables should be overwritten, so that messages that
+    /// wrote them can be pruned.
     fn clear(self: Pin<&mut Self>);
 
     /// Initialize all the fields in 'self' from the given 'detached' type.
