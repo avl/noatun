@@ -207,7 +207,7 @@ impl<Root: FixedSizeObject> Object for DummyTestApp<Root> {
 
     fn detach(&self) -> Self::DetachedOwnedType {}
 
-    fn clear(self: Pin<&mut Self>) {
+    fn destroy(self: Pin<&mut Self>) {
         unimplemented!()
     }
 
@@ -399,7 +399,7 @@ impl Object for CounterObject {
         unimplemented!()
     }
 
-    fn clear(self: Pin<&mut Self>) {
+    fn destroy(self: Pin<&mut Self>) {
         unsafe {
             let tself = self.get_unchecked_mut();
             Pin::new_unchecked(&mut tself.counter).clear();

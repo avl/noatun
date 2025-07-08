@@ -26,7 +26,7 @@ impl Object for CounterObject {
         unimplemented!()
     }
 
-    fn clear(self: Pin<&mut Self>) {
+    fn destroy(self: Pin<&mut Self>) {
         unimplemented!()
     }
 

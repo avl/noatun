@@ -2377,7 +2377,6 @@ use std::collections::BTreeMap;
     use crate::cutoff::CutOffConfig;
     use crate::update_head_tracker::UpdateHeadTracker;
     use std::pin::Pin;
-    use std::sync::atomic::compiler_fence;
     use std::time::Instant;
     use rand::Rng;
     use rand::rngs::SmallRng;

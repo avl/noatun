@@ -278,6 +278,10 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_storable(value, dest) }
     }
+    pub fn wrote_tombstone(&self) {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).set_wrote_tombstone() }
+    }
     pub(crate) fn write_internal<T: NoatunStorable>(&self, value: T, dest: &mut T) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_storable(value, Pin::new_unchecked(dest)) }
@@ -624,6 +628,11 @@ impl NoatunTime {
         ms
     }
 
+    pub fn debug_time(minutes: u64) -> NoatunTime {
+        let noatun = NoatunTime::from(datetime!(2020-01-01 T 00:00:00 Z));
+        noatun + Duration::from_secs(minutes*60)
+    }
+
     pub fn next_multiple_of(self, other: NoatunTime) -> Option<NoatunTime> {
         Some(NoatunTime(self.0.checked_next_multiple_of(other.0)?))
     }
@@ -761,7 +770,7 @@ impl Object for DummyUnitObject {
 
     fn detach(&self) -> Self::DetachedType {}
 
-    fn clear(self: Pin<&mut Self>) {}
+    fn destroy(self: Pin<&mut Self>) {}
 
     fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {}
 
@@ -984,7 +993,7 @@ pub trait Object {
     ///
     /// However, any observables should be overwritten, so that messages that
     /// wrote them can be pruned.
-    fn clear(self: Pin<&mut Self>);
+    fn destroy(self: Pin<&mut Self>);
 
     /// Initialize all the fields in 'self' from the given 'detached' type.
     /// The detached type is a regular rust pod struct, with no requirements
@@ -1203,9 +1212,9 @@ macro_rules! noatun_object {
                 type DetachedOwnedType = $crate::paste!(noatun_object!(detached_type [<$n Detached>]));
 
 
-                fn clear(self: ::std::pin::Pin<&mut Self>) {
+                fn destroy(self: ::std::pin::Pin<&mut Self>) {
                     let tself = unsafe { self.get_unchecked_mut() };
-                    $( unsafe { ::std::pin::Pin::new_unchecked(&mut tself.$name).clear(); } )*
+                    $( unsafe { ::std::pin::Pin::new_unchecked(&mut tself.$name).destroy(); } )*
                 }
 
                 fn detach(&self) -> Self::DetachedOwnedType {
@@ -1411,10 +1420,10 @@ where
         self.iter().map(|x| x.detach()).collect()
     }
 
-    fn clear(self: Pin<&mut Self>) {
+    fn destroy(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         for item in tself {
-            unsafe { Pin::new_unchecked(item).clear() };
+            unsafe { Pin::new_unchecked(item).destroy() };
         }
     }
 

@@ -255,7 +255,18 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
         self.db.count_messages()
     }
 
-    pub(crate) fn maybe_advance_cutoff(&mut self) -> Result<()> {
+    /// Advance the 'cutoff' time of the db, if necessary.
+    ///
+    /// The cutoff is the time in the past, such that all messages sent before that time
+    /// have had time to propagate to all nodes. Since no node will never (by definition)
+    /// see any additional message with a timestamp before the cutoff, messages that
+    /// don't have any remaining effect on the database state (because the data they wrote
+    /// has been overwritten by other messages) can thus be removed.
+    ///
+    /// This method evaluates if enough time has passed to warrant scanning for old messages
+    /// that can be removed according to the principle above, and performs such pruning if
+    /// necessary.
+    pub fn maybe_advance_cutoff(&mut self) -> Result<()> {
         self.db.maybe_advance_cutoff()
     }
 
@@ -473,6 +484,7 @@ impl<APP: Application> Database<APP> {
         let now = self.noatun_now();
         let nominal_cutoff_time = self.message_store.nominal_cutoff_time(now);
         let current_cutoff = self.message_store.current_cutoff_hash()?;
+        dbg!(&now, &current_cutoff, &nominal_cutoff_time);
         if nominal_cutoff_time > current_cutoff.before_time {
             self.advance_cutoff_impl(nominal_cutoff_time)?;
         }
@@ -1029,7 +1041,7 @@ impl<APP: Application> Database<APP> {
             prev_local: None,
             context: ctx,
             message_store,
-            time_override: None,
+            time_override: settings.mock_time,
             projection_time_limit: settings.projection_time_limit,
             load_status,
             auto_delete: settings.auto_delete,

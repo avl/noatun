@@ -16,7 +16,6 @@ use std::ops::{Add, AddAssign, Deref, Index, Range};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
-use std::sync::atomic::compiler_fence;
 use savefile_derive::Savefile;
 use tracing::trace;
 
@@ -67,7 +66,7 @@ impl Object for NoatunString {
         self.get().to_string()
     }
 
-    fn clear(self: Pin<&mut Self>) {
+    fn destroy(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.clear_registrar_ptr(&mut tself.registrar, false);
     }
@@ -386,7 +385,7 @@ impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
         self.value
     }
 
-    fn clear(self: Pin<&mut Self>) {
+    fn destroy(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         trace!("NoatunCell::clear: {:?}", tself.value);
         NoatunContext.clear_registrar_ptr(&mut tself.registrar, false);
@@ -412,7 +411,7 @@ impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
         self.value
     }
 
-    fn clear(self: Pin<&mut Self>) {
+    fn destroy(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         trace!("OpaqueNoatunCell::clear: {:?}", tself.value);
         NoatunContext.clear_registrar_ptr(&mut tself.registrar, true);
@@ -623,7 +622,7 @@ where
         unimplemented!("RawDatabaseVec does not support detach")
     }
 
-    fn clear(self: Pin<&mut Self>) {
+    fn destroy(self: Pin<&mut Self>) {
         // The Raw type is special, is isn't tracked
     }
 
@@ -827,7 +826,7 @@ where
 
     pub fn clear(mut self: Pin<&mut Self>) {
         for i in 0..self.length {
-            self.as_mut().get_index_mut(i).clear();
+            self.as_mut().get_index_mut(i).destroy();
         }
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.update_registrar(&mut tself.length_registrar, false);
@@ -860,7 +859,7 @@ where
         let src_ptr = ThinPtr(tself.data + (tself.length - 1) * size_of::<T>());
         let dst_ptr = ThinPtr(tself.data + index * size_of::<T>());
         unsafe {
-            dst_ptr.access_mut::<T>().clear();
+            dst_ptr.access_mut::<T>().destroy();
         }
         NoatunContext.copy_ptr(FatPtr::from_idx_count(src_ptr.0, 1), dst_ptr);
 
@@ -878,7 +877,7 @@ where
             let mut val = unsafe { read_ptr.access_mut::<T>() };
             let retain = f(val.as_mut());
             if !retain {
-                val.clear();
+                val.destroy();
                 new_len -= 1;
                 read_offset += 1;
             } else {
@@ -919,7 +918,7 @@ where
         self.iter().map(|x| x.detach()).collect()
     }
 
-    fn clear(self: Pin<&mut Self>) {
+    fn destroy(self: Pin<&mut Self>) {
         self.clear()
     }
 
@@ -965,8 +964,8 @@ where
         self.get_inner().detach()
     }
 
-    fn clear(self: Pin<&mut Self>) {
-        Self::get_inner_mut(self).clear()
+    fn destroy(self: Pin<&mut Self>) {
+        Self::get_inner_mut(self).destroy()
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -1090,6 +1089,15 @@ pub struct NoatunHashMap<K: NoatunStorable, V: FixedSizeObject> {
     length: usize,
     capacity: usize,
     data: usize,
+
+    // By having a registrar for any "clear" calls, we can avoid
+    // accumulating multiple "tombstone" messages when clearing hashmaps.
+    // The downside is that each hashmap retains a clearing message
+    // even _after_ the cutoff (since it remains in the db).
+    // Observes any "clear" calls. This allows us to not register
+    // such actions as 'tombstones'.
+    clear_registrar: SequenceNr,
+
     phantom_data: PhantomData<(K, V)>,
 }
 
@@ -1306,6 +1314,7 @@ pub mod meta_finder {
         _mm256_or_si256, _mm256_set1_epi8,
     };
     use std::ops::Range;
+    use super::HASH_META_GROUP_SIZE;
 
     #[inline]
     pub fn get_any_empty(group: &MetaGroup) -> Option<usize> {
@@ -1367,7 +1376,7 @@ pub mod meta_finder {
                 }
 
                 let step = next + 1;
-                if step >= HASH_META_GROUP_SIZE {
+                if step >= HASH_META_GROUP_SIZE as u32 {
                     break;
                 }
                 temp_pos += step as usize;
@@ -1415,7 +1424,7 @@ pub mod meta_finder {
                 }
 
                 let step = next + 1;
-                if step >= HASH_META_GROUP_SIZE {
+                if step >= HASH_META_GROUP_SIZE as u32 {
                     break;
                 }
                 temp_pos += step as usize;
@@ -2047,6 +2056,9 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
         NoatunContext.write_internal(0, &mut tself.length);
 
+        NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
+        //NoatunContext.wrote_tombstone();
+
         let mut context = tself.data_meta_len_mut();
         let buckets_count = context.buckets.len();
         for i in 0..buckets_count {
@@ -2056,7 +2068,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             if meta.populated() {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
                 let mut val = unsafe { Pin::new_unchecked(&mut context.buckets[i].assume_init_mut().v) };
-                val.clear();
+                val.destroy();
             } else if *meta != Meta::EMPTY {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
             }
@@ -2309,7 +2321,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         unsafe {
             let mut val = Pin::new_unchecked(&mut context.buckets[bucket_nr.0].assume_init_mut().v);
             getval(&mut val);
-            val.clear();
+            val.destroy();
         };
 
         match get_meta_mut_and_emptyable(context.metas, bucket_nr) {
@@ -2433,6 +2445,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             length: 0,
             capacity,
             data: NoatunContext.index_of_ptr(data).0,
+            clear_registrar: SequenceNr::INVALID,
             phantom_data: PhantomData,
         };
         NoatunContext.write(new, unsafe { Pin::new_unchecked(self) });
@@ -2513,9 +2526,20 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
             .collect()
     }
 
-    fn clear(self: Pin<&mut Self>) {
-        let length = unsafe { self.map_unchecked_mut(|x| &mut x.length) };
-        NoatunContext.write(0, length);
+    fn destroy(self: Pin<&mut Self>) {
+        //TODO: Should clear all values too.
+        compile_error!("make sure to actually clear all present values too, here!\
+
+Then, check that the tombstone-mechanism actually works.
+
+Also, fix NoatunVec - it should probably use the same tombstone-mechanism as Map.
+The current approach is just broken and non-intuitive.
+
+
+        ")
+
+        let tself = unsafe { self.get_unchecked_mut() };
+        NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
