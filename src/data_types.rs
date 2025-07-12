@@ -643,79 +643,45 @@ struct DatabaseVecLengthCapData {
     data: usize,
 }
 
-unsafe impl NoatunStorable for DatabaseVecLengthCapData {}
+unsafe impl NoatunStorable for DatabaseVecLengthCapData {
+}
 
+
+//TODO: Merge with RawDatabaseVec?
 #[repr(C)]
-pub struct NoatunVec<T: FixedSizeObject> {
+struct NoatunVecRaw<T: FixedSizeObject> {
     //WARNING! These first 3 fields must be identical to DatabaseVecLengthCapData
     length: usize,
     capacity: usize,
     data: usize,
-    length_registrar: SequenceNr,
     phantom_data: PhantomData<T>,
 }
 
-unsafe impl<T: FixedSizeObject> NoatunStorable for NoatunVec<T> {}
-
-impl<T: FixedSizeObject + Debug> Debug for NoatunVec<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.iter()).finish()
+impl<T: FixedSizeObject> NoatunVecRaw<T> {
+    fn get_index(&self, index: usize) -> &T {
+        assert!(index < self.length);
+        let offset = self.data + index * size_of::<T>();
+        unsafe { ThinPtr(offset).access::<T>() }
     }
-}
 
-pub struct NoatunVecIterator<'a, T: FixedSizeObject> {
-    vec: &'a NoatunVec<T>,
-    index: usize,
-}
-
-pub struct NoatunVecIteratorMut<'a, T: FixedSizeObject> {
-    vec: Pin<&'a mut NoatunVec<T>>,
-    index: usize,
-}
-
-impl<'a, T: FixedSizeObject + 'static> Iterator for NoatunVecIterator<'a, T> {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.vec.length {
-            return None;
-        }
-        let index = self.index;
-        self.index += 1;
-        Some(self.vec.get_index(index))
+    fn get_index_mut(&mut self, index: usize) -> Pin<&mut T> {
+        assert!(index < self.length);
+        let offset = self.data + index * size_of::<T>();
+        let t = unsafe { ThinPtr(offset).access_mut::<T>() };
+        t
     }
-}
-impl<'a, T: FixedSizeObject + 'static> Iterator for NoatunVecIteratorMut<'a, T> {
-    type Item = Pin<&'a mut T>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.vec.length {
-            return None;
-        }
-        let index = self.index;
-        self.index += 1;
-        // Transmute is needed, since the rust typesystem "doesn't know" that all the
-        // mutable references to `'a` that we're giving out, are in fact disjoint.
-        Some(unsafe {
-            Pin::new_unchecked(std::mem::transmute::<&mut T, &mut T>(
-                NoatunVec::get_index_mut(self.vec.as_mut(), index).get_unchecked_mut(),
-            ))
-        })
+    fn write(&mut self, index: usize, val: T) {
+        let offset = self.data + index * size_of::<T>();
+        unsafe {
+            let dest = ThinPtr(offset).access_mut::<T>();
+            NoatunContext.write(val, dest);
+        };
     }
-}
-
-impl<T: FixedSizeObject + 'static> NoatunVec<T> {
-    pub fn iter(&self) -> NoatunVecIterator<T> {
-        NoatunVecIterator {
-            vec: self,
-            index: 0,
+    fn destroy_items(&mut self) {
+        for i in 0..self.length {
+            self.get_index_mut(i).destroy();
         }
-    }
-    pub fn iter_mut(self: Pin<&mut Self>) -> NoatunVecIteratorMut<T> {
-        NoatunVecIteratorMut {
-            vec: self,
-            index: 0,
-        }
+        NoatunContext.write_internal(0, &mut self.length);
     }
     fn realloc_add(&mut self, new_capacity: usize, new_len: usize) {
         debug_assert!(new_capacity >= new_len);
@@ -744,6 +710,119 @@ impl<T: FixedSizeObject + 'static> NoatunVec<T> {
             },
         )
     }
+
+    fn push_zeroed(&mut self) -> Pin<&mut T> {
+        if self.length >= self.capacity {
+            self.realloc_add((self.capacity + 1) * 2, self.length + 1);
+        } else {
+            NoatunContext.write_ptr(self.length + 1, addr_of_mut!(self.length));
+        }
+        self.get_index_mut(self.length - 1)
+    }
+
+    fn swap_remove(&mut self, index: usize) {
+        if index == self.length - 1 {
+            NoatunContext.write_ptr(self.length - 1, addr_of_mut!(self.length));
+            let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
+            unsafe {
+                dst_ptr.access_mut::<T>().destroy();
+            }
+            return;
+        }
+        let src_ptr = ThinPtr(self.data + (self.length - 1) * size_of::<T>());
+        let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
+        unsafe {
+            dst_ptr.access_mut::<T>().destroy();
+        }
+        NoatunContext.copy_ptr(FatPtr::from_idx_count(src_ptr.0, 1), dst_ptr);
+
+        NoatunContext.write_ptr(self.length - 1, addr_of_mut!(self.length));
+    }
+}
+
+/// Noatun version of Vec.
+///
+/// Supports inserts, remove and iteration.
+///
+/// NOTE! This type is mostly available for completeness and because it can be convenient for
+/// demos and examples. However, because of the semantics of Noatun, every message that writes
+/// or removes elements from a NoatunVec will form a single causal chain. This means none of them
+/// can be pruned until the vector is cleared, even if early messages no longer appear to have
+/// any impact on the database state.
+///
+/// In most cases, applications should use [`NoatunHashMap`] or OpaqueNoatunVec
+#[repr(C)]
+pub struct NoatunVec<T: FixedSizeObject> {
+    raw: NoatunVecRaw<T>,
+    length_registrar: SequenceNr,
+    clear_registrar: SequenceNr,
+    phantom_data: PhantomData<T>,
+}
+
+unsafe impl<T: FixedSizeObject> NoatunStorable for NoatunVec<T> {}
+
+impl<T: FixedSizeObject + Debug> Debug for NoatunVec<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+pub struct NoatunVecIterator<'a, T: FixedSizeObject> {
+    vec: &'a NoatunVec<T>,
+    index: usize,
+}
+
+pub struct NoatunVecIteratorMut<'a, T: FixedSizeObject> {
+    vec: Pin<&'a mut NoatunVec<T>>,
+    index: usize,
+}
+
+impl<'a, T: FixedSizeObject + 'static> Iterator for NoatunVecIterator<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.vec.raw.length {
+            return None;
+        }
+        let index = self.index;
+        self.index += 1;
+        Some(self.vec.get_index(index))
+    }
+}
+impl<'a, T: FixedSizeObject + 'static> Iterator for NoatunVecIteratorMut<'a, T> {
+    type Item = Pin<&'a mut T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.vec.raw.length {
+            return None;
+        }
+        let index = self.index;
+        self.index += 1;
+        // Transmute is needed, since the rust typesystem "doesn't know" that all the
+        // mutable references to `'a` that we're giving out, are in fact disjoint.
+        Some(unsafe {
+            Pin::new_unchecked(std::mem::transmute::<&mut T, &mut T>(
+                NoatunVec::get_index_mut(self.vec.as_mut(), index).get_unchecked_mut(),
+            ))
+        })
+    }
+}
+
+impl<T: FixedSizeObject + 'static> NoatunVec<T> {
+    pub fn iter(&self) -> NoatunVecIterator<T> {
+        NoatunContext.observe_registrar(self.length_registrar);
+        NoatunVecIterator {
+            vec: self,
+            index: 0,
+        }
+    }
+    pub fn iter_mut(self: Pin<&mut Self>) -> NoatunVecIteratorMut<T> {
+        NoatunContext.observe_registrar(self.length_registrar);
+        NoatunVecIteratorMut {
+            vec: self,
+            index: 0,
+        }
+    }
     #[allow(clippy::mut_from_ref)]
     pub fn new<'a>() -> Pin<&'a mut NoatunVec<T>> {
         unsafe { NoatunContext.allocate::<NoatunVec<T>>() }
@@ -764,116 +843,63 @@ where
 {
     pub fn len(&self) -> usize {
         NoatunContext.observe_registrar(self.length_registrar);
-        self.length
+        self.raw.length
     }
     pub fn is_empty(&self) -> bool {
         NoatunContext.observe_registrar(self.length_registrar);
-        self.length == 0
+        self.raw.length == 0
     }
     pub fn get_index(&self, index: usize) -> &T {
-        assert!(index < self.length);
-        let offset = self.data + index * size_of::<T>();
-        unsafe { ThinPtr(offset).access::<T>() }
+        NoatunContext.observe_registrar(self.length_registrar);
+        self.raw.get_index(index)
     }
 
     pub fn get_index_mut(self: Pin<&mut Self>, index: usize) -> Pin<&mut T> {
-        assert!(index < self.length);
-        let offset = self.data + index * size_of::<T>();
-        let t = unsafe { ThinPtr(offset).access_mut::<T>() };
-        t
+        NoatunContext.observe_registrar(self.length_registrar);
+        let tself = unsafe { self.get_unchecked_mut() };
+        tself.raw.get_index_mut(index)
     }
     fn get_mut_internal(&mut self, index: usize) -> Pin<&mut T> {
-        assert!(index < self.length);
-        let offset = self.data + index * size_of::<T>();
-        let t = unsafe { ThinPtr(offset).access_mut::<T>() };
-        t
+        self.raw.get_index_mut(index)
     }
-    pub(crate) fn write(&mut self, index: usize, val: T) {
-        let offset = self.data + index * size_of::<T>();
-        unsafe {
-            let dest = ThinPtr(offset).access_mut::<T>();
-            NoatunContext.write(val, dest);
-        };
-    }
+    /*pub(crate) fn write(&mut self, index: usize, val: T) {
+        self.raw.write(index, val)
+    }*/
 
-    /// Write the given value to the given index.
-    ///
-    /// If the vector isn't large enough, it will be extended with zeroed elements.
-    // TODO: We should name these methods with names that make users understand their
-    // purpose is to write stuff to a collection without causing any observation of the collection.
-    pub fn set_item_infallible(
-        self: Pin<&mut Self>,
-        index: usize,
-        val: impl Borrow<<T as Object>::DetachedType>,
-    ) {
-        let tself = unsafe { self.get_unchecked_mut() };
-        if index >= tself.length {
-            let new_length = index + 1;
-            if new_length > tself.capacity {
-                // Reallocate
-                tself.realloc_add((new_length + 1) * 2, new_length);
-            } else {
-                // Just increase length
-                NoatunContext.write_ptr(new_length, addr_of_mut!(tself.length));
-            }
-        }
-        let offset = ThinPtr(tself.data + index * size_of::<T>());
-        unsafe {
-            let item_data = offset.access_mut::<T>();
-            item_data.init_from_detached(val.borrow());
-        }
-    }
 
     pub fn clear(mut self: Pin<&mut Self>) {
-        for i in 0..self.length {
-            self.as_mut().get_index_mut(i).destroy();
-        }
         let tself = unsafe { self.get_unchecked_mut() };
+        tself.raw.destroy_items();
         NoatunContext.update_registrar(&mut tself.length_registrar, false);
-        NoatunContext.write_ptr(0, addr_of_mut!(tself.length));
+        NoatunContext.update_registrar(&mut tself.clear_registrar, true);
     }
 
     pub fn push_zeroed(self: Pin<&mut Self>) -> Pin<&mut T> {
         let tself = unsafe { self.get_unchecked_mut() };
-        if tself.length >= tself.capacity {
-            tself.realloc_add((tself.capacity + 1) * 2, tself.length + 1);
-        } else {
-            NoatunContext.write_ptr(tself.length + 1, addr_of_mut!(tself.length));
-        }
+        NoatunContext.observe_registrar(tself.length_registrar);
         NoatunContext.update_registrar(&mut tself.length_registrar, false);
-
-        tself.get_mut_internal(tself.length - 1)
+        tself.raw.push_zeroed()
     }
 
     pub fn swap_remove(self: Pin<&mut Self>, index: usize) {
-        if index >= self.length {
+        if index >= self.raw.length {
             return;
         }
         let tself = unsafe { self.get_unchecked_mut() };
-
-        if index == tself.length - 1 {
-            NoatunContext.update_registrar(&mut tself.length_registrar, false);
-            NoatunContext.write_ptr(tself.length - 1, addr_of_mut!(tself.length));
-            return;
-        }
-        let src_ptr = ThinPtr(tself.data + (tself.length - 1) * size_of::<T>());
-        let dst_ptr = ThinPtr(tself.data + index * size_of::<T>());
-        unsafe {
-            dst_ptr.access_mut::<T>().destroy();
-        }
-        NoatunContext.copy_ptr(FatPtr::from_idx_count(src_ptr.0, 1), dst_ptr);
-
+        NoatunContext.observe_registrar(tself.length_registrar);
         NoatunContext.update_registrar(&mut tself.length_registrar, false);
-        NoatunContext.write_ptr(tself.length - 1, addr_of_mut!(tself.length));
+
+        tself.raw.swap_remove(index);
     }
 
     pub fn retain(self: Pin<&mut Self>, mut f: impl FnMut(Pin<&mut T>) -> bool) {
+        //TODO: Handle panics? Test that panics are handled correctly.
         let mut read_offset = 0;
         let mut write_offset = 0;
-        let mut new_len = self.length;
+        let mut new_len = self.raw.length;
 
-        while read_offset < self.length {
-            let read_ptr = ThinPtr(self.data + read_offset * size_of::<T>());
+        while read_offset < self.raw.length {
+            let read_ptr = ThinPtr(self.raw.data + read_offset * size_of::<T>());
             let mut val = unsafe { read_ptr.access_mut::<T>() };
             let retain = f(val.as_mut());
             if !retain {
@@ -882,7 +908,7 @@ where
                 read_offset += 1;
             } else {
                 if read_offset != write_offset {
-                    let write_ptr = ThinPtr(self.data + write_offset * size_of::<T>());
+                    let write_ptr = ThinPtr(self.raw.data + write_offset * size_of::<T>());
                     NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>());
                 }
                 read_offset += 1;
@@ -890,21 +916,132 @@ where
             }
         }
         let self_mut = unsafe { self.get_unchecked_mut() };
+        NoatunContext.observe_registrar(self_mut.length_registrar);
         NoatunContext.update_registrar(&mut self_mut.length_registrar, false);
-        NoatunContext.write_ptr(new_len, addr_of_mut!(self_mut.length));
+        NoatunContext.write_ptr(new_len, addr_of_mut!(self_mut.raw.length));
     }
 
     pub fn push(mut self: Pin<&mut Self>, t: impl Borrow<<T as Object>::DetachedType>) {
         self.as_mut().push_zeroed();
 
-        let tself = unsafe { self.get_unchecked_mut() };
-        let index = tself.length - 1;
-        let offset = ThinPtr(tself.data + index * size_of::<T>());
+        let index = self.raw.length - 1;
+        self.get_index_mut(index).init_from_detached(t.borrow());
+        /*let offset = ThinPtr(tself.raw.data + index * size_of::<T>());
         unsafe {
             offset.access_mut::<T>().init_from_detached(t.borrow());
-        }
+        }*/
     }
 }
+
+/// Like [`NoatunVec`] but does not support all operations during message application.
+///
+/// Specifically, it doesn't support iteration, and doesn't have a `len` method.
+///
+/// This means less meta data needs to be kept, which avoid building subtle dependencies
+/// between messages. This means messages can be pruned more effectively.
+///
+/// An example:
+///
+/// Adding an item to [`NoatunVec`] using [`NoatunVec::push`] changes the length of the
+/// collection. This change is observable, so metadata about the length must be kept.
+/// However, the resulting length after [`NoatunVec::push`] depends on the previous length,
+/// which in turn depends on all previous push/pop operations. This creates a long
+/// dependency chain of messages that cannot be pruned simply because doing so would change
+/// the length of the collection.
+///
+/// [`Self`] does not support iteration or retrieving the length, so pushing a message
+/// does not depend on all previous operations.
+///
+pub struct OpaqueNoatunVec<T: FixedSizeObject> {
+    raw: NoatunVecRaw<T>,
+    clear_registrar: SequenceNr,
+}
+
+impl<T:FixedSizeObject> Debug for OpaqueNoatunVec<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OpaqueNoatunVec")
+    }
+}
+
+unsafe impl<T: FixedSizeObject> NoatunStorable for OpaqueNoatunVec<T> {}
+
+impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
+
+    pub fn clear(self: Pin<&mut Self>) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
+        tself.raw.destroy_items();
+    }
+
+    /// Write the given value to the given index.
+    ///
+    /// If the vector isn't large enough, it will be extended with zeroed elements.
+    // TODO: We should name these methods with names that make users understand their
+    // purpose is to write stuff to a collection without causing any observation of the collection.
+    // TODO: Should this exist? Should it be public?
+    pub fn set_item_infallible(
+        self: Pin<&mut Self>,
+        index: usize,
+        val: impl Borrow<<T as Object>::DetachedType>,
+    ) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        if index >= tself.raw.length {
+            let new_length = index + 1;
+            if new_length > tself.raw.capacity {
+                // Reallocate
+                tself.raw.realloc_add((new_length + 1) * 2, new_length);
+            } else {
+                // Just increase length
+                NoatunContext.write_ptr(new_length, addr_of_mut!(tself.raw.length));
+            }
+        }
+        let offset = ThinPtr(tself.raw.data + index * size_of::<T>());
+        unsafe {
+            let item_data = offset.access_mut::<T>();
+            item_data.init_from_detached(val.borrow());
+        }
+    }
+    pub fn push(mut self: Pin<&mut Self>, t: impl Borrow<<T as Object>::DetachedType>) {
+        let mut tself = unsafe { self.get_unchecked_mut() };
+        tself.raw.push_zeroed();
+
+        let index = tself.raw.length - 1;
+        tself.raw.get_index_mut(index).init_from_detached(t.borrow());
+    }
+}
+
+impl<T> Object for OpaqueNoatunVec<T>
+where
+    T: FixedSizeObject + 'static,
+{
+    type Ptr = ThinPtr;
+    type DetachedType = [T::DetachedOwnedType];
+    type DetachedOwnedType = Vec<T::DetachedOwnedType>;
+
+    fn detach(&self) -> Self::DetachedOwnedType {
+        unimplemented!("detach not implemented")
+    }
+
+    fn destroy(self: Pin<&mut Self>) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        tself.raw.destroy_items()
+    }
+
+    fn init_from_detached(mut self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        use std::borrow::Borrow;
+        for item in detached {
+            let new_item = tself.raw.push_zeroed();
+            new_item.init_from_detached(item.borrow());
+        }
+    }
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+        let mut pod: Pin<&mut Self> = NoatunContext.allocate();
+        pod.as_mut().init_from_detached(detached);
+        pod
+    }
+}
+
 
 impl<T> Object for NoatunVec<T>
 where
@@ -2051,15 +2188,9 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         // Drop of length_guard will decrease length field value.
     }
 
-    pub fn clear(self: Pin<&mut Self>) {
-        let tself = unsafe { self.get_unchecked_mut() };
+    fn clear_impl(&mut self) {
 
-        NoatunContext.write_internal(0, &mut tself.length);
-
-        NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
-        //NoatunContext.wrote_tombstone();
-
-        let mut context = tself.data_meta_len_mut();
+        let mut context = self.data_meta_len_mut();
         let buckets_count = context.buckets.len();
         for i in 0..buckets_count {
             let meta_group_index = i / HASH_META_GROUP_SIZE;
@@ -2073,6 +2204,16 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 NoatunContext.write_internal(Meta::EMPTY, meta);
             }
         }
+    }
+
+    pub fn clear(self: Pin<&mut Self>) {
+        let tself = unsafe { self.get_unchecked_mut() };
+
+
+        NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
+        //NoatunContext.wrote_tombstone();
+        NoatunContext.write_internal(0, &mut tself.length);
+        tself.clear_impl();
     }
 
     /// General purpose bucket probe
@@ -2528,18 +2669,20 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
 
     fn destroy(self: Pin<&mut Self>) {
         //TODO: Should clear all values too.
-        compile_error!("make sure to actually clear all present values too, here!\
+        //compile_error!("make sure to actually clear all present values too, here!");
+
+        /*compile_error!("
 
 Then, check that the tombstone-mechanism actually works.
 
 Also, fix NoatunVec - it should probably use the same tombstone-mechanism as Map.
 The current approach is just broken and non-intuitive.
-
-
-        ")
+        ")*/
 
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
+
+        tself.clear_impl();
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {

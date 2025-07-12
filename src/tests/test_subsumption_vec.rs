@@ -1,3 +1,4 @@
+use crate::data_types::OpaqueNoatunVec;
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
 use crate::{
@@ -9,7 +10,7 @@ use std::pin::Pin;
 
 noatun_object!(
     struct VecDoc {
-        object items: NoatunVec<OpaqueNoatunCell<u32>>,
+        object items: OpaqueNoatunVec<OpaqueNoatunCell<u32>>,
     }
 );
 
@@ -79,8 +80,11 @@ fn test_vec1() {
     })
     .unwrap();
 
-    assert_eq!(db.count_messages(), 1, "all but the last message are subsumed, because local");
+    // NOTE!
+    // TODO: Document the above in a promenent place in the manual
+    assert_eq!(db.count_messages(), 1, "last message is present in clear-registrar");
 }
+
 #[test]
 fn test_vec2() {
 
@@ -105,8 +109,9 @@ fn test_vec2() {
             .unwrap();
         db.mark_transmitted(msg.id).unwrap();
     }
-    assert_eq!(db.count_messages(), 2, "reset may change the length-field, which is not opaque");
+    assert_eq!(db.count_messages(), 1, "last message is present in clear registrar");
 }
+compile_error!("Continue work on observability etc")
 
 
 #[test]
@@ -134,4 +139,44 @@ fn test_vec3() {
         db.mark_transmitted(msg.id).unwrap();
     }
     assert_eq!(db.count_messages(), 1, "the second message subsumes the first");
+}
+
+
+#[test]
+fn test_vec4() {
+    super::setup_tracing();
+    let mut db: Database<VecDoc> = Database::create_new(
+        "test/test_subsumption4",
+        true,
+        DatabaseSettings::default(),
+        (),
+    )
+        .unwrap();
+    let mut db = db.begin_session_mut().unwrap();
+    db.disable_filesystem_sync().unwrap();
+
+    for i in 0..3 {
+        let msg = db.append_local(VecMessage {
+            index: i,
+            val: (i + 10) as u32,
+            reset: false,
+        })
+            .unwrap();
+        db.mark_transmitted(msg.id).unwrap();
+    }
+    assert_eq!(db.count_messages(), 3);
+
+    db.append_local(VecMessage {
+        index: 0,
+        val: 0,
+        reset: true,
+    })
+        .unwrap();
+
+    // NOTE!
+    // Someone else could write an item at index 0 at a time before th e`reset:true` message.
+    // If they did, our pruning here would become visible, since it wouldn't be deleted.
+    // There'd still be eventual consistency.
+    // TODO: Document the above in a promenent place in the manual
+    assert_eq!(db.count_messages(), 1, "last message must remain, since earlier messages were non-local");
 }
