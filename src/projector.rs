@@ -326,7 +326,7 @@ impl<APP: Application> Projector<APP> {
                 context.set_tainted();
             }
         }
-        let guard = ContextGuardMut::new(context);
+        let guard = ContextGuardMut::new(context, true);
 
         catch_and_log(|| {
             msg.payload.apply(msg.header.id.timestamp(), unsafe {

@@ -2,17 +2,14 @@
 use crate::data_types::meta_finder::get_any_empty;
 use crate::sequence_nr::SequenceNr;
 use crate::xxh3_vendored::NoatunHasher;
-use crate::{
-    DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer,
-    ThinPtr, CONTEXT,
-};
+use crate::{get_context_ptr, Database, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer, ThinPtr, CONTEXT};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use std::ops::{Add, AddAssign, Deref, Index, Range};
+use std::ops::{Add, AddAssign, Deref, Index, Range, SubAssign};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
@@ -276,6 +273,8 @@ impl<T: NoatunStorable> NoatunCell<T> {
 
 impl<T: NoatunStorable> OpaqueNoatunCell<T> {
 
+
+
     /// WARNING!
     /// This must only be called from queries, not from message apply.
     ///
@@ -285,12 +284,7 @@ impl<T: NoatunStorable> OpaqueNoatunCell<T> {
     where
         T: Copy,
     {
-        let context_ptr = CONTEXT.get();
-        if !context_ptr.is_null() {
-            if unsafe { (*(context_ptr as *const DatabaseContextData)).is_mutable } {
-                panic!("Attempt to observe OpaqueNoatunCell from within Message::apply. Use a regular NoatunCell instead.");
-            }
-        }
+        NoatunContext.assert_opaque_access_allowed("OpaqueNoatunCell", "NoatunCell");
         self.value
     }
 
@@ -365,6 +359,14 @@ impl<T: NoatunStorable + AddAssign<T> + Copy > AddAssign<T> for Pin<&mut OpaqueN
         self.as_mut().set(new_value);
     }
 }
+impl<T: NoatunStorable + SubAssign<T> + Copy > SubAssign<T> for Pin<&mut OpaqueNoatunCell<T>> {
+    fn sub_assign(&mut self, rhs: T) {
+        NoatunContext.observe_registrar(self.registrar);
+        let mut new_value = self.value;
+        new_value -= rhs;
+        self.as_mut().set(new_value);
+    }
+}
 
 
 /*impl<T: NoatunStorable> NoatunCell<T> {
@@ -408,6 +410,7 @@ impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
     type DetachedOwnedType = T;
 
     fn detach(&self) -> Self::DetachedOwnedType {
+        NoatunContext.assert_opaque_access_allowed("OpaqueNoatunCell", "NoatunCell");
         self.value
     }
 
@@ -658,13 +661,15 @@ struct NoatunVecRaw<T: FixedSizeObject> {
 }
 
 impl<T: FixedSizeObject> NoatunVecRaw<T> {
+    #[inline]
     fn get_index(&self, index: usize) -> &T {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         unsafe { ThinPtr(offset).access::<T>() }
     }
 
-    fn get_index_mut(&mut self, index: usize) -> Pin<&mut T> {
+    #[inline]
+    fn get_index_mut<'a>(&'a mut self, index: usize) -> Pin<&'a mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         let t = unsafe { ThinPtr(offset).access_mut::<T>() };
@@ -768,7 +773,7 @@ impl<T: FixedSizeObject + Debug> Debug for NoatunVec<T> {
 }
 
 pub struct NoatunVecIterator<'a, T: FixedSizeObject> {
-    vec: &'a NoatunVec<T>,
+    vec: &'a NoatunVecRaw<T>,
     index: usize,
 }
 
@@ -781,7 +786,7 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for NoatunVecIterator<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.vec.raw.length {
+        if self.index >= self.vec.length {
             return None;
         }
         let index = self.index;
@@ -812,7 +817,7 @@ impl<T: FixedSizeObject + 'static> NoatunVec<T> {
     pub fn iter(&self) -> NoatunVecIterator<T> {
         NoatunContext.observe_registrar(self.length_registrar);
         NoatunVecIterator {
-            vec: self,
+            vec: &self.raw,
             index: 0,
         }
     }
@@ -965,12 +970,41 @@ impl<T:FixedSizeObject> Debug for OpaqueNoatunVec<T> {
 
 unsafe impl<T: FixedSizeObject> NoatunStorable for OpaqueNoatunVec<T> {}
 
+impl<T:FixedSizeObject> Index<usize> for OpaqueNoatunVec<T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get_item(index).expect("index out of bounds")
+    }
+}
+
 impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
 
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
         tself.raw.destroy_items();
+    }
+    pub fn iter(&self) -> NoatunVecIterator<T> {
+        NoatunContext.assert_opaque_access_allowed("OpaqueNoatunVec", "NoatunVec");
+        NoatunVecIterator {
+            vec: &self.raw,
+            index: 0,
+        }
+    }
+
+    /// Returns a reference to the element at position 'index' or None if out of bounds.
+    ///
+    /// This panics if called from within [`Message::apply`]. It must only be used
+    /// from within [`Database::with_root`] or similar locations. Opaque data types
+    /// are not visible during message application.
+    #[inline]
+    pub fn get_item(&self, index: usize) -> Option<&T> {
+        if index >= self.raw.length {
+            return None;
+        }
+        NoatunContext.assert_opaque_access_allowed("OpaqueNoatunVec", "NoatunVec");
+        Some(self.raw.get_index(index))
     }
 
     /// Write the given value to the given index.
@@ -1019,11 +1053,12 @@ where
     type DetachedOwnedType = Vec<T::DetachedOwnedType>;
 
     fn detach(&self) -> Self::DetachedOwnedType {
-        unimplemented!("detach not implemented")
+        self.iter().map(|x| x.detach()).collect()
     }
 
     fn destroy(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
+        NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
         tself.raw.destroy_items()
     }
 
@@ -1035,6 +1070,7 @@ where
             new_item.init_from_detached(item.borrow());
         }
     }
+
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         let mut pod: Pin<&mut Self> = NoatunContext.allocate();
         pod.as_mut().init_from_detached(detached);
@@ -1220,6 +1256,45 @@ struct NoatunHashBucket<K, V> {
 
 unsafe impl<K: NoatunStorable, V: NoatunStorable> NoatunStorable for NoatunHashBucket<K, V> {}
 
+
+/// A collection very similar to std HashMap, for Noatun databases.
+///
+/// This is expected to be the primary collection type used by Noatun applications.
+///
+/// # Note regarding [`NoatunHashMap::len`].
+/// The len method is not available during message application. The reason is that
+/// the value of len logically depends on all previous inserts and removes. Each message
+/// calling len would thus gain a dependency on a (potentially) very large number of messages.
+/// Also, this set is not presently tracked by Noatun.
+///
+/// NoatunHashMap still does expose [`NoatunHashMap::iter`] which, of course, can be iterated
+/// and the length of the hashmap thus calculated anyway. Doing this does not cause unsafety,
+/// but may cause unexpected results. Consider the following situation with three messages:
+///
+/// T=1: Key 'A' is inserted to hashmap
+///
+/// T=2: Hashmap is iterated over, and the calculated length (=1) is stored into field X.
+///
+/// T=3: Key 'A' is removed from hashmap
+///
+/// Since the iteration does not cause an observation to be recorded, the fact that the
+/// hashmap length was observed at T=2 is lost. This means that the first message will be
+/// pruned when the last message is inserted. The final value of field X will thus be 0,
+/// not 1.
+///
+/// Let's see what happens if we don't iterate, but instead check for presence of the key 'A':
+///
+/// T=1: Key 'A' is inserted to hashmap
+///
+/// T=2: [`NoatunHashMap::contains_key`] is called with parameter 'A' and the presence of 'A'  is stored
+/// into field X.
+///
+/// T=3: Key 'A' is removed from hashmap
+///
+/// In this case, at T=2 Noatun will record the dependency by the second message on the first
+/// message. The first message will not be pruned when 'A' is removed from the hashmap. Not until
+/// the field X is overwritten (without dependency on the previous value) will the first message
+/// be pruned.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NoatunHashMap<K: NoatunStorable, V: FixedSizeObject> {
@@ -2014,11 +2089,27 @@ impl Drop for LengthGuard {
 
 impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMap<K, V> {
     pub fn len(&self) -> usize {
-        //TODO: We need to register this observation. Unfortunately.
+
+        let context = unsafe{&*get_context_ptr()};
+        if context.is_message_apply() {
+            panic!(
+                "A call was made to NoatunHashMap::len from within Message::apply.
+                 This is not allowed, since it would make the current Message causally dependent
+                 upon all previous mutations to the map."
+            );
+        }
+
         self.length
     }
     pub fn is_empty(&self) -> bool {
-        //TODO: We need to register this observation. Unfortunately.
+        let context = unsafe{&*get_context_ptr()};
+        if context.is_message_apply() {
+            panic!(
+                "A call was made to NoatunHashMap::is_empty from within Message::apply.
+                 This is not allowed, since it would make the current Message causally dependent
+                 upon all previous mutations to the map."
+            );
+        }
         self.length == 0
     }
     pub fn iter(&self) -> NoatunHashMapIterator<K, V> {
@@ -2430,13 +2521,19 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         getval: impl FnOnce(&mut Pin<&mut V>),
     ) -> bool {
         let context = self.data_meta_len_mut();
+
+        // We mark as tombstone even before actually checking if the entry exists.
+        // We must do this, because the remove may make the message that originally
+        // wrote the entry be pruned, meaning that on reprojection, we won't find anything,
+        // and no tombstone would be created.
+        NoatunContext.wrote_tombstone();
         let Some(bucket) = Self::probe_read(context.readonly(), key) else {
             return false;
         };
         let mut context = self.data_meta_len_mut();
         Self::remove_impl_by_bucket_nr(&mut context, bucket, getval);
 
-        println!("Metas now: {:?}", context.metas);
+        //println!("Metas now: {:?}", context.metas);
 
         #[cfg(debug_assertions)]
         {
@@ -2467,11 +2564,11 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
         match get_meta_mut_and_emptyable(context.metas, bucket_nr) {
             MetaMutAndEmpty::NoEmpty(meta) => {
-                println!("No empty found");
+                //println!("No empty found");
                 NoatunContext.write_internal(Meta::DELETED, meta);
             }
             MetaMutAndEmpty::HasEmptyAfterMeta(meta) => {
-                println!("empty just after meta");
+                //println!("empty just after meta");
                 NoatunContext.write_internal(Meta::EMPTY, meta);
             }
             MetaMutAndEmpty::HasEmpty {
@@ -2480,7 +2577,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 before_empty_bucket,
                 before_empty,
             } => {
-                println!("has empty");
+                //println!("has empty");
 
                 NoatunContext.copy(before_empty, meta);
                 NoatunContext.write_internal(Meta::EMPTY, before_empty);

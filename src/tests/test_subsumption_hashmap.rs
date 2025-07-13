@@ -168,6 +168,4 @@ fn test_map3() {
     db.set_mock_time(NoatunTime::debug_time(2*1440)).unwrap();
     db.maybe_advance_cutoff().unwrap();
     assert_eq!(db.count_messages(), 0, "Destroying the map should erase the clear-marker too");
-
-
 }

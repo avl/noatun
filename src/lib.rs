@@ -201,6 +201,20 @@ fn get_context_ptr() -> *const DatabaseContextData {
 pub enum Undetachable {}
 
 impl NoatunContext {
+
+    #[inline]
+    pub fn assert_opaque_access_allowed(self, used_type: &str, alternative_type: &str) {
+        let context = unsafe{&*get_context_ptr()};
+
+        if context.is_message_apply() {
+            panic!(
+                "An attempt was made to read from {} within Message::apply. \
+                 This is not allowed. Avoid reading this data, or change to use {} instead.",
+                used_type, alternative_type
+            );
+        }
+    }
+
     pub fn update_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool,) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).update_registrar_ptr(seq, opaque) }
@@ -334,7 +348,7 @@ impl NoatunContext {
         if context_ptr.is_null() {
             return;
         }
-        if unsafe { (*(context_ptr as *const DatabaseContextData)).is_mutable == false } {
+        if unsafe { (*(context_ptr as *const DatabaseContextData)).is_message_apply == false } {
             return;
         }
         unsafe { (*context_ptr).observe_registrar(registrar) }
@@ -1510,7 +1524,7 @@ impl Drop for ContextGuard {
 struct ContextGuardMut;
 
 impl ContextGuardMut {
-    fn new(context: &mut DatabaseContextData) -> ContextGuardMut {
+    fn new(context: &mut DatabaseContextData, is_message_apply: bool) -> ContextGuardMut {
         if !CONTEXT.get().is_null() {
             panic!(
                 "'with_root' must not be called within an existing database access context.
@@ -1520,6 +1534,7 @@ impl ContextGuardMut {
             );
         }
         context.is_mutable = true;
+        context.is_message_apply = is_message_apply;
         CONTEXT.set(context as *mut _);
         ContextGuardMut
     }
@@ -1529,6 +1544,7 @@ impl Drop for ContextGuardMut {
     fn drop(&mut self) {
         unsafe {
             (*CONTEXT.get()).is_mutable = false;
+            (*CONTEXT.get()).is_message_apply = false;
         }
         CONTEXT.set(null_mut());
     }

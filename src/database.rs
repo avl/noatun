@@ -365,6 +365,11 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
         self.db.create_message_frame(time, message)
     }
 
+    /// Append a single message to the database.
+    /// 
+    /// Note, this fails if the message cannot be added to the backing store but succeeds
+    /// otherwise. Notably, it succeeds even if applying the message to the database
+    /// causes a panic. Any such panic will be caught, and an entry will be emitted to the log.
     pub fn append_single(
         &mut self,
         message: &MessageFrame<APP::Message>,
@@ -428,6 +433,7 @@ impl<APP: Application> Database<APP> {
     fn mark_clean(&mut self) {
         self.context.mark_hot_clean()
     }
+
     #[inline]
     fn mark_fully_clean(&mut self) -> Result<()> {
         self.context.mark_fully_clean()?;
@@ -441,6 +447,7 @@ impl<APP: Application> Database<APP> {
         }
         Ok(())
     }
+
     #[inline(never)]
     pub(crate) fn do_recovery(&mut self) -> Result<()> {
         let now = self.noatun_now();
@@ -471,11 +478,11 @@ impl<APP: Application> Database<APP> {
 
     /// Explicitly check if enough time has passed to be able to auto_delete some messages.
     ///
-    /// Messages that are older than the cutoff period, are assumed to have reached all nodes.
+    /// Messages that are older than the cutoff period are assumed to have reached all nodes.
     /// Specifically, it is assumed that no message will ever arrive with a time stamp before
     /// the cutoff time.
     ///
-    /// This means that messages that have no current visible effects, can be considered
+    /// This means that messages that have no current visible effects can be considered
     /// definitely stale and can be removed. This method will delete messages if possible.
     fn maybe_advance_cutoff(&mut self) -> Result<()> {
         if !self.auto_delete {
@@ -484,7 +491,6 @@ impl<APP: Application> Database<APP> {
         let now = self.noatun_now();
         let nominal_cutoff_time = self.message_store.nominal_cutoff_time(now);
         let current_cutoff = self.message_store.current_cutoff_hash()?;
-        dbg!(&now, &current_cutoff, &nominal_cutoff_time);
         if nominal_cutoff_time > current_cutoff.before_time {
             self.advance_cutoff_impl(nominal_cutoff_time)?;
         }
@@ -575,7 +581,7 @@ impl<APP: Application> Database<APP> {
 
         self.context.set_next_seqnr(current.successor());
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
-        let guard = ContextGuardMut::new(&mut self.context);
+        let guard = ContextGuardMut::new(&mut self.context, false);
         let mut root = unsafe { root_ptr.access_mut::<APP>() };
         self.message_store
             .apply_preview(time, root.as_mut(), preview)?;
@@ -607,7 +613,7 @@ impl<APP: Application> Database<APP> {
     #[cfg(test)]
     fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
         let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
-        let guard = ContextGuardMut::new(&mut self.context);
+        let guard = ContextGuardMut::new(&mut self.context, false);
         let root = unsafe { root_ptr.access_mut::<APP>() };
         let t = f(root);
         drop(guard);
@@ -679,7 +685,7 @@ impl<APP: Application> Database<APP> {
 
         message_store.recover(settings.mock_time.unwrap_or_else(NoatunTime::now))?;
         let mmap_ptr = context.start_ptr();
-        let guard = ContextGuardMut::new(context);
+        let guard = ContextGuardMut::new(context, true);
         let mut root_obj_ref = unsafe { NoatunContext.allocate::<APP>() };
         APP::initialize_root(root_obj_ref.as_mut(), params);
         let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, &*root_obj_ref);
@@ -937,6 +943,7 @@ impl<APP: Application> Database<APP> {
     ) -> Result<()> {
         self.append_many_impl(messages, local, allow_cutoff_advance)
     }
+
     /// For messages before the cutoff-time, all parents are removed.
     fn append_many_impl<'a>(
         &mut self,

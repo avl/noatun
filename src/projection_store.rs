@@ -33,6 +33,7 @@ mod registrar_info {
     pub(crate) struct RegistrarInfo {
         // mask 0x8000_0000 = tainted
         // mask 0x4000_0000 = wrote non-opaque. I.e, didn't just write opaque values.
+        // mask 0x2000_0000 = this sequencenr itself wrote at least one tombstone
         uses: u32,
     }
 
@@ -51,6 +52,10 @@ mod registrar_info {
             self.uses & 0x4000_0000 != 0
         }
         pub fn wrote_tombstones(&self) -> bool {
+            println!("Retrieve registrar tombstone-user: {:x} @  {:?} = {}",
+                     self.uses, &self.uses as *const u32,
+                     self.uses & 0x2000_0000 != 0
+            );
             self.uses & 0x2000_0000 != 0
         }
         pub fn get_use(&self) -> u32 {
@@ -69,6 +74,9 @@ mod registrar_info {
                 return;
             }
             raw_uses |= 0x2000_0000;
+            println!("Mark registrar as tombstone-user: {:x} @  {:?}",
+                raw_uses, &self.uses as *const u32
+            );
             context.write_storable(raw_uses, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
         pub fn decrease_use(
@@ -251,6 +259,7 @@ pub struct DatabaseContextData {
     unused_messages: Vec<UnusedInfo>,
     // Set to true when run from within message apply
     pub(crate) is_mutable: bool,
+    pub(crate) is_message_apply: bool,
     // The next message expected to be applied.
     // Starts at 0. When a message is being applied, this field
     // will have the seqnr of the message being applied, not the next one.
@@ -343,6 +352,9 @@ impl DatabaseContextData {
     }
     pub fn clear_wrote_tombstone(&mut self) {
         self.wrote_tombstone = false;
+    }
+    pub fn is_message_apply(&self) -> bool {
+        self.is_message_apply
     }
     pub fn assert_mutable(&self) {
         if !self.is_mutable {
@@ -699,6 +711,7 @@ impl DatabaseContextData {
             undo_log: UndoLog::new(s, name, max_size)?,
             unused_messages: Vec::default(),
             is_mutable: false,
+            is_message_apply: false,
             filesystem_sync_disabled: false,
             tainted: false,
             wrote_tombstone: false,
@@ -1424,6 +1437,7 @@ impl DatabaseContextData {
 
                         // The things 'deferred' are carried out at the end of this function (i.e, quickly)
                         deferred.push(move |tself: &mut DatabaseContextData| {
+                            println!("Record reverse dependency for {:?}. Wrote tombstone: {}", msg.seq, msg.wrote_tombstone);
                             // Remember/record_reverse_dependency
                             tself.record_reverse_dependency(
                                 msg.seq,
@@ -1452,6 +1466,7 @@ impl DatabaseContextData {
             for (revdep, last_overwriter, can_be_deleted_early, wrote_tombstone) in
                 self.read_reverse_dependency(msg.seq)
             {
+                println!("Read reverse dependency for {:?}. Wrote tombstone: {}", revdep, wrote_tombstone);
                 // Get messages that depend on the message that we just decided to delete
                 unused_messages.push(UnusedInfo {
                     seq: revdep,
@@ -1536,10 +1551,11 @@ impl DatabaseContextData {
         if cur.get_use() == 0 {
             // This is the normal way messages end up in 'unused_messages'
             trace!(
-                "Adding {:?} as unused (overwriter.tainted: {}, registrar tainted: {})",
+                "Adding {:?} as unused (overwriter.tainted: {}, registrar tainted: {}, cur tombstone: {})",
                 registrar,
                 overwriter_tainted,
-                cur.tainted()
+                cur.tainted(),
+                cur.wrote_tombstones()
             );
             self.unused_messages.push(UnusedInfo {
                 seq: registrar,
