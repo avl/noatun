@@ -180,9 +180,10 @@ impl TestDriver {
         });
     }
     pub fn raw_frames_snapshot(&mut self) -> String {
-        let ret = String::new();
+        let mut ret = String::new();
+        use std::fmt::Write;
 
-        println!("TIME:       SRC: DST:         Len  Data");
+        writeln!(&mut ret, "TIME:       SRC: DST:         Len  Data").unwrap();
         for (t, src, msg, dst) in self.senders.get().raw_messages.lock().unwrap().iter() {
             use itertools::Itertools;
 
@@ -194,15 +195,15 @@ impl TestDriver {
             let padcount = 12usize.saturating_sub(rawlen.len());
             let padding = " ".repeat(padcount);
 
-            println!(
-                "{:>10?}: {}    {}{} {} B {:?}",
+            writeln!(&mut ret,
+                     "{:>10?}: {}    {}{} {} B {:?}",
                 t.duration_since(self.driver_start),
                 colored_int((*src).into()),
                 dst.iter().map(|x| colored_int((*x).into())).join(","),
                 padding,
                 msg.len(),
                 data
-            );
+            ).unwrap();
         }
 
         ret
@@ -293,7 +294,7 @@ impl Default for TestDriver {
         }
     }
 }
-struct TestDriverReceiver(Receiver<(u8 /*src*/, Vec<u8>)>);
+struct TestDriverReceiver(Receiver<(u8 /*src*/, Vec<u8>)>, /*own id*/u8);
 struct TestDriverSender(
     u8, /*own addr*/
     ArcShift<TestDriverInner>,
@@ -305,19 +306,25 @@ impl CommunicationReceiveSocket<u8> for TestDriverReceiver {
         &mut self,
         buf: &mut B,
     ) -> std::io::Result<(usize, u8)> {
-        let (src_addr, data) = self.0.recv().await.ok_or(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "all senders have gone away",
-        ))?;
+        loop {
+            let (src_addr, data) = self.0.recv().await.ok_or(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "all senders have gone away",
+            ))?;
 
-        buf.put(&*data);
-        Ok((data.len(), src_addr))
+            if src_addr == self.1 {
+                continue;
+            }
+
+            buf.put(&*data);
+            return Ok((data.len(), src_addr));
+        }
     }
 }
 
 impl CommunicationSendSocket<u8> for TestDriverSender {
-    fn local_addr(&self) -> anyhow::Result<u8> {
-        Ok(self.0)
+    fn local_addr(&self) -> anyhow::Result<Option<u8>> {
+        Ok(Some(self.0))
     }
 
     async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<()> {
@@ -369,13 +376,14 @@ impl CommunicationDriver for TestDriver {
             senders
         });
 
+        let own_id = index.unwrap().try_into().unwrap();
         Ok((
             TestDriverSender(
-                index.unwrap().try_into().unwrap(),
+                own_id,
                 self.senders.clone(),
                 self.partitionings.clone(),
             ),
-            TestDriverReceiver(rx),
+            TestDriverReceiver(rx, own_id),
         ))
     }
 
@@ -1297,9 +1305,8 @@ async fn all_up_three_node_partial_resync1() {
     println!("Start time: {:?}", start_time);
     println!("{}", driver.messages_snapshot());
 
-    // TODO: Add actual assertions on:
-    //assert_snapshot!(driver.messages_snapshot());
-    //assert_snapshot!(driver.raw_frames_snapshot());
+    assert_snapshot!(driver.messages_snapshot());
+    assert_snapshot!(driver.raw_frames_snapshot());
 
     assert_eq!(root1, root2);
     assert_eq!(root2, root3);

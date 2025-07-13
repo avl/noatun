@@ -107,10 +107,11 @@ pub struct CommunicationUdpSendSocket {
     socket: UdpSocket,
 }
 impl CommunicationSendSocket<SocketAddr> for CommunicationUdpSendSocket {
-    fn local_addr(&self) -> anyhow::Result<SocketAddr> {
-        Ok(self.socket.local_addr()?)
+    fn local_addr(&self) -> anyhow::Result<Option<SocketAddr>> {
+        Ok(Some(self.socket.local_addr()?))
     }
 
+    compile_error!("Continue cleaning up TODOs");
     async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<()> {
         println!("Sending to {:?}", self.multicast_addr);
         let res = UdpSocket::send_to(&self.socket, buf, self.multicast_addr).await;

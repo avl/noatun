@@ -151,11 +151,27 @@ fn test_advanced_map2() {
     }))
         .unwrap();
     db.mark_transmitted(msg.id).unwrap();
-
+    
     db.with_root(|root|{
         let value = root.items.get(&32).unwrap();
         assert_eq!(value.query(), 33);
-    })
-    compile_error!("continue making sure this works")
+    });
+
+    let msg = db.append_local(MapMessage::new(|doc| {
+        let mut project = doc.pin_project();
+        let mut item = project.items.as_mut().get_mut_val(&32).unwrap();
+        item += 2;
+        item -= 1;
+    }))
+        .unwrap();
+    db.mark_transmitted(msg.id).unwrap();
+
+    db.with_root(|root|{
+        let value = root.items.get(&32).unwrap();
+        assert_eq!(value.query(), 34);
+    });
+    
+    assert_eq!(db.count_messages(), 3, "all the messages still affect the db");
+
 
 }

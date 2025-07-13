@@ -99,6 +99,12 @@ pub trait CommunicationDriver: Sync + Send {
 }
 #[allow(async_fn_in_trait)] //For now
 pub trait CommunicationReceiveSocket<Endpoint: PartialEq + Debug + Send> {
+    /// Receive a message from the network.
+    ///
+    /// Loopback messages should be avoided - implementations are encouraged
+    /// to avoid receiving messages that were transmitted by the same noatun instance,
+    /// for performance reasons. Correctness is preserved in any case.
+    //TODO: Implement robust EphemeralNodeId collision detection!
     fn recv_buf_from<B: bytes::buf::BufMut + Send>(
         &mut self,
         buf: &mut B,
@@ -106,8 +112,17 @@ pub trait CommunicationReceiveSocket<Endpoint: PartialEq + Debug + Send> {
 }
 #[allow(async_fn_in_trait)] //For now
 pub trait CommunicationSendSocket<Endpoint: PartialEq + Debug + Send> {
-    //TODO: We probably shouldn't require this
-    fn local_addr(&self) -> Result<Endpoint>;
+    /// In many networks, it's possible to uniquely know the address that
+    /// transmitted messages will appear to originate from. This information,
+    /// if available, is only used by Noatun for logging and debugging. It
+    /// can be particularly useful in unit tests, to more easily understand
+    /// the origin of messages.
+    ///
+    /// Noatun does not require implementors to implement this, and it does
+    /// not affect Noatun behavior.
+    fn local_addr(&self) -> Result<Option<Endpoint>> {
+        return Ok(None);
+    }
     fn send_to(&mut self, buf: &[u8]) -> impl std::future::Future<Output = io::Result<()>> + Send;
 }
 
@@ -475,7 +490,7 @@ impl<Socket:CommunicationDriver> SenderLoopTrait<Socket::Endpoint> for Multicast
 struct MulticastSenderLoop<Socket: CommunicationDriver> {
     send_socket: Socket::Sender,
     receive_socket: Socket::Receiver,
-    bind_address: Socket::Endpoint,
+    bind_address: Option<Socket::Endpoint>,
     /// Transmitted messages kept in out queue, to allow retransmitting
     history: SizeLimitVecDeque<SortableTransmittedEntity>,
     queue: VecDeque<SortableTransmittedEntity>,
@@ -543,7 +558,7 @@ impl BwLimiter {
 
 pub struct ExecutionContext<T> {
     cursend: Option<Vec<u8>>,
-    send_local_addr: T,
+    send_local_addr: Option<T>,
     next_retransmit: Instant,
     next_retransmit_active: bool,
 }
@@ -840,9 +855,9 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                 }
                 msg = receive => {
                     let (size, src_addr) = msg.expect("network should not fail");
-                    if src_addr == context.send_local_addr {
+                    /*if src_addr == context.send_local_addr {
                         return Ok(false);
-                    }
+                    }*/
 
                     assert_eq!(size, self.recvbuf.len());
                     let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0)  else {
@@ -1488,7 +1503,7 @@ where
         )
         .await?;
 
-        let node = sender_loop.bind_address.to_string();
+        let node = sender_loop.bind_address.map(|x|x.to_string()).unwrap_or("?".to_string());
         //let jh = spawn(sender_loop.run());
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(100);
