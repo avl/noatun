@@ -11,7 +11,7 @@ use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayString;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use savefile::{
     Deserialize, Deserializer, Introspect, IntrospectItem, Packed, SavefileError, Schema,
     Serialize, Serializer, WithSchema, WithSchemaContext,
@@ -34,6 +34,7 @@ use tokio::time::error::Elapsed;
 use tokio::time::Instant;
 use tokio::{select, spawn};
 use tracing::{debug, error, info, instrument, trace, warn};
+use crate::xxh3_vendored::xxh3::Xxh3Default;
 
 pub mod size_limit_vec_deque;
 pub mod udp;
@@ -43,6 +44,7 @@ pub mod udp;
 pub enum NetworkPacket {
     Data(TransmittedEntitySortable),
     RetransmitRequest {
+        /// The destination for the retransmit-request
         who: EphemeralNodeId,
         what: Vec<u64>,
     },
@@ -68,9 +70,6 @@ pub trait CommunicationDriver: Sync + Send {
     /// There are no hard requirements, but performance will be better if the following
     /// is fulfilled:
     ///  * No two neighboring nodes should appear to have the same address
-    ///  * In particular, no node on the network should appear to have our address.
-    ///  * If loopback occurs (we see the packets we ourselves end), the source address
-    ///    should always be `Self::own_address`.
     ///
     /// However, there are some things which are explicitly not required:
     ///  * Remote nodes can be behind NAT. This means that there's no requirement that
@@ -121,7 +120,7 @@ pub trait CommunicationSendSocket<Endpoint: PartialEq + Debug + Send> {
     /// Noatun does not require implementors to implement this, and it does
     /// not affect Noatun behavior.
     fn local_addr(&self) -> Result<Option<Endpoint>> {
-        return Ok(None);
+        Ok(None)
     }
     fn send_to(&mut self, buf: &[u8]) -> impl std::future::Future<Output = io::Result<()>> + Send;
 }
@@ -199,14 +198,15 @@ impl TransmittedEntitySortable {
     }
 }
 
+/// This represents a transmitted entity with a full (possibly reconstructed) 64 bit
+/// sequence number
 #[derive(Debug)]
-// TODO: Rename this. It makes no sense to have both SortableTransmittedEntity and TransmittedEntitySortable
-struct SortableTransmittedEntity {
+struct TransmittedEntityWithFullSeq {
     reconstructed_seq: u64,
     entity: TransmittedEntitySortable,
 }
 
-impl MeasurableSize for SortableTransmittedEntity {
+impl MeasurableSize for TransmittedEntityWithFullSeq {
     fn size_bytes(&self) -> usize {
         self.entity.data.len() + size_of_val(&self.reconstructed_seq) + size_of_val(&self.entity)
     }
@@ -216,7 +216,7 @@ struct ReceiveTrack {
     have_valid_accum: bool,
     accum: VecDeque<u8>,
     expected_next: u64,
-    sorted_packets: VecDeque<SortableTransmittedEntity>,
+    sorted_packets: VecDeque<TransmittedEntityWithFullSeq>,
     retransmit_interval: Duration,
     disable_retransmit: bool,
     last_success: Instant,
@@ -272,7 +272,7 @@ impl ReceiveTrack {
         &mut self,
         packet: TransmittedEntitySortable,
         packet_source: EphemeralNodeId,
-        tx_finished_received_frame: &mut Sender<(Address, Vec<u8>)>, //TODO: Remove!
+
         message_tx: &mut Vec<(Address, Vec<u8>)>,
         retransmit_requests: &mut IndexMap<EphemeralNodeId, RetransmitInfo>,
         
@@ -284,7 +284,7 @@ impl ReceiveTrack {
     ) -> Result<()> {
         let reconstructed_seq = self.reconstruct_seq(packet.seq);
 
-        let packet = SortableTransmittedEntity {
+        let packet = TransmittedEntityWithFullSeq {
             reconstructed_seq,
             entity: packet,
         };
@@ -482,8 +482,8 @@ impl<Socket:CommunicationDriver> SenderLoopTrait<Socket::Endpoint> for Multicast
         self.create_context()
     }
 
-    async fn pump(&mut self, context: &mut ExecutionContext<Socket::Endpoint>, message_tx: &mut Vec<(Address, Vec<u8>)>) -> Result<bool> {
-        self.run(context, message_tx).await
+    async fn pump(&mut self, context: &mut ExecutionContext<Socket::Endpoint>, message_tx: &mut Vec<(Address, Vec<u8>)>, node_id_collision_detected: &mut bool) -> Result<bool> {
+        self.run(context, message_tx, node_id_collision_detected).await
     }
 }
 
@@ -492,8 +492,8 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     receive_socket: Socket::Receiver,
     bind_address: Option<Socket::Endpoint>,
     /// Transmitted messages kept in out queue, to allow retransmitting
-    history: SizeLimitVecDeque<SortableTransmittedEntity>,
-    queue: VecDeque<SortableTransmittedEntity>,
+    history: SizeLimitVecDeque<TransmittedEntityWithFullSeq>,
+    queue: VecDeque<TransmittedEntityWithFullSeq>,
     outgoing_retransmit_requests: IndexMap<EphemeralNodeId, RetransmitInfo>,
     receive_track: IndexMap<(EphemeralNodeId, Socket::Endpoint), ReceiveTrack>,
     quit_rx: tokio::sync::oneshot::Receiver<()>,
@@ -513,6 +513,8 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     ephemeral_node_id: ArcShift<EphemeralNodeId>,
     retransmit_responsibility_query:
         Box<dyn FnMut(/*src: */ EphemeralNodeId) -> Duration + Sync + Send + 'static>,
+    hasher: Xxh3Default,
+    sent_packets: IndexSet<u128>,
 }
 impl<Socket: CommunicationDriver> Drop for MulticastSenderLoop<Socket> {
     fn drop(&mut self) {
@@ -612,10 +614,12 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             retransmit_interval,
             ephemeral_node_id,
             retransmit_responsibility_query,
+            hasher: Default::default(),
+            sent_packets: Default::default(),
         })
     }
     pub(crate) fn send_buf(
-        queue: &mut VecDeque<SortableTransmittedEntity>,
+        queue: &mut VecDeque<TransmittedEntityWithFullSeq>,
         max_payload_per_packet: usize,
         next_send_seq: &mut u64,
         buffer: Vec<u8>,
@@ -665,7 +669,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             }
             data.write_all(&buffer[reader_pos..reader_pos + chunk])?;
             reader_pos += chunk;
-            queue.push_back(SortableTransmittedEntity {
+            queue.push_back(TransmittedEntityWithFullSeq {
                 reconstructed_seq: *next_send_seq,
                 entity: TransmittedEntitySortable {
                     seq: *next_send_seq as u16,
@@ -719,10 +723,11 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         })
     }
 
+    //TODO: Deprecate this
     pub async fn run_loop(mut self) -> Result<()> {
         let mut ctx = self.create_context()?;
         let mut message_tx = Vec::new();
-        while self.run(&mut ctx, &mut message_tx).await? == false {
+        while self.run(&mut ctx, &mut message_tx, &mut false).await? == false {
             for msg in message_tx.drain(..) {
                 self.message_tx.send(msg).await?;
             }
@@ -731,7 +736,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
     }
 
     #[instrument(skip(self, context),fields(local=?self.bind_address))]
-    pub async fn run(&mut self, context: &mut ExecutionContext<Socket::Endpoint>, message_tx: &mut Vec<(Address,Vec<u8>)>) -> Result<bool/*quit*/> {
+    pub async fn run(&mut self, context: &mut ExecutionContext<Socket::Endpoint>, message_tx: &mut Vec<(Address,Vec<u8>)>, node_id_collision_detected: &mut bool) -> Result<bool/*quit*/> {
         {
             self.recvbuf.clear();
             let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
@@ -782,7 +787,9 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                     }
                 }
                 if context.cursend.is_none() {
+                    //TODO: Reuse buffer?
                     let mut temp = vec![];
+
                     context.cursend = self.queue.pop_front().map(|x| {
                         // Consider if savefile really is the best here. Some more space efficiency
                         // wouldn't hurt!
@@ -792,6 +799,14 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                             &NetworkPacket::Data(x.entity.clone()),
                         )
                         .unwrap();
+
+                        self.hasher.reset();
+                        self.hasher.update(&temp);
+                        self.sent_packets.insert(self.hasher.digest128());
+                        if self.sent_packets.len() >= 1000 {
+                            self.sent_packets.drain(0..500);
+                        }
+
                         let (Ok(insert_point) | Err(insert_point)) = self
                             .history
                             .binary_search_by_key(&x.reconstructed_seq, |x| x.reconstructed_seq);
@@ -860,10 +875,32 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                     }*/
 
                     assert_eq!(size, self.recvbuf.len());
-                    let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0)  else {
+                    let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0) else {
                         error!("Invalid packet received");
                         return Ok(false);
                     };
+
+                    if let NetworkPacket::Data(TransmittedEntitySortable{src,..}) = &packet {
+                        if *src  == *self.ephemeral_node_id.get() {
+                            // We received a message from a node with the same node-id as we do.
+                            // This could be a node id collision. But first, let's heuristically
+                            // determine if we've simply overheard one of our own packets.
+
+                            self.hasher.reset();
+                            self.hasher.update(&self.recvbuf);
+                            let hash = self.hasher.digest128();
+                            if self.sent_packets.contains(&hash) {
+                                // We sent this ourselves, don't deliver it.
+                                return Ok(false);
+                            } else {
+                                *node_id_collision_detected = true;
+                            }
+                        }
+                    }
+
+
+                    compile_error!("Continue cleaning up TODOs")
+                    
 
                     match packet {
                         NetworkPacket::Data(entity) => {
@@ -878,7 +915,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                                 }
                             };
 
-                            match track.process(entity, src_node, &mut self.message_tx, message_tx, &mut self.outgoing_retransmit_requests, &mut self.retransmit_responsibility_query, new_track).await {
+                            match track.process(entity, src_node, message_tx, &mut self.outgoing_retransmit_requests, &mut self.retransmit_responsibility_query, new_track).await {
                                     Ok(()) => {Ok(false)}
                                     Err(err) => {
                                         error!("Receive error: {:?}", err);
@@ -1036,7 +1073,7 @@ impl Default for DatabaseCommunicationConfig {
 #[allow(async_fn_in_trait)]
 pub(crate) trait SenderLoopTrait<E> {
     fn make_context(&self) -> Result<ExecutionContext<E>>;
-    async fn pump(&mut self, context: &mut ExecutionContext<E>, message_tx: &mut Vec<(Address, Vec<u8>)>) -> Result<bool/*quit*/>;
+    async fn pump(&mut self, context: &mut ExecutionContext<E>, message_tx: &mut Vec<(Address, Vec<u8>)>, node_id_collision_detected: &mut bool) -> Result<bool/*quit*/>;
 }
 
 impl<APP: Application + 'static + Send> DatabaseCommunicationLoop<APP>
@@ -1047,7 +1084,7 @@ where
 {
     fn process_packet(&mut self, src: Address, packet: Vec<u8>) -> Result<()> {
         let msg: DistributorMessage = Deserializer::bare_deserialize(&mut Cursor::new(&packet), 0)?;
-        trace!("Received DistrMsg {:?}", msg);
+        trace!("Received DistributorMessage {:?}", msg);
         self.buffered_incoming_messages.push((src, msg));
         Ok(())
     }
@@ -1107,20 +1144,12 @@ where
         let mut context = sender.make_context()?;
         let mut message_tx: Vec<(Address, Vec<u8>)> = Vec::new();
         loop {
-
-            //TODO: Clean this up. Remove the `message_tx` completely.
+            
             while let Some(check) = message_tx.first() {
-                //_ = self.receiver_rx.try_recv();
                 self.process_packet(check.0, check.1.clone())?;
+                // TODO: Consider using VecDeque here, removing first is unnecessarily expensive otherwise.
+                // Or maybe better, just loop through message_tx?
                 message_tx.remove(0);
-                /*
-                _ = self.receiver_rx.try_recv();
-                if let Some(recv_pkt) = self.receiver_rx.recv().await {
-                    assert_eq!(&recv_pkt, check);
-                    message_tx.remove(0);
-                } else {
-                    bail!("sender loop quit");
-                }*/
             }
 
             // For buffered incoming messages
@@ -1173,9 +1202,10 @@ where
                 Ok::<(), anyhow::Error>(())
             };
 
+            let mut node_id_collision = false;
             select!(
                 biased;
-                _ = sender.pump(&mut context, &mut message_tx) => {
+                _ = sender.pump(&mut context, &mut message_tx, &mut node_id_collision) => {
 
                 }
                 res = sendtask => {
@@ -1246,15 +1276,12 @@ where
                         }
                     }
                 }
-                /*recv_pkt = self.receiver_rx.recv() => {
-                    let check = message_tx.remove(0);
-                    let Some(recv_pkt) = recv_pkt else {
-                        bail!("sender loop quit");
-                    };
-                    assert_eq!(recv_pkt, check);
-                    self.process_packet(recv_pkt.0, recv_pkt.1)?;
-                }*/
+
             );
+            
+            if node_id_collision {
+                self.distributor.report_node_id_collision();
+            }
 
 
 

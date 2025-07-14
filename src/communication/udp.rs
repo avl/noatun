@@ -111,11 +111,8 @@ impl CommunicationSendSocket<SocketAddr> for CommunicationUdpSendSocket {
         Ok(Some(self.socket.local_addr()?))
     }
 
-    compile_error!("Continue cleaning up TODOs");
     async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        println!("Sending to {:?}", self.multicast_addr);
         let res = UdpSocket::send_to(&self.socket, buf, self.multicast_addr).await;
-        println!("Res: {res:?}");
         match res {
             Ok(sent_size) => {
                 if sent_size != buf.len() {
@@ -140,9 +137,7 @@ impl CommunicationReceiveSocket<SocketAddr> for tokio::net::UdpSocket {
         &mut self,
         buf: &mut B,
     ) -> std::io::Result<(usize, SocketAddr)> {
-        println!("About to receive from udp socket");
-        let ret = UdpSocket::recv_buf_from(self, buf).await;
-        println!("Udp receive: {ret:?}");
-        ret
+        let (size, addr) = UdpSocket::recv_buf_from(self, buf).await?;
+        Ok((size, addr))
     }
 }

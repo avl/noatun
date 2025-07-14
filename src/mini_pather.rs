@@ -26,8 +26,12 @@ pub struct MiniPather {
     correct_pather: known_good_mini_pather::MiniPather,
 }
 
-
 impl MiniPather {
+    /// Return our id
+    pub fn my_id(&self) -> u16 {
+        self.whoami
+    }
+
     pub fn new(whoami: u16,)-> Self {
         Self {
             whoami,
@@ -58,6 +62,7 @@ impl MiniPather {
         }
     }
 
+    /// Report which neighbors 'node' can hear
     pub fn report_neighbors(&mut self, node: u16, hears_neighbors: impl Iterator<Item=u16>) {
         let mut hears_neighbors : Vec<u16> = hears_neighbors.collect();
         self.correct_pather.report_neighbors(node, hears_neighbors.iter().copied());
@@ -95,13 +100,16 @@ impl MiniPather {
         }
     }
 
+    /// Report which neighbors we ourselves can hear
     pub fn report_own_neighbors(&mut self, hears_neighbors: impl Iterator<Item=u16>) {
         self.report_neighbors(self.whoami, hears_neighbors);
     }
 
+    /// Return everybody who can hear 'node'
     pub fn who_can_hear<'a>(&'a self, node: u16) -> impl Iterator<Item=u16> + use<'a> {
         self.reverse.get(&node).into_iter().flatten().copied()
     }
+
     fn ranking(&self, of: u16) -> (isize, u16) {
         let neighbors = self.nodes.get(&of).map(|x|x.neighbors.len()).unwrap_or(0);
         (-(neighbors as isize), of)

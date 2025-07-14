@@ -98,7 +98,7 @@ impl Message for KeyUpdateMessage {
         let mut root = root.pin_project();
         match self {
             KeyUpdateMessage::Set(key, val) => {
-                root.key_values.insert_internal(key, val);
+                root.key_values.insert(key, val);
             }
             KeyUpdateMessage::Change(key, msg_val) => {
                 if let Some(val) = root.key_values.as_mut().get_mut_val(key) {
@@ -106,7 +106,7 @@ impl Message for KeyUpdateMessage {
                     let new = prev.saturating_add(*msg_val);
                     val.set(new);
                 } else {
-                    root.key_values.insert_internal(key, msg_val);
+                    root.key_values.insert(key, msg_val);
                 }
             }
         }
@@ -175,14 +175,14 @@ impl Node {
         let header = self.db.begin_session_mut()
             .unwrap().append_local(msg.clone()).unwrap();
         self.distributor.outbuf.push_back(DistributorMessage::Message {
-            source: EphemeralNodeId::new(self.whoami as u16),
+            source: *self.distributor.ephemeral_node_id.get(),
             message: SerializedMessage::from_header_and_body(header, msg).unwrap(),
             demand_ack: false,
-            origin: EphemeralNodeId::new(self.whoami as u16),
+            origin: *self.distributor.ephemeral_node_id.get(),
             explicit_retransmit: false,
         });
     }
-    pub fn new(id: u8, now: Instant,) -> Node {
+    pub fn new(id: u8, ephemeral_node_id: Option<EphemeralNodeId>, now: Instant,) -> Node {
 
         let peer_info = ArcShift::new(PeerSummaryInfo::default());
         let db = Database::create_in_memory(1_000_000, DatabaseSettings {
@@ -196,7 +196,9 @@ impl Node {
         Node {
             whoami: id,
             db,
-            distributor: Distributor::new(Duration::from_secs(5), ArcShift::new(EphemeralNodeId::new(id as u16)), peer_info, now),
+            distributor: Distributor::new(Duration::from_secs(5), ArcShift::new(ephemeral_node_id.unwrap_or(
+                EphemeralNodeId::new(id.into())
+            )), peer_info, now),
             last_periodic: now,
         }
     }
@@ -326,8 +328,11 @@ impl Ether {
     pub fn elapsed(&self) -> Duration {
         self.now.saturating_duration_since(self.start)
     }
-    pub fn add_node(&mut self, pos: Vec2) {
-        let node = Node::new(self.actual_ether.node_metadata.len().try_into().unwrap(),self.now);
+    pub fn add_node(&mut self, pos: Vec2, id: Option<u16>) {
+        let myid = self.actual_ether.node_metadata.len().try_into().unwrap();
+        let node = Node::new(
+            myid,
+            id.map(EphemeralNodeId::new), self.now);
         self.actual_ether.node_metadata.push(NodeMetaData {
             whoami: node.whoami,
             pos,
@@ -353,6 +358,7 @@ struct Visualizer {
     temp_set: f64,
     temp_inc: f64,
     paused: bool,
+    new_node_id: String,
 }
 
 impl Default for Visualizer {
@@ -366,6 +372,7 @@ impl Default for Visualizer {
             temp_inc: 1.0,
             paused: false,
             drag: None,
+            new_node_id: String::new(),
         }
     }
 }
@@ -384,7 +391,7 @@ impl App for Visualizer {
                     }
                 }
 
-                /*
+
 
                 ui.label("Time:");
                 let mut t = format!("{:?}", self.ether.elapsed());
@@ -392,8 +399,11 @@ impl App for Visualizer {
                 TextEdit::singleline(&mut t).interactive(false).ui(ui);
 
                 if ui.button("New Node").clicked() {
-                    self.ether.add_node(Vec2::new(0.5,0.5));
+                    let id = self.new_node_id.trim().parse::<_>().ok();
+                    self.ether.add_node(Vec2::new(0.5,0.5), id);
                 }
+
+                ui.text_edit_singleline(&mut self.new_node_id);
 
             });
 
@@ -569,11 +579,13 @@ impl App for Visualizer {
                 let mut thin = vec![];
                 if let Selected::Node(node_index) = self.selected {
                     let node = &mut self.ether.nodes[node_index];
-                    assert_eq!(node_index, node.distributor.ephemeral_node_id.shared_get().raw_u16() as usize);
+                    //assert_eq!(node_index, node.distributor.ephemeral_node_id.shared_get().raw_u16() as usize);
                     let node_pos = self.ether.actual_ether.node_metadata[node_index].pos;
                     for (a_peer_id, a_peer_info) in &node.distributor.neighborhood.peers.peers {
                         for (b_peer_id, b_peer_info) in &node.distributor.neighborhood.peers.peers {
-
+                            
+                            /*
+                            // TODO: Can we salvage this? Do a smarter lookup in node_metadata?
                             let origin_pos = self.ether.actual_ether.node_metadata[a_peer_id.raw_u16() as usize].pos;
                             let recv_from_pos = self.ether.actual_ether.node_metadata[b_peer_id.raw_u16() as usize].pos;
                             if !node.distributor.neighborhood.peers.fast_pather.should_i_forward(a_peer_id.raw_u16(), b_peer_id.raw_u16()) {
@@ -594,6 +606,7 @@ impl App for Visualizer {
                                 ],
                                 stroke: Stroke::new(3.0, Color32::from_rgb(200,255,200)),
                             });
+ */
                         }
 
 
@@ -610,7 +623,7 @@ impl App for Visualizer {
 
                             egui::Grid::new("node_properties").show(ui, |ui| {
                                 ui.label("Node:");
-                                let mut t = selected_node.to_string();
+                                let mut t = self.ether.nodes[selected_node].distributor.ephemeral_node_id.get().to_string();
                                 TextEdit::singleline(&mut t).interactive(false).ui(ui);
                                 ui.end_row();
                                 if ui.button("debug").clicked() {
@@ -716,9 +729,9 @@ fn main() {
 
     let mut visualizer = Visualizer::default();
 
-    visualizer.ether.add_node(Vec2::new(0.2,0.2));
-    visualizer.ether.add_node(Vec2::new(0.5,0.5));
-    visualizer.ether.add_node(Vec2::new(0.8,0.8));
+    visualizer.ether.add_node(Vec2::new(0.2,0.2), None);
+    visualizer.ether.add_node(Vec2::new(0.5,0.5), None);
+    visualizer.ether.add_node(Vec2::new(0.8,0.8), None);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 900.0]),

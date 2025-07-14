@@ -13,7 +13,7 @@ use arcshift::ArcShift;
 use arrayvec::ArrayString;
 use indexmap::map::Entry;
 use indexmap::{IndexMap, IndexSet};
-use rand::{thread_rng, Rng};
+use rand::{random, thread_rng, Rng};
 use savefile_derive::Savefile;
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -296,6 +296,14 @@ impl Peers {
         periodic_message: Duration,
         now: Instant,
     ) {
+        if self.fast_pather.my_id() != our_node_id.raw_u16() {
+            info!("identical ephemeral node_id detected, changing our id");
+            self.fast_pather = MiniPather::new(our_node_id.raw_u16());
+            self.peers.clear();
+            self.recalculate_summary(our_node_id);
+            return;
+        }
+
         if now.saturating_duration_since(self.last_gc) > periodic_message {
             self.last_gc = now;
             let peers_before = self.peers.len();
@@ -952,7 +960,7 @@ impl EphemeralNodeId {
                 return EphemeralNodeId(id);
             }
         }
-        EphemeralNodeId(thread_rng().gen())
+        EphemeralNodeId(random())
     }
 }
 
@@ -1168,6 +1176,7 @@ pub struct Distributor {
     periodic_message_interval: Duration,
     // TODO: Clean this up. The repsonsibilities of `QueryableOutbuffer` vs `Neighborhood`
     // are very unclear
+    // TODO: This should not be public.
     pub outbuf: QueryableOutbuffer,
     pub neighborhood: Neighborhood,
 }
@@ -1333,6 +1342,17 @@ impl Distributor {
         Ok(ret)
     }
 
+    /// Call this when a node id collision has been detected.
+    ///
+    /// This can often be detected quicker by lower layers, this is available
+    /// as a public method. A new unique node id will be generated.
+    pub fn report_node_id_collision(&mut self) {
+        self.ephemeral_node_id.update(EphemeralNodeId::random());
+    }
+
+    /// Note, loopback messages should be detected by caller
+    /// This method will interpret incoming node-ids identical to our own, as a node id
+    /// collision, not as a message loopback
     pub fn receive_message<APP: Application>(
         &mut self,
         database: &mut Database<APP>,
@@ -1362,6 +1382,14 @@ impl Distributor {
         let mut accumulated_sync_all_queries = IndexSet::new();
         let mut accumulated_sync_all_requests = IndexSet::new();
 
+        let our_node_id = *self.ephemeral_node_id.get();
+        let mut collision = false;
+        let mut check_node_id_collision = |observed:EphemeralNodeId|{
+            if observed == our_node_id {
+                collision = true;
+            }
+        };
+
         for (src, item) in input {
             self.neighborhood.record_message(
                 &item,
@@ -1385,6 +1413,7 @@ impl Distributor {
                     heads,
                     neighbors,
                 } => {
+                    check_node_id_collision(source);
                     for pass in 0..2 {
                         match database.is_acceptable_cutoff_hash(cutoff_hash)? {
                             Acceptability::Previous | Acceptability::Nominal => {
@@ -1477,6 +1506,8 @@ impl Distributor {
                     query,
                     destination,
                 } => {
+                    check_node_id_collision(source);
+
                     //if let Some(peer) = neighborhood.peers.get_peer(source) {
                     for (msg, count) in query {
                         // TODO: Consider if this is fast enough to do unbatched here? (and is batching really faster?)
@@ -1504,6 +1535,8 @@ impl Distributor {
                     dest,
                     messages,
                 } => {
+                    check_node_id_collision(source);
+
                     if dest == *self.ephemeral_node_id.get() {
                         for msg in messages {
                             let val = MessageSubGraphNodeValue {
@@ -1528,6 +1561,8 @@ impl Distributor {
                     message_id,
                     destination,
                 } => {
+                    check_node_id_collision(source);
+
                     if destination == *self.ephemeral_node_id.get() {
                         for msg in message_id {
                             match accumulated_send_msg_and_descendants.entry(msg) {
@@ -1550,6 +1585,8 @@ impl Distributor {
                     origin,
                     explicit_retransmit,
                 } => {
+                    check_node_id_collision(source);
+
                     database.remove_cutoff_parents(&mut msg.parents);
                     accumulated_serialized.push(AccumulatedMessage {
                         msg,
@@ -1610,6 +1647,10 @@ impl Distributor {
         }
         self.process_sync_all_queries(&mut database, accumulated_sync_all_queries)?;
         self.process_sync_all_requests(&mut database, accumulated_sync_all_requests, now)?;
+
+        if collision {
+            self.report_node_id_collision();
+        }
 
         Ok(())
     }

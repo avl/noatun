@@ -32,6 +32,7 @@ DEALINGS IN THE SOFTWARE.
 #![allow(clippy::identity_op)]
 
 use std::hash::Hasher;
+use crate::xxh3_vendored::xxh3::{Xxh3, Xxh3Default};
 
 pub(crate) mod xxh32_common {
     #![allow(unused)]
@@ -2065,60 +2066,77 @@ pub mod xxh3 {
     }
 }
 
+
+/// Stable hasher made to be very fast, with predictable output.
 pub enum NoatunHasher {
-    Heap(Vec<u8>),
-    Stack(usize, [u8; 32]),
+    Small([u8; 64], usize),
+    Large(Xxh3Default)
 }
+
 impl Default for NoatunHasher {
+    #[inline]
     fn default() -> Self {
-        NoatunHasher::Stack(0, Default::default())
+        NoatunHasher::Small([0; 64], 0)
     }
 }
 
 impl NoatunHasher {
+    #[inline]
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn clear(&mut self) {
+    #[cold]
+    pub fn transform(&mut self, more_bytes: &[u8]) {
         match self {
-            NoatunHasher::Heap(v) => v.clear(),
-            NoatunHasher::Stack(l, _) => {
-                *l = 0;
+            NoatunHasher::Small(data, ptr) => {
+                let mut d = Xxh3Default::default();
+                if *ptr > 0 {
+                    d.update(&data[0..*ptr]);
+                }
+                d.update(more_bytes);
+                *self = NoatunHasher::Large(d);
+            }
+            #[cold]
+            NoatunHasher::Large(d) => {
+                unreachable!()
             }
         }
     }
-    pub fn get(&self) -> &[u8] {
+}
+
+impl Hasher for NoatunHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
         match self {
-            NoatunHasher::Heap(v) => v,
-            NoatunHasher::Stack(l, b) => &b[..*l],
+            NoatunHasher::Small(data, ptr) => {
+                xxh3::xxh3_64(&data[0..*ptr])
+            }
+            #[cold]
+            NoatunHasher::Large(d) => {
+                d.digest()
+            }
         }
     }
-}
-impl Hasher for NoatunHasher {
-    fn finish(&self) -> u64 {
-        xxh3::xxh3_64(self.get())
-    }
+    #[inline]
     fn write(&mut self, a_bytes: &[u8]) {
         match self {
-            NoatunHasher::Heap(self_v) => {
-                self_v.extend_from_slice(a_bytes);
-            }
-            NoatunHasher::Stack(self_cur, self_data) => {
-                let self_free = self_data.len() - *self_cur;
-                let a_len = a_bytes.len();
-                if self_free >= a_bytes.len() {
-                    self_data[*self_cur..*self_cur + a_len].copy_from_slice(a_bytes);
-                    *self_cur += a_len;
+            NoatunHasher::Small(data, ptr) => {
+                if *ptr + a_bytes.len() <= data.len() {
+                    data[*ptr..*ptr+a_bytes.len()].copy_from_slice(a_bytes);
+                    *ptr += a_bytes.len();
                 } else {
-                    let mut self_v = Vec::with_capacity(*self_cur + a_len);
-                    self_v.extend_from_slice(&self_data[0..*self_cur]);
-                    self_v.extend_from_slice(a_bytes);
-                    *self = NoatunHasher::Heap(self_v);
+                    self.transform(a_bytes);
                 }
+            }
+            #[cold]
+            NoatunHasher::Large(d) => {
+                d.update(a_bytes);
             }
         }
     }
 }
+
+
 
 #[cfg(test)]
 mod xxh3_tests {
@@ -2132,8 +2150,8 @@ mod xxh3_tests {
         assert_eq!(hasher.finish(), 9777848219803310049);
         let mut hasher = NoatunHasher::new();
         hasher.write(b"5678");
-        hasher.write(b" (Nyctereutes procyonoides) ar ett hunddjur som placeras som ensam art i slaktet Nyctereutes. Den har sitt ursprungliga utbredningsomrade");
-        assert_eq!(hasher.finish(), 3210988261660606264);
+        hasher.write(b" (Nyctereutes procyonoides) ar ett hunddjur som placeras som ensam art i slaktet Nyctereutes. Den har sitt ursprungliga utbredningsomrade. 5678 (Nyctereutes procyonoides) ar ett hunddjur som placeras som ensam art i slaktet Nyctereutes. Den har sitt ursprungliga utbredningsomrade. 5678 (Nyctereutes procyonoides) ar ett hunddjur som placeras som ensam art i slaktet Nyctereutes. Den har sitt ursprungliga utbredningsomrade");
+        assert_eq!(hasher.finish(), 2773116291557897730);
     }
     #[test]
     fn test_xxh3() {
@@ -2143,8 +2161,8 @@ mod xxh3_tests {
         let result = crate::xxh3_vendored::xxh3::xxh3_64(b"5678");
         println!("{result:?}");
         assert_eq!(result, 14901654952795293208);
-        let result = crate::xxh3_vendored::xxh3::xxh3_64(b"5678 (Nyctereutes procyonoides) ar ett hunddjur som placeras som ensam art i slaktet Nyctereutes. Den har sitt ursprungliga utbredningsomrade");
+        let result = crate::xxh3_vendored::xxh3::xxh3_64(b"5678 (Nyctereutes procyonoides) ar ett hunddjur som placeras som ensam art i slaktet Nyctereutes. Den har sitt ursprungliga utbredningsomrade. 5678 (Nyctereutes procyonoides) ar ett hunddjur som placeras som ensam art i slaktet Nyctereutes. Den har sitt ursprungliga utbredningsomrade. 5678 (Nyctereutes procyonoides) ar ett hunddjur som placeras som ensam art i slaktet Nyctereutes. Den har sitt ursprungliga utbredningsomrade");
         println!("{result:?}");
-        assert_eq!(result, 3210988261660606264);
+        assert_eq!(result, 2773116291557897730);
     }
 }

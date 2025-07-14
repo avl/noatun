@@ -52,10 +52,10 @@ mod registrar_info {
             self.uses & 0x4000_0000 != 0
         }
         pub fn wrote_tombstones(&self) -> bool {
-            println!("Retrieve registrar tombstone-user: {:x} @  {:?} = {}",
+            /*println!("Retrieve registrar tombstone-user: {:x} @  {:?} = {}",
                      self.uses, &self.uses as *const u32,
                      self.uses & 0x2000_0000 != 0
-            );
+            );*/
             self.uses & 0x2000_0000 != 0
         }
         pub fn get_use(&self) -> u32 {
@@ -74,9 +74,9 @@ mod registrar_info {
                 return;
             }
             raw_uses |= 0x2000_0000;
-            println!("Mark registrar as tombstone-user: {:x} @  {:?}",
+            /*println!("Mark registrar as tombstone-user: {:x} @  {:?}",
                 raw_uses, &self.uses as *const u32
-            );
+            );*/
             context.write_storable(raw_uses, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
         pub fn decrease_use(
@@ -1437,7 +1437,7 @@ impl DatabaseContextData {
 
                         // The things 'deferred' are carried out at the end of this function (i.e, quickly)
                         deferred.push(move |tself: &mut DatabaseContextData| {
-                            println!("Record reverse dependency for {:?}. Wrote tombstone: {}", msg.seq, msg.wrote_tombstone);
+                            //println!("Record reverse dependency for {:?}. Wrote tombstone: {}", msg.seq, msg.wrote_tombstone);
                             // Remember/record_reverse_dependency
                             tself.record_reverse_dependency(
                                 msg.seq,
@@ -1466,7 +1466,7 @@ impl DatabaseContextData {
             for (revdep, last_overwriter, can_be_deleted_early, wrote_tombstone) in
                 self.read_reverse_dependency(msg.seq)
             {
-                println!("Read reverse dependency for {:?}. Wrote tombstone: {}", revdep, wrote_tombstone);
+                //println!("Read reverse dependency for {:?}. Wrote tombstone: {}", revdep, wrote_tombstone);
                 // Get messages that depend on the message that we just decided to delete
                 unused_messages.push(UnusedInfo {
                     seq: revdep,

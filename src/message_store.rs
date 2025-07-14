@@ -2366,8 +2366,8 @@ impl<M> OnDiskMessageStore<M> {
 #[cfg(test)]
 mod tests {
     use indexmap::IndexSet;
-use std::collections::BTreeSet;
-use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
+    use std::collections::BTreeMap;
     use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
     use crate::message_store::{FileOffset, OnDiskMessageStore, U1};
     use crate::{DummyUnitObject, Message, MessageFrame, MessageId, NoatunTime, Target};

@@ -907,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "savefile"
-version = "0.18.7"
+version = "0.18.6"
 dependencies = [
  "arrayvec",
  "bit-set 0.5.3",
@@ -915,6 +915,7 @@ dependencies = [
  "bit-vec 0.6.3",
  "bit-vec 0.8.0",
  "byteorder",
+ "chrono",
  "indexmap",
  "memoffset",
  "parking_lot",
