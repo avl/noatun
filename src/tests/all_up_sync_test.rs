@@ -1642,3 +1642,50 @@ async fn complex_forwarding_test() {
     }
     assert_snapshot!(driver.sent_messages_snapshot());
 }
+
+#[tokio::test(start_paused = true)]
+async fn all_up_clock_mismatch_test() {
+    setup_tracing();
+    MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
+    let start_instant = Instant::now();
+    let noatun_start_time: NoatunTime = START_TIME.into();
+    let mut driver = TestDriver::default();
+
+    let mut app1 = create_app(&mut driver, None).await;
+    let mut app2 = create_app(&mut driver, None).await;
+
+    app1.add_message(SyncMessage {
+        value: 1,
+        persist: false,
+        reset: false,
+    })
+        .await
+        .unwrap();
+
+
+    app2.add_message(SyncMessage {
+        value: 2,
+        persist: false,
+        reset: false,
+    })
+        .await
+        .unwrap();
+
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let time_now = noatun_start_time + start_instant.elapsed();
+        app1.set_mock_time(time_now).unwrap();
+        app2.set_mock_time(time_now + Duration::from_secs(60)).unwrap();
+    }
+
+    app2.inner_database().begin_session_mut().unwrap().set_mock_time(NoatunTime::from_datetime(START_TIME + Duration::from_secs(30))).unwrap();
+
+
+    println!("Start time: {:?}", START_TIME);
+    println!("{}", driver.raw_frames_snapshot());
+    println!("{}", driver.sent_messages_snapshot());
+
+    println!("Sent Messages: {} ", driver.sent_messages_count());
+
+    assert_snapshot!(driver.sent_messages_snapshot());
+}

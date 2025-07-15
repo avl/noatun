@@ -740,7 +740,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
 
         if context.cursend.is_empty() {
             if self.outgoing_retransmit_requests.is_empty() == false {
-                
+
                 let first_key = *self
                     .outgoing_retransmit_requests
                     .iter()
@@ -765,7 +765,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                     };
                     Serializer::bare_serialize(&mut context.cursend, 0, &packet).unwrap();
                     trace!("Sending raw retransmit {:?} ({} bytes)", packet, context.cursend.len());
-                    
+
                     if first_val.items.is_empty() {
                         self.outgoing_retransmit_requests.swap_remove(&first_key);
                     }
@@ -1625,8 +1625,7 @@ mod tests {
             65536 + 65537
         );
     }
-
-    //TODO: Deprecate this
+    
     async fn run_loop<T:CommunicationDriver>(mut tself: MulticastSenderLoop<T>) -> anyhow::Result<()> {
         let mut ctx = tself.create_context()?;
         let mut message_tx = Vec::new();

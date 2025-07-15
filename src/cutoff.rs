@@ -216,10 +216,12 @@ impl CutOffHashPos {
         config: &CutOffConfig,
         now: NoatunTime,
     ) -> Acceptability {
+        // This method doesn't produce Acceptability::Previous
+        // Instead, this case is handled by the layer above this code
+
         if *self == peer_hash {
             return Acceptability::Nominal;
         }
-        //TODO check this (maybe it's already fixed): "Handle the case where self time > peer hash, and check that peer hash matches prev cutoff hash!"
         if self.before_time < peer_hash.before_time {
             if self.before_time < peer_hash.before_time.saturating_sub(config.stride) {
                 return Acceptability::UnacceptablePeerClockDrift;
