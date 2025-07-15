@@ -88,8 +88,6 @@ fn test_vec1() {
     })
     .unwrap();
 
-    // NOTE!
-    // TODO: Document the above in a promenent place in the manual
     assert_eq!(db.count_messages(), 1, "last message is present in clear-registrar");
 }
 

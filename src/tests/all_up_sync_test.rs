@@ -483,6 +483,8 @@ fn random<T: SampleUniform + PartialOrd>(range: std::ops::Range<T>) -> T {
     MY_THREAD_RNG.with(|rng| rng.borrow_mut().as_mut().unwrap().gen_range(range))
 }
 
+compile_error!("Setup CI . Add doc tests to it. Oh, and make all the doc tests pass :) ")
+
 #[test]
 fn old_local_messages_without_effect_are_removed0() {
     let mut db: Database<SyncApp> = Database::create_in_memory(

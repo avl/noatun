@@ -368,6 +368,23 @@ impl<T: NoatunStorable + SubAssign<T> + Copy > SubAssign<T> for Pin<&mut OpaqueN
     }
 }
 
+impl<T: NoatunStorable + AddAssign<T> + Copy > AddAssign<T> for Pin<&mut NoatunCell<T>> {
+    fn add_assign(&mut self, rhs: T) {
+        NoatunContext.observe_registrar(self.registrar);
+        let mut new_value = self.value;
+        new_value += rhs;
+        self.as_mut().set(new_value);
+    }
+}
+impl<T: NoatunStorable + SubAssign<T> + Copy > SubAssign<T> for Pin<&mut NoatunCell<T>> {
+    fn sub_assign(&mut self, rhs: T) {
+        NoatunContext.observe_registrar(self.registrar);
+        let mut new_value = self.value;
+        new_value -= rhs;
+        self.as_mut().set(new_value);
+    }
+}
+
 
 /*impl<T: NoatunStorable> NoatunCell<T> {
     pub fn new(value: T) -> NoatunCell<T> {

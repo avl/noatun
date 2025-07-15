@@ -24,7 +24,7 @@ use crate::undo_store::magic_initialize_ptr;
 use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 pub use cutoff::{CutOffDuration, CutOffState};
-pub use database::Database;
+pub use database::{Database, DatabaseSettings};
 pub use paste::paste;
 pub(crate) use projection_store::DatabaseContextData;
 use rand::RngCore;
@@ -58,6 +58,12 @@ mod projection_store;
 mod term_colors;
 mod undo_store;
 mod mini_pather;
+
+/// The noatun book, in rust code
+mod book {
+    #[doc = include_str!("../book/book.md")]
+    const BOOK:() = ();
+}
 
 
 #[cfg(feature = "debug")]
@@ -1041,7 +1047,7 @@ pub trait Object {
 ///
 /// Example:
 /// ```rust
-/// crate::noatun_object!(
+/// noatun::noatun_object!(
 ///     #[derive(PartialEq)]
 ///     struct Employee {
 ///         object name: NoatunString,
@@ -1049,7 +1055,7 @@ pub trait Object {
 ///     }
 /// );
 ///
-/// crate::noatun_object!(
+/// noatun::noatun_object!(
 ///     struct ExampleDb {
 ///         pod total_salary_cost: u32,
 ///         object employees: NoatunVec<Employee>,
@@ -1150,7 +1156,7 @@ macro_rules! noatun_object {
         #[derive($($derive_item,)* Debug,Clone,$crate::Savefile)]
         pub struct $n_detached
         {
-            $( $name : noatun_object!(declare_detached_field $kind $typ) ),*
+            $( $name : $crate::noatun_object!(declare_detached_field $kind $typ) ),*
         }
     };
 
