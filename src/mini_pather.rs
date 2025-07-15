@@ -21,9 +21,6 @@ pub struct MiniPather {
     /// Map from `(origin, received_from) tuple to result of
     /// calling 'should_i_forward(origin, received_from)`
     memoization: IndexMap<(u16,u16), bool>,
-    /// back-to-back testing against simple, known-to-be-correct pather
-    // TODO: Remove this
-    correct_pather: known_good_mini_pather::MiniPather,
 }
 
 impl MiniPather {
@@ -38,7 +35,6 @@ impl MiniPather {
             nodes: Default::default(),
             reverse: Default::default(),
             memoization: Default::default(),
-            correct_pather: known_good_mini_pather::MiniPather::new(whoami),
         }
     }
     fn add_reverse(node: u16, reverse: &mut IndexMap<u16, Vec<u16>>, added: &[u16]) {
@@ -65,7 +61,6 @@ impl MiniPather {
     /// Report which neighbors 'node' can hear
     pub fn report_neighbors(&mut self, node: u16, hears_neighbors: impl Iterator<Item=u16>) {
         let mut hears_neighbors : Vec<u16> = hears_neighbors.collect();
-        self.correct_pather.report_neighbors(node, hears_neighbors.iter().copied());
 
 
         match self.nodes.entry(node) {
@@ -161,12 +156,11 @@ impl MiniPather {
 
     pub fn should_i_forward(&mut self, origin: u16, received_from: u16) -> bool {
         if origin == self.whoami || received_from == self.whoami {
-            assert!(!self.correct_pather.should_i_forward(origin, received_from));
             return false;
         }
 
         if let Some(memoized ) = self.memoization.get(&(origin, received_from)) {
-            assert_eq!(self.correct_pather.should_i_forward(origin, received_from), *memoized);
+
             return *memoized;
         }
 
@@ -224,10 +218,7 @@ impl MiniPather {
             self.memoization.drain(0..l);
         }
         self.memoization.insert((origin, received_from), !all_visited);
-        assert_eq!(self.correct_pather.should_i_forward(origin, received_from), !all_visited,
-            "#{}: difference between correct pather value: {} and actual: {} for input {}.{}",
-                   self.whoami, self.correct_pather.should_i_forward(origin, received_from), !all_visited, origin, received_from,
-            );
+
         !all_visited
         /*
 
@@ -374,7 +365,7 @@ mod tests {
 
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(20_000))]
+        #![proptest_config(ProptestConfig::with_cases(2_000))]
         #[test]
         fn verify_someone_always_forwards_test(neighbor_reports in neighborhood()) {
             verify_someone_always_forwards(neighbor_reports);

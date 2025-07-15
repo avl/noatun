@@ -78,7 +78,7 @@ fn test_rotation_big1() {
         Database::create_new("test/test_rotation2", true, DatabaseSettings::default(), ()).unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
-    for _ in 0..200 {
+    for _ in 0..75 {
         for _ in 0..50 {
             db.append_local(RotMessage {
                 increment: 1,
@@ -94,4 +94,38 @@ fn test_rotation_big1() {
         .unwrap();
         db.compact().unwrap();
     }
+
+    assert_eq!(db.count_messages(), 1);
+    db.with_root(|root|{
+        assert_eq!(root.counter.get(), 0);
+    })
+}
+
+#[test]
+#[cfg(feature="expensive_tests")]
+fn test_rotation_big2() {
+    let mut db: Database<RotationDoc> =
+        Database::create_new("test/test_rotation2", true, DatabaseSettings::default(), ()).unwrap();
+    let mut db = db.begin_session_mut().unwrap();
+    db.disable_filesystem_sync().unwrap();
+    for _ in 0..200 {
+        for _ in 0..50 {
+            db.append_local(RotMessage {
+                increment: 1,
+                reset: 0,
+            })
+                .unwrap();
+            db.compact().unwrap();
+        }
+        db.append_local(RotMessage {
+            increment: 1,
+            reset: 0,
+        })
+            .unwrap();
+        db.compact().unwrap();
+    }
+
+    db.with_root(|root|{
+        assert_eq!(root.counter.get(), 200*51);
+    })
 }

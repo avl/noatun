@@ -18,6 +18,7 @@ opt-level = 3
 
 [features]
 debug = ["colored"]
+expensive_tests = []
 
 [dependencies]
 byteorder = "1.5"

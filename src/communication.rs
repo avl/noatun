@@ -103,7 +103,6 @@ pub trait CommunicationReceiveSocket<Endpoint: PartialEq + Debug + Send> {
     /// Loopback messages should be avoided - implementations are encouraged
     /// to avoid receiving messages that were transmitted by the same noatun instance,
     /// for performance reasons. Correctness is preserved in any case.
-    //TODO: Implement robust EphemeralNodeId collision detection!
     fn recv_buf_from<B: bytes::buf::BufMut + Send>(
         &mut self,
         buf: &mut B,
@@ -246,7 +245,6 @@ impl ReceiveTrack {
             sorted_packets: Default::default(),
             retransmit_interval,
             disable_retransmit: retransmit_disabled,
-            //TODO: Clean away tracks if last success is too long ago
             last_success: Instant::now(),
         }
     }
@@ -459,8 +457,6 @@ struct RetransmitInfo {
     wait_until: Option<Instant>,
     items: BTreeSet<u64>,
 
-    //TODO: Detect when hearing one's self. Possibly by blake-hashing the entire packets, and
-    //detecting something we didn't transmit, but with our ephemerealid.
     /// When sending a retransmit message, this is set to Some(now) (if not already Some).
     /// Whenever a retransmission is received, we set it to None.
     /// If enough time passes without us hearing the requested messages retransmitted,
@@ -515,6 +511,7 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
         Box<dyn FnMut(/*src: */ EphemeralNodeId) -> Duration + Sync + Send + 'static>,
     hasher: Xxh3Default,
     sent_packets: IndexSet<u128>,
+    gc_time: Instant,
 }
 impl<Socket: CommunicationDriver> Drop for MulticastSenderLoop<Socket> {
     fn drop(&mut self) {
@@ -559,15 +556,16 @@ impl BwLimiter {
 }
 
 pub struct ExecutionContext<T> {
-    cursend: Option<Vec<u8>>,
+    /// Empty if not in use.
+    /// We assume any real packet will be at least 1 byte
+    cursend: Vec<u8>,
     send_local_addr: Option<T>,
     next_retransmit: Instant,
     next_retransmit_active: bool,
 }
 
 impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
-    //TODO: Too many arguments
-    pub(crate) async fn new(
+    async fn new(
         driver: &mut Socket,
         bind_address: &str,
         multicast_group: &str,
@@ -616,6 +614,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             retransmit_responsibility_query,
             hasher: Default::default(),
             sent_packets: Default::default(),
+            gc_time: Instant::now(),
         })
     }
     pub(crate) fn send_buf(
@@ -716,225 +715,217 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
 
     pub fn create_context(&self) -> Result<ExecutionContext<Socket::Endpoint>> {
         Ok(ExecutionContext {
-            cursend: None,
+            cursend: vec![],
             send_local_addr: self.send_socket.local_addr()?,
             next_retransmit: Instant::now(),
             next_retransmit_active: false,
         })
     }
 
-    //TODO: Deprecate this
-    pub async fn run_loop(mut self) -> Result<()> {
-        let mut ctx = self.create_context()?;
-        let mut message_tx = Vec::new();
-        while self.run(&mut ctx, &mut message_tx, &mut false).await? == false {
-            for msg in message_tx.drain(..) {
-                self.message_tx.send(msg).await?;
-            }
-        }
-        Ok(())
-    }
 
     #[instrument(skip(self, context),fields(local=?self.bind_address))]
     pub async fn run(&mut self, context: &mut ExecutionContext<Socket::Endpoint>, message_tx: &mut Vec<(Address,Vec<u8>)>, node_id_collision_detected: &mut bool) -> Result<bool/*quit*/> {
-        {
-            self.recvbuf.clear();
-            let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
 
-            if context.cursend.is_none() {
-                if self.outgoing_retransmit_requests.is_empty() == false {
-                    let mut temp = vec![];
-                    let now = Instant::now();
-                    let first_key = *self
-                        .outgoing_retransmit_requests
-                        .iter()
-                        .min_by_key(|(_k, v)| v.wait_until)
-                        .unwrap()
-                        .0;
-                    let first_val = self
-                        .outgoing_retransmit_requests
-                        .get_mut(&first_key)
-                        .unwrap();
-                    if first_val.wait_until <= Some(now) {
-                        let mut what = Vec::with_capacity(20);
-                        while what.len() < 20 {
-                            let Some(item) = first_val.items.pop_first() else {
-                                break;
-                            };
-                            what.push(item);
-                        }
-                        let packet = NetworkPacket::RetransmitRequest {
-                            who: first_key,
-                            what,
+        self.recvbuf.clear();
+        let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
+
+
+        let now = Instant::now();
+        if self.gc_time < now {
+            self.receive_track.retain(|_k,v|{
+                now.duration_since(v.last_success).as_secs() < 300
+            });
+            self.gc_time = now + Duration::from_secs(60);
+        }
+
+        if context.cursend.is_empty() {
+            if self.outgoing_retransmit_requests.is_empty() == false {
+                
+                let first_key = *self
+                    .outgoing_retransmit_requests
+                    .iter()
+                    .min_by_key(|(_k, v)| v.wait_until)
+                    .unwrap()
+                    .0;
+                let first_val = self
+                    .outgoing_retransmit_requests
+                    .get_mut(&first_key)
+                    .unwrap();
+                if first_val.wait_until <= Some(now) {
+                    let mut what = Vec::with_capacity(20);
+                    while what.len() < 20 {
+                        let Some(item) = first_val.items.pop_first() else {
+                            break;
                         };
-                        Serializer::bare_serialize(&mut temp, 0, &packet).unwrap();
-                        trace!("Sending raw retransmit {:?} ({} bytes)", packet, temp.len());
-                        context.cursend = Some(temp);
-                        if first_val.items.is_empty() {
-                            self.outgoing_retransmit_requests.swap_remove(&first_key);
-                        }
-                    } else {
-                        // This if is probably dead code, since we only get here if wait_until > Some(_),
-                        // which actually implies wait_until != None
-                        if let Some(wait) = first_val.wait_until {
-                            trace!(
-                                "Scheduling raw retransmit in {:?}",
-                                wait.duration_since(Instant::now())
-                            );
-                            context.next_retransmit = wait;
-                            context.next_retransmit_active = true;
-                        }
+                        what.push(item);
                     }
-                }
-                if context.cursend.is_none() {
-                    //TODO: Reuse buffer?
-                    let mut temp = vec![];
-
-                    context.cursend = self.queue.pop_front().map(|x| {
-                        // Consider if savefile really is the best here. Some more space efficiency
-                        // wouldn't hurt!
-                        Serializer::bare_serialize(
-                            &mut temp,
-                            0,
-                            &NetworkPacket::Data(x.entity.clone()),
-                        )
-                        .unwrap();
-
-                        self.hasher.reset();
-                        self.hasher.update(&temp);
-                        self.sent_packets.insert(self.hasher.digest128());
-                        if self.sent_packets.len() >= 1000 {
-                            self.sent_packets.drain(0..500);
-                        }
-
-                        let (Ok(insert_point) | Err(insert_point)) = self
-                            .history
-                            .binary_search_by_key(&x.reconstructed_seq, |x| x.reconstructed_seq);
-                        self.history.insert(insert_point, x);
-
-                        temp
-                    });
-                }
-            }
-
-            let send_queue_empty = context.cursend.is_none();
-
-            let send = async {
-                if let Some(tosend) = context.cursend.as_mut() {
-                    let send_size = tosend.len();
-                    self.limiter.wait_debt_free().await;
-
-                    match self.send_socket.send_to(tosend).await {
-                        Ok(()) => {
-                            self.limiter.incur_debt(send_size as u64);
-
-                            //trace!("Actually sent {} raw bytes", sent);
-                            context.cursend.take();
-                        }
-                        Err(err) => {
-                            // Apply rate limit even on failure
-                            self.limiter.incur_debt(send_size as u64);
-                            context.cursend.take();
-                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                            error!("Send error: {:?}", err);
-                        }
+                    let packet = NetworkPacket::RetransmitRequest {
+                        who: first_key,
+                        what,
+                    };
+                    Serializer::bare_serialize(&mut context.cursend, 0, &packet).unwrap();
+                    trace!("Sending raw retransmit {:?} ({} bytes)", packet, context.cursend.len());
+                    
+                    if first_val.items.is_empty() {
+                        self.outgoing_retransmit_requests.swap_remove(&first_key);
                     }
                 } else {
-                    std::future::pending().await
+                    // This if is probably dead code, since we only get here if wait_until > Some(_),
+                    // which actually implies wait_until != None
+                    if let Some(wait) = first_val.wait_until {
+                        trace!(
+                            "Scheduling raw retransmit in {:?}",
+                            wait.duration_since(Instant::now())
+                        );
+                        context.next_retransmit = wait;
+                        context.next_retransmit_active = true;
+                    }
                 }
-            };
-            let get_cmd = self.message_rx.recv();
-            select! {
-                biased;
-                _ = &mut self.quit_rx => {
-                    info!("quit_rx signalled, background task shutting down");
-                    return Ok(true);
+            }
+            if context.cursend.is_empty() {
+
+                 if let Some(x) = self.queue.pop_front() {
+                    // Consider if savefile really is the best here. Some more space efficiency
+                    // wouldn't hurt!
+                    Serializer::bare_serialize(
+                        &mut context.cursend,
+                        0,
+                        &NetworkPacket::Data(x.entity.clone()),
+                    )
+                    .unwrap();
+
+                    self.hasher.reset();
+                    self.hasher.update(&context.cursend);
+                    self.sent_packets.insert(self.hasher.digest128());
+                    if self.sent_packets.len() >= 1000 {
+                        self.sent_packets.drain(0..500);
+                    }
+
+                    let (Ok(insert_point) | Err(insert_point)) = self
+                        .history
+                        .binary_search_by_key(&x.reconstructed_seq, |x| x.reconstructed_seq);
+                    self.history.insert(insert_point, x);
+                };
+            }
+        }
+
+        let send_queue_empty = context.cursend.is_empty();
+
+        let send = async {
+            if context.cursend.is_empty() == false {
+                let send_size = context.cursend.len();
+                self.limiter.wait_debt_free().await;
+
+                match self.send_socket.send_to(&context.cursend).await {
+                    Ok(()) => {
+                        self.limiter.incur_debt(send_size as u64);
+
+                        //trace!("Actually sent {} raw bytes", sent);
+                        context.cursend.clear();
+                    }
+                    Err(err) => {
+                        // Apply rate limit even on failure
+                        self.limiter.incur_debt(send_size as u64);
+                        context.cursend.clear();
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        error!("Send error: {:?}", err);
+                    }
                 }
-                _ = send => {
+            } else {
+                std::future::pending().await
+            }
+        };
+        let get_cmd = self.message_rx.recv();
+        select! {
+            biased;
+            _ = &mut self.quit_rx => {
+                info!("quit_rx signalled, background task shutting down");
+                return Ok(true);
+            }
+            _ = send => {
+                Ok(false)
+            }
+            buf = get_cmd, if send_queue_empty => {
+                if let Some(buf) = buf {
+                    Self::send_buf(
+                        &mut self.queue,
+                        self.max_payload_per_packet,
+                        &mut self.next_send_seq,
+                        buf,
+                        *self.ephemeral_node_id.get()
+                    )?;
                     Ok(false)
+                } else {
+                    info!("cmd-channel gone, background task shutting down");
+                    Ok(true)
                 }
-                buf = get_cmd, if send_queue_empty => {
-                    if let Some(buf) = buf {
-                        Self::send_buf(
-                            &mut self.queue,
-                            self.max_payload_per_packet,
-                            &mut self.next_send_seq,
-                            buf,
-                            *self.ephemeral_node_id.get()
-                        )?;
+            }
+            msg = receive => {
+                let (size, src_addr) = msg.expect("network should not fail");
+                /*if src_addr == context.send_local_addr {
+                    return Ok(false);
+                }*/
+
+                assert_eq!(size, self.recvbuf.len());
+                let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0) else {
+                    error!("Invalid packet received");
+                    return Ok(false);
+                };
+
+                if let NetworkPacket::Data(TransmittedEntitySortable{src,..}) = &packet {
+                    if *src  == *self.ephemeral_node_id.get() {
+                        // We received a message from a node with the same node-id as we do.
+                        // This could be a node id collision. But first, let's heuristically
+                        // determine if we've simply overheard one of our own packets.
+
+                        self.hasher.reset();
+                        self.hasher.update(&self.recvbuf);
+                        let hash = self.hasher.digest128();
+                        if self.sent_packets.contains(&hash) {
+                            // We sent this ourselves, don't deliver it.
+                            return Ok(false);
+                        } else {
+                            *node_id_collision_detected = true;
+                        }
+                    }
+                }
+
+
+
+
+
+                match packet {
+                    NetworkPacket::Data(entity) => {
+                        let src_node = entity.src;
+
+                        let (track, new_track) = match self.receive_track.entry((src_node, src_addr)) {
+                            Entry::Occupied(e) => {
+                                (e.into_mut(), false)
+                            }
+                            Entry::Vacant(e) => {
+                                (e.insert(ReceiveTrack::new(self.retransmit_interval, self.disable_retransmit)), true)
+                            }
+                        };
+
+                        match track.process(entity, src_node, message_tx, &mut self.outgoing_retransmit_requests, &mut self.retransmit_responsibility_query, new_track).await {
+                                Ok(()) => {Ok(false)}
+                                Err(err) => {
+                                    error!("Receive error: {:?}", err);
+                                    return Ok(false);
+                            }
+                        }
+                    }
+                    NetworkPacket::RetransmitRequest{who, what  } => {
+                        if who == *self.ephemeral_node_id.get() {
+                            self.queue_retransmits(&what);
+                        }
                         Ok(false)
-                    } else {
-                        info!("cmd-channel gone, background task shutting down");
-                        Ok(true)
                     }
                 }
-                msg = receive => {
-                    let (size, src_addr) = msg.expect("network should not fail");
-                    /*if src_addr == context.send_local_addr {
-                        return Ok(false);
-                    }*/
-
-                    assert_eq!(size, self.recvbuf.len());
-                    let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0) else {
-                        error!("Invalid packet received");
-                        return Ok(false);
-                    };
-
-                    if let NetworkPacket::Data(TransmittedEntitySortable{src,..}) = &packet {
-                        if *src  == *self.ephemeral_node_id.get() {
-                            // We received a message from a node with the same node-id as we do.
-                            // This could be a node id collision. But first, let's heuristically
-                            // determine if we've simply overheard one of our own packets.
-
-                            self.hasher.reset();
-                            self.hasher.update(&self.recvbuf);
-                            let hash = self.hasher.digest128();
-                            if self.sent_packets.contains(&hash) {
-                                // We sent this ourselves, don't deliver it.
-                                return Ok(false);
-                            } else {
-                                *node_id_collision_detected = true;
-                            }
-                        }
-                    }
-
-
-                    compile_error!("Continue cleaning up TODOs")
-                    
-
-                    match packet {
-                        NetworkPacket::Data(entity) => {
-                            let src_node = entity.src;
-
-                            let (track, new_track) = match self.receive_track.entry((src_node, src_addr)) {
-                                Entry::Occupied(e) => {
-                                    (e.into_mut(), false)
-                                }
-                                Entry::Vacant(e) => {
-                                    (e.insert(ReceiveTrack::new(self.retransmit_interval, self.disable_retransmit)), true)
-                                }
-                            };
-
-                            match track.process(entity, src_node, message_tx, &mut self.outgoing_retransmit_requests, &mut self.retransmit_responsibility_query, new_track).await {
-                                    Ok(()) => {Ok(false)}
-                                    Err(err) => {
-                                        error!("Receive error: {:?}", err);
-                                        return Ok(false);
-                                }
-                            }
-                        }
-                        NetworkPacket::RetransmitRequest{who, what  } => {
-                            if who == *self.ephemeral_node_id.get() {
-                                self.queue_retransmits(&what);
-                            }
-                            Ok(false)
-                        }
-                    }
-                }
-                _ = tokio::time::sleep_until(context.next_retransmit), if context.next_retransmit_active => {
-                    context.next_retransmit_active = false;
-                    Ok(false)
-                }
+            }
+            _ = tokio::time::sleep_until(context.next_retransmit), if context.next_retransmit_active => {
+                context.next_retransmit_active = false;
+                Ok(false)
             }
         }
     }
@@ -1144,12 +1135,11 @@ where
         let mut context = sender.make_context()?;
         let mut message_tx: Vec<(Address, Vec<u8>)> = Vec::new();
         loop {
-            
-            while let Some(check) = message_tx.first() {
-                self.process_packet(check.0, check.1.clone())?;
-                // TODO: Consider using VecDeque here, removing first is unnecessarily expensive otherwise.
-                // Or maybe better, just loop through message_tx?
-                message_tx.remove(0);
+
+            for message in message_tx.drain(..) {
+                if let Err(err) = self.process_packet(message.0, message.1.clone()) {
+                    error!("Error processing incoming packet: {:?}", err);
+                }
             }
 
             // For buffered incoming messages
@@ -1278,7 +1268,7 @@ where
                 }
 
             );
-            
+
             if node_id_collision {
                 self.distributor.report_node_id_collision();
             }
@@ -1612,7 +1602,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::communication::udp::TokioUdpDriver;
-    use crate::communication::{MulticastSenderLoop, ReceiveTrack};
+    use crate::communication::{CommunicationDriver, MulticastSenderLoop, ReceiveTrack};
     use crate::distributor::EphemeralNodeId;
     use crate::tests::setup_tracing;
     use arcshift::ArcShift;
@@ -1635,6 +1625,19 @@ mod tests {
             65536 + 65537
         );
     }
+
+    //TODO: Deprecate this
+    async fn run_loop<T:CommunicationDriver>(mut tself: MulticastSenderLoop<T>) -> anyhow::Result<()> {
+        let mut ctx = tself.create_context()?;
+        let mut message_tx = Vec::new();
+        while tself.run(&mut ctx, &mut message_tx, &mut false).await? == false {
+            for msg in message_tx.drain(..) {
+                tself.message_tx.send(msg).await?;
+            }
+        }
+        Ok(())
+    }
+
 
     #[tokio::test(start_paused = true)]
     async fn test_sender_ipv4() {
@@ -1682,8 +1685,8 @@ mod tests {
         .await
         .unwrap();
 
-        let jh1: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(mloop1.run_loop());
-        let jh2: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(mloop2.run_loop());
+        let jh1: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(run_loop(mloop1));
+        let jh2: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(run_loop(mloop2));
 
         for packet in [
             vec![1u8; 1],
@@ -1751,8 +1754,8 @@ mod tests {
         .await
         .unwrap();
 
-        let jh1 = spawn(mloop1.run_loop());
-        let jh2 = spawn(mloop2.run_loop());
+        let jh1 = spawn(run_loop(mloop1));
+        let jh2 = spawn(run_loop(mloop2));
 
         for packet in [vec![1u8; 1], vec![2u8; 10]] {
             sender_tx1.send(packet.clone()).await.unwrap();
