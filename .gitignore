@@ -1,2 +1,11 @@
 /target
 /test/
+/db_bench/target
+/db_bench/test.bin
+/db_bench/test_noatun.bin
+proptest-regressions
+visualizer/.idea
+visualizer/Cargo.lock
+visualizer/target
+
+
