@@ -1784,7 +1784,7 @@ impl<M> OnDiskMessageStore<M> {
         let first_input_message: &MessageFrame<M> = messages.next().unwrap();
 
         let initial_index_entries = index_header.entries as usize;
-        let (Ok(mut first_index) | Err(mut first_index)) = mmap_index[0..index_header.entries as usize]
+        let (Ok(first_index) | Err(first_index)) = mmap_index[0..index_header.entries as usize]
             .binary_search_by_key(&first_input_message.id(), |x| x.message);
 
         /*
