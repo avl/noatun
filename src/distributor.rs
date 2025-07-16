@@ -5,7 +5,7 @@ use crate::colors::*;
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
 use crate::{
-    test_elapsed, Application, Database, Message, MessageFrame, MessageHeader, MessageId,
+    test_elapsed, Database, Message, MessageFrame, MessageHeader, MessageId,
     NoatunTime,
 };
 use anyhow::Result;
@@ -13,7 +13,7 @@ use arcshift::ArcShift;
 use arrayvec::ArrayString;
 use indexmap::map::Entry;
 use indexmap::{IndexMap, IndexSet};
-use rand::{random, thread_rng, Rng};
+use rand::{random};
 use savefile_derive::Savefile;
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -1270,9 +1270,9 @@ impl Distributor {
     }
 
     /// Call this to retrieve a message that should be sent periodically
-    pub fn get_periodic_message<APP: Application>(
+    pub fn get_periodic_message<MSG: Message+'static>(
         &mut self,
-        database: &DatabaseSession<APP>,
+        database: &DatabaseSession<MSG>,
         now: Instant
     ) -> Result<Vec<DistributorMessage>> {
 
@@ -1330,9 +1330,9 @@ impl Distributor {
     }
 
     // Legacy, for some old tests
-    pub(crate) fn receive_message2<APP: Application>(
+    pub(crate) fn receive_message2<MSG: Message>(
         &mut self,
-        database: &mut Database<APP>,
+        database: &mut Database<MSG>,
         input: impl Iterator<Item = DistributorMessage>,
         now: Instant,
     ) -> Result<Vec<DistributorMessage>> {
@@ -1353,9 +1353,9 @@ impl Distributor {
     /// Note, loopback messages should be detected by caller
     /// This method will interpret incoming node-ids identical to our own, as a node id
     /// collision, not as a message loopback
-    pub fn receive_message<APP: Application>(
+    pub fn receive_message<MSG: Message>(
         &mut self,
-        database: &mut Database<APP>,
+        database: &mut Database<MSG>,
         input: impl Iterator<Item = (Address, DistributorMessage)>,
         now: Instant,
     ) -> Result<()> {
@@ -1655,9 +1655,9 @@ impl Distributor {
         Ok(())
     }
 
-    fn process_sync_all_queries<APP: Application>(
+    fn process_sync_all_queries<MSG: Message>(
         &mut self,
-        database: &mut DatabaseSessionMut<APP>,
+        database: &mut DatabaseSessionMut<MSG>,
         accumulated_sync_all_queries: IndexSet<MessageId>,
     ) -> Result<()> {
         let mut request = vec![];
@@ -1679,9 +1679,9 @@ impl Distributor {
         Ok(())
     }
 
-    fn process_sync_all_requests<APP: Application>(
+    fn process_sync_all_requests<MSG: Message>(
         &mut self,
-        database: &mut DatabaseSessionMut<APP>,
+        database: &mut DatabaseSessionMut<MSG>,
         accumulated_sync_all_requests: IndexSet<MessageId>,
         now: Instant,
     ) -> Result<()> {
@@ -1720,9 +1720,9 @@ impl Distributor {
         Ok(())
     }
 
-    fn process_reported_heads<APP: Application>(
+    fn process_reported_heads<MSG: Message>(
         &mut self,
-        database: &mut DatabaseSessionMut<APP>,
+        database: &mut DatabaseSessionMut<MSG>,
         accumulated_heads: IndexMap<
             MessageId,
             Vec<(
@@ -1772,9 +1772,9 @@ impl Distributor {
         }
         Ok(())
     }
-    fn process_request_upstream<APP: Application>(
+    fn process_request_upstream<MSG: Message>(
         &mut self,
-        database: &mut DatabaseSessionMut<APP>,
+        database: &mut DatabaseSessionMut<MSG>,
         accumulated_heads: IndexMap<MessageId, (usize, /*src:*/ EphemeralNodeId)>,
     ) -> Result<()> {
         let mut by_src: IndexMap<EphemeralNodeId, Vec<(MessageId, usize)>> = IndexMap::new();
@@ -1808,9 +1808,9 @@ impl Distributor {
 
         Ok(())
     }
-    fn process_upstream_response<APP: Application>(
+    fn process_upstream_response<MSG: Message>(
         &mut self,
-        database: &mut DatabaseSessionMut<APP>,
+        database: &mut DatabaseSessionMut<MSG>,
         upstream_response: IndexMap<
             MessageId,
             /*parents*/
@@ -1910,9 +1910,9 @@ impl Distributor {
 
         Ok(())
     }
-    fn process_send_message_all_descendants<APP: Application>(
+    fn process_send_message_all_descendants<MSG: Message>(
         &mut self,
-        database: &mut DatabaseSessionMut<APP>,
+        database: &mut DatabaseSessionMut<MSG>,
         mut message_list: IndexMap<MessageId, EphemeralNodeId>,
         now: Instant,
     ) -> Result<()> {
@@ -1970,9 +1970,9 @@ impl Distributor {
     }
 
     /// Returns list of messages whose parents are now known
-    fn process_received_messages<APP: Application>(
+    fn process_received_messages<MSG: Message>(
         &mut self,
-        database: &mut DatabaseSessionMut<APP>,
+        database: &mut DatabaseSessionMut<MSG>,
         mut message_list: Vec<AccumulatedMessage>,
         _now: Instant,
     ) -> Result<Vec<AccumulatedMessage>> {

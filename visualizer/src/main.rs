@@ -6,7 +6,7 @@ use eframe::{App, Frame};
 use egui::epaint::{RectShape, TextShape};
 use egui::scroll_area::ScrollBarVisibility;
 use egui::{Button, Color32, Context, CornerRadius, FontFamily, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, TextEdit, Vec2, Widget};
-use noatun::{msg_deserialize, msg_serialize, noatun_object, Application, CutOffDuration, Database, Message, MessageFrame, NoatunCell, NoatunStorable, NoatunTime, Object, Savefile};
+use noatun::{msg_deserialize, msg_serialize, noatun_object, DatabaseRoot, CutOffDuration, Database, Message, MessageFrame, NoatunCell, NoatunStorable, NoatunTime, Object, Savefile};
 use std::default::Default;
 use std::fmt::Debug;
 use std::hash::Hasher;
@@ -124,7 +124,7 @@ impl Message for KeyUpdateMessage {
     }
 }
 
-impl Application for Document {
+impl DatabaseRoot for Document {
     type Message = KeyUpdateMessage;
     type Params = ();
 }

@@ -2,7 +2,7 @@ use anyhow::Result;
 use noatun::data_types::{NoatunString, NoatunVec};
 use noatun::database::DatabaseSettings;
 use noatun::{
-    msg_deserialize, msg_serialize, noatun_object, Application, Database, Message, NoatunTime,
+    msg_deserialize, msg_serialize, noatun_object,  Database, Message, NoatunTime,
     Object,
 };
 use savefile_derive::Savefile;
@@ -57,14 +57,9 @@ impl Message for ExampleMessage {
     }
 }
 
-impl Application for ExampleDb {
-    type Message = ExampleMessage;
-    type Params = ();
-}
-
 fn main() -> Result<()> {
-    let mut db: Database<ExampleDb> =
-        Database::create_new("test/example1.bin", true, DatabaseSettings::default(), ()).unwrap();
+    let mut db: Database<ExampleMessage> =
+        Database::create_new("test/example1.bin", true, DatabaseSettings::default()).unwrap();
 
     let mut s = db.begin_session_mut()?;
     s.append_local(ExampleMessage {

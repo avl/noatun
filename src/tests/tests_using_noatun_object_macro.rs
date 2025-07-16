@@ -2,7 +2,7 @@ use crate::cutoff::CutOffDuration;
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
 use crate::{msg_deserialize, msg_serialize};
-use crate::{Application, Database, Message, NoatunTime};
+use crate::{Database, Message, NoatunTime};
 use datetime_literal::datetime;
 use savefile_derive::Savefile;
 use std::io::Write;
@@ -54,22 +54,16 @@ impl Message for BankMessage {
     }
 }
 
-impl Application for Bank {
-    type Message = BankMessage;
-    type Params = ();
-}
 
 #[test]
 fn init_bank_miri() {
-    let mut db: Database<Bank> = Database::create_in_memory(
+    let mut db: Database<BankMessage> = Database::create_in_memory(
         10_000,
         DatabaseSettings {
             mock_time: Some(datetime!(2023-01-01 Z).into()),
             cutoff_interval:         CutOffDuration::from_minutes(15),
             ..Default::default()
-        },
-        (),
-    )
+        },    )
     .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.append_local(BankMessage::AddCustomerAndMoney {

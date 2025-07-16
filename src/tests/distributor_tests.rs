@@ -18,14 +18,13 @@ fn create_app<'a>(
             bool, /*local*/
         ),
     >,
-) -> Database<CounterObject> {
-    let mut db: Database<CounterObject> = Database::create_in_memory(
+) -> Database<CounterMessage> {
+    let mut db: Database<CounterMessage> = Database::create_in_memory(
         10000,
         DatabaseSettings {
             mock_time: Some(datetime!(2021-01-01 Z).into()),
             ..Default::default()
         },
-        (),
     )
     .unwrap();
     let mut sess = db.begin_session_mut().unwrap();

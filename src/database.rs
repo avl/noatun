@@ -2,10 +2,7 @@ use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
-use crate::{
-    Application, ContextGuard, ContextGuardMut, DatabaseContextData, MessageFrame, MessageHeader,
-    MessageId, NoatunContext, NoatunTime, Object, Pointer, Target,
-};
+use crate::{ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::fmt::{Debug, Formatter};
@@ -28,19 +25,18 @@ pub enum LoadingStatus {
 ///
 /// Any access to a method using `&mut self` (and [`Self::recover`] in particular), will
 /// execute the recovery procedure and restore the database to working order.
-pub struct Database<Base: Application> {
+pub struct Database<MSG: Message> {
     context: DatabaseContextData,
-    message_store: Projector<Base>,
+    message_store: Projector<MSG>,
     // Most recently generated local id, or all zeroes.
     // Future local id's will always be greater than this.
     prev_local: Option<MessageId>,
     time_override: Option<NoatunTime>,
     projection_time_limit: Option<NoatunTime>,
-    params: Base::Params,
     load_status: LoadingStatus,
     auto_delete: bool,
 }
-impl<T: Application> Debug for Database<T> {
+impl<T: Message> Debug for Database<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "Database<{}>", std::any::type_name::<T>())
     }
@@ -82,15 +78,15 @@ impl Default for DatabaseSettings {
     }
 }
 
-pub struct DatabaseSessionMut<'a, APP: Application> {
-    db: &'a mut Database<APP>,
+pub struct DatabaseSessionMut<'a, MSG: Message> {
+    db: &'a mut Database<MSG>,
 }
 
-pub struct DatabaseSession<'a, APP: Application> {
-    db: &'a Database<APP>,
+pub struct DatabaseSession<'a, MSG: Message> {
+    db: &'a Database<MSG>,
 }
 
-impl<APP: Application> Drop for DatabaseSessionMut<'_, APP> {
+impl<MSG: Message> Drop for DatabaseSessionMut<'_, MSG> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
             self.db.mark_clean();
@@ -98,7 +94,7 @@ impl<APP: Application> Drop for DatabaseSessionMut<'_, APP> {
     }
 }
 
-impl< APP: Application> DatabaseSession<'_, APP> {
+impl< MSG: Message+'static> DatabaseSession<'_, MSG> {
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
     }
@@ -116,7 +112,7 @@ impl< APP: Application> DatabaseSession<'_, APP> {
         self.db.get_upstream_of(message_id)
     }
 
-    pub fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<APP::Message>> {
+    pub fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<MSG>> {
         self.db.load_message(message_id)
     }
 
@@ -147,12 +143,12 @@ impl< APP: Application> DatabaseSession<'_, APP> {
     pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.db.get_message_children(msg)
     }
-    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
+    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<MSG>>> {
         self.db.get_all_messages()
     }
     pub(crate) fn get_all_messages_with_children(
         &self,
-    ) -> Result<Vec<(MessageFrame<APP::Message>, Vec<MessageId>)>> {
+    ) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
         self.db.get_all_messages_with_children()
     }
 
@@ -163,7 +159,7 @@ impl< APP: Application> DatabaseSession<'_, APP> {
     /// In normal operation, the database is never corrupted. However, if it somehow is
     /// (by a thread being killed, for example), this method could produce a root object that
     /// is in a state of a message being half-applied, for example.
-    pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
+    pub fn with_root<R>(&self, f: impl FnOnce(&MSG::Root) -> R) -> R {
         self.db.with_root(f)
     }
 
@@ -177,7 +173,7 @@ impl< APP: Application> DatabaseSession<'_, APP> {
     }
 }
 
-impl<APP: Application> DatabaseSessionMut<'_, APP> {
+impl<MSG: Message+'static> DatabaseSessionMut<'_, MSG> {
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
     }
@@ -195,7 +191,7 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
         self.db.get_upstream_of(message_id)
     }
 
-    pub fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<APP::Message>> {
+    pub fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<MSG>> {
         self.db.load_message(message_id)
     }
 
@@ -226,12 +222,12 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
     pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.db.get_message_children(msg)
     }
-    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
+    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<MSG>>> {
         self.db.get_all_messages()
     }
     pub(crate) fn get_all_messages_with_children(
         &self,
-    ) -> Result<Vec<(MessageFrame<APP::Message>, Vec<MessageId>)>> {
+    ) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
         self.db.get_all_messages_with_children()
     }
 
@@ -242,7 +238,7 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
     /// In normal operation, the database is never corrupted. However, if it somehow is
     /// (by a thread being killed, for example), this method could produce a root object that
     /// is in a state of a message being half-applied, for example.
-    pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
+    pub fn with_root<R>(&self, f: impl FnOnce(&MSG::Root) -> R) -> R {
         self.db.with_root(f)
     }
 
@@ -290,8 +286,8 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
     pub fn with_root_preview<R>(
         &mut self,
         time: DateTime<Utc>,
-        preview: impl Iterator<Item = APP::Message>,
-        f: impl FnOnce(&APP) -> R,
+        preview: impl Iterator<Item = MSG>,
+        f: impl FnOnce(&MSG::Root) -> R,
     ) -> Result<R> {
         self.db.with_root_preview(time, preview, f)
     }
@@ -299,7 +295,7 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
     // This method allows modifying the state outside of the message apply loop.
     // This is completely broken and only useful in tests.
     #[cfg(test)]
-    pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
+    pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut MSG::Root>) -> R) -> Result<R> {
         self.db.with_root_mut(f)
     }
 
@@ -333,7 +329,7 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
     }
 
     #[inline]
-    pub fn append_local(&mut self, message: APP::Message) -> Result<MessageHeader> {
+    pub fn append_local(&mut self, message: MSG) -> Result<MessageHeader> {
         self.db.append_local(message)
     }
 
@@ -344,7 +340,7 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
     pub fn append_local_at(
         &mut self,
         time: NoatunTime,
-        message: APP::Message,
+        message: MSG,
     ) -> Result<MessageHeader> {
         self.db.append_local_at(time, message)
     }
@@ -352,7 +348,7 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
     pub fn append_many_local_at(
         &mut self,
         time: NoatunTime,
-        messages: impl Iterator<Item=APP::Message>,
+        messages: impl Iterator<Item=MSG>,
     ) -> Result<()> {
         self.db.append_many_local_at(time, messages)
     }
@@ -360,8 +356,8 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
     pub fn create_message_frame(
         &mut self,
         time: Option<NoatunTime>,
-        message: APP::Message,
-    ) -> Result<MessageFrame<APP::Message>> {
+        message: MSG,
+    ) -> Result<MessageFrame<MSG>> {
         self.db.create_message_frame(time, message)
     }
 
@@ -372,7 +368,7 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
     /// causes a panic. Any such panic will be caught, and an entry will be emitted to the log.
     pub fn append_single(
         &mut self,
-        message: &MessageFrame<APP::Message>,
+        message: &MessageFrame<MSG>,
         local: bool,
     ) -> Result<()> {
         self.db.append_single(message, local)
@@ -381,7 +377,7 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
     pub fn append_local_opt(
         &mut self,
         time: Option<NoatunTime>,
-        message: APP::Message,
+        message: MSG,
     ) -> Result<MessageHeader> {
         self.db.append_local_opt(time, message)
     }
@@ -389,14 +385,14 @@ impl<APP: Application> DatabaseSessionMut<'_, APP> {
     /// For messages before the cutoff-time, all parents are removed.
     pub fn append_many<'b>(
         &mut self,
-        messages: impl Iterator<Item = &'b MessageFrame<APP::Message>>,
+        messages: impl Iterator<Item = &'b MessageFrame<MSG>>,
         local: bool,
         allow_cutoff_advance: bool,
     ) -> Result<()> {
         self.db.append_many(messages, local, allow_cutoff_advance)
     }
 }
-impl<APP: Application> Drop for Database<APP> {
+impl<MSG: Message> Drop for Database<MSG> {
     fn drop(&mut self) {
         if let Err(err) = self.sync_all() {
             error!("Error while dropping Database: {:?}", err);
@@ -404,8 +400,8 @@ impl<APP: Application> Drop for Database<APP> {
     }
 }
 
-impl<APP: Application> Database<APP> {
-    pub fn begin_session_mut(&mut self) -> Result<DatabaseSessionMut<APP>> {
+impl<MSG: Message+'static> Database<MSG> {
+    pub fn begin_session_mut(&mut self) -> Result<DatabaseSessionMut<MSG>> {
         self.mark_dirty()?;
         Ok(DatabaseSessionMut { db: self })
     }
@@ -417,7 +413,7 @@ impl<APP: Application> Database<APP> {
         Ok(())
     }
 
-    pub fn begin_session(&self) -> Result<DatabaseSession<APP>> {
+    pub fn begin_session(&self) -> Result<DatabaseSession<MSG>> {
         self.assert_not_dirty()?;
         Ok(DatabaseSession { db: self })
     }
@@ -459,8 +455,7 @@ impl<APP: Application> Database<APP> {
                 projection_time_limit: self.projection_time_limit,
                 auto_delete: self.auto_delete,
                 ..DatabaseSettings::default()
-            },
-            &self.params,
+            }
         )?;
         self.do_apply_missing()?;
         Ok(())
@@ -534,7 +529,7 @@ impl<APP: Application> Database<APP> {
         self.message_store.get_upstream_of(message_id)
     }
 
-    fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<APP::Message>> {
+    fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<MSG>> {
         self.message_store.load_message(message_id)
     }
 
@@ -562,27 +557,27 @@ impl<APP: Application> Database<APP> {
     fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.message_store.get_message_children(msg)
     }
-    fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
+    fn get_all_messages(&self) -> Result<Vec<MessageFrame<MSG>>> {
         self.message_store.get_all_messages()
     }
     fn get_all_messages_with_children(
         &self,
-    ) -> Result<Vec<(MessageFrame<APP::Message>, Vec<MessageId>)>> {
+    ) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
         self.message_store.get_all_messages_with_children()
     }
 
     fn with_root_preview<R>(
         &mut self,
         time: DateTime<Utc>,
-        preview: impl Iterator<Item = APP::Message>,
-        f: impl FnOnce(&APP) -> R,
+        preview: impl Iterator<Item = MSG>,
+        f: impl FnOnce(&MSG::Root) -> R,
     ) -> Result<R> {
         let current = self.context.next_seqnr();
 
         self.context.set_next_seqnr(current.successor());
-        let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
+        let root_ptr = self.context.get_root_ptr::<<MSG::Root as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context, false);
-        let mut root = unsafe { root_ptr.access_mut::<APP>() };
+        let mut root = unsafe { root_ptr.access_mut::<MSG::Root>() };
         self.message_store
             .apply_preview(time, root.as_mut(), preview)?;
         let ret = f(&*root);
@@ -599,10 +594,10 @@ impl<APP: Application> Database<APP> {
     /// In normal operation, the database is never corrupted. However, if it somehow is
     /// (by a thread being killed, for example), this method could produce a root object that
     /// is in a state of a message being half-applied, for example.
-    pub(crate) fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
-        let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
+    pub(crate) fn with_root<R>(&self, f: impl FnOnce(&MSG::Root) -> R) -> R {
+        let root_ptr = self.context.get_root_ptr::<<MSG::Root as Object>::Ptr>();
         let _guard = ContextGuard::new(&self.context);
-        let root = unsafe { root_ptr.access::<APP>() };
+        let root = unsafe { root_ptr.access::<MSG::Root>() };
         f(root)
     }
 
@@ -611,10 +606,10 @@ impl<APP: Application> Database<APP> {
     }
 
     #[cfg(test)]
-    fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut APP>) -> R) -> Result<R> {
-        let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
+    fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut MSG::Root>) -> R) -> Result<R> {
+        let root_ptr = self.context.get_root_ptr::<<MSG::Root as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context, false);
-        let root = unsafe { root_ptr.access_mut::<APP>() };
+        let root = unsafe { root_ptr.access_mut::<MSG::Root>() };
         let t = f(root);
         drop(guard);
 
@@ -649,12 +644,12 @@ impl<APP: Application> Database<APP> {
     }
 
     fn do_apply_missing(&mut self) -> Result<Option<SequenceNr>> {
-        let root_ptr = self.context.get_root_ptr::<<APP as Object>::Ptr>();
+        let root_ptr = self.context.get_root_ptr::<<MSG::Root as Object>::Ptr>();
 
         let mut earliest = None;
 
         while let Some(cur_earliest_deleted) = self.message_store.apply_missing_messages(
-            unsafe { root_ptr.access_ctx_mut::<APP>(&mut self.context) },
+            unsafe { root_ptr.access_ctx_mut::<MSG::Root>(&mut self.context) },
             &mut self.context,
             self.projection_time_limit,
             self.auto_delete,
@@ -677,17 +672,15 @@ impl<APP: Application> Database<APP> {
     #[inline(never)]
     fn recover_impl(
         context: &mut DatabaseContextData,
-        message_store: &mut Projector<APP>,
+        message_store: &mut Projector<MSG>,
         settings: &DatabaseSettings,
-        params: &APP::Params,
     ) -> Result<()> {
         context.clear()?;
 
         message_store.recover(settings.mock_time.unwrap_or_else(NoatunTime::now))?;
         let mmap_ptr = context.start_ptr();
         let guard = ContextGuardMut::new(context, true);
-        let mut root_obj_ref = unsafe { NoatunContext.allocate::<APP>() };
-        APP::initialize_root(root_obj_ref.as_mut(), params);
+        let mut root_obj_ref = unsafe { NoatunContext.allocate::<MSG::Root>() };
         let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, &*root_obj_ref);
         drop(guard);
 
@@ -742,10 +735,10 @@ impl<APP: Application> Database<APP> {
     /// params - Can be anything. Will be provided at initialization time
     pub fn create_new(
         path: impl AsRef<Path>,
+        //TODO: Make this parameter an enum instead of a bool!
         overwrite_existing: bool,
         settings: DatabaseSettings,
-        params: APP::Params,
-    ) -> Result<Database<APP>> {
+    ) -> Result<Database<MSG>> {
         Self::create(
             if overwrite_existing {
                 Target::CreateNewOrOverwrite(path.as_ref().to_path_buf())
@@ -753,24 +746,21 @@ impl<APP: Application> Database<APP> {
                 Target::CreateNew(path.as_ref().to_path_buf())
             },
             settings,
-            params,
         )
     }
     pub fn open(
         path: impl AsRef<Path>,
         settings: DatabaseSettings,
-        params: APP::Params,
-    ) -> Result<Database<APP>> {
+    ) -> Result<Database<MSG>> {
         Self::create(
             Target::OpenExisting(path.as_ref().to_path_buf()),
             settings,
-            params,
         )
     }
 
     /// Local is true if this message has been locally created. I.e, it isn't a message that
     /// has been received from some other node.
-    fn append_single(&mut self, message: &MessageFrame<APP::Message>, local: bool) -> Result<()> {
+    fn append_single(&mut self, message: &MessageFrame<MSG>, local: bool) -> Result<()> {
         self.append_many(std::iter::once(message), local, true)
     }
 
@@ -792,7 +782,7 @@ impl<APP: Application> Database<APP> {
     }
 
     #[inline]
-    fn append_local(&mut self, message: APP::Message) -> Result<MessageHeader> {
+    fn append_local(&mut self, message: MSG) -> Result<MessageHeader> {
         self.append_local_opt(None, message)
     }
 
@@ -808,7 +798,7 @@ impl<APP: Application> Database<APP> {
     fn append_local_at(
         &mut self,
         time: NoatunTime,
-        message: APP::Message,
+        message: MSG,
     ) -> Result<MessageHeader> {
         self.append_local_opt(Some(time), message)
     }
@@ -816,7 +806,7 @@ impl<APP: Application> Database<APP> {
     fn append_many_local_at(
         &mut self,
         time: NoatunTime,
-        messages: impl Iterator<Item=APP::Message>,
+        messages: impl Iterator<Item=MSG>,
     ) -> Result<()> {
         self.append_local_many_opt(Some(time), messages)
     }
@@ -824,17 +814,17 @@ impl<APP: Application> Database<APP> {
     fn create_message_frame(
         &mut self,
         time: Option<NoatunTime>,
-        message: APP::Message,
-    ) -> Result<MessageFrame<APP::Message>> {
+        message: MSG,
+    ) -> Result<MessageFrame<MSG>> {
         self.create_message_frame_impl(time, message, self.message_store.current_cutoff_time()?)
     }
 
     fn create_message_frame_impl(
         &mut self,
         time: Option<NoatunTime>,
-        message: APP::Message,
+        message: MSG,
         cutoff_time: NoatunTime,
-    ) -> Result<MessageFrame<APP::Message>> {
+    ) -> Result<MessageFrame<MSG>> {
         let time = time.unwrap_or_else(|| self.noatun_now());
         let new_id;
 
@@ -869,7 +859,7 @@ impl<APP: Application> Database<APP> {
     fn append_local_opt(
         &mut self,
         time: Option<NoatunTime>,
-        message: APP::Message,
+        message: MSG,
     ) -> Result<MessageHeader> {
         let cutoff_time = self.message_store.current_cutoff_time()?;
         let t = self.create_message_frame_impl(time, message, cutoff_time)?;
@@ -883,7 +873,7 @@ impl<APP: Application> Database<APP> {
     fn append_local_many_opt(
         &mut self,
         time: Option<NoatunTime>,
-        messages: impl Iterator<Item=APP::Message>,
+        messages: impl Iterator<Item=MSG>,
     ) -> Result<()> {
         let cutoff_time = self.message_store.current_cutoff_time()?;
 
@@ -937,7 +927,7 @@ impl<APP: Application> Database<APP> {
     /// For messages before the cutoff-time, all parents are removed.
     fn append_many<'a>(
         &mut self,
-        messages: impl Iterator<Item = &'a MessageFrame<APP::Message>>,
+        messages: impl Iterator<Item = &'a MessageFrame<MSG>>,
         local: bool,
         allow_cutoff_advance: bool,
     ) -> Result<()> {
@@ -947,7 +937,7 @@ impl<APP: Application> Database<APP> {
     /// For messages before the cutoff-time, all parents are removed.
     fn append_many_impl<'a>(
         &mut self,
-        messages: impl Iterator<Item = &'a MessageFrame<APP::Message>>,
+        messages: impl Iterator<Item = &'a MessageFrame<MSG>>,
         local: bool,
         allow_cutoff_advance: bool,
     ) -> Result<()> {
@@ -968,8 +958,7 @@ impl<APP: Application> Database<APP> {
     pub fn create_in_memory(
         max_size: usize,
         settings: DatabaseSettings,
-        params: APP::Params,
-    ) -> Result<Database<APP>> {
+    ) -> Result<Database<MSG>> {
         let mut disk = InMemoryDisk::default();
         let target = Target::CreateNew(PathBuf::default());
         let mut ctx = DatabaseContextData::new(&mut disk, &target, max_size)
@@ -977,7 +966,7 @@ impl<APP: Application> Database<APP> {
         let mut message_store =
             Projector::new(&mut disk, &target, max_size, settings.cutoff_interval)?;
 
-        Self::recover_impl(&mut ctx, &mut message_store, &settings, &params)?;
+        Self::recover_impl(&mut ctx, &mut message_store, &settings)?;
         ctx.mark_hot_clean();
 
         let mut db = Database {
@@ -986,7 +975,6 @@ impl<APP: Application> Database<APP> {
             message_store,
             time_override: settings.mock_time,
             projection_time_limit: settings.projection_time_limit,
-            params,
             load_status: LoadingStatus::NewDatabase,
             auto_delete: settings.auto_delete,
         };
@@ -998,8 +986,7 @@ impl<APP: Application> Database<APP> {
     fn create(
         target: Target,
         settings: DatabaseSettings,
-        params: APP::Params,
-    ) -> Result<Database<APP>> {
+    ) -> Result<Database<MSG>> {
         let mut disk = StandardDisk;
 
         let mut ctx = DatabaseContextData::new(&mut disk, &target, settings.max_file_size)
@@ -1025,7 +1012,6 @@ impl<APP: Application> Database<APP> {
                     auto_delete: settings.auto_delete,
                     ..Default::default()
                 },
-                &params,
             )?;
             ctx.mark_hot_clean();
             if !message_store.loaded_existing_db() {
@@ -1044,7 +1030,6 @@ impl<APP: Application> Database<APP> {
         //println!("Load status: {:?}", load_status);
 
         let mut db = Database {
-            params,
             prev_local: None,
             context: ctx,
             message_store,

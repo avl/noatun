@@ -6,7 +6,7 @@ use crate::distributor::{
 use crate::colors::rgb;
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 use crate::communication::udp::TokioUdpDriver;
-use crate::{test_elapsed, Application, Database, MessageId, NoatunTime};
+use crate::{test_elapsed, Database, Message, MessageId, NoatunTime, Object};
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayString;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -965,10 +965,10 @@ impl Debug for DebugEventMsg {
     }
 }
 
-enum Cmd<APP: Application> {
+enum Cmd<MSG: Message> {
     AddMessage(
         Option<NoatunTime>,
-        APP::Message,
+        MSG,
         oneshot::Sender<Result<()>>,
     ),
     Quit(oneshot::Sender<()>),
@@ -989,18 +989,17 @@ struct SeenBy {
     when: Instant,
 }
 
-struct DatabaseCommunicationLoop<APP: Application + Send>
+struct DatabaseCommunicationLoop<MSG: Message + Send>
 where
-    <APP as Application>::Params: Send,
     Self: Send,
 {
-    database: Arc<Mutex<Database<APP>>>,
+    database: Arc<Mutex<Database<MSG>>>,
     /// Join handle for MulticastSenderLoop
     //jh: tokio::task::JoinHandle<Result<()>>,
     sender_tx: Sender<Vec<u8>>,
     receiver_rx: Receiver<(Address, Vec<u8>)>,
     distributor: Distributor,
-    cmd_rx: Receiver<Cmd<APP>>,
+    cmd_rx: Receiver<Cmd<MSG>>,
 
     /// When the first item was put into the buffer
     buffer_life_start: Instant,
@@ -1013,9 +1012,8 @@ where
     report_head_interval: Duration,
 }
 
-impl<APP: Application + Send> Drop for DatabaseCommunicationLoop<APP>
+impl<MSG: Message + Send> Drop for DatabaseCommunicationLoop<MSG>
 where
-    <APP as Application>::Params: Send,
     Self: Send,
 {
     fn drop(&mut self) {
@@ -1067,11 +1065,7 @@ pub(crate) trait SenderLoopTrait<E> {
     async fn pump(&mut self, context: &mut ExecutionContext<E>, message_tx: &mut Vec<(Address, Vec<u8>)>, node_id_collision_detected: &mut bool) -> Result<bool/*quit*/>;
 }
 
-impl<APP: Application + 'static + Send> DatabaseCommunicationLoop<APP>
-where
-    <APP as Application>::Params: Send,
-
-    <APP as Application>::Message: Send,
+impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG>
 {
     fn process_packet(&mut self, src: Address, packet: Vec<u8>) -> Result<()> {
         let msg: DistributorMessage = Deserializer::bare_deserialize(&mut Cursor::new(&packet), 0)?;
@@ -1089,7 +1083,7 @@ where
                 dbg(DebugEvent {
                     node: ArrayString::from(&self.node).unwrap_or_else(|_| Default::default()),
                     time: Instant::now(),
-                    msg: DebugEventMsg::Receive(msg.1.debug_format::<APP::Message>()?),
+                    msg: DebugEventMsg::Receive(msg.1.debug_format::<MSG>()?),
                 });
             }
         }
@@ -1108,7 +1102,7 @@ where
             dbg(DebugEvent {
                 node: ArrayString::from(&self.node).unwrap_or_else(|_| Default::default()),
                 time: Instant::now(),
-                msg: DebugEventMsg::Send(msg.debug_format::<APP::Message>()?),
+                msg: DebugEventMsg::Send(msg.debug_format::<MSG>()?),
             });
         }
         Ok(())
@@ -1281,16 +1275,13 @@ where
 
 struct NoatunRuntime {}
 
-pub struct DatabaseCommunication<APP: Application> {
-    database: Arc<Mutex<Database<APP>>>,
-    cmd_tx: Sender<Cmd<APP>>,
+pub struct DatabaseCommunication<MSG: Message> {
+    database: Arc<Mutex<Database<MSG>>>,
+    cmd_tx: Sender<Cmd<MSG>>,
     node: String,
 }
 
-impl<APP: Application + 'static + Send> DatabaseCommunication<APP>
-where
-    <APP as Application>::Params: Send,
-    <APP as Application>::Message: Send,
+impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG>
 {
 
     /// This is just available for debugging
@@ -1348,7 +1339,7 @@ where
     /// Warning! Adding or deleting messages directly to the inner database is not advised. Such
     /// messages will not be immediately picked up by the communication, causing inefficiency.
     /// Instead, use [`Self::add_message`] and similar methods on [`DatabaseCommunication`].
-    pub fn inner_database(&self) -> MutexGuard<Database<APP>> {
+    pub fn inner_database(&self) -> MutexGuard<Database<MSG>> {
         self.database.lock().unwrap()
     }
 
@@ -1377,14 +1368,14 @@ where
         }
     }
 
-    pub async fn add_message(&self, msg: APP::Message) -> Result<()> {
+    pub async fn add_message(&self, msg: MSG) -> Result<()> {
         self.add_message_impl(None, msg).await
     }
 
-    pub async fn add_message_at(&self, time: NoatunTime, msg: APP::Message) -> Result<()> {
+    pub async fn add_message_at(&self, time: NoatunTime, msg: MSG) -> Result<()> {
         self.add_message_impl(Some(time), msg).await
     }
-    async fn add_message_impl(&self, time: Option<NoatunTime>, msg: APP::Message) -> Result<()> {
+    async fn add_message_impl(&self, time: Option<NoatunTime>, msg: MSG) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         match self
             .cmd_tx
@@ -1402,11 +1393,11 @@ where
         response_rx.await??;
         Ok(())
     }
-    pub fn blocking_add_message_at(&self, time: NoatunTime, msg: APP::Message) -> Result<()> {
+    pub fn blocking_add_message_at(&self, time: NoatunTime, msg: MSG) -> Result<()> {
         self.blocking_add_message(Some(time), msg)
     }
     /// Must *not* be called from within a tokio runtime.
-    pub fn blocking_add_message(&self, time: Option<NoatunTime>, msg: APP::Message) -> Result<()> {
+    pub fn blocking_add_message(&self, time: Option<NoatunTime>, msg: MSG) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         match self
             .cmd_tx
@@ -1423,7 +1414,7 @@ where
         response_rx.blocking_recv()??;
         Ok(())
     }
-    pub fn with_root<R>(&self, f: impl FnOnce(&APP) -> R) -> R {
+    pub fn with_root<R>(&self, f: impl FnOnce(&MSG::Root) -> R) -> R {
         let db = self.database.lock().unwrap();
         db.with_root(f)
     }
@@ -1450,8 +1441,8 @@ where
     pub fn with_root_preview<R>(
         &self,
         time: DateTime<Utc>,
-        preview: impl Iterator<Item = APP::Message>,
-        f: impl FnOnce(&APP) -> R,
+        preview: impl Iterator<Item = MSG>,
+        f: impl FnOnce(&MSG::Root) -> R,
     ) -> Result<R> {
         let mut db = self.database.lock().unwrap();
         let mut sess = db.begin_session_mut()?;
@@ -1469,9 +1460,9 @@ where
     /// use noatun with any kind of message based transport.
     pub async fn new_custom<Driver: CommunicationDriver + 'static>(
         driver: &mut Driver,
-        database: Database<APP>,
+        database: Database<MSG>,
         config: DatabaseCommunicationConfig,
-    ) -> Result<DatabaseCommunication<APP>> {
+    ) -> Result<DatabaseCommunication<MSG>> {
         let (sender_tx, sender_rx) = tokio::sync::mpsc::channel(1);
         let (quit_tx, quit_rx) = tokio::sync::oneshot::channel();
         let (receiver_tx, receiver_rx) = tokio::sync::mpsc::channel(1000);
@@ -1562,20 +1553,20 @@ where
 
     fn start_async_runtime<Driver: CommunicationDriver + Sync + Send + 'static>(
         driver: &mut Driver,
-        database: Database<APP>,
+        database: Database<MSG>,
         config: DatabaseCommunicationConfig,
-    ) -> Result<(Runtime, DatabaseCommunication<APP>)> {
+    ) -> Result<(Runtime, DatabaseCommunication<MSG>)> {
         let runtime = Runtime::new()?;
-        let com: DatabaseCommunication<APP> =
+        let com: DatabaseCommunication<MSG> =
             runtime.block_on(Self::new_custom(driver, database, config))?;
         Ok((runtime, com))
     }
 
     /// Create a new instance for communication over UDP multicast.
     pub fn new(
-        database: Database<APP>,
+        database: Database<MSG>,
         config: DatabaseCommunicationConfig,
-    ) -> Result<DatabaseCommunication<APP>> {
+    ) -> Result<DatabaseCommunication<MSG>> {
         let (res_tx, res_rx) = tokio::sync::oneshot::channel();
         thread::spawn(move || {
             match Self::start_async_runtime(&mut TokioUdpDriver, database, config) {

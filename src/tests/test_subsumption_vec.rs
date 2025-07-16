@@ -1,7 +1,7 @@
 use crate::data_types::OpaqueNoatunVec;
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
-use crate::{msg_deserialize, msg_serialize, Application, Database, Message, OpaqueNoatunCell, NoatunTime, Object};
+use crate::{msg_deserialize, msg_serialize,  Database, Message, OpaqueNoatunCell, NoatunTime, Object};
 use savefile_derive::Savefile;
 use std::io::Write;
 use std::pin::Pin;
@@ -21,10 +21,6 @@ pub struct VecMessage {
     destroy: bool,
 }
 
-impl Application for VecDoc {
-    type Message = VecMessage;
-    type Params = ();
-}
 
 impl Message for VecMessage {
     type Root = VecDoc;
@@ -57,11 +53,10 @@ impl Message for VecMessage {
 #[test]
 fn test_vec1() {
     super::setup_tracing();
-    let mut db: Database<VecDoc> = Database::create_new(
+    let mut db: Database<VecMessage> = Database::create_new(
         "test/test_subsumption1",
         true,
         DatabaseSettings::default(),
-        (),
     )
     .unwrap();
     let mut db = db.begin_session_mut().unwrap();
@@ -95,11 +90,10 @@ fn test_vec1() {
 fn test_vec2() {
 
     super::setup_tracing();
-    let mut db: Database<VecDoc> = Database::create_new(
+    let mut db: Database<VecMessage> = Database::create_new(
         "test/test_subsumption2",
         true,
         DatabaseSettings::default(),
-        (),
     )
         .unwrap();
     let mut db = db.begin_session_mut().unwrap();
@@ -125,11 +119,10 @@ fn test_vec2() {
 fn test_vec3() {
 
     super::setup_tracing();
-    let mut db: Database<VecDoc> = Database::create_new(
+    let mut db: Database<VecMessage> = Database::create_new(
         "test/test_subsumption3",
         true,
         DatabaseSettings::default(),
-        (),
     )
         .unwrap();
     let mut db = db.begin_session_mut().unwrap();
@@ -154,11 +147,10 @@ fn test_vec3() {
 #[test]
 fn test_vec4() {
     super::setup_tracing();
-    let mut db: Database<VecDoc> = Database::create_new(
+    let mut db: Database<VecMessage> = Database::create_new(
         "test/test_subsumption4",
         true,
         DatabaseSettings::default(),
-        (),
     )
         .unwrap();
     let mut db = db.begin_session_mut().unwrap();
@@ -197,12 +189,11 @@ fn test_vec4() {
 #[test]
 fn test_vec5() {
 
-    let mut db: Database<VecDoc> = Database::create_in_memory(10_000_000,
+    let mut db: Database<VecMessage> = Database::create_in_memory(10_000_000,
                                                               DatabaseSettings {
                                                                   mock_time: Some(NoatunTime::debug_time(0)),
                                                                   ..DatabaseSettings::default()
                                                               },
-        (),
     )
         .unwrap();
     let mut db = db.begin_session_mut().unwrap();

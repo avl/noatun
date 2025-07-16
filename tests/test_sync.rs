@@ -3,7 +3,7 @@ use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::NoatunCell;
 use noatun::database::DatabaseSettings;
 use noatun::{
-    Application, CutOffDuration, Database, Message, NoatunContext, NoatunStorable, NoatunTime,
+    CutOffDuration, Database, Message, NoatunContext, NoatunStorable, NoatunTime,
     Object, ThinPtr,
 };
 use savefile::{Deserializer, Serializer};
@@ -80,10 +80,6 @@ impl Message for MazeMessage {
     }
 }
 
-impl Application for Maze {
-    type Message = MazeMessage;
-    type Params = ();
-}
 
 #[tokio::test]
 #[ignore]
@@ -95,14 +91,13 @@ async fn test_sync_app() {
             let mut comms = vec![];
 
             for i in 0..2 {
-                let db: Database<Maze> = Database::create_new(
+                let db: Database<MazeMessage> = Database::create_new(
                     format!("test/test_sync_app{i}.bin"),
                     true,
                     DatabaseSettings {
                         cutoff_interval: CutOffDuration::from_days(1).unwrap(),
                         ..Default::default()
                     },
-                    (),
                 )
                 .unwrap();
                 let comm = DatabaseCommunication::new_custom(

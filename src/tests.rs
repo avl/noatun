@@ -1,6 +1,6 @@
 #![allow(non_local_definitions)]
 use super::*;
-use crate::data_types::{NoatunCellArrayExt, NoatunString};
+use crate::data_types::{NoatunCellArrayExt, NoatunHashMap, NoatunString};
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use byteorder::{LittleEndian, WriteBytesExt};
@@ -46,7 +46,7 @@ mod test_types_rewind {
     where
         T: FixedSizeObject + DummyTestMessageApply + std::fmt::Debug,
     {
-        let mut db: Database<DummyTestApp<T>> = Database::create_in_memory(
+        let mut db: Database<DummyTestMessage<T>> = Database::create_in_memory(
             10000,
             DatabaseSettings {
                 mock_time: Some(datetime!(2020-01-01 Z).into()),
@@ -55,7 +55,6 @@ mod test_types_rewind {
                 auto_delete: false,
                 ..Default::default()
             },
-            (),
         )
         .unwrap();
         fn snapshotter<T: std::fmt::Debug>(t: &T) -> String {
@@ -185,6 +184,12 @@ mod test_types_rewind {
         rewind_tester::<NoatunHashMap<u64, NoatunCell<u32>>>();
     }
 }
+/*
+impl<Root: FixedSizeObject + DummyTestMessageApply> Application for DummyTestApp<Root> {
+    type Message = DummyTestMessage<Root>;
+    type Params = ();
+}
+*/
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -198,6 +203,10 @@ impl<Root> DummyTestApp<Root> {
     }
     pub fn inner(&self) -> &Root {
         &self.0
+    }
+
+    pub fn inner_pin(self: Pin<&mut Self>) -> Pin<&mut Root> {
+        unsafe { self.map_unchecked_mut(|x|&mut x.0) }
     }
 }
 
@@ -220,6 +229,13 @@ impl<Root: FixedSizeObject> Object for DummyTestApp<Root> {
 }
 
 pub struct DummyTestMessage<Root>(std::marker::PhantomData<Root>);
+
+impl<Root> Default for DummyTestMessage<Root> {
+    fn default() -> Self {
+        DummyTestMessage(std::marker::PhantomData)
+    }
+}
+
 impl<Root> Debug for DummyTestMessage<Root> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "DummyTestMessage")
@@ -271,10 +287,6 @@ impl<Root: FixedSizeObject + DummyTestMessageApply> Message for DummyTestMessage
     }
 }
 
-impl<Root: FixedSizeObject + DummyTestMessageApply> Application for DummyTestApp<Root> {
-    type Message = DummyTestMessage<Root>;
-    type Params = ();
-}
 
 pub fn setup_tracing() {
     set_test_epoch(Instant::now());
@@ -364,7 +376,7 @@ impl<T> Debug for DummyMessage<T> {
     }
 }
 
-impl<T: Object> Message for DummyMessage<T> {
+impl<T: Object+NoatunStorable+'static> Message for DummyMessage<T> {
     type Root = T;
 
     fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
@@ -430,10 +442,6 @@ impl CounterObject {
     }
 }
 
-impl Application for CounterObject {
-    type Message = CounterMessage;
-    type Params = ();
-}
 
 #[derive(Debug)]
 struct IncrementMessage {
@@ -461,8 +469,8 @@ impl Message for IncrementMessage {
 
 #[test]
 fn test1() {
-    let mut db: Database<CounterObject> =
-        Database::create_new("test/test1.bin", true, DatabaseSettings::default(), ()).unwrap();
+    let mut db: Database<CounterMessage> =
+        Database::create_new("test/test1.bin", true, DatabaseSettings::default()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|counter| unsafe {
@@ -526,14 +534,13 @@ impl Message for CounterMessage {
 }
 #[test]
 fn test_projection_time_limit() {
-    let mut db: Database<CounterObject> = Database::create_new(
+    let mut db: Database<CounterMessage> = Database::create_new(
         "test/msg_store_time_limit.bin",
         true,
         DatabaseSettings {
             projection_time_limit: Some(datetime!(2024-01-02 00:00:00 Z).into()),
             ..Default::default()
         },
-        (),
     )
     .unwrap();
     let mut db = db.begin_session_mut().unwrap();
@@ -603,8 +610,8 @@ fn test_projection_time_limit() {
 }
 #[test]
 fn test_msg_store_real() {
-    let mut db: Database<CounterObject> =
-        Database::create_new("test/msg_store.bin", true, DatabaseSettings::default(), ()).unwrap();
+    let mut db: Database<CounterMessage> =
+        Database::create_new("test/msg_store.bin", true, DatabaseSettings::default()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.append_single(
@@ -655,13 +662,12 @@ fn test_msg_store_real() {
 
 #[test]
 fn test_msg_store_inmem_miri() {
-    let mut db: Database<CounterObject> = Database::create_in_memory(
+    let mut db: Database<CounterMessage> = Database::create_in_memory(
         10000,
         DatabaseSettings {
             mock_time: Some(datetime!(2021-01-01 Z).into()),
             ..Default::default()
         },
-        (),
     )
     .unwrap();
 
@@ -714,13 +720,12 @@ fn test_msg_store_inmem_miri() {
 #[test]
 fn test_msg_store_after_cutoff_inmem_miri() {
     setup_tracing();
-    let mut db: Database<CounterObject> = Database::create_in_memory(
+    let mut db: Database<CounterMessage> = Database::create_in_memory(
         10000,
         DatabaseSettings {
             mock_time: Some(datetime!(2024-01-01 Z).into()),
             ..Default::default()
         },
-        (),
     )
     .unwrap();
 
@@ -778,10 +783,9 @@ fn test_msg_store_after_cutoff_inmem_miri() {
 
 #[test]
 fn test_cutoff_handling() {
-    let mut db: Database<CounterObject> = Database::create_in_memory(
+    let mut db: Database<CounterMessage> = Database::create_in_memory(
         10000,
         DatabaseSettings::default(),
-        (),
     )
     .unwrap();
 
@@ -830,97 +834,91 @@ fn test_cutoff_handling() {
 
 #[test]
 fn test_handle() {
-    let db: Database<NoatunBox<NoatunCell<u32>>> = Database::create_new(
+
+    impl DummyTestMessageApply for NoatunBox<NoatunCell<u32>> {
+        fn test_message_apply(_time: NoatunTime, root: Pin<&mut Self>) {
+            root.assign(&43);
+        }
+    }
+
+    let mut db: Database<DummyTestMessage<NoatunBox<NoatunCell<u32>>>> = Database::create_new(
         "test/test_handle.bin",
         true,
         DatabaseSettings::default(),
-        (),
+
     )
     .unwrap();
 
+    db.begin_session_mut().unwrap()
+        .append_local(DummyTestMessage::default());
+
     db.with_root(|handle| {
-        assert_eq!(handle.get_inner().get(), 43);
+        assert_eq!(handle.0.get_inner().get(), 43);
     });
 }
 
-impl Application for NoatunBox<NoatunCell<u32>> {
-    type Message = DummyMessage<NoatunBox<NoatunCell<u32>>>;
-    type Params = ();
-
-    fn initialize_root<'a>(root: Pin<&mut Self>, _params: &()) {
-        root.assign(&43u32);
-    }
-}
-impl Application for NoatunBox<[NoatunCell<u8>]> {
-    type Message = DummyMessage<NoatunBox<[NoatunCell<u8>]>>;
-    type Params = ();
-
-    fn initialize_root<'a>(root: Pin<&mut Self>, _params: &()) {
-        root.assign([43u8, 45].as_slice());
-    }
-}
 
 #[test]
 fn test_handle_to_unsized_miri() {
-    let db: Database<NoatunBox<[NoatunCell<u8>]>> = Database::create_in_memory(
+    impl DummyTestMessageApply for NoatunBox<[NoatunCell<u8>]> {
+        fn test_message_apply(_time: NoatunTime, root: Pin<&mut Self>) {
+            root.assign(&[1,2,3]);
+        }
+    }
+
+    let mut db: Database<DummyTestMessage<NoatunBox<[NoatunCell<u8>]>>> = Database::create_in_memory(
         1000,
         DatabaseSettings {
             mock_time: Some(datetime!(2021-01-01 Z).into()),
             ..Default::default()
         },
-        (),
     )
     .unwrap();
 
+    db.begin_session_mut().unwrap()
+        .append_local(DummyTestMessage::default());
+
     db.with_root(|handle| {
-        assert_eq!(handle.get_inner().observe(), &[43, 45]);
+        assert_eq!(handle.inner().get_inner().observe(), &[1,2,3]);
     });
 }
 
 #[test]
 fn test_noatun_box_miri() {
-    let mut db: Database<NoatunBox<NoatunCell<u32>>> = Database::create_in_memory(
+    let mut db: Database<DummyTestMessage<NoatunBox<NoatunCell<u32>>>> = Database::create_in_memory(
         1000,
         DatabaseSettings {
             mock_time: Some(datetime!(2021-01-01 Z).into()),
             ..Default::default()
         },
-        (),
+
     )
     .unwrap();
 
+    db.begin_session_mut().unwrap()
+        .append_local(DummyTestMessage::default());
+
+
     db.with_root(|handle| {
-        assert_eq!(handle.get_inner().get(), 43);
+        assert_eq!(handle.inner().get_inner().get(), 43);
     });
     let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|root| {
-        let a1 = root.get_inner_mut();
+        let a1 = root.inner_mut().get_inner_mut();
         assert_eq!(a1.get(), 43);
     })
     .unwrap();
 }
-impl Application for NoatunVec<CounterObject> {
-    type Params = ();
-
-    type Message = DummyMessage<NoatunVec<CounterObject>>;
-}
-impl Application for NoatunString {
-    type Params = ();
-
-    fn initialize_root<'a>(root: Pin<&mut Self>, _params: &()) {
-        root.assign("hello");
-    }
-
-    type Message = DummyMessage<NoatunString>;
-}
 
 #[test]
 fn test_string0() {
-    let mut db: Database<NoatunString> =
-        Database::create_new("test/test_string0", true, DatabaseSettings::default(), ()).unwrap();
+    let mut db: Database<DummyTestMessage<NoatunString>> =
+        Database::create_new("test/test_string0", true, DatabaseSettings::default()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|mut test_str| {
+        let mut test_str = test_str.inner_pin();
+        test_str.as_mut().assign("hello");
         assert_eq!(test_str.len(), 5);
         assert_eq!(test_str.get(), "hello");
         let ptr = test_str.get().as_ptr();
@@ -935,11 +933,18 @@ fn test_string0() {
 
 #[test]
 fn test_vec0() {
-    let mut db: Database<NoatunVec<CounterObject>> =
-        Database::create_new("test/test_vec0", true, DatabaseSettings::default(), ()).unwrap();
+
+    impl DummyTestMessageApply for NoatunVec<CounterObject> {
+        fn test_message_apply(_time: NoatunTime, _root: Pin<&mut Self>) {
+        }
+    }
+
+    let mut db: Database<DummyTestMessage<NoatunVec<CounterObject>>> =
+        Database::create_new("test/test_vec0", true, DatabaseSettings::default()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|mut counter_vec| {
+        let mut counter_vec = counter_vec.inner_pin();
         unsafe {
             assert_eq!(counter_vec.len(), 0);
 
@@ -970,18 +975,18 @@ fn test_vec0() {
 
 #[test]
 fn test_vec_miri0() {
-    let mut db: Database<NoatunVec<CounterObject>> = Database::create_in_memory(
+    let mut db: Database<DummyTestMessage<NoatunVec<CounterObject>>> = Database::create_in_memory(
         10000,
         DatabaseSettings {
             mock_time: Some(datetime!(2021-01-01 Z).into()),
             ..Default::default()
         },
-        (),
     )
     .unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|mut counter_vec| {
+        let mut counter_vec = counter_vec.inner_pin();
         assert_eq!(counter_vec.len(), 0);
 
         let _new_element = counter_vec.as_mut().push_zeroed();
@@ -1026,12 +1031,13 @@ fn test_vec_miri0() {
 }
 #[test]
 fn test_vec_undo() {
-    let mut db: Database<NoatunVec<CounterObject>> =
-        Database::create_new("test/vec_undo", true, DatabaseSettings::default(), ()).unwrap();
+    let mut db: Database<DummyTestMessage<NoatunVec<CounterObject>>> =
+        Database::create_new("test/vec_undo", true, DatabaseSettings::default()).unwrap();
 
     {
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|mut counter_vec| {
+            let mut counter_vec = counter_vec.inner_pin();
             NoatunContext.set_next_seqnr(SequenceNr::from_index(1));
             assert_eq!(counter_vec.len(), 0);
 
@@ -1057,6 +1063,7 @@ fn test_vec_undo() {
     let mut db = db.begin_session_mut().unwrap();
     {
         db.with_root_mut(|counter_vec| {
+            let mut counter_vec = counter_vec.inner_pin();
             let mut counter = counter_vec.get_index_mut(0);
 
             unsafe {
@@ -1075,6 +1082,7 @@ fn test_vec_undo() {
 
     {
         db.with_root_mut(|counter_vec| {
+            let counter_vec = counter_vec.inner_pin();
             assert_eq!(counter_vec.len(), 0);
         })
         .unwrap();

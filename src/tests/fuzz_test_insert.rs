@@ -2,17 +2,16 @@ use crate::cutoff::CutOffDuration;
 use crate::data_types::*;
 use crate::database::DatabaseSettings;
 use crate::sequence_nr::SequenceNr;
-use crate::{msg_deserialize, msg_serialize, Application, Database, Message, NoatunTime};
+use crate::{msg_deserialize, msg_serialize,  Database, Message, NoatunTime};
 use crate::{NoatunStorable, Object};
 use datetime_literal::datetime;
 use rand::prelude::SliceRandom;
 use savefile_derive::Savefile;
-use serde_derive::{Deserialize, Serialize};
 use std::io::Write;
 use std::pin::Pin;
 use std::time::Duration;
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize, Savefile)]
+#[derive(Copy, Clone, Debug, Savefile)]
 #[repr(C)]
 pub struct DummyObj {
     x: u32,
@@ -77,10 +76,6 @@ impl Message for TestMessage {
     }
 }
 
-impl Application for TestDb {
-    type Message = TestMessage;
-    type Params = ();
-}
 
 #[test]
 fn test() {
@@ -98,7 +93,6 @@ fn test() {
                 cutoff_interval:         CutOffDuration::from_hours(1).unwrap(), // 2 days
                 ..Default::default()
             },
-            (),
         )
         .unwrap();
 

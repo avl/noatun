@@ -1,7 +1,7 @@
 use crate::data_types::NoatunHashMap;
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
-use crate::{msg_deserialize, msg_serialize, Application, Database, Message, OpaqueNoatunCell, NoatunTime, Object};
+use crate::{msg_deserialize, msg_serialize,  Database, Message, OpaqueNoatunCell, NoatunTime, Object};
 use savefile_derive::Savefile;
 use std::io::Write;
 use std::pin::Pin;
@@ -21,10 +21,6 @@ pub struct MapMessage {
     destroy: bool,
 }
 
-impl Application for MapDoc {
-    type Message = MapMessage;
-    type Params = ();
-}
 
 impl Message for MapMessage {
     type Root = MapDoc;
@@ -57,11 +53,10 @@ impl Message for MapMessage {
 #[test]
 fn test_map_local1() {
     super::setup_tracing();
-    let mut db: Database<MapDoc> = Database::create_new(
+    let mut db: Database<MapMessage> = Database::create_new(
         "test/test_map_subsumption1",
         true,
         DatabaseSettings::default(),
-        (),
     )
         .unwrap();
     let mut db = db.begin_session_mut().unwrap();
@@ -89,11 +84,10 @@ fn test_map_local1() {
 #[test]
 fn test_map2() {
     super::setup_tracing();
-    let mut db: Database<MapDoc> = Database::create_new(
+    let mut db: Database<MapMessage> = Database::create_new(
         "test/test_map_subsumption2",
         true,
         DatabaseSettings::default(),
-        (),
     )
         .unwrap();
     let mut db = db.begin_session_mut().unwrap();
@@ -121,14 +115,14 @@ fn test_map2() {
 #[test]
 fn test_map3() {
     super::setup_tracing();
-    let mut db: Database<MapDoc> = Database::create_new(
+    let mut db: Database<MapMessage> = Database::create_new(
         "test/test_map_subsumption3",
         true,
         DatabaseSettings {
             mock_time: Some(NoatunTime::debug_time(0)),
             ..DatabaseSettings::default()
         },
-        (),
+
     )
         .unwrap();
     let mut db = db.begin_session_mut().unwrap();

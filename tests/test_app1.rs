@@ -2,7 +2,7 @@ use datetime_literal::datetime;
 use noatun::data_types::{NoatunBox, NoatunCell, NoatunVec};
 use noatun::database::{Database, DatabaseSettings};
 use noatun::{
-    Application, Message, MessageFrame, MessageHeader, MessageId, NoatunContext,
+     Message, MessageFrame, MessageHeader, MessageId, NoatunContext,
     NoatunStorable, NoatunTime, Object, ThinPtr,
 };
 use savefile_derive::Savefile;
@@ -83,20 +83,15 @@ impl Message for CounterMessage {
     }
 }
 
-impl Application for CounterObject {
-    type Message = CounterMessage;
-    type Params = ();
-}
 
 #[test]
 fn test_counter_object_miri() {
-    let mut db: Database<CounterObject> = Database::create_in_memory(
+    let mut db: Database<CounterMessage> = Database::create_in_memory(
         10_000,
         DatabaseSettings {
             mock_time: Some(datetime!(2023-01-01 Z).into()),
             ..Default::default()
         },
-        (),
     )
     .unwrap();
     let mut db = db.begin_session_mut().unwrap();

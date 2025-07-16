@@ -9,7 +9,7 @@ use crate::database::DatabaseSettings;
 use crate::distributor::Status;
 use crate::tests::setup_tracing;
 use crate::{
-    set_test_epoch, test_elapsed, Application, Database, Message, MessageId, NoatunTime, Object,
+    set_test_epoch, test_elapsed, Database, Message, MessageId, NoatunTime, Object,
 };
 use crate::{Persistence, Savefile};
 use arcshift::ArcShift;
@@ -392,25 +392,20 @@ impl CommunicationDriver for TestDriver {
     }
 }
 
-impl Application for SyncApp {
-    type Message = SyncMessage;
-    type Params = ();
-}
 
 const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
 
 async fn create_app(
     driver: &mut TestDriver,
-    modify: Option<&mut dyn FnMut(&mut Database<SyncApp>, &mut DatabaseCommunicationConfig)>,
-) -> DatabaseCommunication<SyncApp> {
-    let mut db: Database<SyncApp> = Database::create_in_memory(
+    modify: Option<&mut dyn FnMut(&mut Database<SyncMessage>, &mut DatabaseCommunicationConfig)>,
+) -> DatabaseCommunication<SyncMessage> {
+    let mut db: Database<SyncMessage> = Database::create_in_memory(
         2_500_000,
         DatabaseSettings {
             mock_time: Some(START_TIME.into()),
             projection_time_limit: None,
             ..DatabaseSettings::default()
         },
-        (),
     )
     .unwrap();
 
@@ -483,18 +478,15 @@ fn random<T: SampleUniform + PartialOrd>(range: std::ops::Range<T>) -> T {
     MY_THREAD_RNG.with(|rng| rng.borrow_mut().as_mut().unwrap().gen_range(range))
 }
 
-compile_error!("Setup CI . Add doc tests to it. Oh, and make all the doc tests pass :) ")
-
 #[test]
 fn old_local_messages_without_effect_are_removed0() {
-    let mut db: Database<SyncApp> = Database::create_in_memory(
+    let mut db: Database<SyncMessage> = Database::create_in_memory(
         10000,
         DatabaseSettings {
             mock_time: Some(datetime!(2020-01-01 00:01:00 Z).into()),
             cutoff_interval: CutOffDuration::from_days(2).unwrap(), // 2 days
             ..Default::default()
         },
-        (),
     )
     .unwrap();
     let mut sess = db.begin_session_mut().unwrap();
@@ -540,14 +532,13 @@ fn old_local_messages_without_effect_are_removed0() {
 #[test]
 fn old_transmitted_messages_without_effect_are_removed1() {
     super::setup_tracing();
-    let mut db: Database<SyncApp> = Database::create_in_memory(
+    let mut db: Database<SyncMessage> = Database::create_in_memory(
         10000,
         DatabaseSettings {
             mock_time: Some(datetime!(2020-01-01 00:01:00 Z).into()),
             cutoff_interval:         CutOffDuration::from_days(2).unwrap(), // 2 days
             ..Default::default()
         },
-        (),
     )
     .unwrap();
     let mut sess = db.begin_session_mut().unwrap();
@@ -590,13 +581,13 @@ fn old_transmitted_messages_without_effect_are_removed1() {
 
 #[test]
 fn old_transmitted_messages_without_effect_are_removed2() {
-    let mut db: Database<SyncApp> = Database::create_in_memory(
+    let mut db: Database<SyncMessage> = Database::create_in_memory(
         100000,
         DatabaseSettings {
             mock_time: Some(START_TIME.into()),
             ..Default::default()
         },
-        (),
+
     )
     .unwrap();
     let mut sess = db.begin_session_mut().unwrap();
@@ -1260,7 +1251,7 @@ async fn all_up_three_node_partial_resync1() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig| {
+    let mut add = |db: &mut Database<SyncMessage>, _config: &mut DatabaseCommunicationConfig| {
         let mut sess = db.begin_session_mut().unwrap();
         sess.append_single(
             &crate::MessageFrame::new(
@@ -1320,7 +1311,7 @@ async fn all_up_three_node_partial_resync2() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig| {
+    let mut add = |db: &mut Database<SyncMessage>, _config: &mut DatabaseCommunicationConfig| {
         let mut sess = db.begin_session_mut().unwrap();
         sess.append_single(
             &crate::MessageFrame::new(
@@ -1378,7 +1369,7 @@ async fn all_up_four_node_partial_resync1() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig| {
+    let mut add = |db: &mut Database<SyncMessage>, _config: &mut DatabaseCommunicationConfig| {
         let mut sess = db.begin_session_mut().unwrap();
         sess.append_single(
             &crate::MessageFrame::new(
@@ -1428,7 +1419,7 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig| {
+    let mut add = |db: &mut Database<SyncMessage>, config: &mut DatabaseCommunicationConfig| {
         config.disable_retransmit = false;
         let mut sess = db.begin_session_mut().unwrap();
         sess.append_single(
@@ -1445,7 +1436,7 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
         )
         .unwrap();
     };
-    let mut noadd = |_db: &mut Database<SyncApp>, config: &mut DatabaseCommunicationConfig| {
+    let mut noadd = |_db: &mut Database<SyncMessage>, config: &mut DatabaseCommunicationConfig| {
         config.disable_retransmit = false;
     };
     let mut app1 = create_app(&mut driver, Some(&mut add)).await;
@@ -1488,7 +1479,7 @@ async fn ten_nodes_sync_test() {
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
 
-    let mut add = |db: &mut Database<SyncApp>, _config: &mut DatabaseCommunicationConfig| {
+    let mut add = |db: &mut Database<SyncMessage>, _config: &mut DatabaseCommunicationConfig| {
         let mut sess = db.begin_session_mut().unwrap();
         sess.append_single(
             &crate::MessageFrame::new(

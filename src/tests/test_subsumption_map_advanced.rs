@@ -3,7 +3,7 @@ use std::fmt::Formatter;
 use crate::data_types::NoatunHashMap;
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
-use crate::{msg_deserialize, msg_serialize, Application, Database, Message, OpaqueNoatunCell, NoatunTime, Object};
+use crate::{msg_deserialize, msg_serialize, Database, Message, OpaqueNoatunCell, NoatunTime, Object};
 use savefile_derive::Savefile;
 use std::io::Write;
 use std::pin::Pin;
@@ -37,10 +37,6 @@ impl std::fmt::Debug for MapMessage {
     }
 }
 
-impl Application for MapDoc {
-    type Message = MapMessage;
-    type Params = ();
-}
 
 thread_local! {
     static TSMA_TEMP: Mutex<Vec<MapMessage>> = Mutex::new(Vec::new());
@@ -80,13 +76,13 @@ impl Message for MapMessage {
 #[test]
 fn test_advanced_map1() {
     super::setup_tracing();
-    let mut db: Database<MapDoc> = Database::create_in_memory(
+    let mut db: Database<MapMessage> = Database::create_in_memory(
         10_000_000,
         DatabaseSettings {
             mock_time: Some(NoatunTime::debug_time(0)),
             ..DatabaseSettings::default()
         },
-        (),
+
     )
         .unwrap();
     let mut db = db.begin_session_mut().unwrap();
@@ -126,13 +122,12 @@ fn test_advanced_map1() {
 #[test]
 fn test_advanced_map2() {
     super::setup_tracing();
-    let mut db: Database<MapDoc> = Database::create_in_memory(
+    let mut db: Database<MapMessage> = Database::create_in_memory(
         10_000_000,
         DatabaseSettings {
             mock_time: Some(NoatunTime::debug_time(0)),
             ..DatabaseSettings::default()
         },
-        (),
     )
         .unwrap();
     let mut db = db.begin_session_mut().unwrap();

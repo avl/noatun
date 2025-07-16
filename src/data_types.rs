@@ -2815,7 +2815,8 @@ The current approach is just broken and non-intuitive.
 
 #[cfg(test)]
 mod tests {
-    use super::{NoatunBox, NoatunHashMap, NoatunString};
+    use crate::tests::DummyTestMessage;
+use super::{NoatunBox, NoatunHashMap, NoatunString};
     use crate::database::DatabaseSettings;
     use crate::tests::DummyTestApp;
     use crate::tests::DummyTestMessageApply;
@@ -2846,7 +2847,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_miri0() {
-        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
+        let mut db: Database<DummyTestMessage<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 10000,
                 DatabaseSettings {
@@ -2854,7 +2855,6 @@ mod tests {
                     projection_time_limit: None,
                     ..DatabaseSettings::default()
                 },
-                (),
             )
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
@@ -2874,14 +2874,13 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_string_keys() {
-        let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunCell<u32>>>> =
+        let mut db: Database<DummyTestMessage<NoatunHashMap<NoatunString, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 10000,
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
                 },
-                (),
             )
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
@@ -2895,14 +2894,13 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_detach() {
-        let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunCell<u32>>>> =
+        let mut db: Database<DummyTestMessage<NoatunHashMap<NoatunString, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 10000,
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
                 },
-                (),
             )
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
@@ -2916,14 +2914,13 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_attach() {
-        let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunCell<u32>>>> =
+        let mut db: Database<DummyTestMessage<NoatunHashMap<NoatunString, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 10000,
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
                 },
-                (),
             )
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
@@ -2946,14 +2943,13 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_detach2() {
-        let mut db: Database<DummyTestApp<NoatunHashMap<NoatunString, NoatunString>>> =
+        let mut db: Database<DummyTestMessage<NoatunHashMap<NoatunString, NoatunString>>> =
             Database::create_in_memory(
                 10000,
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
                 },
-                (),
             )
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
@@ -2970,14 +2966,13 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_delete() {
-        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
+        let mut db: Database<DummyTestMessage<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 10000,
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
                 },
-                (),
             )
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
@@ -3008,14 +3003,13 @@ mod tests {
         #[cfg(not(miri))]
         const N: u32 = 200;
 
-        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
+        let mut db: Database<DummyTestMessage<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 100000,
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
                 },
-                (),
             )
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
@@ -3044,14 +3038,13 @@ mod tests {
     }
     #[test]
     fn test_hashmap_miri_insert_many() {
-        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
+        let mut db: Database<DummyTestMessage<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 200000,
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
                 },
-                (),
             )
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
@@ -3075,14 +3068,13 @@ mod tests {
 
     #[test]
     fn test_hashmap_miri_retain() {
-        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
+        let mut db: Database<DummyTestMessage<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 200000,
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
                 },
-                (),
             )
                 .unwrap();
         let mut db = db.begin_session_mut().unwrap();
@@ -3108,14 +3100,13 @@ mod tests {
 
     #[test]
     fn test_hashmap_miri_clear() {
-        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
+        let mut db: Database<DummyTestMessage<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 200000,
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
                 },
-                (),
             )
                 .unwrap();
         let mut db = db.begin_session_mut().unwrap();
@@ -3136,14 +3127,13 @@ mod tests {
 
     #[test]
     fn test_hashmap_lookup_speed_noatun() {
-        let mut db: Database<DummyTestApp<NoatunHashMap<u32, NoatunCell<u32>>>> =
+        let mut db: Database<DummyTestMessage<NoatunHashMap<u32, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 5000000,
                 DatabaseSettings {
                     mock_time: Some(datetime!(2021-01-01 Z).into()),
                     ..Default::default()
                 },
-                (),
             )
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
@@ -3182,7 +3172,7 @@ mod tests {
             fn test_message_apply(_time: NoatunTime, _root: Pin<&mut Self>) {}
         }
 
-        let mut db: Database<DummyTestApp<NoatunBox<NoatunHashMap<u32, NoatunCell<u32>>>>> =
+        let mut db: Database<DummyTestMessage<NoatunBox<NoatunHashMap<u32, NoatunCell<u32>>>>> =
             Database::create_in_memory(
                 10000,
                 DatabaseSettings {
@@ -3190,7 +3180,6 @@ mod tests {
                     projection_time_limit: None,
                     ..DatabaseSettings::default()
                 },
-                (),
             )
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();

@@ -30,7 +30,6 @@ pub(crate) use projection_store::DatabaseContextData;
 use rand::RngCore;
 use savefile::Deserializer;
 pub use savefile_derive::Savefile;
-pub use serde_derive;
 use std::borrow::Borrow;
 use std::cell::Cell;
 use std::fmt::{Debug, Display, Formatter};
@@ -60,6 +59,7 @@ mod undo_store;
 mod mini_pather;
 
 /// The noatun book, in rust code
+#[cfg(doctest)]
 mod book {
     #[doc = include_str!("../book/book.md")]
     const BOOK:() = ();
@@ -564,10 +564,9 @@ impl MessageId {
     PartialOrd,
     Ord,
     Hash,
-    serde_derive::Serialize,
-    serde_derive::Deserialize,
     Savefile,
 )]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(C)]
 pub struct NoatunTime(pub u64);
 
@@ -714,8 +713,8 @@ pub enum Persistence {
     AtLeastUntilCutoff,
 }
 
-pub trait Message: Debug {
-    type Root: Object;
+pub trait Message: Debug + 'static {
+    type Root: Object + NoatunStorable;
     fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>);
 
     fn deserialize(buf: &[u8]) -> Result<Self>
@@ -1298,21 +1297,7 @@ where
 
 impl<T: Object<Ptr = ThinPtr> + NoatunStorable + 'static> FixedSizeObject for T {}
 
-pub trait Application: FixedSizeObject {
-    type Message: Message<Root = Self>;
-    /// Parameters that will be available in the "initialize_root" call.
-    type Params;
 
-    /// Default initialization function does nothing.
-    ///
-    /// You can override to add initialization data. This data is always
-    /// present.
-    ///
-    /// Note that this present isn't actually persisted. So if later versions of
-    /// the software initialize the database differently, this can affect the
-    /// materialization of the database.
-    fn initialize_root(_root: Pin<&mut Self>, _params: &Self::Params) {}
-}
 #[derive(Debug)]
 #[repr(C)]
 struct RawFatPtr {

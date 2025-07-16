@@ -1,5 +1,5 @@
 use crate::database::DatabaseSettings;
-use crate::Application;
+
 use crate::Database;
 use crate::{Message, NoatunTime};
 use savefile_derive::Savefile;
@@ -19,10 +19,6 @@ pub struct RotMessage {
     reset: u64,
 }
 
-impl Application for RotationDoc {
-    type Message = RotMessage;
-    type Params = ();
-}
 impl Message for RotMessage {
     type Root = RotationDoc;
 
@@ -50,8 +46,8 @@ impl Message for RotMessage {
 
 #[test]
 fn test_rotation1() {
-    let mut db: Database<RotationDoc> =
-        Database::create_new("test/test_rotation1", true, DatabaseSettings::default(), ()).unwrap();
+    let mut db: Database<RotMessage> =
+        Database::create_new("test/test_rotation1", true, DatabaseSettings::default()).unwrap();
     let mut db = db.begin_session_mut().unwrap();
     for _ in 0..5 {
         for _ in 0..10 {
@@ -74,8 +70,8 @@ fn test_rotation1() {
 
 #[test]
 fn test_rotation_big1() {
-    let mut db: Database<RotationDoc> =
-        Database::create_new("test/test_rotation2", true, DatabaseSettings::default(), ()).unwrap();
+    let mut db: Database<RotMessage> =
+        Database::create_new("test/test_rotation2", true, DatabaseSettings::default()).unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
     for _ in 0..75 {
@@ -104,8 +100,8 @@ fn test_rotation_big1() {
 #[test]
 #[cfg(feature="expensive_tests")]
 fn test_rotation_big2() {
-    let mut db: Database<RotationDoc> =
-        Database::create_new("test/test_rotation2", true, DatabaseSettings::default(), ()).unwrap();
+    let mut db: Database<RotMessage> =
+        Database::create_new("test/test_rotation2", true, DatabaseSettings::default()).unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
     for _ in 0..200 {

@@ -219,7 +219,7 @@ pub mod noatun_bench {
     use noatun::data_types::{NoatunHashMap, NoatunOption, NoatunVec};
     use noatun::database::DatabaseSettings;
     use noatun::{
-        msg_deserialize, msg_serialize, noatun_object, Application, Database, Message,
+        msg_deserialize, msg_serialize, noatun_object, DatabaseRoot, Database, Message,
         MessageFrame, NoatunCell, NoatunTime,
     };
     use std::io::Write;
@@ -240,7 +240,7 @@ pub mod noatun_bench {
         }
     );
 
-    impl Application for MainDoc {
+    impl DatabaseRoot for MainDoc {
         type Message = Task;
         type Params = ();
     }

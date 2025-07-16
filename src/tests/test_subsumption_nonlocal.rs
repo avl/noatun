@@ -1,6 +1,6 @@
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
-use crate::{msg_deserialize, msg_serialize, Application, Database, Message, MessageId, NoatunCell, NoatunTime};
+use crate::{msg_deserialize, msg_serialize, Database, Message, MessageId, NoatunCell, NoatunTime};
 use savefile_derive::Savefile;
 use std::io::Write;
 use std::pin::Pin;
@@ -18,10 +18,6 @@ pub struct DocMessage {
     reset: bool,
 }
 
-impl Application for Doc {
-    type Message = DocMessage;
-    type Params = ();
-}
 
 impl Message for DocMessage {
     type Root = Doc;
@@ -51,14 +47,13 @@ impl Message for DocMessage {
 fn test_subsume_nonlocal() {
     super::setup_tracing();
     let msg0_time = MessageId::new_debug2(0).timestamp();
-    let mut db: Database<Doc> = Database::create_new(
+    let mut db: Database<DocMessage> = Database::create_new(
         "test/test_subsumption_nonlocal1",
         true,
         DatabaseSettings {
             mock_time: Some(msg0_time),
             ..DatabaseSettings::default()
         },
-        (),
         ).unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();

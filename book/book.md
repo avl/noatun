@@ -1,6 +1,6 @@
 # Noatun
 
-Welcome to Noatun! Noatun is a multi master distributed event sourced database with automatic
+Welcome to Noatun! Noatun is an in-process, multi master, distributed event sourced database with automatic
 garbage collection. It's suitable for unreliable networks and can be used in embedded applications.
 
 Features:
@@ -35,73 +35,68 @@ to the warehouse, removed, and occasionally an inventory is performed where the 
 of bolts are counted to make sure the tally is correct.
 
 ```rust
-use noatun::{Database, NoatunTime, noatun_object, Application, Message, DatabaseSettings, msg_serialize, msg_deserialize};
+use noatun::{Database, NoatunTime, noatun_object, Message, DatabaseSettings, msg_serialize, msg_deserialize};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::communication::udp::TokioUdpDriver;
-use savefile_derive::Savefile;
+use serde_derive::{Serialize, Deserialize};
 use std::pin::Pin;
 use std::io::Write;
 
 /// Define our events
-/// Here we use 'Savefile' for serialization, but you can use serde or anything else 
-#[derive(Debug, Savefile)]
-pub enum Event {
+/// We use serde + postcard in this example, but noatun isn't tied to
+/// serde in any way (see further below). 
+#[derive(Debug, Serialize, Deserialize)]
+pub enum WarehouseEvent {
     Add(u32),
     Remove(u32),
     Inventory(u32)
 }
 
 /// Define our root database object. Here we have a single pod (plain old data) field of type u32.
+/// See docs for what types are supported by the noatun_object macro.
 noatun_object!(
     struct Warehouse {
         pod quantity: u32
     }
 );
 
-/// Implement Message for our Event, to tell Noatun how to apply these events to the db
-impl Message for Event {
+/// Implement Message for our WarehouseEvent, to tell Noatun how to apply these events to the db
+impl Message for WarehouseEvent {
     /// The type of database root this event must be used with
     type Root = Warehouse;
 
-    /// A function that applies an event on a database with `Warehouse`
-    /// as root object.
+    /// A function which applies an event to a database with `Warehouse`
+    /// as its root object.
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Warehouse>) {
         let mut root = root.pin_project();
         match self {
-            Event::Add(delta) => {
+            WarehouseEvent::Add(delta) => {
                 root.quantity += *delta;
             }
-            Event::Remove(delta) => {
+            WarehouseEvent::Remove(delta) => {
                 root.quantity -= *delta;
             }
-            Event::Inventory(qty) => {
+            WarehouseEvent::Inventory(qty) => {
                 root.quantity.set(*qty);
             }
         }
     }
 
-    /// Noatun is completely agnostic to event serialization, you just have
+    /// Noatun is completely agnostic about event serialization, you just have
     /// to implement this method and also `serialize` further down.
+    /// 
+    /// This example uses "postcard" as serializer
     fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
-        msg_deserialize(buf)
+        Ok(postcard::from_bytes(buf)?)
     }
 
     fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        msg_serialize(self, writer)
+        postcard::to_io(self, writer)?;
+        Ok(())
     }
-}
-
-/// Teach noatun that 'Warehouse' is a suitable root object
-impl Application for Warehouse {
-    /// The type of event that updates this root object
-    type Message = Event;
-    /// Any initial parameters to create an empty instance. Should probably
-    /// usually be just (), but for instance you may want to provide some base knowledge
-    /// (this has to be the same on all nodes, so be very restrictive here).
-    type Params = ();
 }
 
 async fn example() {
@@ -109,11 +104,10 @@ async fn example() {
     /// Create the database on disk
     /// Note, this example creates a purely local database. See further examples
     /// for how to setup synchronization.
-    let mut db: Database<Warehouse> = Database::create_new(
+    let mut db: Database<WarehouseEvent> = Database::create_new(
         "warehouse_db",
         true,
         DatabaseSettings::default(),
-        (),
     ).unwrap();
 
     /// Arrange for the database to be distributed
@@ -126,15 +120,18 @@ async fn example() {
         .await
         .unwrap();
     
-    // Add two events, adding 43, and then subtracting 1
-    distributed_db.add_message(Event::Add(43)).await.unwrap();
-    distributed_db.add_message(Event::Remove(1)).await.unwrap();
+    // Add two events, adding a quantity of 43, and then subtracting 1
+    distributed_db.add_message(WarehouseEvent::Add(43)).await.unwrap();
+    distributed_db.add_message(WarehouseEvent::Remove(1)).await.unwrap();
 
 
     distributed_db.with_root(|root|{
         // The current quantity in the database should now be 42.
         assert_eq!(*root.quantity, 42);
     });
+    
+    // ... run application.
+    // Noatun shuts down when `distributed_db` is dropped.
     
 }
 

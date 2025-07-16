@@ -4,7 +4,7 @@ use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
 use crate::{
-    catch_and_log, Application, ContextGuardMut, DatabaseContextData, Message, MessageFrame,
+    catch_and_log, ContextGuardMut, DatabaseContextData, Message, MessageFrame,
     MessageHeader, MessageId, NoatunContext, NoatunTime, Persistence, Target,
 };
 use anyhow::Result;
@@ -13,14 +13,13 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use tracing::{error, info, trace};
 
-pub(crate) struct Projector<APP: Application> {
-    messages: OnDiskMessageStore<APP::Message>,
+pub(crate) struct Projector<MSG: Message> {
+    messages: OnDiskMessageStore<MSG>,
     head_tracker: UpdateHeadTracker,
-    phantom_data: PhantomData<APP>,
     cut_off_config: CutOffConfig,
 }
 
-impl<APP: Application> Projector<APP> {
+impl<MSG: Message+'static> Projector<MSG> {
     pub(crate) fn disable_filesystem_sync(&mut self) {
         self.messages.disable_filesystem_sync()
     }
@@ -166,7 +165,7 @@ impl<APP: Application> Projector<APP> {
         self.messages.contains_message(id)
     }
 
-    pub(crate) fn load_message(&self, id: MessageId) -> Result<MessageFrame<APP::Message>> {
+    pub(crate) fn load_message(&self, id: MessageId) -> Result<MessageFrame<MSG>> {
         Ok(self
             .messages
             .read_message(id)?
@@ -188,12 +187,12 @@ impl<APP: Application> Projector<APP> {
     pub fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.messages.get_children_of(msg)
     }
-    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<APP::Message>>> {
+    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<MSG>>> {
         self.messages.get_all_messages()
     }
     pub fn get_all_messages_with_children(
         &self,
-    ) -> Result<Vec<(MessageFrame<APP::Message>, Vec<MessageId>)>> {
+    ) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
         self.messages.get_all_messages_with_children()
     }
 
@@ -202,11 +201,10 @@ impl<APP: Application> Projector<APP> {
         target: &Target,
         max_size: usize,
         cutoff_interval: CutOffDuration,
-    ) -> Result<Projector<APP>> {
+    ) -> Result<Projector<MSG>> {
         Ok(Projector {
             messages: OnDiskMessageStore::new(s, target, max_size)?,
             head_tracker: UpdateHeadTracker::new(s, target)?,
-            phantom_data: PhantomData,
             cut_off_config: CutOffConfig::new(cutoff_interval)?,
         })
     }
@@ -230,7 +228,7 @@ impl<APP: Application> Projector<APP> {
     fn push_message(
         &mut self,
         context: &mut DatabaseContextData,
-        message: MessageFrame<APP::Message>,
+        message: MessageFrame<MSG>,
         local: bool,
     ) -> Result<bool> {
         self.push_sorted_messages(context, std::iter::once(&message), local)
@@ -240,10 +238,10 @@ impl<APP: Application> Projector<APP> {
     pub(crate) fn push_messages<'a>(
         &mut self,
         context: &mut DatabaseContextData,
-        message: impl Iterator<Item = &'a MessageFrame<APP::Message>>,
+        message: impl Iterator<Item = &'a MessageFrame<MSG>>,
         local: bool,
     ) -> Result<bool> {
-        let mut messages: Vec<&MessageFrame<APP::Message>> = message.collect();
+        let mut messages: Vec<&MessageFrame<MSG>> = message.collect();
         messages.sort_unstable_by_key(|x| x.id());
         messages.dedup_by_key(|x| x.id());
         trace!("Deduped list to insert: {:?}", messages);
@@ -266,7 +264,7 @@ impl<APP: Application> Projector<APP> {
     pub(crate) fn push_sorted_messages<'a>(
         &mut self,
         context: &mut DatabaseContextData,
-        messages: impl ExactSizeIterator<Item = &'a MessageFrame<APP::Message>>,
+        messages: impl ExactSizeIterator<Item = &'a MessageFrame<MSG>>,
         local: bool,
     ) -> Result<bool> {
         //debug_assert_eq!(self.messages.count_messages()?, context.next_seqnr().try_index().unwrap_or(0));
@@ -310,8 +308,8 @@ impl<APP: Application> Projector<APP> {
 
     fn apply_single_message(
         context: &mut DatabaseContextData,
-        root: &mut APP,
-        msg: &MessageFrame<APP::Message>,
+        root: &mut MSG::Root,
+        msg: &MessageFrame<MSG>,
         seqnr: SequenceNr,
     ) {
         if context.next_seqnr() != seqnr {
@@ -343,8 +341,8 @@ impl<APP: Application> Projector<APP> {
     pub(crate) fn apply_preview(
         &mut self,
         time: DateTime<Utc>,
-        mut root: Pin<&mut APP>,
-        preview: impl Iterator<Item = APP::Message>,
+        mut root: Pin<&mut MSG::Root>,
+        preview: impl Iterator<Item = MSG>,
     ) -> Result<()> {
         NoatunContext.clear_unused_tracking();
         let time = NoatunTime(time.timestamp_millis() as u64);
@@ -368,7 +366,7 @@ impl<APP: Application> Projector<APP> {
 
     pub(crate) fn apply_missing_messages(
         &mut self,
-        root: &mut APP,
+        root: &mut MSG::Root,
         context: &mut DatabaseContextData,
         max_project_to: Option<NoatunTime>,
         auto_delete: bool,
@@ -389,17 +387,17 @@ impl<APP: Application> Projector<APP> {
             Some(max_project_to) => max_project_to,
         };
 
-        do_run::<APP>(context, root, first_run, max_project_to)?;
+        do_run::<MSG>(context, root, first_run, max_project_to)?;
         if !auto_delete {
             return Ok(None);
         }
         return remove_stale_messages(self, context);
 
         /// If returns true, need to finalize before-cutoff-part, then continue at given index
-        fn do_run<APP: Application>(
+        fn do_run<MSG: Message>(
             context: &mut DatabaseContextData,
-            root: &mut APP,
-            items: impl Iterator<Item = (usize, MessageFrame<APP::Message>)>,
+            root: &mut MSG::Root,
+            items: impl Iterator<Item = (usize, MessageFrame<MSG>)>,
             max_project_to: NoatunTime,
         ) -> Result<()> {
             for (seq, msg) in items {
@@ -407,13 +405,13 @@ impl<APP: Application> Projector<APP> {
                     return Ok(());
                 }
                 let seqnr = SequenceNr::from_index(seq);
-                Projector::<APP>::apply_single_message(context, root, &msg, seqnr);
+                Projector::<MSG>::apply_single_message(context, root, &msg, seqnr);
             }
             Ok(())
         }
 
-        fn remove_stale_messages<APP: Application>(
-            tself: &mut Projector<APP>,
+        fn remove_stale_messages<MSG: Message>(
+            tself: &mut Projector<MSG>,
             context: &mut DatabaseContextData,
         ) -> Result<Option<SequenceNr /*minimum deleted*/>> {
             let must_remove = context.calculate_stale_messages(&mut tself.messages)?;
