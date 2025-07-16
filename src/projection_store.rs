@@ -426,9 +426,9 @@ impl DatabaseContextData {
         // TODO(future): Create more efficient undo-construct for adjacent fields. Can be used
         // here and in other places.
 
-        assert!((*key_place).0 < 1 << 62);
+        assert!(key_place.0 < 1 << 62);
 
-        let next_and_flag = (*key_place).0 as u64
+        let next_and_flag = key_place.0 as u64
             | (if can_be_deleted_early { 1 << 63 } else { 0 })
             | (if wrote_tombstone { 1 << 62 } else { 0 });
         self.write_storable(next_and_flag, unsafe {

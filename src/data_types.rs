@@ -2,7 +2,7 @@
 use crate::data_types::meta_finder::get_any_empty;
 use crate::sequence_nr::SequenceNr;
 use crate::xxh3_vendored::NoatunHasher;
-use crate::{get_context_ptr, Database, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer, ThinPtr, CONTEXT};
+use crate::{get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer, ThinPtr, CONTEXT};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
@@ -686,7 +686,7 @@ impl<T: FixedSizeObject> NoatunVecRaw<T> {
     }
 
     #[inline]
-    fn get_index_mut<'a>(&'a mut self, index: usize) -> Pin<&'a mut T> {
+    fn get_index_mut(&mut self, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         let t = unsafe { ThinPtr(offset).access_mut::<T>() };
@@ -889,7 +889,7 @@ where
     }*/
 
 
-    pub fn clear(mut self: Pin<&mut Self>) {
+    pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.destroy_items();
         NoatunContext.update_registrar(&mut tself.length_registrar, false);
@@ -1052,8 +1052,8 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
             item_data.init_from_detached(val.borrow());
         }
     }
-    pub fn push(mut self: Pin<&mut Self>, t: impl Borrow<<T as Object>::DetachedType>) {
-        let mut tself = unsafe { self.get_unchecked_mut() };
+    pub fn push(self: Pin<&mut Self>, t: impl Borrow<<T as Object>::DetachedType>) {
+        let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.push_zeroed();
 
         let index = tself.raw.length - 1;
@@ -1079,7 +1079,7 @@ where
         tself.raw.destroy_items()
     }
 
-    fn init_from_detached(mut self: Pin<&mut Self>, detached: &Self::DetachedType) {
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         let tself = unsafe { self.get_unchecked_mut() };
         use std::borrow::Borrow;
         for item in detached {
@@ -2298,7 +2298,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
     fn clear_impl(&mut self) {
 
-        let mut context = self.data_meta_len_mut();
+        let context = self.data_meta_len_mut();
         let buckets_count = context.buckets.len();
         for i in 0..buckets_count {
             let meta_group_index = i / HASH_META_GROUP_SIZE;
@@ -2306,7 +2306,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             let meta = &mut context.metas[meta_group_index].0[meta_group_offset];
             if meta.populated() {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
-                let mut val = unsafe { Pin::new_unchecked(&mut context.buckets[i].assume_init_mut().v) };
+                let val = unsafe { Pin::new_unchecked(&mut context.buckets[i].assume_init_mut().v) };
                 val.destroy();
             } else if *meta != Meta::EMPTY {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
@@ -2508,12 +2508,12 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         {
             let tself = unsafe { self.as_mut().get_unchecked_mut() };
 
-            unsafe { tself.insert_internal_impl(key,|_target|{
+            tself.insert_internal_impl(key,|_target|{
                 // Leave as zero
-            })};
+            });
         }
 
-        return self.get_mut_val(key).unwrap();
+        self.get_mut_val(key).unwrap()
     }
 
     /// Return true if a value was removed
@@ -2818,7 +2818,7 @@ mod tests {
     use crate::tests::DummyTestMessage;
 use super::{NoatunBox, NoatunHashMap, NoatunString};
     use crate::database::DatabaseSettings;
-    use crate::tests::DummyTestApp;
+    
     use crate::tests::DummyTestMessageApply;
     use crate::{Database, NoatunCell, NoatunTime, Object};
     use datetime_literal::datetime;
@@ -3090,7 +3090,7 @@ use super::{NoatunBox, NoatunHashMap, NoatunString};
                 *k%2==0
             }) };
             assert_eq!(map.0.len(), 5);
-            for (k,v) in map.0.iter() {
+            for (k,_v) in map.0.iter() {
                 assert_eq!(*k%2, 0, "the odd elements have ben removed by `retain`");
             }
         })

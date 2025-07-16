@@ -3,7 +3,7 @@ use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
 use crate::{ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::fmt::{Debug, Formatter};
 use std::path::{Path, PathBuf};
@@ -680,7 +680,7 @@ impl<MSG: Message+'static> Database<MSG> {
         message_store.recover(settings.mock_time.unwrap_or_else(NoatunTime::now))?;
         let mmap_ptr = context.start_ptr();
         let guard = ContextGuardMut::new(context, true);
-        let mut root_obj_ref = unsafe { NoatunContext.allocate::<MSG::Root>() };
+        let root_obj_ref = unsafe { NoatunContext.allocate::<MSG::Root>() };
         let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, &*root_obj_ref);
         drop(guard);
 

@@ -1,11 +1,9 @@
 use crate::data_types::NoatunHashMap;
-use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
 use crate::{msg_deserialize, msg_serialize,  Database, Message, OpaqueNoatunCell, NoatunTime, Object};
 use savefile_derive::Savefile;
 use std::io::Write;
 use std::pin::Pin;
-use datetime_literal::datetime;
 
 noatun_object!(
     struct MapDoc {

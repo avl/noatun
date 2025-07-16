@@ -2367,7 +2367,7 @@ impl<M> OnDiskMessageStore<M> {
 mod tests {
     use indexmap::IndexSet;
     use std::collections::BTreeSet;
-    use std::collections::BTreeMap;
+    
     use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
     use crate::message_store::{FileOffset, OnDiskMessageStore, U1};
     use crate::{DummyUnitObject, Message, MessageFrame, MessageId, NoatunTime, Target};
@@ -2805,7 +2805,7 @@ mod tests {
         }
     }
     fn add_and_delete_fuzz_seed(seed: u32) {
-        use rand::{seq::SliceRandom, SeedableRng};
+        use rand::SeedableRng;
         let mut rng = SmallRng::seed_from_u64(seed as u64);
 
         let target = Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into());
@@ -2856,7 +2856,7 @@ Measure metrics:
             let mut to_insert = Vec::new();
             let big = rng.gen_bool(0.5);
             let mut actually_inserted = IndexSet::new();
-            let take = total_created_messages.retain(|x|
+            total_created_messages.retain(|x|
                 if rng.gen_range(0.. if big {2} else {6} ) == 0 {
                     let new = MessageId::new_debug(*x);
                     to_insert.push(

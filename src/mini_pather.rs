@@ -101,7 +101,7 @@ impl MiniPather {
     }
 
     /// Return everybody who can hear 'node'
-    pub fn who_can_hear<'a>(&'a self, node: u16) -> impl Iterator<Item=u16> + use<'a> {
+    pub fn who_can_hear(&self, node: u16) -> impl Iterator<Item=u16> + use<'_> {
         self.reverse.get(&node).into_iter().flatten().copied()
     }
 
@@ -180,13 +180,13 @@ impl MiniPather {
         if let Some(temp) = self.nodes.get_mut(&received_from) {
             temp.visited = AtomicBool::new(true);
         }
-        for temp in self.reverse.get(&origin).into_iter().flatten().copied()/*self.who_can_hear inlined*/ {
-            if let Some(temp) = self.nodes.get_mut(&temp) {
+        for temp in self.reverse.get(&origin).into_iter().flatten()/*self.who_can_hear inlined*/ {
+            if let Some(temp) = self.nodes.get_mut(temp) {
                 temp.visited = AtomicBool::new(true);
             }
         }
-        for temp in self.reverse.get(&received_from).into_iter().flatten().copied()/*self.who_can_hear inlined*/ {
-            if let Some(temp) = self.nodes.get_mut(&temp) {
+        for temp in self.reverse.get(&received_from).into_iter().flatten()/*self.who_can_hear inlined*/ {
+            if let Some(temp) = self.nodes.get_mut(temp) {
                 temp.visited = AtomicBool::new(true);
             }
         }
@@ -204,8 +204,8 @@ impl MiniPather {
 
                 //recipients_solved.extend(self.who_can_hear(*other_forwarder));
 
-                for temp in self.reverse.get(other_forwarder).into_iter().flatten().copied()/*self.who_can_hear inlined*/ {
-                    if let Some(temp) = self.nodes.get(&temp) {
+                for temp in self.reverse.get(other_forwarder).into_iter().flatten()/*self.who_can_hear inlined*/ {
+                    if let Some(temp) = self.nodes.get(temp) {
                         temp.visited.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
@@ -276,7 +276,7 @@ mod tests {
         }
 
         fn get_who_hears(node: u16, neighbors: &Vec<Vec<u16>>) -> impl Iterator<Item=u16> + use<'_> {
-            neighbors.iter().enumerate().filter_map(move |(x_node, x_neighbor)| if x_neighbor.contains(&(node as u16)) { Some(x_node as u16) } else { None })
+            neighbors.iter().enumerate().filter_map(move |(x_node, x_neighbor)| if x_neighbor.contains(&{ node }) { Some(x_node as u16) } else { None })
         }
 
         for src in 0..node_count {
@@ -284,7 +284,7 @@ mod tests {
             let mut front = IndexSet::new();
             let mut covered = IndexSet::new();
             let mut nodes_that_have_received_msg = IndexSet::new();
-            front.extend(get_who_hears(src as u16, &node_neighbors).into_iter().map(|x|(x, src as u16)));
+            front.extend(get_who_hears(src as u16, &node_neighbors).map(|x|(x, src as u16)));
             while let Some((dest, received_from)) = front.pop() {
                 nodes_that_have_received_msg.insert(dest);
                 if !covered.insert((dest,received_from)) {
@@ -296,12 +296,12 @@ mod tests {
                     if node.should_i_forward(src as u16, received_from) {
                         //println!("Node {} decided to forward msg from {} via {}", dest, src, received_from);
 
-                        assert_eq!(node.should_i_forward(src as u16, received_from), true);
+                        assert!(node.should_i_forward(src as u16, received_from));
                         for hearing_node in get_who_hears(dest, &node_neighbors) {
                             front.insert((hearing_node, dest));
                         }
                     } else {
-                        assert_eq!(node.should_i_forward(src as u16, received_from), false);
+                        assert!(!node.should_i_forward(src as u16, received_from));
                         //println!("Node {} decided NOT to forward msg from {} via {}", dest, src, received_from);
                     }
                 }
@@ -329,7 +329,7 @@ mod tests {
         }
 
         for src in 0..node_count {
-            let mut num_in_same_island = 0;
+            //let mut num_in_same_island = 0;
             let mut some_ask = false;
             let mut some_ask0 = false;
             let mut have_same_island = 0;
@@ -342,7 +342,7 @@ mod tests {
                 if islands[src] == islands[dst] {
                     have_same_island+=1;
                 }
-                num_in_same_island += 1;
+                //num_in_same_island += 1;
                 if ask.is_some() {
                     some_ask = true;
                 }
@@ -359,7 +359,7 @@ mod tests {
 
     }
     fn neighborhood() -> impl Strategy<Value = Vec<Vec<u16>>> {
-        let n = 4 as usize;
+        let n = 4_usize;
         proptest::collection::vec(proptest::collection::vec(any::<u16>().prop_map(move |x|x%(n as u16)), n..n+1),n..n+1)
     }
 

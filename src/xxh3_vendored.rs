@@ -32,7 +32,7 @@ DEALINGS IN THE SOFTWARE.
 #![allow(clippy::identity_op)]
 
 use std::hash::Hasher;
-use crate::xxh3_vendored::xxh3::{Xxh3, Xxh3Default};
+use crate::xxh3_vendored::xxh3::Xxh3Default;
 
 pub(crate) mod xxh32_common {
     #![allow(unused)]
@@ -2096,7 +2096,6 @@ impl NoatunHasher {
                 d.update(more_bytes);
                 *self = NoatunHasher::Large(d);
             }
-            #[cold]
             NoatunHasher::Large(d) => {
                 unreachable!()
             }
@@ -2111,7 +2110,6 @@ impl Hasher for NoatunHasher {
             NoatunHasher::Small(data, ptr) => {
                 xxh3::xxh3_64(&data[0..*ptr])
             }
-            #[cold]
             NoatunHasher::Large(d) => {
                 d.digest()
             }
@@ -2128,7 +2126,6 @@ impl Hasher for NoatunHasher {
                     self.transform(a_bytes);
                 }
             }
-            #[cold]
             NoatunHasher::Large(d) => {
                 d.update(a_bytes);
             }

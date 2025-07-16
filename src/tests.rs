@@ -1,6 +1,6 @@
 #![allow(non_local_definitions)]
 use super::*;
-use crate::data_types::{NoatunCellArrayExt, NoatunHashMap, NoatunString};
+use crate::data_types::{NoatunCellArrayExt, NoatunString};
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use byteorder::{LittleEndian, WriteBytesExt};
@@ -34,7 +34,7 @@ mod test_subsumption_map_advanced;
 mod test_types_rewind {
     use crate::data_types::{NoatunHashMap, NoatunString, NoatunVec};
     use crate::database::DatabaseSettings;
-    use crate::tests::{DummyTestApp, DummyTestMessage, DummyTestMessageApply};
+    use crate::tests::{DummyTestMessage, DummyTestMessageApply};
     use crate::{
         CutOffDuration, Database, FixedSizeObject, MessageFrame, MessageId, NoatunCell, NoatunTime,
     };
@@ -850,7 +850,7 @@ fn test_handle() {
     .unwrap();
 
     db.begin_session_mut().unwrap()
-        .append_local(DummyTestMessage::default());
+        .append_local(DummyTestMessage::default()).unwrap();
 
     db.with_root(|handle| {
         assert_eq!(handle.0.get_inner().get(), 43);
@@ -876,7 +876,7 @@ fn test_handle_to_unsized_miri() {
     .unwrap();
 
     db.begin_session_mut().unwrap()
-        .append_local(DummyTestMessage::default());
+        .append_local(DummyTestMessage::default()).unwrap();
 
     db.with_root(|handle| {
         assert_eq!(handle.inner().get_inner().observe(), &[1,2,3]);
@@ -896,7 +896,7 @@ fn test_noatun_box_miri() {
     .unwrap();
 
     db.begin_session_mut().unwrap()
-        .append_local(DummyTestMessage::default());
+        .append_local(DummyTestMessage::default()).unwrap();
 
 
     db.with_root(|handle| {
@@ -916,7 +916,7 @@ fn test_string0() {
         Database::create_new("test/test_string0", true, DatabaseSettings::default()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
-    db.with_root_mut(|mut test_str| {
+    db.with_root_mut(|test_str| {
         let mut test_str = test_str.inner_pin();
         test_str.as_mut().assign("hello");
         assert_eq!(test_str.len(), 5);
@@ -943,7 +943,7 @@ fn test_vec0() {
         Database::create_new("test/test_vec0", true, DatabaseSettings::default()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
-    db.with_root_mut(|mut counter_vec| {
+    db.with_root_mut(|counter_vec| {
         let mut counter_vec = counter_vec.inner_pin();
         unsafe {
             assert_eq!(counter_vec.len(), 0);
@@ -985,7 +985,7 @@ fn test_vec_miri0() {
     .unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
-    db.with_root_mut(|mut counter_vec| {
+    db.with_root_mut(|counter_vec| {
         let mut counter_vec = counter_vec.inner_pin();
         assert_eq!(counter_vec.len(), 0);
 
@@ -1036,7 +1036,7 @@ fn test_vec_undo() {
 
     {
         let mut db = db.begin_session_mut().unwrap();
-        db.with_root_mut(|mut counter_vec| {
+        db.with_root_mut(|counter_vec| {
             let mut counter_vec = counter_vec.inner_pin();
             NoatunContext.set_next_seqnr(SequenceNr::from_index(1));
             assert_eq!(counter_vec.len(), 0);
@@ -1063,7 +1063,7 @@ fn test_vec_undo() {
     let mut db = db.begin_session_mut().unwrap();
     {
         db.with_root_mut(|counter_vec| {
-            let mut counter_vec = counter_vec.inner_pin();
+            let counter_vec = counter_vec.inner_pin();
             let mut counter = counter_vec.get_index_mut(0);
 
             unsafe {

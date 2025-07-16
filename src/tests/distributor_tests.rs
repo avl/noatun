@@ -1,6 +1,6 @@
 use crate::database::DatabaseSettings;
 use crate::distributor::{Distributor, DistributorMessage, EphemeralNodeId, Neighborhood};
-use crate::tests::{CounterMessage, CounterObject};
+use crate::tests::CounterMessage;
 use crate::{set_test_epoch, Database, MessageId, NoatunTime};
 use arcshift::ArcShift;
 use datetime_literal::datetime;

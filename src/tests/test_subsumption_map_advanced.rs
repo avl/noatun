@@ -1,13 +1,10 @@
 use std::sync::Mutex;
 use std::fmt::Formatter;
 use crate::data_types::NoatunHashMap;
-use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
-use crate::{msg_deserialize, msg_serialize, Database, Message, OpaqueNoatunCell, NoatunTime, Object};
-use savefile_derive::Savefile;
+use crate::{Database, Message, OpaqueNoatunCell, NoatunTime};
 use std::io::Write;
 use std::pin::Pin;
-use datetime_literal::datetime;
 use std::sync::Arc;
 use byteorder::{LittleEndian, WriteBytesExt};
 use byteorder::ReadBytesExt;
@@ -39,7 +36,7 @@ impl std::fmt::Debug for MapMessage {
 
 
 thread_local! {
-    static TSMA_TEMP: Mutex<Vec<MapMessage>> = Mutex::new(Vec::new());
+    static TSMA_TEMP: Mutex<Vec<MapMessage>> = const { Mutex::new(Vec::new()) };
 }
 
 impl Message for MapMessage {
@@ -56,7 +53,7 @@ impl Message for MapMessage {
         let mut buf = Cursor::new(buf);
         let index = buf.read_u32::<LittleEndian>().unwrap() as usize;
         Ok(TSMA_TEMP.with(move |x| {
-            let mut guard = x.lock().unwrap();
+            let guard = x.lock().unwrap();
             guard[index].clone()
         }))
     }
