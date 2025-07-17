@@ -13,6 +13,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::offset_of;
+#[allow(unused)]
 use itertools::Itertools;
 use tracing::{debug, info, trace, warn};
 

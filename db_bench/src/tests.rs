@@ -3,13 +3,13 @@ use crate::{noatun_bench, ArticleId, BoxId, Task, TasksInTransaction};
 
 #[test]
 fn simple_smoketest() {
-    let mut tasks = TasksInTransaction(vec![Task::CreateBox { id: BoxId(0) }]);
+    let tasks = TasksInTransaction(vec![Task::CreateBox { id: BoxId(0) }]);
     let db = noatun_bench::run_test(std::iter::once(tasks), true).0;
     assert_eq!(single_query(&db, BoxId(0), ArticleId(0)), 0);
 }
 #[test]
 fn simple_smoketest2() {
-    let mut tasks = TasksInTransaction(vec![
+    let tasks = TasksInTransaction(vec![
         Task::CreateBox { id: BoxId(0) },
         Task::AddArticle {
             id: BoxId(0),
@@ -22,7 +22,7 @@ fn simple_smoketest2() {
 }
 #[test]
 fn simple_smoketest3() {
-    let mut tasks = TasksInTransaction(vec![
+    let tasks = TasksInTransaction(vec![
         Task::CreateBox { id: BoxId(0) },
         Task::AddArticle {
             id: BoxId(0),
@@ -36,7 +36,7 @@ fn simple_smoketest3() {
 
 #[test]
 fn simple_smoketest4() {
-    let mut tasks = TasksInTransaction(vec![
+    let tasks = TasksInTransaction(vec![
         Task::CreateBox { id: BoxId(0) },
         Task::CreateBox { id: BoxId(1) },
         Task::AddArticle {
@@ -57,7 +57,7 @@ fn simple_smoketest4() {
 #[test]
 fn simple_smoketest5() {
     // Place box 1 in box 0.
-    let mut tasks = TasksInTransaction(vec![
+    let tasks = TasksInTransaction(vec![
         Task::CreateBox { id: BoxId(0) },
         Task::CreateBox { id: BoxId(1) },
         Task::MoveBox {

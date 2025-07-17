@@ -1,9 +1,6 @@
-use crate::noatun_bench::single_query;
 use indexmap::IndexMap;
-use noatun::set_test_epoch;
 use rand::prelude::{IteratorRandom, SmallRng};
-use rand::{Rng, RngCore, SeedableRng};
-use std::hint::black_box;
+use rand::{Rng, SeedableRng};
 use std::time::Instant;
 use tracing_subscriber::Layer;
 
@@ -14,9 +11,9 @@ extern crate noatun;
 mod tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Savefile)]
-struct BoxId(u32);
+pub struct BoxId(u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Savefile)]
-struct ArticleId(u32);
+pub struct ArticleId(u32);
 
 #[derive(Debug, Savefile)]
 pub enum Task {
@@ -39,13 +36,13 @@ pub enum Task {
     },
 }
 
-struct TasksInTransaction(Vec<Task>);
+pub struct TasksInTransaction(Vec<Task>);
 
 fn generate_sequence(mut rng: SmallRng) -> impl Iterator<Item = TasksInTransaction> {
     const MAX_BOXES: usize = 100;
 
     let mut boxes: IndexMap<BoxId, /*parent*/ Option<BoxId>> = IndexMap::new();
-    let mut qtys: IndexMap<(BoxId, ArticleId), u32> = IndexMap::new();
+    let qtys: IndexMap<(BoxId, ArticleId), u32> = IndexMap::new();
 
     fn any_parent_contains(
         boxes: &mut IndexMap<BoxId, Option<BoxId>>,
@@ -117,7 +114,7 @@ fn generate_sequence(mut rng: SmallRng) -> impl Iterator<Item = TasksInTransacti
 
 pub mod sqlite_bench {
     use crate::{ArticleId, BoxId, Task, TasksInTransaction};
-    use rusqlite::{params, Connection};
+    use rusqlite::Connection;
     use std::path::Path;
 
     pub fn run(transactions: impl IntoIterator<Item = TasksInTransaction>) -> (Connection, usize) {
@@ -159,7 +156,7 @@ pub mod sqlite_bench {
 
         let mut ops = 0;
         for tasks in transactions {
-            let mut sqlite_trans = conn.transaction().unwrap();
+            let sqlite_trans = conn.transaction().unwrap();
             for task in tasks.0 {
                 ops += 1;
                 match task {
@@ -218,8 +215,8 @@ pub mod noatun_bench {
     use crate::{ArticleId, BoxId, Task, TasksInTransaction};
     use noatun::data_types::{NoatunHashMap, NoatunOption, NoatunVec};
     use noatun::database::DatabaseSettings;
-    use noatun::{noatun_object, Database, Message, MessageFrame, NoatunCell, NoatunTime, OpenMode, SavefileMessageSerializer};
-    use std::io::Write;
+    use noatun::{noatun_object, Database, Message, NoatunCell, NoatunTime, OpenMode, SavefileMessageSerializer};
+    
     use std::pin::Pin;
 
     noatun_object!(
@@ -241,7 +238,7 @@ pub mod noatun_bench {
         type Root = MainDoc;
         type Serializer = SavefileMessageSerializer<Self>;
 
-        fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
+        fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
             let mut project = root.pin_project();
 
             match self {
@@ -259,7 +256,7 @@ pub mod noatun_bench {
                 Task::MoveBox { id, to } => {
                     let mut prev_parent = None;
                     if let Some(abox) = project.boxes.as_mut().get_mut_val(&id.0) {
-                        let mut abox = abox.pin_project();
+                        let abox = abox.pin_project();
                         prev_parent = abox.parent.into_option();
                         abox.parent.set((to.map(|x| x.0)).into());
                     }
@@ -272,7 +269,7 @@ pub mod noatun_bench {
 
                     if let Some(prev_parent) = prev_parent {
                         if let Some(parent_obj) = project.boxes.as_mut().get_mut_val(&prev_parent) {
-                            let mut parent_proj = parent_obj.pin_project();
+                            let parent_proj = parent_obj.pin_project();
                             let index = parent_proj.children.iter().position(|x| x.get() == id.0);
                             if let Some(index) = index {
                                 parent_proj.children.swap_remove(index);
@@ -293,8 +290,8 @@ pub mod noatun_bench {
                     if let Some(abox) = project.boxes.get_mut_val(&id.0) {
                         let mut abox = abox.pin_project();
                         let subtract = matches!(t, Task::RemoveArticle { .. });
-                        if let Some(mut art) = abox.articles.as_mut().get_mut_val(article_id) {
-                            let mut cur = art.get();
+                        if let Some(art) = abox.articles.as_mut().get_mut_val(article_id) {
+                            let cur = art.get();
                             let new = if subtract {
                                 cur.saturating_sub(*quantity)
                             } else {
@@ -402,8 +399,8 @@ fn main() {
 
     //TODO: Clean up this "benchmark"
     
-    let TRANSACTION_COUNT: usize = 1000;
-    let gen_task = || generate_sequence(SmallRng::seed_from_u64(1)).take(TRANSACTION_COUNT);
+    let transaction_count: usize = 1000;
+    let gen_task = || generate_sequence(SmallRng::seed_from_u64(1)).take(transaction_count);
 
     let mut tot_noatun_sum = 0;
     let mut tot_sqlite_sum = 0;
@@ -412,13 +409,13 @@ fn main() {
     let task2 = gen_task().collect::<Vec<_>>();
 
     let bef = Instant::now();
-    let (mut db, event_count) = noatun_bench::run_test(task1.into_iter(), false);
+    let (db, event_count) = noatun_bench::run_test(task1.into_iter(), false);
     let t = bef.elapsed();
     println!(
         "Inserts using noatun: {:?} ({} events in {} transactions, {} ops/s)",
         t,
         event_count,
-        TRANSACTION_COUNT,
+        transaction_count,
         event_count as f64 / t.as_secs_f64()
     );
     let bef = Instant::now();
@@ -442,7 +439,7 @@ fn main() {
         "Inserts using sqlite: {:?} ({} ops in {} transactions, {} ops/s)",
         t,
         op_count,
-        TRANSACTION_COUNT,
+        transaction_count,
         op_count as f64 / t.as_secs_f64()
     );
 

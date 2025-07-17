@@ -1945,10 +1945,11 @@ impl Distributor {
                 });
             }
 
-            let mut children = database.get_message_children(msg_id)?;
+            let children = database.get_message_children(msg_id)?;
             message_list.extend(children.iter().map(|x| (*x, src)));
             #[cfg(debug_assertions)]
             {
+                let mut children = children;
                 let mut actual_children = vec![];
                 for child_msg in database.get_all_messages()? {
                     if child_msg.header.parents.contains(&msg_id) {
