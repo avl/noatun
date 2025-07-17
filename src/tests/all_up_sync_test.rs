@@ -1,4 +1,5 @@
 #![allow(clippy::needless_range_loop)]
+use crate::SavefileMessageSerializer;
 use crate::colors::colored_int;
 use crate::communication::{
     CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
@@ -27,7 +28,6 @@ use rand::SeedableRng;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::Debug;
-use std::io::Write;
 use std::ops::Add;
 use std::ops::Sub;
 use std::pin::Pin;
@@ -59,6 +59,7 @@ pub struct SyncMessage {
 
 impl Message for SyncMessage {
     type Root = SyncApp;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let project = root.pin_project();
@@ -77,16 +78,6 @@ impl Message for SyncMessage {
         }
     }
 
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        crate::msg_deserialize(buf)
-    }
-
-    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        crate::msg_serialize(self, writer)
-    }
 
     fn persistence(&self) -> Persistence {
         if self.persist {

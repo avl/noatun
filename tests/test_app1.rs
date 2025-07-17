@@ -1,12 +1,8 @@
 use datetime_literal::datetime;
 use noatun::data_types::{NoatunBox, NoatunCell, NoatunVec};
 use noatun::database::{Database, DatabaseSettings};
-use noatun::{
-     Message, MessageFrame, MessageHeader, MessageId, NoatunContext,
-    NoatunStorable, NoatunTime, Object, ThinPtr,
-};
+use noatun::{Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunStorable, NoatunTime, Object, SavefileMessageSerializer, ThinPtr};
 use savefile_derive::Savefile;
-use std::io::{Cursor, Write};
 use std::pin::Pin;
 
 #[repr(C)]
@@ -50,6 +46,7 @@ struct CounterMessage {
 
 impl Message for CounterMessage {
     type Root = CounterObject;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
         let root_counter;
@@ -71,16 +68,6 @@ impl Message for CounterMessage {
         }
     }
 
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(savefile::load_noschema(&mut Cursor::new(buf), 1)?)
-    }
-
-    fn serialize<W: Write>(&self, mut writer: W) -> anyhow::Result<()> {
-        Ok(savefile::save_noschema(&mut writer, 1, self)?)
-    }
 }
 
 

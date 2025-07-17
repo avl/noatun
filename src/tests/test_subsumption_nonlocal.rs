@@ -1,7 +1,7 @@
-use crate::database::DatabaseSettings;
-use crate::{msg_deserialize, msg_serialize, Database, Message, MessageId, NoatunTime};
+use crate::SavefileMessageSerializer;
+use crate::database::{DatabaseSettings, OpenMode};
+use crate::{Database, Message, MessageId, NoatunTime};
 use savefile_derive::Savefile;
-use std::io::Write;
 use std::pin::Pin;
 use crate::MessageFrame;
 
@@ -20,6 +20,7 @@ pub struct DocMessage {
 
 impl Message for DocMessage {
     type Root = Doc;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let mut root = root.pin_project();
@@ -30,16 +31,7 @@ impl Message for DocMessage {
         }
     }
 
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        msg_deserialize(buf)
-    }
-
-    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        msg_serialize(self, writer)
-    }
+    
 }
 
 #[test]
@@ -48,7 +40,7 @@ fn test_subsume_nonlocal() {
     let msg0_time = MessageId::new_debug2(0).timestamp();
     let mut db: Database<DocMessage> = Database::create_new(
         "test/test_subsumption_nonlocal1",
-        true,
+        OpenMode::Overwrite,
         DatabaseSettings {
             mock_time: Some(msg0_time),
             ..DatabaseSettings::default()

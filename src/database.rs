@@ -173,6 +173,21 @@ impl< MSG: Message+'static> DatabaseSession<'_, MSG> {
     }
 }
 
+/// Determine how any pre-existing database file is to be handled
+pub enum OpenMode {
+    /// Open existing database, or create new if none exists
+    OpenCreate,
+    /// Unconditionally overwrite any pre-existing database file
+    /// (this is mostly useful for tests)
+    Overwrite
+}
+
+impl OpenMode {
+    fn overwrite_existing(&self) -> bool {
+        matches!(self, OpenMode::Overwrite)
+    }
+}
+
 impl<MSG: Message+'static> DatabaseSessionMut<'_, MSG> {
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
@@ -736,11 +751,11 @@ impl<MSG: Message+'static> Database<MSG> {
     pub fn create_new(
         path: impl AsRef<Path>,
         //TODO: Make this parameter an enum instead of a bool!
-        overwrite_existing: bool,
+        mode: OpenMode,
         settings: DatabaseSettings,
     ) -> Result<Database<MSG>> {
         Self::create(
-            if overwrite_existing {
+            if mode.overwrite_existing() {
                 Target::CreateNewOrOverwrite(path.as_ref().to_path_buf())
             } else {
                 Target::CreateNew(path.as_ref().to_path_buf())

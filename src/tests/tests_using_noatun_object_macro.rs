@@ -1,11 +1,10 @@
+use crate::SavefileMessageSerializer;
 use crate::cutoff::CutOffDuration;
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
-use crate::{msg_deserialize, msg_serialize};
 use crate::{Database, Message, NoatunTime};
 use datetime_literal::datetime;
 use savefile_derive::Savefile;
-use std::io::Write;
 use std::pin::Pin;
 
 noatun_object!(
@@ -28,6 +27,7 @@ pub enum BankMessage {
 
 impl Message for BankMessage {
     type Root = Bank;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
         match self {
@@ -42,16 +42,7 @@ impl Message for BankMessage {
         }
     }
 
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        msg_deserialize(buf)
-    }
-
-    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        msg_serialize(self, writer)
-    }
+    
 }
 
 

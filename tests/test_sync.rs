@@ -1,14 +1,9 @@
 use noatun::communication::udp::TokioUdpDriver;
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::NoatunCell;
-use noatun::database::DatabaseSettings;
-use noatun::{
-    CutOffDuration, Database, Message, NoatunContext, NoatunStorable, NoatunTime,
-    Object, ThinPtr,
-};
-use savefile::{Deserializer, Serializer};
+use noatun::database::{DatabaseSettings, OpenMode};
+use noatun::{CutOffDuration, Database, Message, NoatunContext, NoatunStorable, NoatunTime, Object, SavefileMessageSerializer, ThinPtr};
 use savefile_derive::Savefile;
-use std::io::{Cursor, Write};
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -57,6 +52,7 @@ impl Object for Maze {
 
 impl Message for MazeMessage {
     type Root = Maze;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
         let root_player_pos_x = unsafe { root.as_mut().map_unchecked_mut(|x| &mut x.player_pos_x) };
@@ -68,16 +64,7 @@ impl Message for MazeMessage {
         root_player_pos_y.set(y);
     }
 
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Deserializer::bare_deserialize(&mut Cursor::new(buf), 0)?)
-    }
 
-    fn serialize<W: Write>(&self, mut writer: W) -> anyhow::Result<()> {
-        Ok(Serializer::bare_serialize(&mut writer, 0, self)?)
-    }
 }
 
 
@@ -93,7 +80,7 @@ async fn test_sync_app() {
             for i in 0..2 {
                 let db: Database<MazeMessage> = Database::create_new(
                     format!("test/test_sync_app{i}.bin"),
-                    true,
+                    OpenMode::Overwrite,
                     DatabaseSettings {
                         cutoff_interval: CutOffDuration::from_days(1).unwrap(),
                         ..Default::default()

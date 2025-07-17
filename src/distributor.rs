@@ -4,10 +4,7 @@
 use crate::colors::*;
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
-use crate::{
-    test_elapsed, Database, Message, MessageFrame, MessageHeader, MessageId,
-    NoatunTime,
-};
+use crate::{test_elapsed, Database, Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunTime};
 use anyhow::Result;
 use arcshift::ArcShift;
 use arrayvec::ArrayString;
@@ -100,7 +97,6 @@ impl PeerSummaryInfo {
                 .iter()
                 .position(|&x| x == our_node_id)
                 .unwrap_or(100);
-            error!("our index: {}", our_index);
             ((our_index as u32) * retransmit_interval) / 4
         } else {
             retransmit_interval

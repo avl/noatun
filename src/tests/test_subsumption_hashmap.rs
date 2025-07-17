@@ -1,8 +1,8 @@
+use crate::SavefileMessageSerializer;
 use crate::data_types::NoatunHashMap;
-use crate::database::DatabaseSettings;
-use crate::{msg_deserialize, msg_serialize,  Database, Message, OpaqueNoatunCell, NoatunTime, Object};
+use crate::database::{DatabaseSettings, OpenMode};
+use crate::{ Database, Message, OpaqueNoatunCell, NoatunTime, Object};
 use savefile_derive::Savefile;
-use std::io::Write;
 use std::pin::Pin;
 
 noatun_object!(
@@ -22,29 +22,18 @@ pub struct MapMessage {
 
 impl Message for MapMessage {
     type Root = MapDoc;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
         if self.destroy {
             root.items.destroy();
-        }
-        else if self.reset {
+        } else if self.reset {
             root.items.clear();
         } else {
             let value = root.items.get_value_infallible(&(self.index as u32));
             value.set(self.val);
         }
-    }
-
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        msg_deserialize(buf)
-    }
-
-    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        msg_serialize(self, writer)
     }
 }
 
@@ -53,7 +42,7 @@ fn test_map_local1() {
     super::setup_tracing();
     let mut db: Database<MapMessage> = Database::create_new(
         "test/test_map_subsumption1",
-        true,
+        OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
         .unwrap();
@@ -84,7 +73,7 @@ fn test_map2() {
     super::setup_tracing();
     let mut db: Database<MapMessage> = Database::create_new(
         "test/test_map_subsumption2",
-        true,
+        OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
         .unwrap();
@@ -115,7 +104,7 @@ fn test_map3() {
     super::setup_tracing();
     let mut db: Database<MapMessage> = Database::create_new(
         "test/test_map_subsumption3",
-        true,
+        OpenMode::Overwrite,
         DatabaseSettings {
             mock_time: Some(NoatunTime::debug_time(0)),
             ..DatabaseSettings::default()

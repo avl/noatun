@@ -265,17 +265,17 @@ mod tests {
         for (node, _neighbors) in node_neighbors.iter().enumerate(){
             all_nodes.insert(node as u16);
             let mut pather = MiniPather::new(node as u16);
-            for i in 0..node_count {
+            for (i, neighbors) in node_neighbors.iter().enumerate() {
                 if i != node {
-                    pather.report_neighbors(i as u16, node_neighbors[i].iter().copied());
+                    pather.report_neighbors(i as u16, neighbors.iter().copied());
                 } else {
-                    pather.report_own_neighbors(node_neighbors[i].iter().copied());
+                    pather.report_own_neighbors(neighbors.iter().copied());
                 }
             }
             pathers.push(pather);
         }
 
-        fn get_who_hears(node: u16, neighbors: &Vec<Vec<u16>>) -> impl Iterator<Item=u16> + use<'_> {
+        fn get_who_hears(node: u16, neighbors: &[Vec<u16>]) -> impl Iterator<Item=u16> + use<'_> {
             neighbors.iter().enumerate().filter_map(move |(x_node, x_neighbor)| if x_neighbor.contains(&{ node }) { Some(x_node as u16) } else { None })
         }
 
@@ -381,10 +381,10 @@ mod tests {
             for (node, _neighbors) in node_neighbors.iter().enumerate(){
                 let mut pather = MiniPather::new(node as u16);
                 let mut ref_pather = known_good_mini_pather::MiniPather::new(node as u16);
-                for i in 0..node_count {
+                for (i, neighbors) in node_neighbors.iter().enumerate() {
                     if i != node {
-                        pather.report_neighbors(i as u16, node_neighbors[i].iter().copied());
-                        ref_pather.report_neighbors(i as u16, node_neighbors[i].iter().copied());
+                        pather.report_neighbors(i as u16, neighbors.iter().copied());
+                        ref_pather.report_neighbors(i as u16, neighbors.iter().copied());
                     }
                 }
                 for i in 0..node_count {
@@ -438,11 +438,11 @@ mod tests {
         verify_someone_always_forwards(input);
     }
 
-    fn islands(node_neighbors: &Vec<Vec<u16>>) -> Vec<u8> {
+    fn islands(node_neighbors: &[Vec<u16>]) -> Vec<u8> {
 
         //println!("Input: {:?}", node_neighbors);
         let mut explored = IndexSet::new();
-        fn explore(explored: &mut IndexSet<u16>, seed: u16, neighbors: &Vec<Vec<u16>>) -> BTreeSet<u16> {
+        fn explore(explored: &mut IndexSet<u16>, seed: u16, neighbors: &[Vec<u16>]) -> BTreeSet<u16> {
             let mut front = IndexSet::new();
             let mut island = BTreeSet::new();
             front.insert(seed);
@@ -479,21 +479,21 @@ mod tests {
     #[test]
     fn verify_islands() {
         assert_eq!(
-            islands(&vec![
+            islands(&[
                 vec![0,1],
                 vec![0,1],
             ]),
             vec![0,0]);
 
         assert_eq!(
-            islands(&vec![
+            islands(&[
                 vec![0],
                 vec![1],
             ]),
             vec![0,1]);
 
         assert_eq!(
-            islands(&vec![
+            islands(&[
                 vec![0,1],
                 vec![1],
             ]),
@@ -501,7 +501,7 @@ mod tests {
 
 
         assert_eq!(
-            islands(&vec![
+            islands(&[
                 vec![0,1],
                 vec![1,2],
                 vec![1,2],
@@ -509,14 +509,14 @@ mod tests {
             vec![0,1,1]);
 
         assert_eq!(
-            islands(&vec![
+            islands(&[
                 vec![],
                 vec![2],
                 vec![1],
             ]),
             vec![0,1,1]);
         assert_eq!(
-            islands(&vec![
+            islands(&[
                 vec![1],
                 vec![0,2],
                 vec![1,3],
@@ -525,7 +525,7 @@ mod tests {
             ]),
             vec![0,0,0,0,0]);
         assert_eq!(
-            islands(&vec![
+            islands(&[
                 vec![1],
                 vec![0,2],
                 vec![1,3],
@@ -534,7 +534,7 @@ mod tests {
             ]),
             vec![0,0,0,0,1]);
         assert_eq!(
-            islands(&vec![
+            islands(&[
                 vec![],
                 vec![],
                 vec![],

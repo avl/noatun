@@ -1,8 +1,7 @@
 use crate::data_types::OpaqueNoatunVec;
-use crate::database::DatabaseSettings;
-use crate::{msg_deserialize, msg_serialize,  Database, Message, OpaqueNoatunCell, NoatunTime, Object};
+use crate::database::{DatabaseSettings, OpenMode};
+use crate::{Database, Message, OpaqueNoatunCell, NoatunTime, Object, SavefileMessageSerializer};
 use savefile_derive::Savefile;
-use std::io::Write;
 use std::pin::Pin;
 
 noatun_object!(
@@ -23,6 +22,7 @@ pub struct VecMessage {
 
 impl Message for VecMessage {
     type Root = VecDoc;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
@@ -37,16 +37,7 @@ impl Message for VecMessage {
         }
     }
 
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        msg_deserialize(buf)
-    }
-
-    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        msg_serialize(self, writer)
-    }
+    
 }
 
 #[test]
@@ -54,7 +45,7 @@ fn test_vec1() {
     super::setup_tracing();
     let mut db: Database<VecMessage> = Database::create_new(
         "test/test_subsumption1",
-        true,
+        OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
     .unwrap();
@@ -91,7 +82,7 @@ fn test_vec2() {
     super::setup_tracing();
     let mut db: Database<VecMessage> = Database::create_new(
         "test/test_subsumption2",
-        true,
+        OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
         .unwrap();
@@ -120,7 +111,7 @@ fn test_vec3() {
     super::setup_tracing();
     let mut db: Database<VecMessage> = Database::create_new(
         "test/test_subsumption3",
-        true,
+        OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
         .unwrap();
@@ -148,7 +139,7 @@ fn test_vec4() {
     super::setup_tracing();
     let mut db: Database<VecMessage> = Database::create_new(
         "test/test_subsumption4",
-        true,
+        OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
         .unwrap();

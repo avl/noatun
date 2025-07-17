@@ -1,9 +1,9 @@
-use crate::database::DatabaseSettings;
+use crate::SavefileMessageSerializer;
+use crate::database::{DatabaseSettings, OpenMode};
 
 use crate::Database;
 use crate::{Message, NoatunTime};
 use savefile_derive::Savefile;
-use std::io::Write;
 use std::pin::Pin;
 
 noatun_object!(
@@ -21,6 +21,7 @@ pub struct RotMessage {
 
 impl Message for RotMessage {
     type Root = RotationDoc;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
@@ -32,22 +33,13 @@ impl Message for RotMessage {
         }
     }
 
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        crate::msg_deserialize(buf)
-    }
-
-    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        crate::msg_serialize(self, writer)
-    }
+    
 }
 
 #[test]
 fn test_rotation1() {
     let mut db: Database<RotMessage> =
-        Database::create_new("test/test_rotation1", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_rotation1", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
     let mut db = db.begin_session_mut().unwrap();
     for _ in 0..5 {
         for _ in 0..10 {
@@ -71,7 +63,7 @@ fn test_rotation1() {
 #[test]
 fn test_rotation_big1() {
     let mut db: Database<RotMessage> =
-        Database::create_new("test/test_rotation2", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_rotation2", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
     for _ in 0..75 {

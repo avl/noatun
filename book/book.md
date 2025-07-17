@@ -35,10 +35,11 @@ to the warehouse, removed, and occasionally an inventory is performed where the 
 of bolts are counted to make sure the tally is correct.
 
 ```rust
-use noatun::{Database, NoatunTime, noatun_object, Message, DatabaseSettings, msg_serialize, msg_deserialize};
+use noatun::{Database, OpenMode, NoatunTime, noatun_object, Message, DatabaseSettings, PostcardMessageSerializer};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::communication::udp::TokioUdpDriver;
 use serde_derive::{Serialize, Deserialize};
+use tokio::time::Duration;
 use std::pin::Pin;
 use std::io::Write;
 
@@ -54,6 +55,8 @@ pub enum WarehouseEvent {
 
 /// Define our root database object. Here we have a single pod (plain old data) field of type u32.
 /// See docs for what types are supported by the noatun_object macro.
+/// It is also possible to implement completely custom types by implementing the [`noatun::Object`]
+/// macro manually.
 noatun_object!(
     struct Warehouse {
         pod quantity: u32
@@ -64,7 +67,11 @@ noatun_object!(
 impl Message for WarehouseEvent {
     /// The type of database root this event must be used with
     type Root = Warehouse;
-
+    
+    /// The on-disk/on-wire format of messages is customizable.
+    /// Here we use the serde-based "postcard" serializer.
+    type Serializer = PostcardMessageSerializer<Self>;
+    
     /// A function which applies an event to a database with `Warehouse`
     /// as its root object.
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Warehouse>) {
@@ -81,24 +88,10 @@ impl Message for WarehouseEvent {
             }
         }
     }
-
-    /// Noatun is completely agnostic about event serialization, you just have
-    /// to implement this method and also `serialize` further down.
-    /// 
-    /// This example uses "postcard" as serializer
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(postcard::from_bytes(buf)?)
-    }
-
-    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        postcard::to_io(self, writer)?;
-        Ok(())
-    }
 }
 
+/// Open a database, add some events, and then synchronize with any
+/// other reachable noatun nodes.
 async fn example() {
     
     /// Create the database on disk
@@ -106,7 +99,7 @@ async fn example() {
     /// for how to setup synchronization.
     let mut db: Database<WarehouseEvent> = Database::create_new(
         "warehouse_db",
-        true,
+        OpenMode::OpenCreate,
         DatabaseSettings::default(),
     ).unwrap();
 
@@ -132,10 +125,8 @@ async fn example() {
     
     // ... run application.
     // Noatun shuts down when `distributed_db` is dropped.
-    
+    tokio::time::sleep(Duration::from_secs(30)).await;
 }
-
-
 
 
 ```

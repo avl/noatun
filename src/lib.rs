@@ -24,7 +24,7 @@ use crate::undo_store::magic_initialize_ptr;
 use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 pub use cutoff::{CutOffDuration, CutOffState};
-pub use database::{Database, DatabaseSettings};
+pub use database::{Database, DatabaseSettings, OpenMode};
 pub use paste::paste;
 pub(crate) use projection_store::DatabaseContextData;
 use rand::RngCore;
@@ -34,6 +34,7 @@ use std::borrow::Borrow;
 use std::cell::Cell;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::Write;
+use std::marker::PhantomData;
 use std::mem::{transmute_copy, MaybeUninit};
 use std::ops::{Add, Sub};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -45,6 +46,10 @@ use std::time::Duration;
 #[cfg(not(feature = "tokio"))]
 use std::time::Instant;
 use datetime_literal::datetime;
+#[cfg(feature="serde")]
+use serde::de::DeserializeOwned;
+#[cfg(feature="serde")]
+use serde::Serialize;
 #[cfg(feature = "tokio")]
 use tokio::time::Instant;
 
@@ -713,18 +718,29 @@ pub enum Persistence {
     AtLeastUntilCutoff,
 }
 
-pub trait Message: Debug + 'static {
+pub trait Message: Debug + Sized + 'static {
     type Root: Object + NoatunStorable;
+    type Serializer: NoatunMessageSerializer<Self>;
     fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>);
-
-    fn deserialize(buf: &[u8]) -> Result<Self>
-    where
-        Self: Sized;
-    fn serialize<W: Write>(&self, writer: W) -> Result<()>;
-
     fn persistence(&self) -> Persistence {
         Persistence::UntilOverwritten
     }
+}
+
+pub trait MessageExt : Message {
+    fn serialize<W: Write>(&self, writer: W) -> Result<()> {
+        Self::Serializer::serialize(self, writer)
+    }
+
+    fn deserialize(buf: &[u8]) -> Result<Self>
+    where
+        Self: Sized {
+        Self::Serializer::deserialize(buf)
+    }
+}
+
+impl<T> MessageExt for T where T: Message {
+
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -946,15 +962,12 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
 
 /// # Safety
 /// To implement this safely:
-///  * Self must be repr(C) or repr(transparent). repr(packed) may work, but
-///    causes composability problems, as types that own Self may then also need to
-///    be packed.
+///  * Self must be repr(C) or repr(transparent). repr(packed) may also work.
 ///  * Self must not utilize any niches in owned objects. This is because the undo-function
 ///    of noatun will overwrite such niches during undo.
 ///  * Self can have niches, but noatun guarantees they will never be used and Self is
 ///    allowed to clobber them.
-///  * All fields of Self must implement Object
-///  * Self must not be Sync or Send.
+///  * All fields of Self must implement NoatunStorable
 ///  * Self must not be Unpin.
 ///
 /// TLDR:
@@ -967,7 +980,8 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
 /// However:
 /// 1: Just don't do that!
 /// 2: In order to be able to call Pin::set, the user needs to have an owned value of
-///    an Object-type. This should be impossible to obtain.
+///    an Object-type. This must be made impossible to obtain.
+///
 /// Therefore, any type that implements Object must make sure that safe
 /// code cannot obtain an owned instance of Self:
 ///   * No Default-impl!
@@ -976,17 +990,15 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
 /// NOTE!
 /// This trait represents an object that can be stored on its own as a first class
 /// noatun database object. However, noatun has a distinction between objects and values.
-/// At the top level, all information stored in a noatun database must be an object. However,
+/// At the top level, the root object of a noatun database must be an Object. However,
 /// the [`NoatunCell`] type allows storing values. This allows storing rust standard primitives
 /// like u8, u16, u32 etc directly in the database. It also allows storing custom types, for
 /// example newtype wrappers, identifiers etc directly in the database. All other information
-/// should be wrapped in a type that implements Object, such as [`data_types::NoatunVec`] or
-/// [`data_types::NoatunString`] etc.
-///
+/// should be wrapped in a type that implements Object, such as [`data_types::NoatunCell`].
 ///
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a noatun Object, and can't appear on its own in a noatun database.",
-    label = "`{Self}` does not implement Object.    ",
+    label = "`{Self}` does not implement Object.",
     note = "For primitives, try wrapping in NoatunCell.",
     note = "For structs, use `noatun_object!`-macro.",
     note = "For collections, try `NoatunHashMap` or `NoatunVec`.",
@@ -994,11 +1006,15 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
 )]
 pub trait Object {
     /// This is meant to be either ThinPtr for sized objects, or
-    /// FatPtr for dynamically sized objects. Other types are likely to not make sense.
+    /// FatPtr for dynamically sized objects. Other types are unlikely to make sense.
     type Ptr: Pointer;
     type DetachedType: ?Sized;
     type DetachedOwnedType: Borrow<Self::DetachedType>;
 
+    /// Create an owned 'detached' copy of this object.
+    ///
+    /// Detached types are regular rust objects, not stored in the noatun database.
+    /// For example, the detached type for [`data_types::NoatunString`] is [`std::primitive::str`]
     fn detach(&self) -> Self::DetachedOwnedType;
 
     /// Clear this object.
@@ -1046,7 +1062,10 @@ pub trait Object {
 ///
 /// Example:
 /// ```rust
-/// noatun::noatun_object!(
+/// use noatun::noatun_object;
+/// use noatun::data_types::{NoatunString, NoatunVec};
+/// 
+/// noatun_object!(
 ///     #[derive(PartialEq)]
 ///     struct Employee {
 ///         object name: NoatunString,
@@ -1054,7 +1073,7 @@ pub trait Object {
 ///     }
 /// );
 ///
-/// noatun::noatun_object!(
+/// noatun_object!(
 ///     struct ExampleDb {
 ///         pod total_salary_cost: u32,
 ///         object employees: NoatunVec<Employee>,
@@ -1556,20 +1575,85 @@ noatun_object!(
     }
 );
 
-pub fn msg_serialize<T: savefile::Serialize + savefile::Packed>(
+fn msg_serialize<T: savefile::Serialize + savefile::Packed>(
     obj: &T,
     mut writer: impl Write,
 ) -> anyhow::Result<()> {
     Ok(savefile::Serializer::bare_serialize(&mut writer, 0, obj)?)
 }
 
-pub fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(
+fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(
     buf: &[u8],
 ) -> anyhow::Result<T> {
     Ok(Deserializer::bare_deserialize(
         &mut std::io::Cursor::new(buf),
         0,
     )?)
+}
+
+pub trait NoatunMessageSerializer<MSG> {
+    /// Noatun is completely agnostic about event serialization, you just have
+    /// to implement this method and also `serialize` further down.
+    ///
+    /// This example uses "postcard" as serializer
+    fn deserialize(buf: &[u8]) -> anyhow::Result<MSG>
+    where
+        Self: Sized;
+
+    fn serialize<W: Write>(msg: &MSG, writer: W) -> anyhow::Result<()>;
+}
+
+/// Serializer strategy that uses the serde-based "postcard" serializer
+#[cfg(feature="postcard")]
+pub struct PostcardMessageSerializer<MSG: Serialize + DeserializeOwned>(pub PhantomData<MSG>);
+
+#[cfg(feature="postcard")]
+impl<MSG: Serialize+DeserializeOwned> NoatunMessageSerializer<MSG> for PostcardMessageSerializer<MSG> {
+    fn deserialize(buf: &[u8]) -> anyhow::Result<MSG>
+    where
+        Self: Sized,
+    {
+        Ok(postcard::from_bytes(buf)?)
+    }
+
+    fn serialize<W: Write>(msg: &MSG, writer: W) -> anyhow::Result<()> {
+        postcard::to_io(msg, writer)?;
+        Ok(())
+    }
+}
+
+pub struct SavefileMessageSerializer<MSG: savefile::Serialize+ savefile::Deserialize+savefile::Packed>(pub PhantomData<MSG>);
+
+/// Dummy serializer that panics on all use
+///
+/// Only useful for compile tests or similar, where actual serialization isn't needed, but
+/// a type implementing NoatunMessageSerializer<T> is needed
+pub struct DummyMessageSerializer;
+
+impl<MSG> NoatunMessageSerializer<MSG> for DummyMessageSerializer {
+    fn deserialize(_buf: &[u8]) -> Result<MSG>
+    where
+        Self: Sized
+    {
+        panic!("attempt to deserialize message using dummy serializer")
+    }
+
+    fn serialize<W: Write>(_msg: &MSG, _writer: W) -> Result<()> {
+        panic!("attempt to serialize message using dummy serializer")
+    }
+}
+
+impl<MSG: savefile::Serialize+ savefile::Deserialize+savefile::Packed> NoatunMessageSerializer<MSG> for SavefileMessageSerializer<MSG> {
+    fn deserialize(buf: &[u8]) -> Result<MSG>
+    where
+        Self: Sized
+    {
+        msg_deserialize(buf)
+    }
+
+    fn serialize<W: Write>(msg: &MSG, writer: W) -> Result<()> {
+        msg_serialize(msg, writer)
+    }
 }
 
 #[cfg(test)]

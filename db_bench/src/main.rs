@@ -218,10 +218,7 @@ pub mod noatun_bench {
     use crate::{ArticleId, BoxId, Task, TasksInTransaction};
     use noatun::data_types::{NoatunHashMap, NoatunOption, NoatunVec};
     use noatun::database::DatabaseSettings;
-    use noatun::{
-        msg_deserialize, msg_serialize, noatun_object, DatabaseRoot, Database, Message,
-        MessageFrame, NoatunCell, NoatunTime,
-    };
+    use noatun::{noatun_object, Database, Message, MessageFrame, NoatunCell, NoatunTime, OpenMode, SavefileMessageSerializer};
     use std::io::Write;
     use std::pin::Pin;
 
@@ -240,12 +237,9 @@ pub mod noatun_bench {
         }
     );
 
-    impl DatabaseRoot for MainDoc {
-        type Message = Task;
-        type Params = ();
-    }
     impl Message for Task {
         type Root = MainDoc;
+        type Serializer = SavefileMessageSerializer<Self>;
 
         fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
             let mut project = root.pin_project();
@@ -317,19 +311,9 @@ pub mod noatun_bench {
             }
         }
 
-        fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-        where
-            Self: Sized,
-        {
-            msg_deserialize(buf)
-        }
-
-        fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-            msg_serialize(self, writer)
-        }
     }
 
-    pub fn single_query(database: &Database<MainDoc>, boxid: BoxId, article_id: ArticleId) -> u32 {
+    pub fn single_query(database: &Database<Task>, boxid: BoxId, article_id: ArticleId) -> u32 {
         let sess = database.begin_session().unwrap();
 
         sess.with_root(|root| {
@@ -360,30 +344,28 @@ pub mod noatun_bench {
     pub fn run_test(
         input: impl Iterator<Item = TasksInTransaction>,
         in_memory: bool,
-    ) -> (Database<MainDoc>, usize) {
+    ) -> (Database<Task>, usize) {
         let noatun_time = NoatunTime::now();
 
         let mut db;
         if in_memory {
-            db = Database::<MainDoc>::create_in_memory(
+            db = Database::<Task>::create_in_memory(
                 50_000,
                 DatabaseSettings {
                     auto_delete: false,
                     ..DatabaseSettings::default()
-                },
-                (),
+                }
             )
             .unwrap();
         } else {
-            db = Database::<MainDoc>::create_new(
+            db = Database::<Task>::create_new(
                 "test_noatun.bin",
-                true,
+                OpenMode::Overwrite,
                 DatabaseSettings {
                     auto_delete: true,
                     max_file_size: 1000_000_000,
                     ..DatabaseSettings::default()
-                },
-                (),
+                }
             )
             .unwrap();
         }

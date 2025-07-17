@@ -2,7 +2,7 @@ use std::sync::Mutex;
 use std::fmt::Formatter;
 use crate::data_types::NoatunHashMap;
 use crate::database::DatabaseSettings;
-use crate::{Database, Message, OpaqueNoatunCell, NoatunTime};
+use crate::{Database, Message, OpaqueNoatunCell, NoatunTime, NoatunMessageSerializer};
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -39,14 +39,10 @@ thread_local! {
     static TSMA_TEMP: Mutex<Vec<MapMessage>> = const { Mutex::new(Vec::new()) };
 }
 
-impl Message for MapMessage {
-    type Root = MapDoc;
+pub struct TsmaSerializer;
 
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
-        (self.func)(root)
-    }
-
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
+impl NoatunMessageSerializer<MapMessage> for TsmaSerializer {
+    fn deserialize(buf: &[u8]) -> anyhow::Result<MapMessage>
     where
         Self: Sized,
     {
@@ -58,15 +54,27 @@ impl Message for MapMessage {
         }))
     }
 
-    fn serialize<W: Write>(&self, mut writer: W) -> anyhow::Result<()> {
+    fn serialize<W: Write>(msg: &MapMessage, mut writer: W) -> anyhow::Result<()> {
         TSMA_TEMP.with(move |x| {
             let mut guard = x.lock().unwrap();
             let index = guard.len();
-            guard.push(self.clone());
+            guard.push(msg.clone());
             writer.write_u32::<LittleEndian>(index as u32)?;
             Ok(())
         })
     }
+}
+
+
+impl Message for MapMessage {
+    type Root = MapDoc;
+    type Serializer = TsmaSerializer;
+
+    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
+        (self.func)(root)
+    }
+
+
 }
 
 

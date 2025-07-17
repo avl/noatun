@@ -1,12 +1,8 @@
 use anyhow::Result;
 use noatun::data_types::{NoatunString, NoatunVec};
-use noatun::database::DatabaseSettings;
-use noatun::{
-    msg_deserialize, msg_serialize, noatun_object,  Database, Message, NoatunTime,
-    Object,
-};
+use noatun::database::{DatabaseSettings, OpenMode};
+use noatun::{noatun_object, Database, Message,  NoatunTime, Object, SavefileMessageSerializer};
 use savefile_derive::Savefile;
-use std::io::Write;
 use std::pin::Pin;
 
 noatun_object!(
@@ -32,6 +28,7 @@ pub struct ExampleMessage {
 
 impl Message for ExampleMessage {
     type Root = ExampleDb;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
@@ -45,21 +42,11 @@ impl Message for ExampleMessage {
         });
     }
 
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        msg_deserialize(buf)
-    }
-
-    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        msg_serialize(self, writer)
-    }
 }
 
 fn main() -> Result<()> {
     let mut db: Database<ExampleMessage> =
-        Database::create_new("test/example1.bin", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/example1.bin", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
 
     let mut s = db.begin_session_mut()?;
     s.append_local(ExampleMessage {

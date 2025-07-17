@@ -1,11 +1,11 @@
+use crate::SavefileMessageSerializer;
 use crate::data_types::{NoatunString, NoatunVec};
-use crate::database::{DatabaseSettings, LoadingStatus};
+use crate::database::{DatabaseSettings, LoadingStatus, OpenMode};
 use crate::{ Database, Message, NoatunTime, Object};
 use chrono::{DateTime, Utc};
 use datetime_literal::datetime;
 use savefile_derive::Savefile;
 use std::fmt::Debug;
-use std::io::Write;
 use std::pin::Pin;
 
 noatun_object!(
@@ -33,6 +33,7 @@ pub struct KeyValMessage {
 
 impl Message for KeyValMessage {
     type Root = KeyValStore;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
         let mut projected = root.pin_project();
@@ -48,16 +49,7 @@ impl Message for KeyValMessage {
         projected.edit_count.set(new_count);
     }
 
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        crate::msg_deserialize(buf)
-    }
 
-    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        crate::msg_serialize(self, writer)
-    }
 }
 
 const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
@@ -65,7 +57,7 @@ const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
 #[test]
 fn test_nominal_load_without_recovery() {
     let mut db: Database<KeyValMessage> =
-        Database::create_new("test/test_recover1", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_recover1", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
 
     let mut sess = db.begin_session_mut().unwrap();
     sess.append_local(KeyValMessage {
@@ -103,7 +95,7 @@ fn test_nominal_load_without_recovery() {
     drop(db);
 
     let db: Database<KeyValMessage> =
-        Database::create_new("test/test_recover1", false, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_recover1", OpenMode::OpenCreate, DatabaseSettings::default()).unwrap();
     assert_eq!(db.load_status(), LoadingStatus::CleanLoad);
     db.with_root(|root| {
         assert_eq!(
@@ -126,7 +118,7 @@ fn test_nominal_load_without_recovery() {
 fn test_recovery_simple() {
     super::setup_tracing();
     let mut db: Database<KeyValMessage> =
-        Database::create_new("test/test_recover2", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_recover2", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
     let mut sess = db.begin_session_mut().unwrap();
     sess.disable_filesystem_sync().unwrap();
 
@@ -169,7 +161,7 @@ fn test_recovery_simple() {
     Database::<KeyValMessage>::remove_caches("test/test_recover2").unwrap();
 
     let db: Database<KeyValMessage> =
-        Database::create_new("test/test_recover2", false, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_recover2", OpenMode::OpenCreate, DatabaseSettings::default()).unwrap();
     assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
 
     db.with_root(|root| {
@@ -202,7 +194,7 @@ fn test_recovery_simple() {
 fn test_recovery_corrupted_file() {
     Database::<KeyValMessage>::remove_db_files("test/test_recover3").unwrap();
     let mut db: Database<KeyValMessage> =
-        Database::create_new("test/test_recover3", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_recover3", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
     assert_eq!(db.load_status(), LoadingStatus::NewDatabase);
 
     let mut sess = db.begin_session_mut().unwrap();
@@ -251,7 +243,7 @@ fn test_recovery_corrupted_file() {
     std::fs::write("test/test_recover3/data0.bin", contents).unwrap();
 
     let db: Database<KeyValMessage> =
-        Database::create_new("test/test_recover3", false, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_recover3", OpenMode::OpenCreate, DatabaseSettings::default()).unwrap();
     assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
 
     db.with_root(|root| {
@@ -276,7 +268,7 @@ fn test_recovery_corrupted_file() {
 
 fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     let mut db: Database<KeyValMessage> =
-        Database::create_new("test/test_recover4", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_recover4", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
     let mut sess = db.begin_session_mut().unwrap();
     sess.disable_filesystem_sync().unwrap();
 
@@ -325,7 +317,7 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     std::fs::write("test/test_recover4/data0.bin", &contents).unwrap();
 
     let db: Database<KeyValMessage> =
-        Database::create_new("test/test_recover4", false, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_recover4", OpenMode::OpenCreate, DatabaseSettings::default()).unwrap();
     assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
 
     let db = db.begin_session().unwrap();

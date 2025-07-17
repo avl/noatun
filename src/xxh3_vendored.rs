@@ -2068,6 +2068,7 @@ pub mod xxh3 {
 
 
 /// Stable hasher made to be very fast, with predictable output.
+#[allow(clippy::large_enum_variant)]
 pub enum NoatunHasher {
     Small([u8; 64], usize),
     Large(Xxh3Default)
@@ -2096,7 +2097,7 @@ impl NoatunHasher {
                 d.update(more_bytes);
                 *self = NoatunHasher::Large(d);
             }
-            NoatunHasher::Large(d) => {
+            NoatunHasher::Large(_) => {
                 unreachable!()
             }
         }

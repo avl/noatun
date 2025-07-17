@@ -4,7 +4,7 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::{sha2, sha2_message};
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, Message, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime, Target};
+use crate::{bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime, Target};
 use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::cmp::Ordering;
@@ -2370,7 +2370,7 @@ mod tests {
     
     use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
     use crate::message_store::{FileOffset, OnDiskMessageStore, U1};
-    use crate::{DummyUnitObject, Message, MessageFrame, MessageId, NoatunTime, Target};
+    use crate::{DummyUnitObject, Message, MessageFrame, MessageId, NoatunMessageSerializer, NoatunTime, Target};
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use std::io::{Cursor, Read, Write};
 
@@ -2388,14 +2388,11 @@ mod tests {
         data: Vec<u8>,
     }
 
-    impl Message for OnDiskMessage {
-        type Root = DummyUnitObject;
+    struct OnDiskMessageSerializer;
 
-        fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
-            unimplemented!()
-        }
+    impl NoatunMessageSerializer<OnDiskMessage> for OnDiskMessageSerializer {
 
-        fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
+        fn deserialize(buf: &[u8]) -> anyhow::Result<OnDiskMessage>
         where
             Self: Sized,
         {
@@ -2408,13 +2405,23 @@ mod tests {
             Ok(OnDiskMessage { id, seq, data })
         }
 
-        fn serialize<W: Write>(&self, mut writer: W) -> anyhow::Result<()> {
-            writer.write_u64::<LittleEndian>(self.id)?;
-            writer.write_u64::<LittleEndian>(self.seq)?;
-            writer.write_u64::<LittleEndian>(self.data.len() as u64)?;
-            writer.write_all(&self.data)?;
+        fn serialize<W: Write>(tself: &OnDiskMessage, mut writer: W) -> anyhow::Result<()> {
+            writer.write_u64::<LittleEndian>(tself.id)?;
+            writer.write_u64::<LittleEndian>(tself.seq)?;
+            writer.write_u64::<LittleEndian>(tself.data.len() as u64)?;
+            writer.write_all(&tself.data)?;
             Ok(())
         }
+    }
+
+    impl Message for OnDiskMessage {
+        type Root = DummyUnitObject;
+        type Serializer = OnDiskMessageSerializer;
+
+        fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
+            unimplemented!()
+        }
+
     }
 
     #[test]

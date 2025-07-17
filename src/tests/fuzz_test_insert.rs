@@ -1,13 +1,14 @@
+use crate::SavefileMessageSerializer;
 use crate::cutoff::CutOffDuration;
 use crate::data_types::*;
 use crate::database::DatabaseSettings;
 use crate::sequence_nr::SequenceNr;
-use crate::{msg_deserialize, msg_serialize,  Database, Message, NoatunTime};
+use crate::{Database, Message, NoatunTime};
 use crate::{NoatunStorable, Object};
 use datetime_literal::datetime;
 use rand::prelude::SliceRandom;
 use savefile_derive::Savefile;
-use std::io::Write;
+
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -53,6 +54,7 @@ pub struct TestMessage {
 
 impl Message for TestMessage {
     type Root = TestDb;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, time: NoatunTime, mut root: Pin<&mut Self::Root>) {
         root.as_mut().items_mut().push(SubObjDetached {
@@ -64,16 +66,7 @@ impl Message for TestMessage {
         root.as_mut().set_now(time);
     }
 
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(msg_deserialize(buf)?)
-    }
 
-    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        msg_serialize(self, writer)
-    }
 }
 
 

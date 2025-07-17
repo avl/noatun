@@ -5,18 +5,18 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use byteorder::{LittleEndian, WriteBytesExt};
 
-use crate::database::DatabaseSettings;
+use crate::database::{DatabaseSettings, OpenMode};
 use data_types::NoatunBox;
 use data_types::NoatunCell;
 use data_types::NoatunVec;
 use database::Database;
 use datetime_literal::datetime;
 use savefile::{
-    load_noschema, save_noschema, Deserialize, Packed, SavefileError, Schema, Serialize,
+    Deserialize, Packed, SavefileError, Schema, Serialize,
     Serializer, WithSchema, WithSchemaContext,
 };
 use savefile_derive::Savefile;
-use std::io::{Cursor, Read, SeekFrom};
+use std::io::{Read, SeekFrom};
 use tracing_subscriber::Layer;
 
 mod all_up_sync_test;
@@ -270,21 +270,13 @@ pub(crate) trait DummyTestMessageApply {
 
 impl<Root: FixedSizeObject + DummyTestMessageApply> Message for DummyTestMessage<Root> {
     type Root = DummyTestApp<Root>;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
         Root::test_message_apply(time, root.inner_mut())
     }
 
-    fn deserialize(buf: &[u8]) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        msg_deserialize(buf)
-    }
 
-    fn serialize<W: Write>(&self, writer: W) -> Result<()> {
-        msg_serialize(self, writer)
-    }
 }
 
 
@@ -378,21 +370,13 @@ impl<T> Debug for DummyMessage<T> {
 
 impl<T: Object+NoatunStorable+'static> Message for DummyMessage<T> {
     type Root = T;
+    type Serializer = DummyMessageSerializer;
 
     fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
         unimplemented!()
     }
 
-    fn deserialize(_buf: &[u8]) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        unimplemented!()
-    }
 
-    fn serialize<W: Write>(&self, _writer: W) -> Result<()> {
-        unimplemented!()
-    }
 }
 
 #[repr(C)]
@@ -450,27 +434,19 @@ struct IncrementMessage {
 
 impl Message for IncrementMessage {
     type Root = CounterObject;
+    type Serializer = DummyMessageSerializer;
 
     fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
         unimplemented!()
     }
 
-    fn deserialize(_buf: &[u8]) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        unimplemented!()
-    }
 
-    fn serialize<W: Write>(&self, _writer: W) -> Result<()> {
-        unimplemented!()
-    }
 }
 
 #[test]
 fn test1() {
     let mut db: Database<CounterMessage> =
-        Database::create_new("test/test1.bin", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test1.bin", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|counter| unsafe {
@@ -509,6 +485,7 @@ impl CounterMessage {
 }
 impl Message for CounterMessage {
     type Root = CounterObject;
+    type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: NoatunTime, root: Pin<&mut CounterObject>) {
         unsafe {
@@ -521,22 +498,13 @@ impl Message for CounterMessage {
         }
     }
 
-    fn deserialize(buf: &[u8]) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(load_noschema(&mut Cursor::new(buf), 1)?)
-    }
-
-    fn serialize<W: Write>(&self, mut writer: W) -> Result<()> {
-        Ok(save_noschema(&mut writer, 1, self)?)
-    }
+    
 }
 #[test]
 fn test_projection_time_limit() {
     let mut db: Database<CounterMessage> = Database::create_new(
         "test/msg_store_time_limit.bin",
-        true,
+        OpenMode::Overwrite,
         DatabaseSettings {
             projection_time_limit: Some(datetime!(2024-01-02 00:00:00 Z).into()),
             ..Default::default()
@@ -611,7 +579,7 @@ fn test_projection_time_limit() {
 #[test]
 fn test_msg_store_real() {
     let mut db: Database<CounterMessage> =
-        Database::create_new("test/msg_store.bin", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/msg_store.bin", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.append_single(
@@ -843,7 +811,7 @@ fn test_handle() {
 
     let mut db: Database<DummyTestMessage<NoatunBox<NoatunCell<u32>>>> = Database::create_new(
         "test/test_handle.bin",
-        true,
+        OpenMode::Overwrite,
         DatabaseSettings::default(),
 
     )
@@ -913,7 +881,7 @@ fn test_noatun_box_miri() {
 #[test]
 fn test_string0() {
     let mut db: Database<DummyTestMessage<NoatunString>> =
-        Database::create_new("test/test_string0", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_string0", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|test_str| {
@@ -940,7 +908,7 @@ fn test_vec0() {
     }
 
     let mut db: Database<DummyTestMessage<NoatunVec<CounterObject>>> =
-        Database::create_new("test/test_vec0", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_vec0", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
 
     let mut db = db.begin_session_mut().unwrap();
     db.with_root_mut(|counter_vec| {
@@ -1032,7 +1000,7 @@ fn test_vec_miri0() {
 #[test]
 fn test_vec_undo() {
     let mut db: Database<DummyTestMessage<NoatunVec<CounterObject>>> =
-        Database::create_new("test/vec_undo", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/vec_undo", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
 
     {
         let mut db = db.begin_session_mut().unwrap();
