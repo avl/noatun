@@ -263,12 +263,6 @@ impl<T: NoatunStorable> NoatunCell<T> {
         c.write_storable_ptr(new_value, addr_of_mut!(tself.value));
         c.update_registrar_ptr(addr_of_mut!(tself.registrar), false);
     }
-    pub fn clear(self: Pin<&mut Self>) {
-        let tself = unsafe { self.get_unchecked_mut() };
-        // TODO: Should this also set the `opaque` flag, as above? Is `clear` really
-        // observable?
-        NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.registrar), false);
-    }
 }
 
 impl<T: NoatunStorable> OpaqueNoatunCell<T> {

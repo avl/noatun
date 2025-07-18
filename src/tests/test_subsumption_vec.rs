@@ -37,7 +37,7 @@ impl Message for VecMessage {
         }
     }
 
-    
+
 }
 
 #[test]
@@ -168,11 +168,6 @@ fn test_vec4() {
     })
         .unwrap();
 
-    // NOTE!
-    // Someone else could write an item at index 0 at a time before th e`reset:true` message.
-    // If they did, our pruning here would become visible, since it wouldn't be deleted.
-    // There'd still be eventual consistency.
-    // TODO: Document the above in a promenent place in the manual
     assert_eq!(db.count_messages(), 1, "last message must remain, since earlier messages were non-local");
 }
 

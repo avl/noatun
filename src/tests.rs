@@ -399,8 +399,8 @@ impl Object for CounterObject {
     fn destroy(self: Pin<&mut Self>) {
         unsafe {
             let tself = self.get_unchecked_mut();
-            Pin::new_unchecked(&mut tself.counter).clear();
-            Pin::new_unchecked(&mut tself.counter2).clear();
+            Pin::new_unchecked(&mut tself.counter).destroy();
+            Pin::new_unchecked(&mut tself.counter2).destroy();
         }
     }
 
@@ -1081,4 +1081,30 @@ fn test_object_macro() {
 #[ignore]
 fn test_id_generation_must_be_random() {
     assert!(!FOR_TEST_NON_RANDOM_ID);
+}
+
+#[test]
+fn test_noatuntime_comparison() {
+    let id1 = MessageId::generate_for_time(datetime!(2024-01-01 T 00:00:00 Z).into()).unwrap();
+    let id2 = MessageId::generate_for_time(datetime!(2024-01-01 T 00:00:01 Z).into()).unwrap();
+    assert!(id1 < id2);
+}
+
+#[test]
+fn test_successor() {
+
+    compile_error!("check this actually works")
+    for _ in 0.. 100                                                                                                                                                                                                                                                                 {
+        let id = MessageId::generate_for_time(NoatunTime::now()).unwrap();
+        //println!("------------------ Id: {:?} -------------------------", id);
+        let mut idc = id;
+        for i in 0..100 {
+            let oldidc = idc;
+            idc = idc.unique_successor().unwrap();
+            let id2 = idc;
+            assert!(oldidc < idc);
+            //println!("{:x?}, succeeded by\n{:x?}", id.raw(), id2.raw());
+        }
+
+    }
 }

@@ -426,7 +426,7 @@ impl Debug for MessageId {
 }
 
 #[cfg(test)]
-static FOR_TEST_NON_RANDOM_ID: bool = true;
+static FOR_TEST_NON_RANDOM_ID: bool = false;
 
 #[cfg(test)]
 static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize =
@@ -471,6 +471,10 @@ impl MessageId {
     }
     pub fn zero() -> MessageId {
         MessageId { data: [0, 0, 0, 0] }
+    }
+
+    pub(crate) fn raw(&self) -> [u32;4] {
+        self.data
     }
 
     /// Next larger MessageId.
@@ -528,7 +532,40 @@ impl MessageId {
             rand::thread_rng().fill_bytes(&mut random_part);
         }
 
-        Self::from_parts(time, random_part)
+
+        let mut temp = Self::from_parts(time, random_part)?;
+
+        // Leave space for same-timestamp increments
+        temp.data[1] &= 0xffff_7fff;
+
+        Ok(temp)
+    }
+    /// Creates a new message id which is guaranteed to have a greater sort order
+    /// than 'self', but the same timestamp.
+    ///
+    /// NOTE! Every original NoatunMessage has at most 32767 successors. This means
+    /// that [`unique_successor`] can be used to 'update' a message 32768 times, but not
+    /// more. If a need arises for generating more than 32767 message ids with the same timestamp,
+    /// some other mechanism must be used.
+    ///
+    /// # Returns
+    /// The new message-id, or an error if the successor pool is exhausted or if the
+    /// timestamp is out of range.
+    pub fn unique_successor(&self) -> Result<MessageId> {
+        let mut counter = self.data[1]&0xffff;
+        if counter < 0x8000 {
+            counter = 0x8000;
+        }  else {
+            counter += 1;
+            if counter > 0xffff {
+                bail!("unique successors of {} exhausted, no more can be generated", self);
+            }
+        }
+        let time = self.timestamp();
+        let mut raw = Self::generate_for_time(time)?;
+        raw.data[1] &= 0xffff_0000;
+        raw.data[1] |= counter;
+        Ok(raw)
     }
     pub fn from_parts_for_test(time: NoatunTime, random: u64) -> MessageId {
         let mut data = [0u8; 10];
@@ -537,7 +574,11 @@ impl MessageId {
         Self::from_parts(time, data).unwrap()
     }
     pub fn timestamp(&self) -> NoatunTime {
-        let restes = (self.data[0] as u64) + (((self.data[1] & 0xffff) as u64) << 32);
+        let mut data : [u8; 16] = cast_storable(self.data);
+        let mut time_le_bytes = [0u8; 8];
+        time_le_bytes[2..6].copy_from_slice(&data[0..4]);
+        time_le_bytes[0..2].copy_from_slice(&data[6..8]);
+        let restes = u64::from_le_bytes(time_le_bytes);
         NoatunTime(restes)
     }
     pub fn from_parts(time: NoatunTime, random: [u8; 10]) -> Result<MessageId> {
@@ -552,8 +593,11 @@ impl MessageId {
             bail!("Time value is too large");
         }
         let mut data = [0u8; 16];
-        data[0..6].copy_from_slice(&time.to_le_bytes()[0..6]);
-        data[6..16].copy_from_slice(&random);
+        let time_le_bytes = time.to_le_bytes();
+        data[0..4].copy_from_slice(&time_le_bytes[2..6]);
+        data[4..6].copy_from_slice(&random[0..2]);
+        data[6..8].copy_from_slice(&time_le_bytes[0..2]);
+        data[8..16].copy_from_slice(&random[2..10]);
 
         Ok(MessageId {
             data: cast_storable(data),
