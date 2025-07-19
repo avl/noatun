@@ -2073,56 +2073,99 @@ impl<'a, K: NoatunKey + PartialEq, V: FixedSizeObject> HashAccessContextMut<'a, 
     }
 }
 
-struct LengthGuard {
+struct LengthGuard<'a, K:NoatunKey,V:FixedSizeObject> {
     new_length: usize,
-    length_field: *mut usize,
+
+    map: &'a mut NoatunHashMap<K, V>,
+    //length_field: *mut usize,
 }
 
-impl LengthGuard {
-    fn new(length_field: &mut usize) -> LengthGuard {
+impl<'a, K:NoatunKey,V:FixedSizeObject> LengthGuard<'a, K,V> {
+    fn new(map: &'a mut NoatunHashMap<K,V>) -> LengthGuard<'a, K, V> {
         LengthGuard {
-            new_length: *length_field,
-            length_field: length_field as *mut usize,
+            new_length: map.length,
+            map
         }
     }
-    fn record_delete(&mut self) {
-        self.new_length -= 1;
-    }
 }
 
-impl Drop for LengthGuard {
+impl<'a, K:NoatunKey,V:FixedSizeObject> Drop for LengthGuard<'a,K,V> {
     fn drop(&mut self) {
         println!("Dropping DeleteGuard, writing {}", self.new_length);
-        NoatunContext.write_ptr(self.new_length, self.length_field);
+        NoatunContext.write_ptr(self.new_length, &mut self.map.length);
     }
 }
 
 
 impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMap<K, V> {
-    pub fn len(&self) -> usize {
 
+    fn assert_not_apply(&self, method: &str, untracked_version_available: bool) {
         let context = unsafe{&*get_context_ptr()};
         if context.is_message_apply() {
+            let extra = if untracked_version_available {
+                format!(" To bypass this check, use NoatunHashMap::untracked_{method} instead.")
+            } else {
+                "".to_string()
+            };
             panic!(
-                "A call was made to NoatunHashMap::len from within Message::apply.
+                "A call was made to NoatunHashMap::{method} from within Message::apply.
                  This is not allowed, since it would make the current Message causally dependent
-                 upon all previous mutations to the map."
+                 upon all previous mutations to the map.{extra}"
             );
         }
+
+    }
+
+    /// Returns the number of elements in the map.
+    ///
+    /// This method panics if called from within [`Message::apply`]. But also see
+    /// [`Self::untracked_len`].
+    pub fn len(&self) -> usize {
+
+        self.assert_not_apply("len", true);
 
         self.length
     }
+
+    /// Note, this does not record a read dependency.
+    ///
+    /// Future pruning of unrelated messages may affect the result of this method.
+    /// Only use the return value for logging/debugging, or uses where the numerical
+    /// value will not be used as a decision factor in any logic.
+    pub fn untracked_len(&self) -> usize {
+        self.length
+    }
+
+    /// Returns true if there are no elements in the map.
+    ///
+    /// This method panics if called from within [`Message::apply`]. But also see
+    /// [`Self::untracked_is_empty`].
     pub fn is_empty(&self) -> bool {
-        let context = unsafe{&*get_context_ptr()};
-        if context.is_message_apply() {
-            panic!(
-                "A call was made to NoatunHashMap::is_empty from within Message::apply.
-                 This is not allowed, since it would make the current Message causally dependent
-                 upon all previous mutations to the map."
-            );
-        }
+        self.assert_not_apply("is_empty", true);
         self.length == 0
     }
+    /// Returns true if there are no elements in the map.
+    ///
+    /// Note, this does not record a read dependency.
+    ///
+    /// Future pruning of unrelated messages may affect the result of this method.
+    /// Only use the return value for logging/debugging, or uses where the true
+    /// value will not be used as a decision factor in any logic.
+    pub fn untracked_is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    /// Iterate over all the key/value-pairs of the map.
+    ///
+    /// Note, this does not record any read dependency.
+    /// Generally, this is not a problem, since the code is probably reading from the
+    /// actual iterated values, recording read dependencies on them.
+    ///
+    /// However, code could just count the number of elements by exhausting the iterator
+    /// and counting the number of values. Doing this will not record any read dependency.
+    ///
+    /// It is recommended that applications do not count the number of iterated values, or
+    /// if they do, that they do not use the numerical value for any decisions.
     pub fn iter(&self) -> NoatunHashMapIterator<K, V> {
         let context = self.data_meta_len();
         NoatunHashMapIterator {
@@ -2261,10 +2304,15 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         }*/
     }
 
+    /// Remove any items in the map for which the predicate returns true.
+    ///
+    /// This method does not record any read-dependency on the map. Applications are
+    /// encouraged not to count the number of invocations of the predicate, or if they do,
+    /// to not base any logic on the numeric value.
     pub fn retain(self: Pin<&mut Self>, mut predicate: impl FnMut(&K, Pin<&mut V>) -> bool ) {
         let tself = unsafe { self.get_unchecked_mut() };
-        let mut length_guard = LengthGuard::new(&mut tself.length);
-        let mut context = tself.data_meta_len_mut();
+        let mut length_guard_and_map = LengthGuard::new(tself);
+        let mut context = length_guard_and_map.map.data_meta_len_mut();
 
         let buckets_count = context.buckets.len();
         let mut i = 0;
@@ -2277,8 +2325,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 let val = unsafe { Pin::new_unchecked(&mut bucket.v) };
                 if !predicate(&bucket.key, val) {
                     let bucket_nr = BucketNr(i);
-                    length_guard.record_delete();
-                    println!("Record delete");
+                    length_guard_and_map.new_length -= 1;
                     Self::remove_impl_by_bucket_nr(&mut context, bucket_nr, |_|{});
                 } else {
                     i += 1;
@@ -2308,12 +2355,21 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         }
     }
 
+    /// Clear all elements.
+    ///
+    /// This does not itself record any tombstones, but does record the current message
+    /// as the "last clearer" of this map.
+    ///
+    /// If the map is repeatedly built up, then cleared, it's much more efficient to
+    /// use this method than other methods to delete items from the map. The reason is
+    /// that after 'clear', Noatun will be able to prune all previous messages, including
+    /// those invoking 'clear'.
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
 
 
         NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
-        //NoatunContext.wrote_tombstone();
+
         NoatunContext.write_internal(0, &mut tself.length);
         tself.clear_impl();
     }
@@ -2456,18 +2512,23 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     }
 
     /// For a mutable version of this, see [`get_mut_val`].
+    #[inline]
     pub fn get(&self, key: &K::DetachedType) -> Option<&V> {
         let context = self.data_meta_len();
         let bucket = Self::probe_read(context, key)?;
         unsafe { Some(&context.buckets[bucket.0].assume_init_ref().v) }
     }
 
+    /// Returns true if the given key is present in the map.
     pub fn contains_key(&self,
                         key: &K::DetachedType) -> bool {
         let context = self.data_meta_len();
         Self::probe_read(context, key).is_some()
     }
 
+
+    /// NOTE! This method is not available from within [`Message::apply`],
+    /// and will panic if called from there.
     pub fn get_mut_val<'a>(
         self: Pin<&'a mut Self>,
         key: &K::DetachedType,
@@ -2482,7 +2543,10 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         }
     }
 
-    pub fn get_value_infallible<'a>(
+    /// Return the value for the given key.
+    ///
+    /// If the key is not present in the map, insert it with an all-zero value.
+    pub fn get_insert<'a>(
         mut self: Pin<&'a mut Self>,
         key: &K::DetachedType,
     ) -> Pin<&'a mut V> {
@@ -2515,7 +2579,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         self.remove_impl(key, |_| {})
     }
 
-    /// Remove and return value for the given key.
+    /// Remove and return the value for the given key.
     ///
     /// If the key is not present, None is returned.
     pub fn pop(&mut self, key: &K::DetachedType) -> Option<V::DetachedOwnedType> {
@@ -3050,7 +3114,7 @@ use super::{NoatunBox, NoatunHashMap, NoatunString};
             }
 
             assert_eq!(map.0.len(), 300);
-            assert_eq!(**unsafe{Pin::new_unchecked(&mut map.0)}.get_value_infallible(&10), 10);
+            assert_eq!(**unsafe{Pin::new_unchecked(&mut map.0)}.get_insert(&10), 10);
 
             for i in 0..300 {
                 let val = map.0.get(&i).unwrap();

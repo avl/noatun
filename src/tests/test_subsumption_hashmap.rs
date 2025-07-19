@@ -31,7 +31,7 @@ impl Message for MapMessage {
         } else if self.reset {
             root.items.clear();
         } else {
-            let value = root.items.get_value_infallible(&(self.index as u32));
+            let value = root.items.get_insert(&(self.index as u32));
             value.set(self.val);
         }
     }

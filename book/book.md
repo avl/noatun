@@ -1,23 +1,28 @@
 # Introduction to Noatun
 
 Welcome to Noatun! Noatun is an in-process, multi master, distributed event sourced database with automatic
-garbage collection. It's suitable for unreliable networks and can be used in embedded applications.
+garbage collection and an automatically materialized view. It's suitable for unreliable networks and can be 
+used in embedded applications (std required).
 
 Features:
 
  * Multi master distribution - writes can be made on any node, even when offline
- * Decentralized - nodes in the network do not need to be assigned unique ids
+ * 100% decentralized - nodes in the network do not need to be assigned unique ids - all they need
+   to agree on is the message format. 
  * Data model is 100% event based. Current database state is a function only of current events.
- * Works in any network - does not require unique network addresses
+ * Works in any network - and does not require unique network addresses
  * Deterministic replay and time travel for easy debugging
  * Robust persistent store optimized for availability
  * Automatic pruning of old messages
+ * Excellent read performance. Reading from Noatun is almost as fast as reading from regular pure 
+   rust data structures in RAM.
+ * Good write performance. Writing messages to disk is very fast, and projecting them
+   to the materialized view is often reasonable fast too, but depends on the user logic.
 
 ## Functional overview
 
 At the base of Noatun is an event log. Everything that happens in a Noatun database happens
-because of an event. The only way to affect the state of a Noatun database is to create and
-add an event.
+because of an event. The only way to affect the state of a Noatun database is to create an event.
 
 Each Noatun database has two parts: 
  * Event store: contains all events in the database
@@ -27,26 +32,27 @@ _Information flow (in operation)_
 
 ```mermaid
 block-beta
-columns 1
-    U["User Code"]
-    space
-    Noatun
-    space
-    block:ID
+columns 3
+    U["Application"]:3
+    space:3
+    Noatun:3
+    space:3
+    space:3
+    block:ID:3
       E["Event Store"]
       space
-      Materializer
+      Projector
       space
       M["Materialized View"]
     end
-    space
-    Disk
+    space:3
+    Disk:3
     U --> Noatun
-    Noatun --> U
     Noatun --> E
     M --> Noatun
-    E --> Materializer
-    Materializer --> M
+    E --> Projector
+    Projector --> M
+    M --> Projector
     E --> Disk
     M --> Disk
     Disk --> M
@@ -63,7 +69,7 @@ event have been overwritten by later events, Noatun will prune the first event. 
 that a Noatun application can work for an indefinite time period without growing indefinitely
 in size (given that previous events are actually logically subsumed by later events).
 
-## How to use
+## Complete example
 
 Let's say you wanted to track the number of bolts in a warehouse. Bolts are added
 to the warehouse, removed, and occasionally an inventory is performed where the number
@@ -72,7 +78,7 @@ of bolts are counted to make sure the tally is correct.
 Example code:
 
 ```rust
-use noatun::{Database, OpenMode, NoatunTime, noatun_object, Message, DatabaseSettings, PostcardMessageSerializer};
+use noatun::{Database, OpenMode, MessageId, noatun_object, Message, DatabaseSettings, PostcardMessageSerializer};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::communication::udp::TokioUdpDriver;
 use serde_derive::{Serialize, Deserialize};
@@ -113,7 +119,7 @@ impl Message for WarehouseEvent {
     
     /// A function which applies an event to a database with `Warehouse`
     /// as its root object.
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut Warehouse>) {
+    fn apply(&self, _id: MessageId, root: Pin<&mut Warehouse>) {
         let mut root = root.pin_project();
         match self {
             WarehouseEvent::Add(delta) => {
@@ -173,7 +179,6 @@ async fn example() {
 # Features
 
 ## Automatic pruning
-
 
 ### Introduction
 
@@ -276,7 +281,7 @@ would cause the previous message to be pruned.
 
 This sort of dependency tracking is not without problems.
 
-## Actual reads vs potential reads, and the cutoff interval
+### Actual reads vs potential reads, and the cutoff interval
 
 As we saw in the previous section, when a message apply reads from the materialized view, this creates
 a read dependency. However, messages can arrive to a node out-of-order. This means that even if no readers
@@ -369,6 +374,64 @@ nodes detect that peers have cutoff intervals in the near future, they immediate
 Large clock drift is detected and flagged as an error. Noatun requires approximate clock synchronization.
 
 
+### Avoiding read dependencies in complex apps
+
+For some applications, message pruning is simply not necessary. Consider a distributed bug tracker for
+a small team. Noatun will function well with millions of events in the store, and a small team
+may never reach this amount of data.
+
+Even if pruning is needed, it is likely to be okay that updates to a specific bug aren't pruned until
+the bug is deleted.
+
+But for some applications, this is not enough. Consider a support application for a delivery trucks.
+
+Each truck may update its current position once a second. With thousands of trucks, the number of position
+updates will soon grow large. However, if we only need the most recent position update, we would like
+previous messages to be pruned.
+
+As we've seen above, this is easily supported by Noatun. However, a complication to be aware of is that
+navigating the materialized view can cause unintended observations. 
+
+
+### Early pruning with opaque data
+
+Noatun can sometimes prune data even before the cut-off interval has elapsed. This is possible when
+a message has only written "opaque" data to the database. Opaque data is data that cannot be read
+by other messages. That is, information that cannot be read while executing in [`Message::apply`], but only
+from [`DatabaseSession::with_root`]. 
+
+Let's return to a variation of our earlier example:
+
+```mermaid 
+block-beta
+    columns 5
+    block
+        columns 1
+        uct1("Event Store")
+        Event1
+        space
+        Event2
+    end
+    space
+    space
+    block
+        columns 1
+        uct2("Materialized View")
+        FieldA
+        space
+        space
+        FieldB
+    end
+    Event1-- "write" -->FieldA
+    Event2-- "write" -->FieldA
+class uct1 BT
+class uct2 BT
+classDef BT stroke:transparent,fill:transparent
+```
+
+If FieldA is an opaque field, we know no message can ever read it. This means that we can be certain that 
+the value that Event1 wrote can never be accessed. Thus, messages that only write opaque data can be pruned
+as soon as all their information has been completely overwritten.
 
 
 ### Collections
@@ -389,6 +452,27 @@ pruning an element from a `OpaqueNoatunVec` is not observable to any message. Re
 if information it wrote could be read by a later message. So if the message we're about to prune wrote an item
 that is actually read itself by a message, the pruning will not occur.
 
+
+### Tombstones
+
+Tombstones are markers that certain information no longer exists. Intuitively, it may seem that information that
+no longer exists shouldn't require any information to be stored at all. However, in a distributed system this
+isn't always true. The reason is that a node that is not up-to-date could still have information that should 
+have been deleted. Other nodes thus need to maintain just enough information to be able to communicate that
+the deleted information is, in fact, deleted,
+
+Noatun marks messages that delete elements from collections as 'tombstone' messages. These are never pruned
+until the cutoff interval has elapsed, even if the message only wrote opaque data.
+
+Emitting tombstones can be costly, so it can make sense for applications to take care to avoid doing so.
+
+Noatun has a tools for avoiding tombstones in some situations: the `clear` method.
+
+[`NoatunVec`], [`OpaqueNoatunVec`] and [`NoatunHashMap`] all have such a `clear`-method. This method, unsurprisingly,
+removes all elements from the collection. But additionally, and crucially, it does this without marking the 
+message as a tombstone. Instead, it records itself as the writer of a special 'clear' marker in the collection. 
+This write is recorded just like the write to any field. Future calls to 'clear' will overwrite the marker, and 
+allow the previous message to be pruned.
 
 
 
@@ -479,11 +563,11 @@ in order, it is easy to implement last write wins.
 As long as all messages represent "an event that actually happened in the real world"
 things often turn out fine. 
 
-However, consider a naive distributed system that keeps track of a bunch of ice cream carts on
+To illustrate this, consider a naive distributed system that keeps track of a bunch of ice cream carts on
 a beach. Each cart is a noatun node. Every time an ice cream is sold, each cart/node records 
 the sale in a database:
 
-```rust
+```ignore
 enum Event {
     IceCreamSold(u32)
 }
@@ -540,6 +624,7 @@ The cameras photograph cars, and register the passage of each car as an event in
 What's wrong with the following event?
 
 ```rust
+use noatun::data_types::NoatunString;
 enum TollEvent {
     CarPassed {
         license_plate_number: NoatunString,
@@ -645,6 +730,7 @@ Generally, there are two options:
  * Use 'data entry' timestamps for all elements. That is, timestamp all events with the
    time at which they were entered into the system. This loses some benefits
    of a timestamped event source, but may be the right choice in this particular example.
+    
 
 
 
