@@ -56,6 +56,8 @@ checksum = "34ac096ce696dc2fcabef30516bb13c0a68a11d30131d3df6f04711467681b04"
 [[package]]
 name = "arcshift"
 version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95bcd258b3b56d33539bfd0c0bd423b74ee05abe628386a3a000a88c0147748f"
 
 [[package]]
 name = "arrayvec"
@@ -980,7 +982,9 @@ dependencies = [
 
 [[package]]
 name = "savefile"
-version = "0.18.6"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efae543b0c35dafb640485acfae6db2c57da94a81393fb411c12f3d6c9084139"
 dependencies = [
  "arrayvec",
  "bit-set 0.5.3",
@@ -998,9 +1002,9 @@ dependencies = [
 
 [[package]]
 name = "savefile-derive"
-version = "0.18.5"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45900852661d1f7b288211dd848c7d65f6c3b501e298280f8e6e31205d01cf2c"
+checksum = "1e0376f220a3427a88e084a1acd072f3d16a0246abd37114aa801d99ffb9bc1f"
 dependencies = [
  "proc-macro-error2",
  "proc-macro2",

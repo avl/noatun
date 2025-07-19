@@ -47,6 +47,8 @@ checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
 [[package]]
 name = "arcshift"
 version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95bcd258b3b56d33539bfd0c0bd423b74ee05abe628386a3a000a88c0147748f"
 
 [[package]]
 name = "arrayvec"
@@ -195,7 +197,7 @@ dependencies = [
  "noatun",
  "rand",
  "rusqlite",
- "savefile",
+ "savefile 0.18.7",
  "savefile-derive",
  "tracing",
  "tracing-subscriber",
@@ -424,7 +426,7 @@ dependencies = [
  "memchr",
  "paste",
  "rand",
- "savefile",
+ "savefile 0.18.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "savefile-derive",
  "sha2",
  "smallvec",
@@ -668,7 +670,7 @@ checksum = "8a0d197bd2c9dc6e53b84da9556a69ba4cdfab8619eb41a8bd1cc2027a0f6b1d"
 
 [[package]]
 name = "savefile"
-version = "0.18.6"
+version = "0.18.7"
 dependencies = [
  "arrayvec",
  "bit-set 0.5.3",
@@ -685,10 +687,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "savefile-derive"
-version = "0.18.6"
+name = "savefile"
+version = "0.18.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02ff2c898fd98e9c08d78b2b5e791afcbe88336ce8d951691f50bb1996685b10"
+checksum = "336aa7479a32f1fd5c1faec0e1a1689e2b351111a65e7be20bade956f1a806e6"
+dependencies = [
+ "arrayvec",
+ "bit-set 0.5.3",
+ "bit-set 0.8.0",
+ "bit-vec 0.6.3",
+ "bit-vec 0.8.0",
+ "byteorder",
+ "indexmap",
+ "memoffset",
+ "parking_lot",
+ "rustc_version",
+ "smallvec",
+]
+
+[[package]]
+name = "savefile-derive"
+version = "0.18.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7523cec5c125aebcc001239c865df1f9a1fdb1497879557457d2d35949c97b6a"
 dependencies = [
  "proc-macro-error2",
  "proc-macro2",

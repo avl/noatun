@@ -28,8 +28,8 @@ sha2 = "0.10"
 indexmap = "2.7"
 anyhow = "1.0"
 fs2 = "0.4"
-savefile = {  version = "0.18", path ="../savefile/savefile"}
-savefile-derive = { version = "0.18"}
+savefile = {  version = "0.19.0"}
+savefile-derive = { version = "0.19.0"}
 serde_derive = { version = "1.0", optional = true }
 serde = { version = "1.0", optional = true }
 libc = "0.2.169"
@@ -46,7 +46,7 @@ memchr = "2.7.4"
 colored = { version = "3.0.0", optional = true}
 itertools = "0.14.0"
 smallvec = "1.14.0"
-arcshift = { version = "0.4.0", path = "../arcshift/arcshift" }
+arcshift = { version = "0.4.0"}
 datetime_literal = "0.1.3"
 postcard = { version = "1.1", features = ["use-std"], optional = true }
 
