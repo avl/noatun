@@ -38,3 +38,6 @@ pub fn rgb(s: &str, _r: u8, _g: u8, _b: u8) -> &str {
 pub fn colored_hex_int(i: u32) -> u32 {
     i
 }
+pub fn colored_hex_sint(i: i32) -> i32 {
+    i
+}

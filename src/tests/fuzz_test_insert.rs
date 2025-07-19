@@ -1,4 +1,4 @@
-use crate::SavefileMessageSerializer;
+use crate::{MessageId, SavefileMessageSerializer};
 use crate::cutoff::CutOffDuration;
 use crate::data_types::*;
 use crate::database::DatabaseSettings;
@@ -56,14 +56,14 @@ impl Message for TestMessage {
     type Root = TestDb;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, time: NoatunTime, mut root: Pin<&mut Self::Root>) {
+    fn apply(&self, time: MessageId, mut root: Pin<&mut Self::Root>) {
         root.as_mut().items_mut().push(SubObjDetached {
             counter: self.insert,
             subsub: vec![SubSubObjDetached {
                 dummy: DummyObj { x: 1, y: 2 },
             }],
         });
-        root.as_mut().set_now(time);
+        root.as_mut().set_now(time.timestamp());
     }
 
 

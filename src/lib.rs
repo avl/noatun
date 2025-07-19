@@ -393,7 +393,7 @@ impl Display for MessageId {
                 f,
                 "{:?}-{}-{}-{}",
                 time_str,
-                colored_hex_int((self.data[1] & 0xffff0000) >> 16),
+                colored_hex_sint((self.data[1] & 0xffff).wrapping_sub(0x4000) as i32),
                 colored_hex_int(self.data[2]),
                 colored_hex_int(self.data[3])
             )
@@ -404,7 +404,7 @@ impl Display for MessageId {
             f,
             "{:?}-{:x}-{:x}-{:x}",
             time_str,
-            (self.data[1] & 0xffff0000) >> 16,
+            (self.data[1] & 0xffff).wrapping_sub(0x4000) as i32,
             self.data[2],
             self.data[3]
         )
@@ -426,7 +426,7 @@ impl Debug for MessageId {
 }
 
 #[cfg(test)]
-static FOR_TEST_NON_RANDOM_ID: bool = false;
+static FOR_TEST_NON_RANDOM_ID: bool = true;
 
 #[cfg(test)]
 static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize =
@@ -481,6 +481,8 @@ impl MessageId {
     /// Panics if current id is the largest possible.
     /// Note: This *CAN* change the timestamp of the message, though this is unlikely.
     /// Note: The timestamp can at most increase by 1 ms.
+    /// Note: Use this with care to not accidentally create duplicate ids
+    ///
     pub fn successor(&self) -> MessageId {
         let mut temp = *self;
         for element in temp.data.iter_mut().rev() {
@@ -512,6 +514,10 @@ impl MessageId {
                                        nr)
     }
 
+    pub fn new_random() -> Result<Self> {
+        Self::generate_for_time(NoatunTime::now())
+    }
+
     pub fn generate_for_time(time: NoatunTime) -> Result<MessageId> {
         let mut random_part = [0u8; 10];
 
@@ -536,51 +542,88 @@ impl MessageId {
         let mut temp = Self::from_parts(time, random_part)?;
 
         // Leave space for same-timestamp increments
-        temp.data[1] &= 0xffff_7fff;
+        temp.pred_succ_reserve();
 
         Ok(temp)
     }
+
+    /// Reserve space for predecessors/successors within the same timestamp
+    fn pred_succ_reserve(&mut self) {
+        let mut bits = (self.data[1]>>14)&3;
+        if bits == 0 {
+            bits = 1;
+        }
+        if bits == 3 {
+            bits = 2;
+        }
+        self.data[1] &= 0xffff_3fff;
+        self.data[1] |= bits<<14;
+    }
+
     /// Creates a new message id which is guaranteed to have a greater sort order
     /// than 'self', but the same timestamp.
     ///
-    /// NOTE! Every original NoatunMessage has at most 32767 successors. This means
-    /// that [`unique_successor`] can be used to 'update' a message 32768 times, but not
-    /// more. If a need arises for generating more than 32767 message ids with the same timestamp,
-    /// some other mechanism must be used.
+    /// NOTE! Every original NoatunMessage is guaranteed to have at least 8191 successors.
+    /// This means that `unique_successor` can be used to 'update' a message at least 8191 times.
     ///
     /// # Returns
     /// The new message-id, or an error if the successor pool is exhausted or if the
     /// timestamp is out of range.
     pub fn unique_successor(&self) -> Result<MessageId> {
         let mut counter = self.data[1]&0xffff;
-        if counter < 0x8000 {
-            counter = 0x8000;
-        }  else {
-            counter += 1;
-            if counter > 0xffff {
-                bail!("unique successors of {} exhausted, no more can be generated", self);
-            }
+        if counter == 0xffff {
+            bail!("unique successors of {} exhausted, no more can be generated", self);
         }
+        counter += 1;
         let time = self.timestamp();
         let mut raw = Self::generate_for_time(time)?;
         raw.data[1] &= 0xffff_0000;
         raw.data[1] |= counter;
         Ok(raw)
     }
+    /// Creates a new message id which is guaranteed to have a smaller sort order
+    /// than 'self', but the same timestamp.
+    ///
+    /// NOTE! Every original NoatunMessage is guaranteed to have at least 8191 predecessors.
+    /// This means that `unique_predecessor` can be used to 'update' a message at least 8191 times.
+    ///
+    /// # Returns
+    /// The new message-id, or an error if the predecessor pool is exhausted or if the
+    /// timestamp is out of range.
+    pub fn unique_predecessor(&self) -> Result<MessageId> {
+        let mut counter = self.data[1]&0xffff;
+        if counter == 0 {
+            bail!("unique predecessors of {} exhausted, no more can be generated", self);
+        }
+        counter -= 1;
+        let time = self.timestamp();
+        let mut raw = Self::generate_for_time(time)?;
+        raw.data[1] &= 0xffff_0000;
+        raw.data[1] |= counter;
+        Ok(raw)
+    }
+
+
     pub fn from_parts_for_test(time: NoatunTime, random: u64) -> MessageId {
         let mut data = [0u8; 10];
         data[2..10].copy_from_slice(&random.to_le_bytes());
-
-        Self::from_parts(time, data).unwrap()
+        let mut temp = Self::from_parts(time, data).unwrap();
+        temp.pred_succ_reserve();
+        temp
     }
     pub fn timestamp(&self) -> NoatunTime {
-        let mut data : [u8; 16] = cast_storable(self.data);
+        let data : [u8; 16] = cast_storable(self.data);
         let mut time_le_bytes = [0u8; 8];
         time_le_bytes[2..6].copy_from_slice(&data[0..4]);
         time_le_bytes[0..2].copy_from_slice(&data[6..8]);
         let restes = u64::from_le_bytes(time_le_bytes);
         NoatunTime(restes)
     }
+
+    /// Create a MessageId from the given time and random part.
+    ///
+    /// Note, this is a low level operation. Use [`Self::generate_for_time`] to generate
+    /// a unique id for a specified timestamp, or [`Self::`]
     pub fn from_parts(time: NoatunTime, random: [u8; 10]) -> Result<MessageId> {
         let t: u64 = time.as_ms();
         Self::from_parts_raw(t, random)
@@ -718,8 +761,14 @@ impl NoatunTime {
     pub const ZERO: NoatunTime = NoatunTime(0);
     pub const MAX: NoatunTime = NoatunTime(u64::MAX);
 
+    /// Returns the current time.
+    ///
+    /// If the time is outside the range [1970-01-01T00:00:00Z, 10889-08-02T05:31:50.655Z],
+    /// the returned value will be clamped to this range.
     pub fn now() -> Self {
-        Self(Utc::now().timestamp_millis() as u64)
+        let millis = Utc::now().timestamp_millis()
+            .clamp(0, (1<<48) -1);
+        Self(millis as u64)
     }
 
     #[must_use]
@@ -762,10 +811,46 @@ pub enum Persistence {
     AtLeastUntilCutoff,
 }
 
+/// A message handled by Noatun
+///
+/// Messages carry all primary data in Noatun. The noatun materialized
+/// view is a function of the complete set of messages. Messages are the events in
+/// the event source pattern followed by Noatun.
+///
+/// As an implementer of Message you need to provide:
+///
+///  * [`Self::apply`], that tells Noatun how to apply a message to the materialized view
+///  * [`Self::Root`] - type of materialized view root object that the message must be applied to
+///  * [`Self::Serializer`] - serializer to serialize message to wire and disk.
+///    See trait [`NoatunMessageSerializer`]. Noatun provides impls for serde postcard and
+///    savefile out of the box.
 pub trait Message: Debug + Sized + 'static {
+    /// The type of materialized view that this message is compatible with.
+    ///
+    /// Each noatun application is expected to have a single message type, and
+    /// thus a single root object that contains all information in the system.
     type Root: Object + NoatunStorable;
+
+    /// Designated the serializer needed to serialize this object.
+    ///
+    /// Having this as an associated type means we can ensure messages are serializable,
+    /// without requiring any particular serializer traits (like serde's Serialize/Deserialize).
     type Serializer: NoatunMessageSerializer<Self>;
-    fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>);
+
+    /// Apply the message to the noatun materialized view, with root type [`Self::Root`].
+    ///
+    /// Implementations of this method must never fail, and must not panic. Automatic proptesting
+    /// or fuzz-testing is encouraged to ensure this.
+    ///
+    /// Logical errors that occur during application should be stored in the database. This so that
+    /// any UI or other user of the materialized view can show the appropriate error message.
+    fn apply(&self, id: MessageId, root: Pin<&mut Self::Root>);
+
+    /// Affect the retention of this message type.
+    ///
+    /// Sometimes it can be desired to make sure messages linger in the system, even
+    /// though they don't affect the materialized view anymore. One example is when
+    /// a complete log of historical events is desired for traceability or compliance.
     fn persistence(&self) -> Persistence {
         Persistence::UntilOverwritten
     }

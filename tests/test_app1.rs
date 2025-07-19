@@ -1,7 +1,7 @@
 use datetime_literal::datetime;
 use noatun::data_types::{NoatunBox, NoatunCell, NoatunVec};
 use noatun::database::{Database, DatabaseSettings};
-use noatun::{Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunStorable, NoatunTime, Object, SavefileMessageSerializer, ThinPtr};
+use noatun::{Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunStorable,  Object, SavefileMessageSerializer, ThinPtr};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
@@ -48,7 +48,7 @@ impl Message for CounterMessage {
     type Root = CounterObject;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, mut root: Pin<&mut Self::Root>) {
         let root_counter;
         unsafe {
             root_counter = root.as_mut().map_unchecked_mut(|x| &mut x.counter);

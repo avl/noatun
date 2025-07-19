@@ -18,10 +18,43 @@ At the base of Noatun is an event log. Everything that happens in a Noatun datab
 because of an event. The only way to affect the state of a Noatun database is to create and
 add an event.
 
-Events are applied to the database in timestamp order. As a user of Noatun, you need to
-define a function that applies an event to the database. Noatun then ensures that the
-database is always just the result of applying all events in order. Noatun will, under the hood,
-efficiently roll back and reapply events if they arrive over the network out of order.
+Each Noatun database has two parts: 
+ * Event store: contains all events in the database
+ * Materialized view: maintained by "applying" all events in order
+
+_Information flow (in regular operation)_
+
+```mermaid
+block-beta
+columns 1
+    U["User Code"]
+    space
+    Noatun
+    space
+    block:ID
+      E["Event Store"]
+      space
+      Materializer
+      space
+      M["Materialized View"]
+    end
+    space
+    Disk
+    U --> Noatun
+    Noatun --> U
+    Noatun --> E
+    M --> Noatun
+    E --> Materializer
+    Materializer --> M
+    E --> Disk
+    M --> Disk
+```
+
+Events are applied to the projection in timestamp order. As a user of Noatun, you need to
+implement a method that applies an event to the database [`Message::apply`]. Noatun 
+then ensures that the materialized view is always just the result of applying all events 
+in order. Noatun will, under the hood, efficiently roll back and reapply events if they 
+arrive over the network out of order.
 
 However, events don't necessarily remain in the database forever. If all the effects of an
 event have been overwritten by later events, Noatun will prune the first event. This means
@@ -34,6 +67,8 @@ Let's say you wanted to track the number of bolts in a warehouse. Bolts are adde
 to the warehouse, removed, and occasionally an inventory is performed where the number
 of bolts are counted to make sure the tally is correct.
 
+Example code:
+
 ```rust
 use noatun::{Database, OpenMode, NoatunTime, noatun_object, Message, DatabaseSettings, PostcardMessageSerializer};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
@@ -43,9 +78,11 @@ use tokio::time::Duration;
 use std::pin::Pin;
 use std::io::Write;
 
-/// Define our events
-/// We use serde + postcard in this example, but noatun isn't tied to
-/// serde in any way (see further below). 
+/// Defines our events
+/// 
+/// For serialization of events (to disk and on network), we use 
+/// serde + postcard. However, Noatun itself isn't tied to serde in 
+/// any way (see further below). 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum WarehouseEvent {
     Add(u32),
@@ -161,8 +198,11 @@ While requiring correct time is a limitation, it is often the case that IT syste
 often need correct time anyway for other purposes, such as validating certificates, 
 correctly timestamping logs, achieving freshness conditions in cryptography, and many more.
 
+The noatun type representing time, `NoatunTime`, has a range from the year 1970 to 
+the year 10000.
 
-## Avoid logical conflicts during Message::apply
+
+## Logical conflicts during Message::apply
 
 Noatun guarantees that all messages are applied in order. I.e, Noatun will call
 the `apply` method of the users `Message` type in timestamp order. If messages arrive 
@@ -172,6 +212,25 @@ does not have to think about this.
 That said, it is possible for different nodes to issue events that logically conflict.
 Noatun has no built-in conflict resolution, but since messages are always applied
 in order, it is easy to implement last write wins.
+
+## Undo
+
+There are a few possibilities for undoing events in Noatun:
+
+### Deleting the event
+
+Events can be deleted using [`DatabaseSessionMut::remove_message`]. Note, however,
+that this is a low level operation that should not be used for events that have been
+(or may have been) transmitted to other nodes. 
+
+### Adding a new event that undoes the previous event
+
+The most straightforward way to handle undo is to create an event that just does
+the reverse of the event that is to be undone.
+
+### Inhibiting a message from being applied
+
+
 
 ## Philosophy of event applications
 
@@ -224,7 +283,8 @@ If events only encode actual ground truth information, and no derived informatio
 it is often relatively straightforward to correctly implement the [`Message::apply`] method.
 
 In general, Noatun events should contain events that exactly reflect what has happened
-in the real world, without any extra information.
+in the real world, with the timestamp of the actual event, without any extra information.
+However, see below for cases where this may be hard to achieve.
 
 ## Event design pitfalls
 
@@ -352,11 +412,4 @@ Generally, there are two options:
 
 
 
-
-
-
-
-
-
-
-
+   

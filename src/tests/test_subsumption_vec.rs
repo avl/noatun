@@ -1,6 +1,6 @@
 use crate::data_types::OpaqueNoatunVec;
 use crate::database::{DatabaseSettings, OpenMode};
-use crate::{Database, Message, OpaqueNoatunCell, NoatunTime, Object, SavefileMessageSerializer};
+use crate::{Database, Message, OpaqueNoatunCell, NoatunTime, Object, SavefileMessageSerializer, MessageId};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
@@ -24,7 +24,7 @@ impl Message for VecMessage {
     type Root = VecDoc;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
         if self.reset {
             root.items.clear();

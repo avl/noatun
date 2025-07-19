@@ -1,6 +1,6 @@
 use crate::SavefileMessageSerializer;
 use crate::database::{DatabaseSettings, OpenMode};
-use crate::{Database, Message, MessageId, NoatunTime};
+use crate::{Database, Message, MessageId};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 use crate::MessageFrame;
@@ -22,7 +22,7 @@ impl Message for DocMessage {
     type Root = Doc;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
         let mut root = root.pin_project();
         if self.reset {
             root.counter.set(0);

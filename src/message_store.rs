@@ -1188,17 +1188,24 @@ impl<M> OnDiskMessageStore<M> {
             .map(|x| x.message)
             .collect())
     }
-    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<M>>>
+    pub fn get_all_messages(&self) -> Result<impl Iterator<Item = MessageFrame<M>> + use<'_, M> >
     where
         M: Message,
     {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
         let data_files = &self.data_files;
-        message_index
+        Ok(message_index
             .iter()
             .filter(|x| !x.file_offset.is_deleted())
-            .map(|x| Self::read_msg(x, data_files, None))
-            .collect()
+            .filter_map(|x|
+                match Self::read_msg(x, data_files, None) {
+                    Ok(v) => {Some(v)}
+                    Err(err) => {
+                        warn!("failed to read message {}: {:?}", x.message, err);
+                        None
+                    }
+                }
+            ))
     }
     pub fn get_all_messages_with_children(&self) -> Result<Vec<(MessageFrame<M>, Vec<MessageId>)>>
     where
@@ -1372,25 +1379,39 @@ impl<M> OnDiskMessageStore<M> {
     /// Delete from the index.
     /// Mark the db as clean.
     /// Messages that are not found are simply ignored. The operation does not stop or fail.
+    ///
+    /// Without force, transmitted messages are not deleted.
+    ///
+    /// Returns earliest sequence nr deleted, if any deleted
+    ///
+    /// This succeeds without deleting if either the iterator was empty,
+    /// or all elements in the iterator were already deleted
     pub fn delete_many(
         &mut self,
         messages: impl Iterator<Item = MessageId>,
         update_head_tracker: &mut UpdateHeadTracker,
-    ) -> Result<()>
+        force: bool
+    ) -> Result<Option<SequenceNr>>
     where
         M: Message,
     {
-        self.do_delete_many(messages, update_head_tracker)
+        self.do_delete_many(messages, update_head_tracker, force)
     }
 
+    /// Returns earliest sequence nr deleted, if any deleted
+    ///
+    /// This succeeds without deleting if either the iterator was empty,
+    /// or all elements in the iterator were already deleted
     fn do_delete_many(
         &mut self,
         messages: impl Iterator<Item = MessageId>,
         update_head_tracker: &mut UpdateHeadTracker,
-    ) -> Result<()>
+        force: bool
+    ) -> Result<Option<SequenceNr>>
     where
         M: Message,
     {
+        let mut earliest = None;
         for message in messages {
             let (_header, message_index) =
                 Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
@@ -1398,10 +1419,29 @@ impl<M> OnDiskMessageStore<M> {
             let Ok(index) = message_index.binary_search_by_key(&message, |x| x.message) else {
                 continue;
             };
-            if message_index[index].file_offset.is_deleted() {
-                return Ok(());
+            let msg = message_index[index];
+            if msg.file_offset.is_deleted() {
+                continue;
             }
-            self.mark_deleted_by_index(SequenceNr::from_index(index), update_head_tracker)?;
+
+            if !force {
+                if let Some((file, offset)) = msg.file_offset.file_and_offset() {
+                    let mut file = self.data_files[file.index()].file.readonly();
+                    file.seek(SeekFrom::Start(offset))
+                        .context("Seeking to message data")?;
+                    let header: FileHeaderEntry = file.read_pod()?;
+                    if header.has_been_transmitted != 0 {
+                        continue;
+                    }
+                }
+            }
+
+            let seq = SequenceNr::from_index(index);
+            self.mark_deleted_by_index(seq, update_head_tracker)?;
+            let earliest = earliest.get_or_insert(seq);
+            if seq < *earliest {
+                *earliest = seq
+            }
             /*let message_entry = &mut message_index[index];
 
             if let Some((file, offset)) = message_entry.file_offset.file_and_offset() {
@@ -1420,7 +1460,7 @@ impl<M> OnDiskMessageStore<M> {
                             }
              */
         }
-        Ok(())
+        Ok(earliest)
     }
 
     /// Make sure the given number of slots are available.
@@ -2419,7 +2459,7 @@ mod tests {
         type Root = DummyUnitObject;
         type Serializer = OnDiskMessageSerializer;
 
-        fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
+        fn apply(&self, _time: MessageId, _root: Pin<&mut Self::Root>) {
             unimplemented!()
         }
 
@@ -2650,6 +2690,7 @@ mod tests {
                 ]
                 .into_iter(),
                 &mut head_tracker,
+                true
             )
             .unwrap();
 
@@ -2926,6 +2967,7 @@ Measure metrics:
                 .delete_many(
                     to_delete.into_iter(),
                     &mut head_tracker,
+                    true
                 )
                 .unwrap();
 

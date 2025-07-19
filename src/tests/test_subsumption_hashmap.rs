@@ -1,4 +1,4 @@
-use crate::SavefileMessageSerializer;
+use crate::{MessageId, SavefileMessageSerializer};
 use crate::data_types::NoatunHashMap;
 use crate::database::{DatabaseSettings, OpenMode};
 use crate::{ Database, Message, OpaqueNoatunCell, NoatunTime, Object};
@@ -24,7 +24,7 @@ impl Message for MapMessage {
     type Root = MapDoc;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
         if self.destroy {
             root.items.destroy();

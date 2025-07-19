@@ -2,7 +2,7 @@ use std::sync::Mutex;
 use std::fmt::Formatter;
 use crate::data_types::NoatunHashMap;
 use crate::database::DatabaseSettings;
-use crate::{Database, Message, OpaqueNoatunCell, NoatunTime, NoatunMessageSerializer};
+use crate::{Database, Message, OpaqueNoatunCell, NoatunTime, NoatunMessageSerializer, MessageId};
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -70,7 +70,7 @@ impl Message for MapMessage {
     type Root = MapDoc;
     type Serializer = TsmaSerializer;
 
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
         (self.func)(root)
     }
 

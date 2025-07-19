@@ -143,8 +143,14 @@ impl< MSG: Message+'static> DatabaseSession<'_, MSG> {
     pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.db.get_message_children(msg)
     }
-    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<MSG>>> {
+
+    /// Retrieve all messages in the system.
+    pub fn get_all_messages(&self) -> Result<impl Iterator<Item = MessageFrame<MSG>>+ use<'_, MSG> > {
         self.db.get_all_messages()
+    }
+    /// Retrieve all messages in the system in a Vec
+    pub fn get_all_messages_vec(&self) -> Result<Vec<MessageFrame<MSG>>> {
+        Ok(self.db.get_all_messages()?.collect())
     }
     pub(crate) fn get_all_messages_with_children(
         &self,
@@ -152,7 +158,15 @@ impl< MSG: Message+'static> DatabaseSession<'_, MSG> {
         self.db.get_all_messages_with_children()
     }
 
-    /// Note, this method offer very little overhead, but this means it also does not validate
+    /// Access the materialized view.
+    ///
+    /// This method yields read-only access. The only way to update the materialized view
+    /// is through messages. Please add messages to the database using
+    /// [`DatabaseSessionMut::append_local`] (for example), and let the message's
+    /// [`Message::apply`] method modify the database.
+    ///
+    /// NOTE!
+    /// This method offer very little overhead, but this means it also does not validate
     /// the database before executing. This should always be safe, but it means that recovery
     /// will not occur if the database has been corrupted by a previous operation.
     ///
@@ -237,8 +251,11 @@ impl<MSG: Message+'static> DatabaseSessionMut<'_, MSG> {
     pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.db.get_message_children(msg)
     }
-    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<MSG>>> {
+    pub fn get_all_messages(&self) -> Result<impl Iterator<Item=MessageFrame<MSG>>+ use<'_, MSG> > {
         self.db.get_all_messages()
+    }
+    pub fn get_all_messages_vec(&self) -> Result<Vec<MessageFrame<MSG>>> {
+        Ok(self.db.get_all_messages()?.collect())
     }
     pub(crate) fn get_all_messages_with_children(
         &self,
@@ -286,6 +303,17 @@ impl<MSG: Message+'static> DatabaseSessionMut<'_, MSG> {
     /// even though the call that added them returned an Ok result.
     pub fn disable_filesystem_sync(&mut self) -> Result<()> {
         self.db.disable_filesystem_sync()
+    }
+
+    /// Delete the message with the given id.
+    ///
+    /// Normally, an event that has been distributed to other nodes can't be deleted,
+    /// since this would affect eventual consistency. Use the `force` option to
+    /// force deletion even in this case. This is generally only safe if the same delete
+    /// is performed concurrently on all nodes, and the message is not in flight anywhere
+    /// in the network. As a special case, it is safe if no other replicas currently exist.
+    pub fn remove_message(&mut self, message_id: MessageId, force: bool) -> Result<()> {
+        self.db.remove_message(message_id, force)
     }
 
     pub(crate) fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
@@ -572,7 +600,9 @@ impl<MSG: Message+'static> Database<MSG> {
     fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.message_store.get_message_children(msg)
     }
-    fn get_all_messages(&self) -> Result<Vec<MessageFrame<MSG>>> {
+
+    /// Retrieve all messages in the database.
+    fn get_all_messages(&self) -> Result<impl Iterator<Item = MessageFrame<MSG>>+ use<'_, MSG> > {
         self.message_store.get_all_messages()
     }
     fn get_all_messages_with_children(
@@ -771,6 +801,18 @@ impl<MSG: Message+'static> Database<MSG> {
             Target::OpenExisting(path.as_ref().to_path_buf()),
             settings,
         )
+    }
+
+    /// Remove the given message.
+    ///
+    /// If force == false, don't delete message if it has been transmitted
+    fn remove_message(&mut self, message_id: MessageId, force: bool) -> Result<()> {
+        if let Some(seq) = self.message_store.remove_message(message_id, force)? {
+            self.reproject_from(seq)?;
+        }
+
+
+        Ok(())
     }
 
     /// Local is true if this message has been locally created. I.e, it isn't a message that

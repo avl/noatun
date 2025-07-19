@@ -2,7 +2,7 @@ use noatun::communication::udp::TokioUdpDriver;
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::NoatunCell;
 use noatun::database::{DatabaseSettings, OpenMode};
-use noatun::{CutOffDuration, Database, Message, NoatunContext, NoatunStorable, NoatunTime, Object, SavefileMessageSerializer, ThinPtr};
+use noatun::{CutOffDuration, Database, Message, MessageId, NoatunContext, NoatunStorable, NoatunTime, Object, SavefileMessageSerializer, ThinPtr};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 use std::time::Duration;
@@ -54,7 +54,7 @@ impl Message for MazeMessage {
     type Root = Maze;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, mut root: Pin<&mut Self::Root>) {
         let root_player_pos_x = unsafe { root.as_mut().map_unchecked_mut(|x| &mut x.player_pos_x) };
         let x = root_player_pos_x.get().saturating_add_signed(self.delta_x);
         root_player_pos_x.set(x);

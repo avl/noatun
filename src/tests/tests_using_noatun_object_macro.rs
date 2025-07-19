@@ -2,7 +2,7 @@ use crate::SavefileMessageSerializer;
 use crate::cutoff::CutOffDuration;
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
-use crate::{Database, Message, NoatunTime};
+use crate::{Database, Message, MessageId};
 use datetime_literal::datetime;
 use savefile_derive::Savefile;
 use std::pin::Pin;
@@ -29,7 +29,7 @@ impl Message for BankMessage {
     type Root = Bank;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, mut root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, mut root: Pin<&mut Self::Root>) {
         match self {
             BankMessage::AddCustomerAndMoney { money, customer: _ } => {
                 let prev_money = root.total_money();

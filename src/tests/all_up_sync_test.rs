@@ -61,7 +61,7 @@ impl Message for SyncMessage {
     type Root = SyncApp;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
         let project = root.pin_project();
 
         if self.reset {
@@ -502,7 +502,7 @@ fn old_local_messages_without_effect_are_removed0() {
     println!("Add msg2 {:?}", msg1.id);
     sess.set_mock_time(datetime!(2020-01-02 00:00:00 Z).into())
         .unwrap();
-    assert_eq!(sess.get_all_messages().unwrap().len(), 2);
+    assert_eq!(sess.get_all_messages_vec().unwrap().len(), 2);
 
     sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
     let last = sess
@@ -514,7 +514,7 @@ fn old_local_messages_without_effect_are_removed0() {
         .unwrap();
     println!("Add msg3 {:?}", last.id);
 
-    let all_msgs = sess.get_all_messages().unwrap();
+    let all_msgs = sess.get_all_messages_vec().unwrap();
     assert_eq!(all_msgs.len(), 1);
     assert_eq!(all_msgs[0].header.id, last.id);
     println!("Cutoff-hash: {:?}", sess.current_cutoff_state().unwrap());
@@ -554,13 +554,13 @@ fn old_transmitted_messages_without_effect_are_removed1() {
         .unwrap();
     sess.mark_transmitted(msg2.id).unwrap();
     println!("Add msg2 {:?}", msg2.id);
-    assert_eq!(sess.get_all_messages().unwrap().len(), 2);
+    assert_eq!(sess.get_all_messages_vec().unwrap().len(), 2);
 
     //println!("Advancing time to 2024");
     sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
     sess.maybe_advance_cutoff().unwrap();
 
-    let all_msgs = sess.get_all_messages().unwrap();
+    let all_msgs = sess.get_all_messages_vec().unwrap();
     assert_eq!(all_msgs.len(), 1);
     assert_eq!(all_msgs[0].header.id, msg2.id);
     println!("Cutoff-hash: {:?}", sess.current_cutoff_state().unwrap());
@@ -604,13 +604,13 @@ fn old_transmitted_messages_without_effect_are_removed2() {
         .unwrap();
     sess.mark_transmitted(msg2.id).unwrap();
     println!("Add msg2 {:?}", msg2.id);
-    assert_eq!(sess.get_all_messages().unwrap().len(), 2);
+    assert_eq!(sess.get_all_messages_vec().unwrap().len(), 2);
 
     //println!("Advancing time to 2024");
     sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
     sess.maybe_advance_cutoff().unwrap();
 
-    let all_msgs = sess.get_all_messages().unwrap();
+    let all_msgs = sess.get_all_messages_vec().unwrap();
     assert_eq!(all_msgs.len(), 1);
     assert_eq!(all_msgs[0].header.id, msg2.id);
     println!("Cutoff-hash: {:?}", sess.current_cutoff_state().unwrap());
@@ -635,19 +635,19 @@ async fn all_up_gradual_update_sync_test() {
     let start_time = tokio::time::Instant::now();
     for _i in 0..10 {
         //println!("I = {}", i);
-        //println!("Msgs1: {:#?}", app1.get_all_messages().unwrap());
+        //println!("Msgs1: {:#?}", app1.get_all_messages_vec().unwrap());
         assert!(app1
             .inner_database()
             .begin_session()
             .unwrap()
-            .get_all_messages()
+            .get_all_messages_vec()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         assert!(app2
             .inner_database()
             .begin_session()
             .unwrap()
-            .get_all_messages()
+            .get_all_messages_vec()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
@@ -693,13 +693,13 @@ async fn all_up_gradual_update_sync_test() {
         .inner_database()
         .begin_session()
         .unwrap()
-        .get_all_messages()
+        .get_all_messages_vec()
         .unwrap();
     let msgs2 = app2
         .inner_database()
         .begin_session()
         .unwrap()
-        .get_all_messages()
+        .get_all_messages_vec()
         .unwrap();
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
@@ -853,14 +853,14 @@ async fn all_up_general_update_sync_test_impl(
             .inner_database()
             .begin_session()
             .unwrap()
-            .get_all_messages()
+            .get_all_messages_vec()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         assert!(app2
             .inner_database()
             .begin_session()
             .unwrap()
-            .get_all_messages()
+            .get_all_messages_vec()
             .unwrap()
             .is_sorted_by_key(|x| x.header.id.timestamp()));
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
@@ -923,13 +923,13 @@ async fn all_up_general_update_sync_test_impl(
         .inner_database()
         .begin_session()
         .unwrap()
-        .get_all_messages()
+        .get_all_messages_vec()
         .unwrap();
     let msgs2 = app2
         .inner_database()
         .begin_session()
         .unwrap()
-        .get_all_messages()
+        .get_all_messages_vec()
         .unwrap();
     println!("Node 1 messages:\n{:#?}", msgs1);
     println!("Node 2 messages:\n{:#?}", msgs2);
@@ -1093,13 +1093,13 @@ async fn all_up_big_nominal_test() {
         .inner_database()
         .begin_session()
         .unwrap()
-        .get_all_messages()
+        .get_all_messages_vec()
         .unwrap();
     let msgs2 = app2
         .inner_database()
         .begin_session()
         .unwrap()
-        .get_all_messages()
+        .get_all_messages_vec()
         .unwrap();
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));

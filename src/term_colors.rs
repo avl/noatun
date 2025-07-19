@@ -34,8 +34,8 @@ pub fn rgb(s: &str, r: u8, g: u8, b: u8) -> ColoredString {
     s.truecolor(r, g, b)
 }
 
-fn colored_int_impl(i: u32, hex: bool) -> ColoredString {
-    let p = (i * 167 + 203) % (128 * 3);
+fn colored_int_impl(i: i64, color: u32, hex: bool) -> ColoredString {
+    let p = (color * 167 + 203) % (128 * 3);
     let r;
     let g;
     let b;
@@ -56,9 +56,13 @@ fn colored_int_impl(i: u32, hex: bool) -> ColoredString {
     }
     if hex { format!("{i:x}") } else { i.to_string() }.truecolor(r as u8, g as u8, b as u8)
 }
+
 pub fn colored_hex_int(i: u32) -> ColoredString {
-    colored_int_impl(i, true)
+    colored_int_impl(i as i64, i, true)
 }
 pub fn colored_int(i: u32) -> ColoredString {
-    colored_int_impl(i, false)
+    colored_int_impl(i as i64, i, false)
+}
+pub fn colored_sint(i: i32) -> ColoredString {
+    colored_int_impl(i as i64, i as u32, false)
 }

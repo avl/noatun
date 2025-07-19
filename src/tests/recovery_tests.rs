@@ -1,7 +1,7 @@
-use crate::SavefileMessageSerializer;
+use crate::{MessageId, SavefileMessageSerializer};
 use crate::data_types::{NoatunString, NoatunVec};
 use crate::database::{DatabaseSettings, LoadingStatus, OpenMode};
-use crate::{ Database, Message, NoatunTime, Object};
+use crate::{ Database, Message, Object};
 use chrono::{DateTime, Utc};
 use datetime_literal::datetime;
 use savefile_derive::Savefile;
@@ -35,7 +35,7 @@ impl Message for KeyValMessage {
     type Root = KeyValStore;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
         let mut projected = root.pin_project();
         projected
             .keyval

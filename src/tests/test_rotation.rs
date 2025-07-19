@@ -1,8 +1,8 @@
-use crate::SavefileMessageSerializer;
+use crate::{MessageId, SavefileMessageSerializer};
 use crate::database::{DatabaseSettings, OpenMode};
 
 use crate::Database;
-use crate::{Message, NoatunTime};
+use crate::{Message};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
@@ -23,7 +23,7 @@ impl Message for RotMessage {
     type Root = RotationDoc;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
         if self.reset != 0 {
             root.counter.set(0);

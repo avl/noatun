@@ -629,7 +629,7 @@ impl App for Visualizer {
                                 if ui.button("debug").clicked() {
                                     let node = &self.ether.nodes[selected_node].distributor;
                                     println!("Distributor for node {}:\n{:#?}", selected_node, node);
-                                    println!("Messages:\n{:#?}", self.ether.nodes[selected_node].db.begin_session().unwrap().get_all_messages());
+                                    println!("Messages:\n{:#?}", self.ether.nodes[selected_node].db.begin_session().unwrap().get_all_messages_vec());
                                 }
                                 ui.end_row();
 

@@ -186,7 +186,7 @@ impl<MSG: Message+'static> Projector<MSG> {
     pub fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.messages.get_children_of(msg)
     }
-    pub fn get_all_messages(&self) -> Result<Vec<MessageFrame<MSG>>> {
+    pub fn get_all_messages(&self) -> Result<impl Iterator<Item=MessageFrame<MSG>> + use<'_, MSG> >  {
         self.messages.get_all_messages()
     }
     pub fn get_all_messages_with_children(
@@ -296,6 +296,9 @@ impl<MSG: Message+'static> Projector<MSG> {
             Ok(false)
         }
     }
+    pub(crate) fn remove_message(&mut self, message_id: MessageId, force: bool) -> Result<Option<SequenceNr>> {
+        self.messages.delete_many(std::iter::once(message_id), &mut self.head_tracker, force)
+    }
     pub(crate) fn rewind(
         &mut self,
         context: &mut DatabaseContextData,
@@ -326,7 +329,7 @@ impl<MSG: Message+'static> Projector<MSG> {
         let guard = ContextGuardMut::new(context, true);
 
         catch_and_log(|| {
-            msg.payload.apply(msg.header.id.timestamp(), unsafe {
+            msg.payload.apply(msg.header.id, unsafe {
                 Pin::new_unchecked(root)
             });
         });
@@ -347,7 +350,7 @@ impl<MSG: Message+'static> Projector<MSG> {
         let time = NoatunTime(time.timestamp_millis() as u64);
         catch_and_log(|| {
             for msg in preview {
-                msg.apply(time, root.as_mut());
+                msg.apply(MessageId::from_parts_for_test(time, 0), root.as_mut());
             }
         });
 

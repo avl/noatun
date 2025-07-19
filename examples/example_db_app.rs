@@ -1,7 +1,7 @@
 use anyhow::Result;
 use noatun::data_types::{NoatunString, NoatunVec};
 use noatun::database::{DatabaseSettings, OpenMode};
-use noatun::{noatun_object, Database, Message,  NoatunTime, Object, SavefileMessageSerializer};
+use noatun::{noatun_object, Database, Message, MessageId,  Object, SavefileMessageSerializer};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
@@ -30,7 +30,7 @@ impl Message for ExampleMessage {
     type Root = ExampleDb;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
 
         let new_total_salary = root.total_salary_cost.detach() + self.salary;

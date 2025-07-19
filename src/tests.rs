@@ -272,8 +272,8 @@ impl<Root: FixedSizeObject + DummyTestMessageApply> Message for DummyTestMessage
     type Root = DummyTestApp<Root>;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, time: NoatunTime, root: Pin<&mut Self::Root>) {
-        Root::test_message_apply(time, root.inner_mut())
+    fn apply(&self, time: MessageId, root: Pin<&mut Self::Root>) {
+        Root::test_message_apply(time.timestamp(), root.inner_mut())
     }
 
 
@@ -372,7 +372,7 @@ impl<T: Object+NoatunStorable+'static> Message for DummyMessage<T> {
     type Root = T;
     type Serializer = DummyMessageSerializer;
 
-    fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, _root: Pin<&mut Self::Root>) {
         unimplemented!()
     }
 
@@ -436,7 +436,7 @@ impl Message for IncrementMessage {
     type Root = CounterObject;
     type Serializer = DummyMessageSerializer;
 
-    fn apply(&self, _time: NoatunTime, _root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, _root: Pin<&mut Self::Root>) {
         unimplemented!()
     }
 
@@ -487,7 +487,7 @@ impl Message for CounterMessage {
     type Root = CounterObject;
     type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut CounterObject>) {
+    fn apply(&self, _time: MessageId, root: Pin<&mut CounterObject>) {
         unsafe {
             if self.inc1 != 0 {
                 let val = root.counter.get().saturating_add_signed(self.inc1);
@@ -1091,20 +1091,80 @@ fn test_noatuntime_comparison() {
 }
 
 #[test]
+fn test_time_comparison() {
+    let t = NoatunTime::now();
+
+    let prev_id = MessageId::generate_for_time(t).unwrap();
+    for step in [1,937,23423,3745863] {
+        for i in 1..1000 {
+            let id = MessageId::generate_for_time(t + Duration::from_millis(step*i)).unwrap();
+            assert!(prev_id < id);
+
+            let mut temp = id;
+            for _ in 0..100 {
+                temp = temp.unique_successor().unwrap();
+                assert!(id < temp);
+            }
+        }
+    }
+}
+
+#[test]
 fn test_successor() {
 
-    compile_error!("check this actually works")
     for _ in 0.. 100                                                                                                                                                                                                                                                                 {
         let id = MessageId::generate_for_time(NoatunTime::now()).unwrap();
-        //println!("------------------ Id: {:?} -------------------------", id);
-        let mut idc = id;
-        for i in 0..100 {
-            let oldidc = idc;
-            idc = idc.unique_successor().unwrap();
-            let id2 = idc;
-            assert!(oldidc < idc);
-            //println!("{:x?}, succeeded by\n{:x?}", id.raw(), id2.raw());
+        let mut temp = id;
+        for _ in 0..100 {
+            let prev = temp;
+            temp = temp.unique_successor().unwrap();
+            assert!(prev < temp);
         }
-
     }
+}
+#[test]
+fn test_successor_exhaustion() {
+    let mut id = MessageId::generate_for_time(NoatunTime::now()).unwrap();
+    let mut increments = 0;
+    while let Ok(new_id) = id.unique_successor() {
+        assert!(new_id > id);
+        id = new_id;
+        increments += 1;
+    }
+    println!("Increments : {}", increments);
+    assert!(increments >= 16383);
+    assert!(increments <= 32768 + 16383);
+}
+#[test]
+fn test_predecessor_exhaustion() {
+    let mut id = MessageId::generate_for_time(NoatunTime::now()).unwrap();
+    let mut increments = 0;
+    while let Ok(new_id) = id.unique_predecessor() {
+        assert!(new_id < id);
+        id = new_id;
+        increments += 1;
+    }
+    println!("Increments : {}", increments);
+    assert!(increments >= 16383);
+    assert!(increments <= 32768 + 16383);
+}
+
+#[test]
+fn test_predecessor() {
+
+    for _ in 0.. 100                                                                                                                                                                                                                                                                 {
+        let id = MessageId::generate_for_time(NoatunTime::now()).unwrap();
+        let mut temp = id;
+        for _ in 0..100 {
+            let prev = temp;
+            temp = temp.unique_predecessor().unwrap();
+            assert!(prev > temp);
+        }
+    }
+}
+
+#[test]
+fn max_time() {
+    println!("Time: {}", NoatunTime((1<<48)-1));
+    println!("Time: {}", NoatunTime((1<<49)-1));
 }
