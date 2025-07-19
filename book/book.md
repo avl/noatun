@@ -1,16 +1,17 @@
-# Noatun
+# Introduction to Noatun
 
 Welcome to Noatun! Noatun is an in-process, multi master, distributed event sourced database with automatic
 garbage collection. It's suitable for unreliable networks and can be used in embedded applications.
 
 Features:
 
- * Multi master distribution - writes can be made on any node, even offline
+ * Multi master distribution - writes can be made on any node, even when offline
  * Decentralized - nodes in the network do not need to be assigned unique ids
  * Data model is 100% event based. Current database state is a function only of current events.
  * Works in any network - does not require unique network addresses
  * Deterministic replay and time travel for easy debugging
  * Robust persistent store optimized for availability
+ * Automatic pruning of old messages
 
 ## Functional overview
 
@@ -22,7 +23,7 @@ Each Noatun database has two parts:
  * Event store: contains all events in the database
  * Materialized view: maintained by "applying" all events in order
 
-_Information flow (in regular operation)_
+_Information flow (in operation)_
 
 ```mermaid
 block-beta
@@ -48,6 +49,7 @@ columns 1
     Materializer --> M
     E --> Disk
     M --> Disk
+    Disk --> M
 ```
 
 Events are applied to the projection in timestamp order. As a user of Noatun, you need to
@@ -168,16 +170,275 @@ async fn example() {
 
 ```
 
+# Features
 
-# Noatun survivor guide
+## Automatic pruning
 
-Noatun has been designed with the aspiration that users don't have to understand
-all details of the exact semantics. However, the nature of multi-leader (also known
-as multi master) distributed systems is complex, and noatun does not abstract all 
-the complexity away.
 
-There are a few aspects that Noatun users have to be aware of.
+### Introduction
 
+Messages are automatically removed from the database when they are no longer needed.
+
+The basic approach is that Noatun tracks exactly what information a message writes.
+Once all that information has been overwritten, the message can be removed.
+
+_Basic Example_
+```mermaid 
+block-beta
+    columns 5
+    block
+        columns 1
+        uct1("Event Store")
+        Event1
+        space
+        Event2
+        space
+        Event3
+    end
+    space
+    space
+    block
+        columns 1
+        uct2("Materialized View")
+        FieldA
+        space
+        space
+        FieldB
+    end
+    Event1-- "write" -->FieldA
+    Event1-- "write" -->FieldB
+    Event2-- "write" -->FieldB
+    Event3-- "write" -->FieldA
+class uct1 BT
+class uct2 BT
+classDef BT stroke:transparent,fill:transparent
+```
+
+Event 1 writes both fields. After Event2 has been written, Event1 still needs to be retained, since
+it wrote the most recent value to "FieldB". However, after Event3 has been written, none of what
+Event1 wrote is still in the database, and Event1 will now be automatically pruned (note that there is
+some nuance to this statement, please consult the following sections).
+
+However, consider what happens if messages also read from the database:
+
+_Messages with dependencies_
+
+```mermaid 
+block-beta
+    columns 5
+    block
+        columns 1
+        uct1("Event Store")
+        Event1
+        space
+        Event2
+        space
+        Event3
+    end
+    space
+    space
+    block
+        columns 1
+        uct2("Materialized View")
+        FieldA
+        space
+        space
+        FieldB
+    end
+    Event1-- "write:1" -->FieldA
+    Event1-- "write:1" -->FieldB
+    FieldA-- "read:1" -->Event2
+    Event2-- "write:2" -->FieldB
+    Event3-- "write:3" -->FieldA
+class uct1 BT
+class uct2 BT
+classDef BT stroke:transparent,fill:transparent
+```
+In this example, none of the messages can be deleted. None of the values written by Event1 remain in the database.
+However, the value "1", written to field A, was later read by Event2. Any value subsequently written by Event2
+(i.e, the write to Field B) may depend on the value read from field A. In fact, it is highly likely that the
+value written to field B depends on what wa read from field A. Otherwise, the implementation of Event2 should just
+be changed to eliminate this useless read. 
+
+Noatun tracks this type of information flow dependency between events, and will thus _not_ prune Event1 in this case.
+
+### Automatic Pruning details
+
+As we saw in the previous section, reads introduce dependencies between events that may inhibit automatic
+pruning. This is generally a good thing. Without this, messages couldn't safely build upon data in
+the materialized view that was written by earlier messages. Doing so would cause unexpected effects
+if/when those earlier messages were completely overwritten. 
+
+For example, consider a simple counter, which registers the number of clicks on a button. Each
+message would read the previous counter value, increment it, and write it back to the counter.
+If dependencies were not tracked, the counter value would never increment far, since every message
+would cause the previous message to be pruned.
+
+This sort of dependency tracking is not without problems.
+
+## Actual reads vs potential reads, and the cutoff interval
+
+As we saw in the previous section, when a message apply reads from the materialized view, this creates
+a read dependency. However, messages can arrive to a node out-of-order. This means that even if no readers
+currently exist locally, they could exist elsewhere in the distributed system. 
+
+Let's look at a simple example:
+
+```mermaid 
+block-beta
+    columns 5
+    block
+        columns 1
+        uct1("Event Store")
+        Event1
+        space
+        Event2
+    end
+    space
+    space
+    block
+        columns 1
+        uct2("Materialized View")
+        FieldA
+        space
+        space
+        FieldB
+    end
+    Event1-- "write" -->FieldA
+    Event2-- "write" -->FieldA
+class uct1 BT
+class uct2 BT
+classDef BT stroke:transparent,fill:transparent
+```
+
+Event2 completely overwrites everything created by Event1. So it may seem we could always prune Event1.
+
+However, this is not the case. It's possible that, sometime after Event1 was created, but before Event2 was created,
+on a different node, there may be an Event1.5:
+
+
+```mermaid 
+block-beta
+    columns 5
+    block
+        columns 1
+        uct1("Event Store")
+        Event1
+        space
+        Event15("Event1.5")
+        space
+        Event2
+    end
+    space
+    space
+    block
+        columns 1
+        uct2("Materialized View")
+        FieldA
+        space
+        space
+        FieldB
+
+    end
+    Event1-- "write" -->FieldA
+    FieldA-- "read" -->Event15
+    Event15-- "write" -->FieldB
+    Event2-- "write" -->FieldA
+class Event15 D
+class uct1 BT
+class uct2 BT
+classDef BT stroke:transparent, fill:transparent
+classDef D stroke-dasharray: 5
+```
+
+Since we cannot know if such an event will arrive, we cannot immediately prune event 1.
+
+However, if we know the worst case network propagation time T, we can prune events that have been
+unobservable for a time of at least T. In the original example above (before receiving Event 1.5), once time T has passed since the timestamp
+of Event2, we know that there can't exist an Event 1.5, because it would have reached us already (by definition).
+
+Noatun exposes this concept as the `cutoff_interval`. The value is configurable in the `DatabaseSettings` struct.
+
+Note, in the example above, it is the timestamp of Event2 (the message that overwrote the last visible piece of
+Event1) that the cutoff_interval is relative to.
+
+Note, Noatun verifies that nodes always agree on the set of events with timestamps before `now - cutoff_interval`
+(this time is known as the "cutoff_time"). A hash of all messages timestamped before the cutoff time is maintained
+and periodically sent to all neighbors. The cutoff_time advances periodically by a the "cutoff stride". When
+nodes detect that peers have cutoff intervals in the near future, they immediately advance to be in sync.
+Large clock drift is detected and flagged as an error. Noatun requires approximate clock synchronization.
+
+
+
+
+### Collections
+
+Collections offer a challenge. To illustrate this, consider vectors.
+
+It may seem that pushing a new item at the end of a vector [`NoatunVec``] should not introduce any read dependency.
+But actually, the result of such a push depends on the previous contents of, and thus all previous writes
+to the vector. The reason for this is that later messages may use the length of the vector in calculations.
+
+Pruning any messages that wrote to a [`NoatunVec`] would change the later return value of [`NoatunVec::len`], and
+this could change the final materialized state. Because of this [`NoatunVec`] *does* record a read dependency
+on previous messages when pushing to a [`NoatunVec`].
+
+To work around this, [`OpaqueNoatunVec`] exists. It works like [`NoatunVec`], but does not record read dependencies
+when pushing new elements. The downside is that it does not support a regular [`len`] operation. This way,
+pruning an element from a `OpaqueNoatunVec` is not observable to any message. Remember that we never prune a message
+if information it wrote could be read by a later message. So if the message we're about to prune wrote an item
+that is actually read itself by a message, the pruning will not occur.
+
+
+
+
+## Validation
+
+Interactive applications often have a need to validate messages before emitting them.
+
+In these situations, applications can use [`DatabaseSessionMut::with_root_preview`] to
+apply a message temporarily, and give the application access to the resulting
+materialized view. An application can then run validation on the actual resulting
+state from emitting the message.
+
+If message application has complex application logic, this can be useful for
+reducing code duplication in validators.
+
+After `with_root_preview` returns, the database is restored to the previous
+state.
+
+## Undo
+
+There are a few possibilities for undoing events in Noatun:
+
+### Deleting the event
+
+Events can be deleted using [`DatabaseSessionMut::remove_message`]. Note, however,
+that this is a low level operation that should not be used for events that have been
+(or may have been) transmitted to other nodes.
+
+### Adding a new event that undoes the previous event
+
+The most straightforward way to handle undo is to create an event that just does
+the reverse of the event that is to be undone.
+
+### Inhibiting a message from being applied
+
+Since messages have access to their id when being applied, it is possible to
+maintain a set of 'inhibited' messages. A [`Message::apply`] implementation can
+then check if it has been inhibited before executing the bulk of its body.
+
+Separate 'inhibit' messages can then be defined, that add to the set of inhibited
+messages. This way, a message can be inhibited, effectively undoing it. Or to be precise,
+it will be as if the message never happened.
+
+The inhibit messages can be created with a MessageId that sorts immediately before
+the original message (but still on the same timestamp). See method
+[`MessageId::unique_predecessor`].
+
+
+
+# Details and limitations
 
 ## Noatun requires correct time
 
@@ -212,25 +473,6 @@ does not have to think about this.
 That said, it is possible for different nodes to issue events that logically conflict.
 Noatun has no built-in conflict resolution, but since messages are always applied
 in order, it is easy to implement last write wins.
-
-## Undo
-
-There are a few possibilities for undoing events in Noatun:
-
-### Deleting the event
-
-Events can be deleted using [`DatabaseSessionMut::remove_message`]. Note, however,
-that this is a low level operation that should not be used for events that have been
-(or may have been) transmitted to other nodes. 
-
-### Adding a new event that undoes the previous event
-
-The most straightforward way to handle undo is to create an event that just does
-the reverse of the event that is to be undone.
-
-### Inhibiting a message from being applied
-
-
 
 ## Philosophy of event applications
 
