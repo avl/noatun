@@ -11,6 +11,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  timeout-minutes: 20
   build:
 
     runs-on: ubuntu-latest
