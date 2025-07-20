@@ -892,6 +892,27 @@ past all their overwriters.
 Noatun also tracks reads. For each message, a linked list of readers is maintained. This allows
 maintaining a dependency graph for read-dependencies between all messages in the database.
 
+# Communication
+
+Noatun contains built-in support for communication over UDP Multicast. However, the central communication
+logic is completely independent of the chosen network technology. Noatun poses very few requirements on 
+the underlying network. Specifically:
+ * The network can have high latency (multiple seconds is ok)
+ * The network can be lossy (though performance will suffer if packet loss is frequent) 
+   Noatun does not do forward error correction. The network is expected to provide this, if needed. 
+ * The network capacity can be low. Noatun has a configurable max bandwidth cap that it will respect,
+   to avoid overloading the network. 
+ * The network MTU can be small (down to ~200 bytes is ok)
+ * The network doesn't need to have the concept of addresses
+ * If it has addresses, not all addresses need be globally unique (this can be useful in a very decentralized system,
+   where reliably guaranteeing uniqueness of ip-addresses for all nodes may be hard).
+ * The nodes don't need to know their own address
+
+The only requirement of addresses is that if the network has addresses, nodes may not change addresses too frequently.
+Note that on linux you may need to disable `rp_filter` for 
+
+
+
 
 
 

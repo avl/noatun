@@ -296,7 +296,7 @@ impl CommunicationReceiveSocket<u8> for TestDriverReceiver {
     async fn recv_buf_from<B: BufMut + Send>(
         &mut self,
         buf: &mut B,
-    ) -> std::io::Result<(usize, u8)> {
+    ) -> std::io::Result<(usize, Option<u8>)> {
         loop {
             let (src_addr, data) = self.0.recv().await.ok_or(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -308,7 +308,7 @@ impl CommunicationReceiveSocket<u8> for TestDriverReceiver {
             }
 
             buf.put(&*data);
-            return Ok((data.len(), src_addr));
+            return Ok((data.len(), Some(src_addr)));
         }
     }
 }

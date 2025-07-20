@@ -133,8 +133,8 @@ impl CommunicationReceiveSocket<SocketAddr> for tokio::net::UdpSocket {
     async fn recv_buf_from<B: bytes::BufMut + Send>(
         &mut self,
         buf: &mut B,
-    ) -> std::io::Result<(usize, SocketAddr)> {
+    ) -> std::io::Result<(usize, Option<SocketAddr>)> {
         let (size, addr) = UdpSocket::recv_buf_from(self, buf).await?;
-        Ok((size, addr))
+        Ok((size, Some(addr)))
     }
 }

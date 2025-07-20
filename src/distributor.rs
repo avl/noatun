@@ -59,6 +59,9 @@ impl RecentMessages {
         source: EphemeralNodeId,
         actual_transmission: bool,
     ) {
+        if self.recent_messages.len() > 10000 {
+            self.recent_messages.drain(0..2500);
+        }
         match self.recent_messages.entry(message) {
             Entry::Vacant(e) => {
                 e.insert(MessageSourceInfo {
@@ -80,110 +83,11 @@ impl RecentMessages {
     }
 }
 
-#[derive(Default, Debug)]
-pub struct PeerSummaryInfo {
-    pub(crate) peers:
-        IndexMap<EphemeralNodeId, Vec<EphemeralNodeId> /*neighbors in common with us*/>,
-}
 
-impl PeerSummaryInfo {
-    pub(crate) fn we_should_retransmit(
-        &self,
-        our_node_id: EphemeralNodeId,
-        peer: EphemeralNodeId,
-        retransmit_interval: Duration,
-    ) -> Duration {
-        if let Some(peer_neighbors) = self.peers.get(&peer) {
-            let our_index = peer_neighbors
-                .iter()
-                .position(|&x| x == our_node_id)
-                .unwrap_or(100);
-            ((our_index as u32) * retransmit_interval) / 4
-        } else {
-            retransmit_interval
-        }
-    }
-}
-
-#[derive(Debug)]
-struct DecayingKnowledge {
-    short_term: f32,
-    long_term: f32,
-    epic_term: f32,
-    last_update: Instant,
-    interval_seconds: f32,
-}
-impl DecayingKnowledge {
-    fn new(now: Instant) -> Self {
-        Self {
-            short_term: 0.0,
-            long_term: 0.0,
-            epic_term: 0.0,
-            last_update: now,
-            interval_seconds: 0.0,
-        }
-    }
-}
-
-impl DecayingKnowledge {
-    pub fn check(&mut self, now: Instant) -> bool {
-        self.decay(now);
-        self.short_term + self.long_term + self.epic_term > 0.0
-    }
-    fn decay(&mut self, now: Instant) {
-
-        let elapsed_secs = now.duration_since(self.last_update).as_secs_f32();
-        let short_k = elapsed_secs / self.interval_seconds;
-        let long_k = 0.1 * short_k;
-        let epic_k = 0.01 * short_k;
-        self.last_update = now;
-        self.short_term *= (-elapsed_secs * short_k).exp();
-        self.long_term *= (-elapsed_secs * long_k).exp();
-        self.epic_term *= (-elapsed_secs * epic_k).exp();
-        self.short_term = self.short_term.clamp(-10.0, 10.0);
-        self.long_term = self.long_term.clamp(-10.0, 10.0);
-        self.epic_term = self.epic_term.clamp(-10.0, 10.0);
-    }
-    pub fn observe_true(&mut self) {
-        self.short_term += 1.0;
-        self.long_term += 1.0;
-        self.epic_term += 1.0;
-    }
-    pub fn observe_false(&mut self) {
-        self.short_term -= 5.0;
-        self.long_term -= 1.0;
-        self.epic_term -= 1.0;
-    }
-}
 
 
 // TODO(future): Consider the responsibilities of 'communciation.rs' and 'distributor.rs'
 // And the latter should perhaps be split into submodules.
-#[derive(Debug)]
-pub(crate) struct PeerOriginInfo {
-    /// The peer this information concerns
-    peer: EphemeralNodeId,
-    /// The origin of that peer this information concerns
-    origin: EphemeralNodeId,
-    /// True if 'peer' can normally hear 'origin'
-    can_hear_source: DecayingKnowledge,
-}
-impl PeerOriginInfo {
-    pub fn new(peer: EphemeralNodeId, source: EphemeralNodeId, now: Instant) -> PeerOriginInfo {
-        PeerOriginInfo {
-            peer,
-            origin: source,
-            can_hear_source: DecayingKnowledge::new(now),
-        }
-    }
-}
-
-/// Information about a neighbor's neighbors
-pub(crate) struct NeighborNeighborInfo {
-    node_id: EphemeralNodeId,
-    //squelched: DecayingKnowledge,
-    is_neighbor: DecayingKnowledge,
-}
 
 #[derive(Debug, Default)]
 enum UpToSpeedStatus {
@@ -211,7 +115,6 @@ pub struct PeerInfo {
     /// For messages we first observed from key (`Address`), this peer is usually filled in
     /// by messages from `SeenBy`.
     /// TODO: Remove this unless we use it?
-    pub(crate) source_info: IndexMap<EphemeralNodeId, PeerOriginInfo>,
     pub(crate) peer_neighbors: Vec<EphemeralNodeId>,
 
 
@@ -226,48 +129,12 @@ impl PeerInfo {
         PeerInfo {
             peer,
             up_to_speed: Default::default(),
-            source_info: Default::default(),
             peer_neighbors: vec![],
             last_seen: now,
             request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit::default(),
             //send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit::default(),
             //resend_actual_message_based_on_node_numbers: Default::default(),
         }
-    }
-    pub fn we_should_answer_request(&self, our_id: EphemeralNodeId) -> bool {
-        error!(
-            "Checking peer's (={:?}) neighborlist: {:?} looking for us: {:?}",
-            self.peer, self.peer_neighbors, our_id
-        );
-        if let Some(our_index_in_their_neighbor_list) =
-            self.peer_neighbors.iter().position(|x| *x == our_id)
-        {
-            println!(
-                "our index in neighborlist: {our_index_in_their_neighbor_list}",
-            );
-            if our_index_in_their_neighbor_list == 0 {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Report that this peer seems unable to hear messages from `source`
-    pub fn cant_hear(&mut self, source: EphemeralNodeId, now: Instant) {
-        let source_info = self
-            .source_info
-            .entry(source)
-            .or_insert_with(|| PeerOriginInfo::new(self.peer, source, now));
-        source_info.can_hear_source.observe_false();
-    }
-
-    /// Report that this peer seems able to hear messages from `source`
-    pub fn can_hear(&mut self, source: EphemeralNodeId, now: Instant) {
-        let source_info = self
-            .source_info
-            .entry(source)
-            .or_insert_with(|| PeerOriginInfo::new(self.peer, source, now));
-        source_info.can_hear_source.observe_true();
     }
 
 }
@@ -276,7 +143,6 @@ impl PeerInfo {
 pub struct Peers {
     //TODO: GC this, remove stale entries
     pub peers: IndexMap<EphemeralNodeId, PeerInfo>,
-    peer_summary_info: ArcShift<PeerSummaryInfo>,
     //TODO: GC
     pub fast_pather: Arc<RwLock<MiniPather>>,
     last_gc: Instant,
@@ -296,14 +162,12 @@ impl Peers {
                 *pather = MiniPather::new(our_node_id.raw_u16());
                 self.peers.clear();
                 drop(pather);
-                self.recalculate_summary(our_node_id);
                 return;
             }
         }
 
         if now.saturating_duration_since(self.last_gc) > periodic_message {
             self.last_gc = now;
-            let peers_before = self.peers.len();
 
             let mut removed = vec![];
             self.peers
@@ -315,24 +179,7 @@ impl Peers {
                     retained
                 });
 
-            if peers_before != self.peers.len() {
-                self.recalculate_summary(our_node_id);
-            }
         }
-    }
-    pub(crate) fn recalculate_summary(&mut self, our_node_id: EphemeralNodeId) {
-        let mut summary = PeerSummaryInfo::default();
-        for (peer, info) in self.peers.iter() {
-            summary.peers.insert(
-                *peer,
-                info.peer_neighbors
-                    .iter()
-                    .copied()
-                    .filter(|x| self.peers.contains_key(x) || *x == our_node_id)
-                    .collect(),
-            );
-        }
-        self.peer_summary_info.update(summary);
     }
     pub fn get_insert_peer(&mut self, peer_id: EphemeralNodeId, now: Instant) -> &mut PeerInfo {
         let t = self
@@ -379,8 +226,19 @@ pub(crate) struct QuarantinedMessage {
 #[derive(Default, Debug)]
 pub(crate) struct NodeNumberBasedInhibit {
     /// True if we inhibited a response to this node in the last cycle (since last ReportHeads from peer)
+    ///
+    /// I.e, we didn't send something when we otherwise would have (were it not for this
+    /// inhibit-mechanism).
     was_inhibited: bool,
     /// Incremented whenever we receive a ReportHeads, while 'was_inhibited' is true.
+    ///
+    /// I.e, this value increases every time we've inhibited messages, until it's cleared.
+    ///
+    /// The larger this value gets, the less likely the algorithm is to inhibit anything.
+    /// Whenever we decide to _not_ inhibit, we set this to 0.
+    ///
+    /// The consequence is that we're initially likely to inhibit transmission,
+    /// but after some time this value increases too much and we don't inhibit.
     inhibit_with_no_one_else_taking_up_the_slack_count: usize,
 }
 
@@ -411,6 +269,9 @@ impl NodeNumberBasedInhibit {
             );
         }
     }
+    //TODO(future): Remove the separate tracking of neighbors for `NodeNumberBasedInhibit`,
+    //and use the MiniPather instead. We probably only need something like a counter to
+    //keep track of how much patience we should have
     pub fn is_inhibited(
         &mut self,
         self_node: EphemeralNodeId,
@@ -418,10 +279,7 @@ impl NodeNumberBasedInhibit {
         neighbors_of_requester: &[EphemeralNodeId],
     ) -> bool {
         let mut patience = Patience(self.inhibit_with_no_one_else_taking_up_the_slack_count);
-        /*println!(
-            "is_inhibited {:?}: our: {:?} neigh: {:?}",
-            self_node, our_neighbor_list, neighbors_of_requester
-        );*/
+
         for our_neighbor in our_neighbor_list {
             if *our_neighbor >= self_node {
                 continue;
@@ -430,8 +288,6 @@ impl NodeNumberBasedInhibit {
             if neighbors_of_requester.contains(our_neighbor) {
                 if patience.tax() {
                     self.was_inhibited = true;
-                    //trace!("#{:?}: was inhibited", self_node);
-                    //println!("Inhibited because we ({:?}), consider {:?} to be a neighbor of requester, and patience is taxed: {:?}", self_node, our_neighbor, patience);
                     // This other neighbor should do the request instead
                     return true;
                 } else {
@@ -448,6 +304,10 @@ impl NodeNumberBasedInhibit {
     }
 }
 
+/// Data structure to detect duplicate requests.
+/// 
+/// If multiple parts of the algorithm decide to do the same request,
+/// we wish to merge these and not emit two identical requests on the net.
 #[derive(Debug)]
 pub struct DuplicationChecker<T> {
     memory: IndexMap<T, Instant>,
@@ -502,11 +362,12 @@ pub struct Neighborhood {
     /// Messages that we were totally going to request from upstream, but didn't
     /// because we figured a peer would do it. request_inhibited_based_on_node_numbers has
     /// a counter that is increased when adding stuff here, and decreased whenever we
-    /// receive a message in here without having requestd it.
+    /// receive a message in here without having requested it.
     //TODO: Verify we have gc for this
     pub(crate) inhibited_request_upstream: IndexMap<MessageId, (Instant, EphemeralNodeId)>,
+    /// Mapping from values of inhibited_request_upstream to
     pub(crate) inhibited_request_upstream_oldest:
-        IndexMap<EphemeralNodeId, BTreeMap<Instant, Vec<MessageId>>>,
+        IndexMap<EphemeralNodeId, BTreeMap<Instant, ()>>,
 }
 
 impl Neighborhood {
@@ -517,11 +378,8 @@ impl Neighborhood {
                 Entry::Occupied(mut e) => {
                     match e.get_mut().entry(time) {
                         std::collections::btree_map::Entry::Vacant(_) => {}
-                        std::collections::btree_map::Entry::Occupied(mut e2) => {
-                            e2.get_mut().retain(|x| x != &msg);
-                            if e2.get().is_empty() {
-                                e2.remove();
-                            }
+                        std::collections::btree_map::Entry::Occupied(e2) => {
+                            e2.remove();
                         }
                     }
                     if e.get_mut().is_empty() {
@@ -547,15 +405,14 @@ impl Neighborhood {
                     .or_default()
                     .entry(now)
                     .or_default()
-                    .push(msg_id);
+                    ;
             }
         }
     }
-    pub fn new(peer_summary_info: ArcShift<PeerSummaryInfo>, now: Instant, pather: Arc<RwLock<MiniPather>>) -> Neighborhood {
+    pub fn new(now: Instant, pather: Arc<RwLock<MiniPather>>) -> Neighborhood {
         Self {
             peers: Peers {
                 peers: Default::default(),
-                peer_summary_info,
                 fast_pather: pather,
                 last_gc: now,
             },
@@ -587,6 +444,7 @@ impl Neighborhood {
         }
         let requesting_node_neighbors: SmallVec<[_; 16]> =
             requesting_node.peer_neighbors.iter().copied().collect();
+
         let inhibitor = &mut requesting_node.request_inhibited_based_on_node_numbers;
         if inhibitor.is_inhibited(self_node, &neighbors_list, &requesting_node_neighbors) {
             for msg_id in message_ids {
@@ -608,21 +466,19 @@ impl Neighborhood {
         periodic_message: Duration,
         now: Instant,
     ) {
-        //TODO: Finish epohemeralnodeid stuff, make sure to implement re-randomization on conflicts! And clean up old history
         match message {
             DistributorMessage::ReportHeads { heads, source, .. } => {
 
                 let peer = self.peers.get_insert_peer(*source, now);
                 //println!("{:?}: Calling time_passed for {:?}", test_elapsed(), *source);
                 if let Some(inhibited) = self.inhibited_request_upstream_oldest.get(source) {
-                    if let Some((age, val)) = inhibited.first_key_value() {
+                    if let Some((age, _)) = inhibited.first_key_value() {
                         let periods = now.saturating_duration_since(*age).as_secs_f32()
                             / periodic_message.as_secs_f32();
                         println!(
-                            "{:?}: Stress level is based on {} elapsed for msgs: {:?}",
+                            "{:?}: Stress level is based on {} elapsed",
                             test_elapsed(),
                             now.saturating_duration_since(*age).as_secs_f32(),
-                            val
                         );
                         peer.request_inhibited_based_on_node_numbers
                             .time_passed((periods + 1.0) as usize);
@@ -632,11 +488,11 @@ impl Neighborhood {
 
                 //peer.resend_actual_message_based_on_node_numbers.time_passed();
                 for head in heads {
-                    if let Some(msg_source) = self.recent_messages.get(&head.msg) {
+                    /*if let Some(msg_source) = self.recent_messages.get(&head.msg) {
                         if msg_source.other_transmitters == false {
                             peer.can_hear(msg_source.original_source, now);
                         }
-                    }
+                    }*/
                     self.recent_messages
                         .record_message_source(head.msg, *source, false);
                 }
@@ -647,23 +503,11 @@ impl Neighborhood {
             DistributorMessage::SyncAllQuery(_) => {}
             DistributorMessage::SyncAllRequest(_) => {}
             DistributorMessage::SyncAllAck(_) => {}
-            DistributorMessage::RequestUpstream { source, query, .. } => {
-                let peer = self.peers.get_insert_peer(*source, now);
-                for (queried_msg, _count) in query {
-                    if let Some(msg_source) = self.recent_messages.get(queried_msg) {
-                        if msg_source.other_transmitters == false {
-                            peer.cant_hear(msg_source.original_source, now);
-                        }
-                    }
-                }
+            DistributorMessage::RequestUpstream { source:_, query:_, .. } => {
             }
             DistributorMessage::UpstreamResponse {
                 source, messages, ..
             } => {
-                /*if let Some(peer) = self.peers.get_peer_mut(*source) {
-                    //
-                    peer.request_inhibited_based_on_node_numbers.satisfied();
-                }*/
                 for msg in messages {
                     self.recent_messages
                         .record_message_source(msg.id, *source, false);
@@ -693,6 +537,7 @@ struct OriginForwardingData {
 
 
 const MAX_RECENT_SENT_KEPT: usize = 1000;
+//TODO(future): Consider merging this with NeighborHood?
 #[derive(Debug)]
 pub struct QueryableOutbuffer {
     outbuf: VecDeque<DistributorMessage>,
@@ -702,6 +547,7 @@ pub struct QueryableOutbuffer {
     recently_sent_upstream_responses_for: DuplicationChecker<MessageId>,
 
     recently_sent_message_ids: DuplicationChecker<MessageId>,
+    //TODO: GC this! This contains complete messages, which may consume lots of RAM.
     parentless_messages:
         IndexMap</*missing parent*/ MessageId, Vec<AccumulatedMessage>>,
 }
@@ -1223,7 +1069,6 @@ impl Distributor {
     pub fn new(
         periodic_message_interval: Duration,
         mut initial_node_id: ArcShift<EphemeralNodeId>,
-        peer_info: ArcShift<PeerSummaryInfo>,
         now: Instant,
         mini_pather: Option<Arc<RwLock<MiniPather>>>,
     ) -> Distributor {
@@ -1232,7 +1077,7 @@ impl Distributor {
             sync_all_inprogress: SyncAllState::NotActive,
             distributor_state: DistributorStatus::default(),
             periodic_message_interval,
-            neighborhood: Neighborhood::new(peer_info, now, mini_pather
+            neighborhood: Neighborhood::new(now, mini_pather
                 .unwrap_or(Arc::new(RwLock::new(MiniPather::new(node))))),
             ephemeral_node_id: initial_node_id,
             outbuf: QueryableOutbuffer::new(periodic_message_interval),
@@ -1457,10 +1302,6 @@ impl Distributor {
 
                                 debug_assert!(neighbors.is_sorted());
                                 peer.peer_neighbors.clone_from(&neighbors);
-                                self.neighborhood
-                                    .peers
-                                    .recalculate_summary(*self.ephemeral_node_id.get());
-
                                 break;
                             }
                             Acceptability::Unacceptable => {

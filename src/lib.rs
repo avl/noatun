@@ -820,6 +820,11 @@ pub enum Persistence {
 ///  * [`Self::Serializer`] - serializer to serialize message to wire and disk.
 ///    See trait [`NoatunMessageSerializer`]. Noatun provides impls for serde postcard and
 ///    savefile out of the box.
+/// 
+/// Note, Noatun will keep message instances in RAM in some contexts, for example
+/// when messages are sitting in internal send buffers. This is generally
+/// ok for messages up to a few kilobytes in size. However, messages that
+/// carry large amounts of data may wish to use temporary files to conserve RAM.
 pub trait Message: Debug + Sized + 'static {
     /// The type of materialized view that this message is compatible with.
     ///

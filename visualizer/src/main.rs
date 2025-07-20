@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use noatun::data_types::{NoatunHashMap, NoatunKey};
 use noatun::database::DatabaseSettings;
-use noatun::distributor::{Address, Distributor, DistributorMessage, EphemeralNodeId, PeerSummaryInfo, SerializedMessage};
+use noatun::distributor::{Address, Distributor, DistributorMessage, EphemeralNodeId, SerializedMessage};
 
 const RANGE: f32 = 0.5;
 
@@ -171,7 +171,6 @@ impl Node {
     }
     pub fn new(id: u8, ephemeral_node_id: Option<EphemeralNodeId>, now: Instant,) -> Node {
 
-        let peer_info = ArcShift::new(PeerSummaryInfo::default());
         let db = Database::create_in_memory(1_000_000, DatabaseSettings {
             mock_time: Some(datetime!(2020-01-01 T 00:00:00 Z).into()),
             projection_time_limit: None,
@@ -185,7 +184,7 @@ impl Node {
             db,
             distributor: Distributor::new(Duration::from_secs(5), ArcShift::new(ephemeral_node_id.unwrap_or(
                 EphemeralNodeId::new(id.into())
-            )), peer_info, now, None),
+            )), now, None),
             last_periodic: now,
         }
     }

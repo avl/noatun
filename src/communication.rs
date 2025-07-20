@@ -1,6 +1,6 @@
 use crate::distributor::{
     Address, Distributor, DistributorMessage, EphemeralNodeId,
-    PeerSummaryInfo, SerializedMessage, Status,
+    SerializedMessage, Status,
 };
 
 use crate::colors::rgb;
@@ -107,7 +107,7 @@ pub trait CommunicationReceiveSocket<Endpoint: PartialEq + Debug + Send> {
     fn recv_buf_from<B: bytes::buf::BufMut + Send>(
         &mut self,
         buf: &mut B,
-    ) -> impl std::future::Future<Output = std::io::Result<(usize, Endpoint)>> + Send;
+    ) -> impl std::future::Future<Output = std::io::Result<(usize, Option<Endpoint>)>> + Send;
 }
 #[allow(async_fn_in_trait)] //For now
 pub trait CommunicationSendSocket<Endpoint: PartialEq + Debug + Send> {
@@ -492,7 +492,7 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     history: SizeLimitVecDeque<TransmittedEntityWithFullSeq>,
     queue: VecDeque<TransmittedEntityWithFullSeq>,
     outgoing_retransmit_requests: IndexMap<EphemeralNodeId, RetransmitInfo>,
-    receive_track: IndexMap<(EphemeralNodeId, Socket::Endpoint), ReceiveTrack>,
+    receive_track: IndexMap<(EphemeralNodeId, Option<Socket::Endpoint>), ReceiveTrack>,
     quit_rx: tokio::sync::oneshot::Receiver<()>,
     /// Sent to net
     message_rx: Receiver<Vec<u8>>,
@@ -1472,7 +1472,6 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG>
                 .initial_ephemeral_node_id
                 .unwrap_or_else(EphemeralNodeId::random),
         );
-        let node_peer_info = ArcShift::new(PeerSummaryInfo::default());
 
 
         let retransmit_interval = Duration::from_secs_f32(config.retransmit_interval_seconds);
@@ -1518,7 +1517,6 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG>
             distributor: Distributor::new(
                 config.periodic_message_interval,
                 our_node_id,
-                node_peer_info,
                 Instant::now().into(),
                 Some(mini_pather)
             ),
