@@ -16,6 +16,7 @@
 #![allow(clippy::expect_fun_call)]
 #![allow(clippy::needless_late_init)]
 #![allow(clippy::derivable_impls)]
+#![allow(clippy::manual_is_multiple_of)]
 
 pub use crate::data_types::{OpaqueNoatunCell,NoatunCell};
 use crate::private::Sealed;

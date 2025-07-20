@@ -825,14 +825,14 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for NoatunVecIteratorMut<'a, T> 
 }
 
 impl<T: FixedSizeObject + 'static> NoatunVec<T> {
-    pub fn iter(&self) -> NoatunVecIterator<T> {
+    pub fn iter(&self) -> NoatunVecIterator<'_, T> {
         NoatunContext.observe_registrar(self.length_registrar);
         NoatunVecIterator {
             vec: &self.raw,
             index: 0,
         }
     }
-    pub fn iter_mut(self: Pin<&mut Self>) -> NoatunVecIteratorMut<T> {
+    pub fn iter_mut(self: Pin<&mut Self>) -> NoatunVecIteratorMut<'_, T> {
         NoatunContext.observe_registrar(self.length_registrar);
         NoatunVecIteratorMut {
             vec: self,
@@ -996,7 +996,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
         NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
         tself.raw.destroy_items();
     }
-    pub fn iter(&self) -> NoatunVecIterator<T> {
+    pub fn iter(&self) -> NoatunVecIterator<'_, T> {
         NoatunContext.assert_opaque_access_allowed("OpaqueNoatunVec", "NoatunVec");
         NoatunVecIterator {
             vec: &self.raw,
@@ -2032,7 +2032,7 @@ enum MetaMutAndEmpty<'a> {
 
 /// Some(x) if the given bucket is part of a group with at least one empty slot.
 /// x will be the first such empty slot.
-fn get_meta_mut_and_emptyable(metas: &mut [MetaGroup], bucket: BucketNr) -> MetaMutAndEmpty {
+fn get_meta_mut_and_emptyable(metas: &mut [MetaGroup], bucket: BucketNr) -> MetaMutAndEmpty<'_> {
     let group = bucket.0 / HASH_META_GROUP_SIZE;
     let subindex = bucket.0 % HASH_META_GROUP_SIZE;
     let group_obj = &mut metas[group];
@@ -2166,7 +2166,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     ///
     /// It is recommended that applications do not count the number of iterated values, or
     /// if they do, that they do not use the numerical value for any decisions.
-    pub fn iter(&self) -> NoatunHashMapIterator<K, V> {
+    pub fn iter(&self) -> NoatunHashMapIterator<'_, K, V> {
         let context = self.data_meta_len();
         NoatunHashMapIterator {
             hash_buckets: context.buckets,
@@ -2183,7 +2183,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             next_position: 0,
         }
     }
-    fn data_meta_len_mut(&mut self) -> HashAccessContextMut<K, V> {
+    fn data_meta_len_mut(&mut self) -> HashAccessContextMut<'_, K, V> {
         self.data_meta_len_mut_unsafe()
     }
     fn data_meta_len_mut_unsafe<'a>(&mut self) -> HashAccessContextMut<'a, K, V> {
@@ -2211,7 +2211,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             }
         }
     }
-    fn data_meta_len(&self) -> HashAccessContext<K, V> {
+    fn data_meta_len(&self) -> HashAccessContext<'_, K, V> {
         let dptr = NoatunContext.start_ptr().wrapping_add(self.data);
         let align = align_of::<NoatunHashBucket<K, V>>().max(align_of::<MetaGroup>());
         let cap = self.capacity;

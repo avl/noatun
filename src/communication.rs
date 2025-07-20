@@ -1339,7 +1339,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG>
     /// Warning! Adding or deleting messages directly to the inner database is not advised. Such
     /// messages will not be immediately picked up by the communication, causing inefficiency.
     /// Instead, use [`Self::add_message`] and similar methods on [`DatabaseCommunication`].
-    pub fn inner_database(&self) -> MutexGuard<Database<MSG>> {
+    pub fn inner_database(&self) -> MutexGuard<'_, Database<MSG>> {
         self.database.lock().unwrap()
     }
 

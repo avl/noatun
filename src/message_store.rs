@@ -1779,6 +1779,7 @@ impl<M> OnDiskMessageStore<M> {
                 prev = Some(test.header.id);
             } else {
                 #[cfg(debug_assertions)]
+                #[allow(clippy::unnecessary_unwrap)]
                 {
                     if test.header.id <= prev.unwrap() {
                         dbg!(test.header.id, prev);

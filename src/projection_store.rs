@@ -167,10 +167,11 @@ mod registrar_info {
 
     impl PartialOrd for UnusedInfo {
         fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.seq.cmp(&other.seq))
+            Some(self.cmp(other))
         }
     }
     impl Ord for UnusedInfo {
+        #[inline]
         fn cmp(&self, other: &Self) -> Ordering {
             self.seq.cmp(&other.seq)
         }

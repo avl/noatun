@@ -20,6 +20,6 @@ jobs:
       - name: Install rust
         run: rustup toolchain install stable
       - name: Run Clippy
-        run: cargo +stable clippy --all-features --workspace
+        run: RUSTFLAGS="-Dwarnings" cargo +stable clippy --all-features --workspace
       - name: Run Clippy (no features)
-        run: cargo +stable clippy --no-default-features --workspace
+        run: RUSTFLAGS="-Dwarnings" cargo +stable clippy --no-default-features --workspace

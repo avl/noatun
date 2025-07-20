@@ -118,7 +118,7 @@ impl UndoLog {
             //false
         })
     }
-    fn parse1(data: &mut [u8]) -> Option<(usize /*new size*/, UndoLogEntry)> {
+    fn parse1(data: &mut [u8]) -> Option<(usize /*new size*/, UndoLogEntry<'_>)> {
         if data.is_empty() {
             return None;
         }

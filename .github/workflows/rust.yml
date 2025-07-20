@@ -18,7 +18,7 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Install rust
-      run: rustup toolchain install stable
+      run: rustup toolchain install stable && rustup toolchain install 1.86
     - name: Install nextest
       run: cargo install cargo-nextest
     - name: Run tests
@@ -27,6 +27,8 @@ jobs:
       run: rustup component add --toolchain nightly miri && cargo +nightly miri test miri
     - name: Docs
       run: cargo +stable test --doc
+    - name: Build (1.86)
+      run: cargo +1.86 build --workspace --all-targets --all-features
 
 
 

@@ -260,7 +260,7 @@ impl FileAccessor {
         Ok(())
     }
 
-    pub(crate) fn readonly(&self) -> ReadonlyFileAccessor {
+    pub(crate) fn readonly(&self) -> ReadonlyFileAccessor<'_> {
         ReadonlyFileAccessor {
             ptr: self.ptr,
             size: self.used_space(),

@@ -444,7 +444,7 @@ impl<MSG: Message> Drop for Database<MSG> {
 }
 
 impl<MSG: Message+'static> Database<MSG> {
-    pub fn begin_session_mut(&mut self) -> Result<DatabaseSessionMut<MSG>> {
+    pub fn begin_session_mut(&mut self) -> Result<DatabaseSessionMut<'_, MSG>> {
         self.mark_dirty()?;
         Ok(DatabaseSessionMut { db: self })
     }
@@ -456,7 +456,7 @@ impl<MSG: Message+'static> Database<MSG> {
         Ok(())
     }
 
-    pub fn begin_session(&self) -> Result<DatabaseSession<MSG>> {
+    pub fn begin_session(&self) -> Result<DatabaseSession<'_, MSG>> {
         self.assert_not_dirty()?;
         Ok(DatabaseSession { db: self })
     }
