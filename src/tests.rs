@@ -1131,7 +1131,7 @@ fn test_successor_exhaustion() {
         id = new_id;
         increments += 1;
     }
-    println!("Increments : {}", increments);
+    println!("Increments : {increments}");
     assert!(increments >= 16383);
     assert!(increments <= 32768 + 16383);
 }
@@ -1144,7 +1144,7 @@ fn test_predecessor_exhaustion() {
         id = new_id;
         increments += 1;
     }
-    println!("Increments : {}", increments);
+    println!("Increments : {increments}");
     assert!(increments >= 16383);
     assert!(increments <= 32768 + 16383);
 }

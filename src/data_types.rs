@@ -3144,7 +3144,7 @@ use super::{NoatunBox, NoatunHashMap, NoatunString};
             }
             assert_eq!(map.0.len(), 10);
             unsafe { Pin::new_unchecked(&mut map.0).retain(|k, _v|{
-                println!("retain cb: {}", k);
+                println!("retain cb: {k}");
                 *k%2==0
             }) };
             assert_eq!(map.0.len(), 5);

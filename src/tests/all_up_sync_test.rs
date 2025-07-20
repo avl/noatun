@@ -182,7 +182,7 @@ impl TestDriver {
                 savefile::Deserializer::bare_deserialize(&mut std::io::Cursor::new(msg), 0)
                     .unwrap();
 
-            let rawlen = dst.iter().map(|x| format!("{}", x)).join(",");
+            let rawlen = dst.iter().map(|x| format!("{x}")).join(",");
             let padcount = 12usize.saturating_sub(rawlen.len());
             let padding = " ".repeat(padcount);
 
@@ -328,7 +328,7 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
             if driver_inner.loss <= random(0.0..1.0) && !partitioned {
                 item.send((self.0 /*src*/, data.clone()))
                     .await
-                    .map_err(|e| std::io::Error::other(format!("simulated net failed {:?}", e)))?;
+                    .map_err(|e| std::io::Error::other(format!("simulated net failed {e:?}")))?;
                 delivered_to.push(*dst_node);
             } else {
                 //println!("== SIMULATOR CAUSED PACKET LOSS ==: partitioned: {}", partitioned);
@@ -841,7 +841,7 @@ async fn all_up_general_update_sync_test_impl(
     let steps = MY_THREAD_RNG
         .with(|x| x.borrow_mut().as_mut().unwrap().gen_range(1..20))
         .min(maxlen);
-    println!("Steps: {}", steps);
+    println!("Steps: {steps}");
     for i in 0..steps
     {
         info!("==== write {} =====", i);
@@ -931,8 +931,8 @@ async fn all_up_general_update_sync_test_impl(
         .unwrap()
         .get_all_messages_vec()
         .unwrap();
-    println!("Node 1 messages:\n{:#?}", msgs1);
-    println!("Node 2 messages:\n{:#?}", msgs2);
+    println!("Node 1 messages:\n{msgs1:#?}");
+    println!("Node 2 messages:\n{msgs2:#?}");
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
     /*let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
@@ -1215,7 +1215,7 @@ async fn all_up_three_node_resync() {
             .unwrap();
     }
 
-    println!("Start time: {:?}", start_time);
+    println!("Start time: {start_time:?}");
     println!("{}", driver.messages_snapshot());
 
     assert_eq!(
@@ -1286,7 +1286,7 @@ async fn all_up_three_node_partial_resync1() {
     let root2 = app2.with_root(|root| root.detach());
     let root3 = app3.with_root(|root| root.detach());
 
-    println!("Start time: {:?}", start_time);
+    println!("Start time: {start_time:?}");
     println!("{}", driver.messages_snapshot());
 
     assert_snapshot!(driver.messages_snapshot());
@@ -1346,7 +1346,7 @@ async fn all_up_three_node_partial_resync2() {
     let root2 = app2.with_root(|root| root.detach());
     let root3 = app3.with_root(|root| root.detach());
 
-    println!("Start time: {:?}", start_time);
+    println!("Start time: {start_time:?}");
     //println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.messages_snapshot());
 
@@ -1395,7 +1395,7 @@ async fn all_up_four_node_partial_resync1() {
     let root3 = app3.with_root(|root| root.detach());
     let root4 = app4.with_root(|root| root.detach());
 
-    println!("Start time: {:?}", start_time);
+    println!("Start time: {start_time:?}");
     //println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.messages_snapshot());
 
@@ -1455,7 +1455,7 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
     let root3 = app3.with_root(|root| root.detach());
     let root4 = app4.with_root(|root| root.detach());
 
-    println!("Start time: {:?}", start_time);
+    println!("Start time: {start_time:?}");
     println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.messages_snapshot());
 
@@ -1514,7 +1514,7 @@ async fn ten_nodes_sync_test() {
         }
     }
 
-    println!("Start time: {:?}", start_time);
+    println!("Start time: {start_time:?}");
     println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.messages_snapshot());
 
@@ -1613,7 +1613,7 @@ async fn complex_forwarding_test() {
         }
     }
 
-    println!("Start time: {:?}", start_time);
+    println!("Start time: {start_time:?}");
     println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.sent_messages_snapshot());
 
@@ -1665,7 +1665,7 @@ async fn all_up_clock_mismatch_test() {
     app2.inner_database().begin_session_mut().unwrap().set_mock_time(NoatunTime::from_datetime(START_TIME + Duration::from_secs(30))).unwrap();
 
 
-    println!("Start time: {:?}", START_TIME);
+    println!("Start time: {START_TIME:?}");
     println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.sent_messages_snapshot());
 
