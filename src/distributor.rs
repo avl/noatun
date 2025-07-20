@@ -12,8 +12,7 @@ use indexmap::map::Entry;
 use indexmap::{IndexMap, IndexSet};
 use rand::{random};
 use savefile_derive::Savefile;
-use smallvec::SmallVec;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::Cursor;
@@ -91,9 +90,16 @@ impl RecentMessages {
 
 #[derive(Debug, Default)]
 enum UpToSpeedStatus {
+    /// We don't know how up-to-date we are with respect to the node
     #[default]
     Uninitialized,
+    /// The node has some update heads that we lack.
+    ///
+    /// The tuple member gives the message ids of the missing messages.
     HeadsNeeded(Vec<MessageId>),
+    /// We are up-to-date with respect to this node.
+    ///
+    /// That is, we know everything it knows.
     UpToSpeed
 }
 
@@ -110,30 +116,22 @@ impl UpToSpeedStatus {
 //TODO: Clean up all unused stuff here and around
 #[derive(Debug)]
 pub struct PeerInfo {
+    /// The node id of this peer
+    ///
+    /// The peer may change nodeid, but we just consider that as a new peer appearing
     pub(crate) peer: EphemeralNodeId,
+    /// How up-to-date we are with respect to this neighbor
     up_to_speed: UpToSpeedStatus,
-    /// For messages we first observed from key (`Address`), this peer is usually filled in
-    /// by messages from `SeenBy`.
-    /// TODO: Remove this unless we use it?
-    pub(crate) peer_neighbors: Vec<EphemeralNodeId>,
-
 
     pub(crate) last_seen: Instant,
 
-    /// set to true whenever we decide to inhibit a request based on the idea that
-    /// there's another node in our group that should be doing the request
-    pub(crate) request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit,
 }
 impl PeerInfo {
     pub fn new(peer: EphemeralNodeId, now: Instant) -> PeerInfo {
         PeerInfo {
             peer,
             up_to_speed: Default::default(),
-            peer_neighbors: vec![],
             last_seen: now,
-            request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit::default(),
-            //send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit::default(),
-            //resend_actual_message_based_on_node_numbers: Default::default(),
         }
     }
 
@@ -242,19 +240,6 @@ pub(crate) struct NodeNumberBasedInhibit {
     inhibit_with_no_one_else_taking_up_the_slack_count: usize,
 }
 
-#[derive(Debug)]
-struct Patience(usize);
-
-impl Patience {
-    pub fn tax(&mut self) -> bool {
-        if self.0 == 0 {
-            true
-        } else {
-            self.0 -= 1;
-            false
-        }
-    }
-}
 
 impl NodeNumberBasedInhibit {
     /// This is called when we receive a ReportHeads from this peer
@@ -274,26 +259,17 @@ impl NodeNumberBasedInhibit {
     //keep track of how much patience we should have
     pub fn is_inhibited(
         &mut self,
-        self_node: EphemeralNodeId,
-        our_neighbor_list: &[EphemeralNodeId],
-        neighbors_of_requester: &[EphemeralNodeId],
+        other_node: EphemeralNodeId,
+        fast_pather: &mut MiniPather,
     ) -> bool {
-        let mut patience = Patience(self.inhibit_with_no_one_else_taking_up_the_slack_count);
 
-        for our_neighbor in our_neighbor_list {
-            if *our_neighbor >= self_node {
-                continue;
+        if let Some(ordinal) = fast_pather.should_i_ask_for_retransmission(other_node.raw_u16()) {
+            if ordinal > self.inhibit_with_no_one_else_taking_up_the_slack_count {
+                // Higher 'ordinal' means we should transmit less.
+                return true;
             }
-
-            if neighbors_of_requester.contains(our_neighbor) {
-                if patience.tax() {
-                    self.was_inhibited = true;
-                    // This other neighbor should do the request instead
-                    return true;
-                } else {
-                    //println!("Not inhibited yet because {:?}, considers {:?} to be a neighbor of requester, and patience isn't taxed: {:?}", self_node, our_neighbor, patience);
-                }
-            }
+        } else {
+            return true;
         }
 
 
@@ -357,7 +333,7 @@ pub const MAX_RECENT_SENT_MEMORY: usize = 100;
 pub struct Neighborhood {
     pub peers: Peers,
     /// The source we've observed for recent messages.
-    pub(crate) recent_messages: RecentMessages,
+    pub(crate) recent_messages_source: RecentMessages,
 
     /// Messages that we were totally going to request from upstream, but didn't
     /// because we figured a peer would do it. request_inhibited_based_on_node_numbers has
@@ -365,50 +341,9 @@ pub struct Neighborhood {
     /// receive a message in here without having requested it.
     //TODO: Verify we have gc for this
     pub(crate) inhibited_request_upstream: IndexMap<MessageId, (Instant, EphemeralNodeId)>,
-    /// Mapping from values of inhibited_request_upstream to
-    pub(crate) inhibited_request_upstream_oldest:
-        IndexMap<EphemeralNodeId, BTreeMap<Instant, ()>>,
 }
 
 impl Neighborhood {
-    pub fn report_no_longer_inhibited(&mut self, msg: MessageId) {
-        if let Some((time, src)) = self.inhibited_request_upstream.swap_remove(&msg) {
-            match self.inhibited_request_upstream_oldest.entry(src) {
-                Entry::Vacant(_) => {}
-                Entry::Occupied(mut e) => {
-                    match e.get_mut().entry(time) {
-                        std::collections::btree_map::Entry::Vacant(_) => {}
-                        std::collections::btree_map::Entry::Occupied(e2) => {
-                            e2.remove();
-                        }
-                    }
-                    if e.get_mut().is_empty() {
-                        e.swap_remove();
-                    }
-                }
-            }
-        }
-    }
-    pub fn report_inhibited_message(
-        &mut self,
-        msg_id: MessageId,
-        source: EphemeralNodeId,
-        now: Instant,
-    ) {
-        match self.inhibited_request_upstream.entry(msg_id) {
-            Entry::Occupied(_e) => {}
-            Entry::Vacant(e) => {
-
-                e.insert((now, source));
-                self.inhibited_request_upstream_oldest
-                    .entry(source)
-                    .or_default()
-                    .entry(now)
-                    .or_default()
-                    ;
-            }
-        }
-    }
     pub fn new(now: Instant, pather: Arc<RwLock<MiniPather>>) -> Neighborhood {
         Self {
             peers: Peers {
@@ -416,9 +351,8 @@ impl Neighborhood {
                 fast_pather: pather,
                 last_gc: now,
             },
-            recent_messages: Default::default(),
+            recent_messages_source: Default::default(),
             inhibited_request_upstream: Default::default(),
-            inhibited_request_upstream_oldest: Default::default(),
         }
     }
 
@@ -430,32 +364,36 @@ impl Neighborhood {
         self_node: EphemeralNodeId,
         message_ids: &[MessageId],
         now: Instant,
+        periodic_interval: Duration
     ) -> bool {
-        let neighbors_list: SmallVec<[_; 16]> = self.peers.peers.keys().copied().collect();
+        let mut fast_pather_guard = self.peers.fast_pather.write().unwrap();
+        let fast_pather = &mut *fast_pather_guard;
 
-        let Some(requesting_node) = self.peers.get_peer_mut(request_from) else {
-            println!("Inhibit, because requesting node is not known");
-            return true;
-        };
-        if requesting_node.peer_neighbors.is_empty() {
-            println!("Inhibit, because requesting node has no neighbors");
-            // Not fully up-and-running yet
-            return true;
-        }
-        let requesting_node_neighbors: SmallVec<[_; 16]> =
-            requesting_node.peer_neighbors.iter().copied().collect();
-
-        let inhibitor = &mut requesting_node.request_inhibited_based_on_node_numbers;
-        if inhibitor.is_inhibited(self_node, &neighbors_list, &requesting_node_neighbors) {
-            for msg_id in message_ids {
-                self.report_inhibited_message(*msg_id, request_from, now);
-            }
-            true
-        } else {
+        if let Some(ordinal) = fast_pather.should_i_ask_for_retransmission(request_from.raw_u16()) {
+            let mut inhibit = true;
             for msg in message_ids {
-                self.report_no_longer_inhibited(*msg);
+                match self.inhibited_request_upstream.entry(*msg) {
+                    Entry::Occupied(o) => {
+                        let periods = ((now.duration_since(o.get().0).as_millis() as u64) / (periodic_interval.as_millis().max(1) as u64)) as usize;
+                        if periods > ordinal  {
+                            inhibit = false;
+                            o.swap_remove();
+                        }
+                    }
+                    Entry::Vacant(o) => {
+                        if ordinal != 0 {
+                            o.insert((now, request_from));
+                        } else {
+                            inhibit = false;
+                        }
+                    }
+                }
             }
-            false
+            inhibit
+           // inhibit
+        } else {
+            // They can't hear us.
+            true
         }
     }
 
@@ -471,7 +409,7 @@ impl Neighborhood {
 
                 let peer = self.peers.get_insert_peer(*source, now);
                 //println!("{:?}: Calling time_passed for {:?}", test_elapsed(), *source);
-                if let Some(inhibited) = self.inhibited_request_upstream_oldest.get(source) {
+                /*if let Some(inhibited) = self.inhibited_request_upstream_oldest.get(source) {
                     if let Some((age, _)) = inhibited.first_key_value() {
                         let periods = now.saturating_duration_since(*age).as_secs_f32()
                             / periodic_message.as_secs_f32();
@@ -483,7 +421,7 @@ impl Neighborhood {
                         peer.request_inhibited_based_on_node_numbers
                             .time_passed((periods + 1.0) as usize);
                     }
-                }
+                }*/
 
 
                 //peer.resend_actual_message_based_on_node_numbers.time_passed();
@@ -493,12 +431,10 @@ impl Neighborhood {
                             peer.can_hear(msg_source.original_source, now);
                         }
                     }*/
-                    self.recent_messages
+                    self.recent_messages_source
                         .record_message_source(head.msg, *source, false);
                 }
-                self.peers
-                    .gc_if_necessary(our_node_id, periodic_message, now);
-                self.peers.fast_pather.write().unwrap().report_own_neighbors(self.peers.peers.keys().map(|x|x.raw_u16()));
+
             }
             DistributorMessage::SyncAllQuery(_) => {}
             DistributorMessage::SyncAllRequest(_) => {}
@@ -509,7 +445,7 @@ impl Neighborhood {
                 source, messages, ..
             } => {
                 for msg in messages {
-                    self.recent_messages
+                    self.recent_messages_source
                         .record_message_source(msg.id, *source, false);
                 }
             }
@@ -519,9 +455,9 @@ impl Neighborhood {
                 message: msg,
                 ..
             } => {
-                self.report_no_longer_inhibited(msg.message_id());
+                self.inhibited_request_upstream.swap_remove(&msg.message_id());
 
-                self.recent_messages
+                self.recent_messages_source
                     .record_message_source(msg.message_id(), *source, true);
             }
         }
@@ -618,6 +554,7 @@ impl QueryableOutbuffer {
             self_node,
             messages_to_request,
             now,
+            self.periodic_message_interval
         ) {
             return;
         }
@@ -1130,7 +1067,7 @@ impl Distributor {
             .map(|msg_id| {
                 let origin = self
                     .neighborhood
-                    .recent_messages
+                    .recent_messages_source
                     .recent_messages
                     .get(msg_id)
                     .map(|x| x.original_source);
@@ -1299,9 +1236,9 @@ impl Distributor {
                                 debug!("Acceptability: Nominal");
                                 self.distributor_state.most_recent_unsynced.remove(&src);
                                 self.distributor_state.most_recent_clockdrift.remove(&src);
+                                self.neighborhood.peers.fast_pather.write().unwrap().report_own_neighbors(self.neighborhood.peers.peers.keys().map(|x|x.raw_u16()));
 
                                 debug_assert!(neighbors.is_sorted());
-                                peer.peer_neighbors.clone_from(&neighbors);
                                 break;
                             }
                             Acceptability::Unacceptable => {
@@ -1539,7 +1476,7 @@ impl Distributor {
                             source: *self.ephemeral_node_id.get(),
                             origin: self
                                 .neighborhood
-                                .recent_messages
+                                .recent_messages_source
                                 .recent_messages
                                 .get(&msg.id())
                                 .map(|x| x.original_source)
@@ -1778,7 +1715,7 @@ impl Distributor {
                 self.outbuf.push_back(DistributorMessage::Message {
                     origin: self
                         .neighborhood
-                        .recent_messages
+                        .recent_messages_source
                         .recent_messages
                         .get(&msg_id)
                         .map(|x| x.original_source)
