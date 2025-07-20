@@ -358,9 +358,16 @@ impl<MSG: Message+'static> DatabaseSessionMut<'_, MSG> {
     /// Set the current time to the given value.
     /// This does not update the system time, it only affects the time for Noatun.
     ///
-    /// This does not trigger any rewinding of the database, current time is only used
-    /// when automatically advancing the cutoff frontier. This only happens during recovery
-    /// (initialization) and when adding more messages.
+    /// This does not trigger any rewinding of the database, or any other operation.
+    /// It only sets an override that affects what time Noatun considers to be 'now'
+    /// (i.e, the return value of [`Self::noatun_now`]).
+    /// 
+    /// This method does not trigger advancement of the cutoff frontier. 
+    /// This only happens during recovery (and initialization) and 
+    /// when adding more messages.
+    /// 
+    /// If the database is advanced forward in time, you may wish to call
+    /// [`Self::maybe_advance_cutoff`] to make sure pruning of old messages occurs.
     pub fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
         self.db.set_mock_time(time)
     }

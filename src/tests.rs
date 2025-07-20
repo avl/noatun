@@ -17,6 +17,7 @@ use savefile::{
 };
 use savefile_derive::Savefile;
 use std::io::{Read, SeekFrom};
+use insta::assert_debug_snapshot;
 use tracing_subscriber::Layer;
 
 mod all_up_sync_test;
@@ -28,7 +29,9 @@ mod test_subsumption_vec;
 mod test_subsumption_hashmap;
 
 mod tests_using_noatun_object_macro;
+mod test_subsumption_nonlocal_opaque;
 mod test_subsumption_nonlocal;
+
 mod test_subsumption_map_advanced;
 
 mod test_types_rewind {
@@ -997,6 +1000,47 @@ fn test_vec_miri0() {
     })
     .unwrap();
 }
+
+
+#[test]
+fn test_vec_retain_miri0() {
+    let mut db: Database<DummyTestMessage<NoatunVec<CounterObject>>> = Database::create_in_memory(
+        10000,
+        DatabaseSettings {
+            mock_time: Some(datetime!(2021-01-01 Z).into()),
+            ..Default::default()
+        },
+    )
+        .unwrap();
+
+    let mut db = db.begin_session_mut().unwrap();
+    db.with_root_mut(|counter_vec| {
+        let mut counter_vec = counter_vec.inner_pin();
+        let obj0 = counter_vec.as_mut().push_zeroed();
+        unsafe { obj0.map_unchecked_mut(|x|&mut x.counter).set(0); }
+        let obj1 = counter_vec.as_mut().push_zeroed();
+        unsafe { obj1.map_unchecked_mut(|x|&mut x.counter).set(1); }
+        let obj2 = counter_vec.as_mut().push_zeroed();
+        unsafe { obj2.map_unchecked_mut(|x|&mut x.counter).set(2); }
+
+        catch_unwind(AssertUnwindSafe(|| {
+            counter_vec.as_mut().retain(|x| {
+                if x.counter.get() == 0 {
+                    false
+                } else {
+                    panic!("check panics")
+                }
+            });
+        })).unwrap_err();
+
+        assert_eq!(counter_vec.as_mut().len(), 2);
+        assert_eq!(counter_vec.get_index(0).counter.get(), 1);
+        assert_eq!(counter_vec.get_index(1).counter.get(), 2);
+
+    })
+        .unwrap();
+}
+
 #[test]
 fn test_vec_undo() {
     let mut db: Database<DummyTestMessage<NoatunVec<CounterObject>>> =

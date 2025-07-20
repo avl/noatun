@@ -1,13 +1,11 @@
-use crate::SavefileMessageSerializer;
-use crate::database::{DatabaseSettings, OpenMode};
-use crate::{Database, Message, MessageId};
-use savefile_derive::Savefile;
 use std::pin::Pin;
-use crate::MessageFrame;
+use std::time::Duration;
+use savefile_derive::Savefile;
+use crate::{CutOffDuration, Database, DatabaseSettings, Message, MessageFrame, MessageId, SavefileMessageSerializer};
 
 noatun_object!(
     struct Doc {
-        opod counter: u32,
+        pod counter: u32,
     }
 );
 
@@ -31,42 +29,62 @@ impl Message for DocMessage {
         }
     }
 
-    
+
 }
 
 #[test]
-fn test_subsume_nonlocal() {
+fn test_subsumption_cutoff_interaction()  {
+    // Is cutoff_interval implemented correctly?
+    // it needs to know the last time information established by the prune candidate was observable.
+    // this time can be looong after the directly written information was overwritten. I guess it
+    // "just works", because this is actually the first time the pruning candidate can fulfill
+    // the "not used" condition. But do we correctly wait for this overwriter to pass into the
+    // before-cutoff region, if the overwriter doesn't depend on the overwritten?
+
     super::setup_tracing();
-    let msg0_time = MessageId::new_debug2(0).timestamp();
-    let mut db: Database<DocMessage> = Database::create_new(
-        "test/test_subsumption_nonlocal1",
-        OpenMode::Overwrite,
+    let t0 = MessageId::new_debug2(0).timestamp();
+    let mut db: Database<DocMessage> = Database::create_in_memory(
+        10_000_000,
         DatabaseSettings {
-            mock_time: Some(msg0_time),
+            mock_time: Some(t0),
+            cutoff_interval: CutOffDuration::from_hours(1).unwrap(),
             ..DatabaseSettings::default()
         },
-        ).unwrap();
+    ).unwrap();
     let mut db = db.begin_session_mut().unwrap();
-    db.disable_filesystem_sync().unwrap();
 
     println!("Cur cutoff time: {:?}", db.current_cutoff_time());
-
-    for i in 0..3 {
-        db.append_single(
-            &MessageFrame::new(MessageId::new_debug2(i),vec![], DocMessage {
-                val: 1,
-                reset: false,
-            }), false)
-            .unwrap();
-    }
-    assert_eq!(db.count_messages(), 3);
-
     db.append_single(
-        &MessageFrame::new(MessageId::new_debug2(10),vec![], DocMessage {
+        &MessageFrame::new(MessageId::generate_for_time(t0).unwrap(),vec![], DocMessage {
             val: 0,
-            reset: true
+            reset: true,
         }), false)
         .unwrap();
 
-    assert_eq!(db.count_messages(), 1);
+    let t1 = t0 + Duration::from_secs(1800);
+    db.set_mock_time(t1).unwrap();
+
+    db.append_single(
+        &MessageFrame::new(MessageId::generate_for_time(t1).unwrap(),vec![], DocMessage {
+            val: 0,
+            reset: true,
+        }), false)
+        .unwrap();
+
+    assert_eq!(db.count_messages(), 2, "nothing can be pruned, observer could sneak in before t1");
+
+
+    let t2 = t1 + Duration::from_secs(1801);
+    db.set_mock_time(t2).unwrap();
+    db.maybe_advance_cutoff().unwrap();
+
+    assert_eq!(db.count_messages(), 2, "nothing can be pruned, observer could still sneak in before t1");
+
+    let t3 = t1 + Duration::from_secs(3600+1800);
+    db.set_mock_time(t3).unwrap();
+    db.maybe_advance_cutoff().unwrap();
+
+
+    assert_eq!(db.count_messages(), 1, "first can be pruned, observer can no longer sneak in before t1");
+
 }

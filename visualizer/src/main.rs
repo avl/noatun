@@ -6,11 +6,10 @@ use eframe::{App, Frame};
 use egui::epaint::{RectShape, TextShape};
 use egui::scroll_area::ScrollBarVisibility;
 use egui::{Button, Color32, Context, CornerRadius, FontFamily, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, TextEdit, Vec2, Widget};
-use noatun::{msg_deserialize, msg_serialize, noatun_object, DatabaseRoot, CutOffDuration, Database, Message, MessageFrame, NoatunCell, NoatunStorable, NoatunTime, Object, Savefile};
+use noatun::{noatun_object, CutOffDuration, Database, Message, MessageFrame, MessageId, NoatunCell, NoatunStorable, Object, Savefile, SavefileMessageSerializer};
 use std::default::Default;
 use std::fmt::Debug;
 use std::hash::Hasher;
-use std::io::Write;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
@@ -93,8 +92,9 @@ noatun_object!{
 
 impl Message for KeyUpdateMessage {
     type Root = Document;
+    type Serializer = SavefileMessageSerializer<Self>;
 
-    fn apply(&self, _time: NoatunTime, root: Pin<&mut Self::Root>) {
+    fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
         let mut root = root.pin_project();
         match self {
             KeyUpdateMessage::Set(key, val) => {
@@ -112,22 +112,8 @@ impl Message for KeyUpdateMessage {
         }
     }
 
-    fn deserialize(buf: &[u8]) -> anyhow::Result<Self>
-    where
-        Self: Sized
-    {
-        msg_deserialize(buf)
-    }
-
-    fn serialize<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        msg_serialize(self, writer)
-    }
 }
 
-impl DatabaseRoot for Document {
-    type Message = KeyUpdateMessage;
-    type Params = ();
-}
 
 struct InflightPacket {
     from: u8,
@@ -165,7 +151,7 @@ impl InflightPacket {
 #[derive(Debug)]
 struct Node {
     whoami: u8,
-    db: Database<Document>,
+    db: Database<KeyUpdateMessage>,
     distributor: Distributor,
     last_periodic: Instant,
 }
@@ -191,7 +177,7 @@ impl Node {
             auto_delete: false,
             max_file_size: 100_000_000,
             cutoff_interval: CutOffDuration::from_minutes(5),
-        }, ()).unwrap();
+        }).unwrap();
 
         Node {
             whoami: id,
@@ -297,6 +283,7 @@ impl Ether {
 struct NodeMetaData {
     #[allow(unused)]
     whoami: u8,
+    ephemeral_node_id: ArcShift<EphemeralNodeId>,
     pos: Vec2,
 }
 
@@ -335,6 +322,7 @@ impl Ether {
             id.map(EphemeralNodeId::new), self.now);
         self.actual_ether.node_metadata.push(NodeMetaData {
             whoami: node.whoami,
+            ephemeral_node_id: node.distributor.ephemeral_node_id.clone(),
             pos,
         });
         self.nodes.push(node);
@@ -581,13 +569,17 @@ impl App for Visualizer {
                     let node = &mut self.ether.nodes[node_index];
                     //assert_eq!(node_index, node.distributor.ephemeral_node_id.shared_get().raw_u16() as usize);
                     let node_pos = self.ether.actual_ether.node_metadata[node_index].pos;
-                    for (a_peer_id, a_peer_info) in &node.distributor.neighborhood.peers.peers {
-                        for (b_peer_id, b_peer_info) in &node.distributor.neighborhood.peers.peers {
+                    for (a_peer_id, _a_peer_info) in &node.distributor.neighborhood.peers.peers {
+                        for (b_peer_id, _b_peer_info) in &node.distributor.neighborhood.peers.peers {
                             
-                            /*
+
                             // TODO: Can we salvage this? Do a smarter lookup in node_metadata?
-                            let origin_pos = self.ether.actual_ether.node_metadata[a_peer_id.raw_u16() as usize].pos;
-                            let recv_from_pos = self.ether.actual_ether.node_metadata[b_peer_id.raw_u16() as usize].pos;
+                            let Some(origin_pos) = self.ether.actual_ether.node_metadata.iter().find(|x|*x.ephemeral_node_id.shared_get() == *a_peer_id).map(|x|x.pos) else {
+                                continue;
+                            };
+                            let Some(recv_from_pos) = self.ether.actual_ether.node_metadata.iter().find(|x|*x.ephemeral_node_id.shared_get() == *b_peer_id).map(|x|x.pos) else {
+                                continue;
+                            };
                             if !node.distributor.neighborhood.peers.fast_pather.should_i_forward(a_peer_id.raw_u16(), b_peer_id.raw_u16()) {
                                 continue;
                             }
@@ -606,7 +598,7 @@ impl App for Visualizer {
                                 ],
                                 stroke: Stroke::new(3.0, Color32::from_rgb(200,255,200)),
                             });
- */
+
                         }
 
 

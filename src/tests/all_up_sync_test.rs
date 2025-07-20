@@ -1674,9 +1674,3 @@ async fn all_up_clock_mismatch_test() {
     assert_snapshot!(driver.sent_messages_snapshot());
 }
 
-// TODO:  Is cutoff_interval implemented correctly?
-// it needs to know the last time information established by the prune candidate was observable.
-// this time can be looong after the directly written information was overwritten. I guess it
-// "just works", because this is actually the first time the pruning candidate can fulfill
-// the "not used" condition. But do we correctly wait for this overwriter to pass into the
-// before-cutoff region?

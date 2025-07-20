@@ -606,7 +606,7 @@ impl Neighborhood {
         periodic_message: Duration,
         now: Instant,
     ) {
-        //TODO Finish epohemeralnodeid stuff, make sure to implement re-randomization on conflicts! And clean up old history
+        //TODO: Finish epohemeralnodeid stuff, make sure to implement re-randomization on conflicts! And clean up old history
         match message {
             DistributorMessage::ReportHeads { heads, source, .. } => {
 
