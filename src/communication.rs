@@ -1637,7 +1637,7 @@ mod tests {
 
         let mloop1 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
-            "192.168.1.112:0",
+            "127.0.0.1:0",
             "224.45.0.1:7777",
             receiver_tx1,
             sender_rx1,
@@ -1659,7 +1659,7 @@ mod tests {
 
         let mloop2 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
-            "192.168.1.112:0",
+            "127.0.0.1:0",
             "224.45.0.1:7777",
             receiver_tx2,
             sender_rx2,
