@@ -245,8 +245,7 @@ impl PeerInfo {
             self.peer_neighbors.iter().position(|x| *x == our_id)
         {
             println!(
-                "our index in neighborlist: {}",
-                our_index_in_their_neighbor_list
+                "our index in neighborlist: {our_index_in_their_neighbor_list}",
             );
             if our_index_in_their_neighbor_list == 0 {
                 return true;
@@ -765,7 +764,7 @@ impl QueryableOutbuffer {
         now: Instant,
         uninhibitable: bool,
     ) {
-        println!("We: {}, request upstream inhibit check. Messages to request: {:?}", self_node, messages_to_request);
+        println!("We: {self_node}, request upstream inhibit check. Messages to request: {messages_to_request:?}");
         if !uninhibitable && neighbors.is_request_upstream_inhibited(
             request_from,
             self_node,

@@ -1484,12 +1484,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG>
 
                 let info = node_peer_info2.get();
                 println!("--------------------------------------------------------");
-                println!("Peer summary: {:?}", info);
+                println!("Peer summary: {info:?}", );
                 let t = info.we_should_retransmit(*our_node_id2.get(), peer, retransmit_interval);
                 println!(
-                    "Conclusion: {:?} (for peer: {}, we:'re: {}",
-                    t,
-                    peer,
+                    "Conclusion: {t:?} (for peer: {peer}, we:'re: {}",
                     our_node_id2.get()
                 );
                 t

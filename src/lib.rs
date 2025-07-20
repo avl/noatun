@@ -83,12 +83,8 @@ mod dummy_term_colors;
 use dummy_term_colors as colors;
 
 #[cfg(feature = "debug")]
-use crate::colors::colored_hex_int;
+use crate::colors::{colored_hex_int, colored_hex_sint};
 
-#[allow(unused)]
-use crate::colors::colored_int;
-
-pub mod prelude {}
 #[cfg(feature = "tokio")]
 pub mod communication;
 
@@ -219,9 +215,8 @@ impl NoatunContext {
 
         if context.is_message_apply() {
             panic!(
-                "An attempt was made to read from {} within Message::apply. \
-                 This is not allowed. Avoid reading this data, or change to use {} instead.",
-                used_type, alternative_type
+                "An attempt was made to read from {used_type} within Message::apply. \
+                 This is not allowed. Avoid reading this data, or change to use {alternative_type} instead."
             );
         }
     }

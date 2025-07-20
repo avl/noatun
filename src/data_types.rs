@@ -2089,7 +2089,7 @@ impl<'a, K:NoatunKey,V:FixedSizeObject> LengthGuard<'a, K,V> {
     }
 }
 
-impl<'a, K:NoatunKey,V:FixedSizeObject> Drop for LengthGuard<'a,K,V> {
+impl<K:NoatunKey,V:FixedSizeObject> Drop for LengthGuard<'_,K,V> {
     fn drop(&mut self) {
         println!("Dropping DeleteGuard, writing {}", self.new_length);
         NoatunContext.write_ptr(self.new_length, &mut self.map.length);

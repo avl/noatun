@@ -3,7 +3,6 @@ use crate::communication::{
 };
 use anyhow::{bail, Context};
 use socket2::{Domain, Protocol, Type};
-use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
 use tracing::{info};
@@ -116,12 +115,10 @@ impl CommunicationSendSocket<SocketAddr> for CommunicationUdpSendSocket {
         match res {
             Ok(sent_size) => {
                 if sent_size != buf.len() {
-                    return Err(std::io::Error::new(
-                        ErrorKind::Other,
+                    return Err(std::io::Error::other(
                         format!(
-                            "Packet send failure. Expected to send {}, sent {}",
-                            buf.len(),
-                            sent_size
+                            "Packet send failure. Expected to send {}, sent {sent_size}",
+                            buf.len()
                         ),
                     ));
                 }

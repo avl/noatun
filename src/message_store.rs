@@ -24,7 +24,7 @@ pub struct FileOffset(u64);
 impl Debug for FileOffset {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if let Some(offset) = self.offset() {
-            write!(f, "{}", offset)
+            write!(f, "{offset}")
         } else {
             write!(f, "deleted")
         }
@@ -2841,7 +2841,7 @@ mod tests {
         const COUNT: u32 = 10000;
 
         for seed in 0..COUNT {
-            println!("===== add_and_delete_many_fuzz seed: {} =======", seed);
+            println!("===== add_and_delete_many_fuzz seed: {seed} =======");
             add_and_delete_fuzz_seed(seed);
         }
     }
@@ -2849,7 +2849,7 @@ mod tests {
     fn add_and_delete_many_fuzz345() {
         {
             let seed = 345;
-            println!("===== add_and_delete_many_fuzz seed: {} =======", seed);
+            println!("===== add_and_delete_many_fuzz seed: {seed} =======");
             add_and_delete_fuzz_seed(seed);
         }
     }
@@ -2934,13 +2934,13 @@ Measure metrics:
             //
 
             let mut was_inserted = IndexSet::new();
-            println!("To insert: {:?}", to_insert);
+            println!("To insert: {to_insert:?}");
             println!("Pre-state:\n{:#?}",
                 store.header_and_index()
             );
             store
                 .append_many_sorted(to_insert.iter(), |inserted, _| {
-                    println!("Reported insert of {:?}", inserted);
+                    println!("Reported insert of {inserted:?}");
                     was_inserted.insert(inserted);
                     Ok(())
                 }, true)
@@ -2951,8 +2951,8 @@ Measure metrics:
             let all_msgs = store.get_all_message_ids().unwrap();
             let facit_msgs =  facit.iter().copied().collect::<Vec<_>>();
             if facit_msgs != all_msgs {
-                println!("Facit: {:#?}", facit_msgs);
-                println!("Actual: {:#?}", all_msgs);
+                println!("Facit: {facit_msgs:#?}");
+                println!("Actual: {all_msgs:#?}");
             }
             assert_eq!(all_msgs,facit_msgs, "msgs in db must be correct after append_many_sorted");
 
@@ -2975,8 +2975,8 @@ Measure metrics:
             let all_msgs = store.get_all_message_ids().unwrap();
             let facit_msgs =  facit.iter().copied().collect::<Vec<_>>();
             if facit_msgs != all_msgs {
-                println!("Facit: {:#?}", facit_msgs);
-                println!("Actual: {:#?}", all_msgs);
+                println!("Facit: {facit_msgs:#?}");
+                println!("Actual: {all_msgs:#?}");
             }
             assert_eq!(all_msgs,facit_msgs);
 

@@ -60,6 +60,9 @@ fn colored_int_impl(i: i64, color: u32, hex: bool) -> ColoredString {
 pub fn colored_hex_int(i: u32) -> ColoredString {
     colored_int_impl(i as i64, i, true)
 }
+pub fn colored_hex_sint(i: i32) -> ColoredString {
+    colored_int_impl(i as i64, i as u32, true)
+}
 pub fn colored_int(i: u32) -> ColoredString {
     colored_int_impl(i as i64, i, false)
 }

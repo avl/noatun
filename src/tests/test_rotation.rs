@@ -93,7 +93,7 @@ fn test_rotation_big1() {
 #[cfg(feature="expensive_tests")]
 fn test_rotation_big2() {
     let mut db: Database<RotMessage> =
-        Database::create_new("test/test_rotation2", true, DatabaseSettings::default()).unwrap();
+        Database::create_new("test/test_rotation2", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
     for _ in 0..200 {

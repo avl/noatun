@@ -320,8 +320,8 @@ mod tests {
                 }
                 let ok = nodes_that_have_received_msg.contains(&(node_index as u16));
                 if !ok {
-                    println!("Input: {:#?}", node_neighbors);
-                    println!("Src: {}, reached {nodes_that_have_received_msg:?}, ok = {}, islands: {:?} (msg didn't reach {})", src, ok, islands, node_index);
+                    println!("Input: {node_neighbors:#?}");
+                    println!("Src: {src}, reached {nodes_that_have_received_msg:?}, ok = {ok}, islands: {islands:?} (msg didn't reach {node_index})");
                     std::process::abort();
                 }
                 assert!(ok);

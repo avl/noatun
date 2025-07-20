@@ -258,7 +258,7 @@ impl TestDriver {
             writeln!(
                 &mut ret,
                 "{elapsed:>8?}: #{}:{lost:>8} {:?}",
-                crate::colored_int(node),
+                colored_int(node),
                 ev.msg
             )
             .unwrap();
