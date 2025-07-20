@@ -113,7 +113,6 @@ impl UpToSpeedStatus {
     }
 }
 
-//TODO: Clean up all unused stuff here and around
 #[derive(Debug)]
 pub struct PeerInfo {
     /// The node id of this peer
@@ -137,16 +136,8 @@ impl PeerInfo {
 
 }
 
-#[derive(Debug)]
-pub struct Peers {
-    //TODO: GC this, remove stale entries
-    pub peers: IndexMap<EphemeralNodeId, PeerInfo>,
-    //TODO: GC
-    pub fast_pather: Arc<RwLock<MiniPather>>,
-    last_gc: Instant,
-}
 
-impl Peers {
+impl Neighborhood {
     pub fn gc_if_necessary(
         &mut self,
         our_node_id: EphemeralNodeId,
@@ -167,6 +158,10 @@ impl Peers {
         if now.saturating_duration_since(self.last_gc) > periodic_message {
             self.last_gc = now;
 
+            self.inhibited_request_upstream.retain(|_k,v|{
+                now.saturating_duration_since(v.0) < 32*periodic_message
+            });
+
             let mut removed = vec![];
             self.peers
                 .retain(|k, v| {
@@ -176,7 +171,11 @@ impl Peers {
                     }
                     retained
                 });
-
+            let mut pather = self.fast_pather.write().unwrap();
+            for item in removed {
+                pather.remove_neighbor(item.raw_u16());
+                
+            }
         }
     }
     pub fn get_insert_peer(&mut self, peer_id: EphemeralNodeId, now: Instant) -> &mut PeerInfo {
@@ -326,12 +325,16 @@ impl<T: Eq + Hash> DuplicationChecker<T> {
 
 pub const MAX_RECENT_SENT_MEMORY: usize = 100;
 
-// TODO: Maybe nodes that notice that they have more neighbors than basically anybody,
+// TODO(future): Maybe nodes that notice that they have more neighbors than basically anybody,
 // should try to change node-id to a small number, so they can be natural, efficient relays for everybody.
 
 #[derive(Debug)]
 pub struct Neighborhood {
-    pub peers: Peers,
+    pub peers: IndexMap<EphemeralNodeId, PeerInfo>,
+    //TODO: GC
+    pub fast_pather: Arc<RwLock<MiniPather>>,
+
+    last_gc: Instant,
     /// The source we've observed for recent messages.
     pub(crate) recent_messages_source: RecentMessages,
 
@@ -346,11 +349,9 @@ pub struct Neighborhood {
 impl Neighborhood {
     pub fn new(now: Instant, pather: Arc<RwLock<MiniPather>>) -> Neighborhood {
         Self {
-            peers: Peers {
-                peers: Default::default(),
-                fast_pather: pather,
-                last_gc: now,
-            },
+            peers: Default::default(),
+            fast_pather: pather,
+            last_gc: now,
             recent_messages_source: Default::default(),
             inhibited_request_upstream: Default::default(),
         }
@@ -361,12 +362,11 @@ impl Neighborhood {
     pub(crate) fn is_request_upstream_inhibited(
         &mut self,
         request_from: EphemeralNodeId,
-        self_node: EphemeralNodeId,
         message_ids: &[MessageId],
         now: Instant,
         periodic_interval: Duration
     ) -> bool {
-        let mut fast_pather_guard = self.peers.fast_pather.write().unwrap();
+        let mut fast_pather_guard = self.fast_pather.write().unwrap();
         let fast_pather = &mut *fast_pather_guard;
 
         if let Some(ordinal) = fast_pather.should_i_ask_for_retransmission(request_from.raw_u16()) {
@@ -400,41 +400,13 @@ impl Neighborhood {
     pub fn record_message(
         &mut self,
         message: &DistributorMessage,
-        our_node_id: EphemeralNodeId,
-        periodic_message: Duration,
-        now: Instant,
     ) {
         match message {
             DistributorMessage::ReportHeads { heads, source, .. } => {
-
-                let peer = self.peers.get_insert_peer(*source, now);
-                //println!("{:?}: Calling time_passed for {:?}", test_elapsed(), *source);
-                /*if let Some(inhibited) = self.inhibited_request_upstream_oldest.get(source) {
-                    if let Some((age, _)) = inhibited.first_key_value() {
-                        let periods = now.saturating_duration_since(*age).as_secs_f32()
-                            / periodic_message.as_secs_f32();
-                        println!(
-                            "{:?}: Stress level is based on {} elapsed",
-                            test_elapsed(),
-                            now.saturating_duration_since(*age).as_secs_f32(),
-                        );
-                        peer.request_inhibited_based_on_node_numbers
-                            .time_passed((periods + 1.0) as usize);
-                    }
-                }*/
-
-
-                //peer.resend_actual_message_based_on_node_numbers.time_passed();
                 for head in heads {
-                    /*if let Some(msg_source) = self.recent_messages.get(&head.msg) {
-                        if msg_source.other_transmitters == false {
-                            peer.can_hear(msg_source.original_source, now);
-                        }
-                    }*/
                     self.recent_messages_source
                         .record_message_source(head.msg, *source, false);
                 }
-
             }
             DistributorMessage::SyncAllQuery(_) => {}
             DistributorMessage::SyncAllRequest(_) => {}
@@ -548,10 +520,9 @@ impl QueryableOutbuffer {
         now: Instant,
         uninhibitable: bool,
     ) {
-        println!("We: {self_node}, request upstream inhibit check. Messages to request: {messages_to_request:?}");
+        //println!("We: {self_node}, request upstream inhibit check. Messages to request: {messages_to_request:?}");
         if !uninhibitable && neighbors.is_request_upstream_inhibited(
             request_from,
-            self_node,
             messages_to_request,
             now,
             self.periodic_message_interval
@@ -1058,7 +1029,7 @@ impl Distributor {
         now: Instant
     ) -> Result<Vec<DistributorMessage>> {
 
-        self.neighborhood.peers
+        self.neighborhood
             .gc_if_necessary(*self.ephemeral_node_id.get(), self.periodic_message_interval, now);
 
         let mut heads = database
@@ -1082,7 +1053,7 @@ impl Distributor {
             source: *self.ephemeral_node_id.get(),
             cutoff: database.current_cutoff_state()?,
             heads,
-            neighbors: self.neighborhood.peers.get_neighbors(),
+            neighbors: self.neighborhood.get_neighbors(),
         }];
         let sync_from = match &self.sync_all_inprogress {
             SyncAllState::NotActive => None,
@@ -1175,9 +1146,6 @@ impl Distributor {
         for (src, item) in input {
             self.neighborhood.record_message(
                 &item,
-                *self.ephemeral_node_id.get(),
-                self.periodic_message_interval,
-                now,
             );
 
             self.distributor_state.have_heard_peer = true;
@@ -1202,9 +1170,9 @@ impl Distributor {
                                 // If the neighbor has no neighbors of its own, it's just starting up.
                                 // Let's wait a bit before acting on its messages
 
-                                self.neighborhood.peers.fast_pather.write().unwrap().report_neighbors(source.raw_u16(), neighbors.iter().map(|x|x.raw_u16()));
+                                self.neighborhood.fast_pather.write().unwrap().report_neighbors(source.raw_u16(), neighbors.iter().map(|x|x.raw_u16()));
 
-                                let peer = self.neighborhood.peers.get_insert_peer(source, now);
+                                let peer = self.neighborhood.get_insert_peer(source, now);
 
 
                                 match &mut peer.up_to_speed {
@@ -1236,7 +1204,7 @@ impl Distributor {
                                 debug!("Acceptability: Nominal");
                                 self.distributor_state.most_recent_unsynced.remove(&src);
                                 self.distributor_state.most_recent_clockdrift.remove(&src);
-                                self.neighborhood.peers.fast_pather.write().unwrap().report_own_neighbors(self.neighborhood.peers.peers.keys().map(|x|x.raw_u16()));
+                                self.neighborhood.fast_pather.write().unwrap().report_own_neighbors(self.neighborhood.peers.keys().map(|x|x.raw_u16()));
 
                                 debug_assert!(neighbors.is_sorted());
                                 break;
@@ -1525,7 +1493,7 @@ impl Distributor {
                 if srcs.len() == 1 {srcs[0]} else {
                     srcs.iter().min_by_key(|(src,_)|
                         {
-                            let score = self.neighborhood.peers.get_peer(*src)
+                            let score = self.neighborhood.get_peer(*src)
                                 .map(|x|if x.up_to_speed.is_up_to_speed() {0u8} else {1}).unwrap_or(2);
                             (score, src)
                         }
@@ -1817,7 +1785,7 @@ impl Distributor {
                 //if let Some(peer) = self.neighborhood.peers.get_peer_mut(source) {
                 
                     //if !peer.forwardings.is_empty() {
-                    if self.neighborhood.peers.fast_pather.write().unwrap().should_i_forward(origin.raw_u16(), source.raw_u16()) {
+                    if self.neighborhood.fast_pather.write().unwrap().should_i_forward(origin.raw_u16(), source.raw_u16()) {
                         //println!("#{}: Forwarding message from {:?}.{:?}", self.ephemeral_node_id.get(), origin, source);
                         self.outbuf.push_back(DistributorMessage::Message {
                             source: *self.ephemeral_node_id.get(),

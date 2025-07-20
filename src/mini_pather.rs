@@ -29,6 +29,13 @@ impl MiniPather {
         self.whoami
     }
 
+    pub fn remove_neighbor(&mut self, neighbor: u16) {
+        self.memoization.clear();
+        if let Some(peer_obj) = self.nodes.swap_remove(&neighbor) {
+            Self::del_reverse(neighbor, &mut self.reverse, &peer_obj.neighbors);
+        }
+    }
+
     pub fn new(whoami: u16,)-> Self {
         Self {
             whoami,
@@ -252,6 +259,29 @@ mod tests {
 
     use proptest::prelude::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn simple_remove_test() {
+        let mut t = MiniPather::new(1);
+
+        t.report_own_neighbors([1,2,3].into_iter());
+
+        t.report_neighbors(2, [1,3].into_iter());
+        t.report_neighbors(3, [1,2,4].into_iter());
+
+        assert_eq!(t.who_can_hear(3).collect::<Vec<_>>(), [1,2]);
+        assert_eq!(t.who_can_hear(1).collect::<Vec<_>>(), [1,2,3]);
+        t.remove_neighbor(3);
+
+        assert_eq!(t.who_can_hear(3).collect::<Vec<_>>(), [1,2]);
+        assert_eq!(t.who_can_hear(1).collect::<Vec<_>>(), [1,2]);
+
+        t.remove_neighbor(1);
+        t.remove_neighbor(2);
+
+        assert!(t.nodes.is_empty());
+        assert!(t.reverse.is_empty());
+    }
 
     fn verify_someone_always_forwards(node_neighbors: Vec<Vec<u16>>) {
 

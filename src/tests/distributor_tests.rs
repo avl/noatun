@@ -84,7 +84,6 @@ fn test_distributor() {
     dist2.neighborhood = Neighborhood::new(Instant::now().into(), Arc::new(RwLock::new(MiniPather::new(2))));
     dist1
         .neighborhood
-        .peers
         .get_insert_peer(EphemeralNodeId::new(2), Instant::now().into());
     
     let sess1 = app1.begin_session().unwrap();
