@@ -118,7 +118,6 @@ impl<MSG: Message+'static> Projector<MSG> {
         self.head_tracker
             .remove_before_cutoff(cutoff_state.before_time.to_noatun_time())?;
 
-        self.messages.deprecated_set_cutoff_time(new_cutoff_at)?;
         Ok(())
     }
 

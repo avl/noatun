@@ -465,16 +465,21 @@ impl QueryableOutbuffer {
             let mut ok = 0;
             let mut size_so_far = 0;
             for (_msg_id, msg_objs) in self.parentless_messages.iter().rev() {
+                let mut bad = false;
                 for msg_obj in msg_objs {
                     size_so_far += msg_obj.ram_size_estimate();
                     if size_so_far < 50_000_000 {
-                        ok += 1;
                     } else {
+                        bad = true;
                         break;
                     }
                 }
+                if !bad {
+                    ok += 1;
+                }
             }
             if ok != self.parentless_messages.len() {
+                debug_assert!(ok < self.parentless_messages.len());
                 self.parentless_messages.drain(0..ok);
             }
         }
@@ -946,7 +951,7 @@ pub struct Distributor {
     periodic_message_interval: Duration,
     // TODO(future): Clean this up. The repsonsibilities of `QueryableOutbuffer` vs `Neighborhood`
     // are very unclear
-    // TODO: This should not be public.
+    // TODO(future): This should not be public.
     #[doc(hidden)]
     pub outbuf: QueryableOutbuffer,
     #[doc(hidden)]
@@ -1561,7 +1566,7 @@ impl Distributor {
         for (src, heads) in by_src {
             let messages: Vec<MessageSubGraphNode> = database
                 .get_upstream_of(heads.into_iter())?
-                //TODO: Can we re-enable this?
+                // Is the following filter correct?
                 .filter(|x|self.outbuf.upstream_response_blocked(x.0.id, now) == false)
                 .map(|(msg, query_count)| MessageSubGraphNode {
                     id: msg.id,
@@ -1569,10 +1574,6 @@ impl Distributor {
                     query_count,
                 })
                 .collect();
-
-            /*if neighbors.is_inhibited(request_from, self_node, |info|&mut info.request_inhibited_based_on_node_numbers) {
-                return;
-            }*/
 
             if !messages.is_empty() {
                 self.outbuf.push_back(DistributorMessage::UpstreamResponse {

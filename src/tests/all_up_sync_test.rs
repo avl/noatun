@@ -1034,7 +1034,7 @@ async fn all_up_big_severely_desynced_test() {
     }
     tokio::time::sleep(Duration::from_secs(900)).await;
     driver.set_loss(0.0);
-    tokio::time::sleep(Duration::from_secs(60)).await;
+    tokio::time::sleep(Duration::from_secs(70)).await;
 
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());

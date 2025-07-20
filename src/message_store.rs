@@ -1935,7 +1935,7 @@ impl<M> OnDiskMessageStore<M> {
                     if cur_index < initial_index_entries && !cur_index_entry.is_deleted() {
                         let (Ok(insert_at) | Err(insert_at)) = carry_buffer
                             .binary_search_by_key(&cur_index_entry.message, |x| x.message);
-                        // TODO: Use BTreeMap for carry_buffer?
+                        // TODO(future): Use BTreeMap for carry_buffer?
                         //println!("Carry carry add {:?}", cur_index_entry.message);
                         carry_buffer.insert(insert_at, *cur_index_entry);
                         debug_assert!(carry_buffer.iter().is_sorted_by_key(|x| x.message));
@@ -1960,8 +1960,7 @@ impl<M> OnDiskMessageStore<M> {
                                     if cur_index < initial_index_entries {
                                         let (Ok(insert_at) | Err(insert_at)) = carry_buffer
                                             .binary_search_by_key(&cur_index_entry.message, |x| x.message);
-                                        // TODO: Use BTreeMap for carry_buffer?
-                                        //println!("Dupe carry add {:?}", cur_index_entry.message);
+                                        // TODO(future): Use BTreeMap for carry_buffer?
                                         carry_buffer.insert(insert_at, *cur_index_entry);
                                         debug_assert!(carry_buffer.iter().is_sorted_by_key(|x| x.message));
                                     }
@@ -2115,7 +2114,6 @@ impl<M> OnDiskMessageStore<M> {
     }
     #[cfg(debug_assertions)]
     fn check_duplicates(mmap_index: &[IndexEntry]) {
-        //TODO: Make this method not run in release mode
         for (index,(window0,window1)) in mmap_index.iter().tuple_windows().enumerate() {
             #[allow(clippy::nonminimal_bool)]
             if !(window0.message < window1.message) {
@@ -2362,16 +2360,7 @@ impl<M> OnDiskMessageStore<M> {
         let (header, index) = self.header_and_index()?;
         Ok(&index[0..header.entries as usize])
     }
-    pub(crate) fn deprecated_set_cutoff_time(&mut self, time: CutOffTime) -> Result<()> {
-        let (header, _index) = Self::header_and_index_mut(&mut self.index_mmap)?;
-        if header.cutoff.before_time != time {
-            eprintln!("internal error, deprecated set cutoff time would have needed to make an actual change");
-            println!("internal error, deprecated set cutoff time would have needed to make an actual change");
-            //TODO: Remove this method!
-            std::process::abort();
-        }
-        Ok(())
-    }
+
 
     pub(crate) fn get_messages_at_or_after(
         &self,

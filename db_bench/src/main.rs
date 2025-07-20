@@ -210,7 +210,6 @@ select IFNULL(SUM(quantity.quantity),0) from boxclosure bt,quantity WHERE quanti
     }
 }
 
-//TODO: Rename this module
 pub mod noatun_bench {
     use crate::{ArticleId, BoxId, Task, TasksInTransaction};
     use noatun::data_types::{NoatunHashMap, NoatunOption, NoatunVec};

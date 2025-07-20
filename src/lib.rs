@@ -1189,7 +1189,7 @@ pub trait Object {
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self>;
 }
 
-// TODO: Could we support a noatun_enum! macro?
+// TODO(future): Could we support a noatun_enum! macro?
 
 /// Define a noatun object.
 ///
