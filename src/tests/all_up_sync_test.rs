@@ -1,5 +1,4 @@
 #![allow(clippy::needless_range_loop)]
-use crate::SavefileMessageSerializer;
 use crate::colors::colored_int;
 use crate::communication::{
     CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
@@ -9,9 +8,8 @@ use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
 use crate::distributor::Status;
 use crate::tests::setup_tracing;
-use crate::{
-    set_test_epoch, test_elapsed, Database, Message, MessageId, NoatunTime, Object,
-};
+use crate::SavefileMessageSerializer;
+use crate::{set_test_epoch, test_elapsed, Database, Message, MessageId, NoatunTime, Object};
 use crate::{Persistence, Savefile};
 use arcshift::ArcShift;
 use bytes::BufMut;
@@ -77,7 +75,6 @@ impl Message for SyncMessage {
             project.sum.set(prev_sum.wrapping_add(self.value));
         }
     }
-
 
     fn persistence(&self) -> Persistence {
         if self.persist {
@@ -186,15 +183,17 @@ impl TestDriver {
             let padcount = 12usize.saturating_sub(rawlen.len());
             let padding = " ".repeat(padcount);
 
-            writeln!(&mut ret,
-                     "{:>10?}: {}    {}{} {} B {:?}",
+            writeln!(
+                &mut ret,
+                "{:>10?}: {}    {}{} {} B {:?}",
                 t.duration_since(self.driver_start),
                 colored_int((*src).into()),
                 dst.iter().map(|x| colored_int((*x).into())).join(","),
                 padding,
                 msg.len(),
                 data
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         ret
@@ -285,7 +284,7 @@ impl Default for TestDriver {
         }
     }
 }
-struct TestDriverReceiver(Receiver<(u8 /*src*/, Vec<u8>)>, /*own id*/u8);
+struct TestDriverReceiver(Receiver<(u8 /*src*/, Vec<u8>)>, /*own id*/ u8);
 struct TestDriverSender(
     u8, /*own addr*/
     ArcShift<TestDriverInner>,
@@ -330,8 +329,6 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
                     .await
                     .map_err(|e| std::io::Error::other(format!("simulated net failed {e:?}")))?;
                 delivered_to.push(*dst_node);
-            } else {
-                //println!("== SIMULATOR CAUSED PACKET LOSS ==: partitioned: {}", partitioned);
             }
         }
         driver_inner.raw_messages.lock().unwrap().push((
@@ -369,11 +366,7 @@ impl CommunicationDriver for TestDriver {
 
         let own_id = index.unwrap().try_into().unwrap();
         Ok((
-            TestDriverSender(
-                own_id,
-                self.senders.clone(),
-                self.partitionings.clone(),
-            ),
+            TestDriverSender(own_id, self.senders.clone(), self.partitionings.clone()),
             TestDriverReceiver(rx, own_id),
         ))
     }
@@ -382,7 +375,6 @@ impl CommunicationDriver for TestDriver {
         Ok(s.parse()?)
     }
 }
-
 
 const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
 
@@ -527,7 +519,7 @@ fn old_transmitted_messages_without_effect_are_removed1() {
         10000,
         DatabaseSettings {
             mock_time: Some(datetime!(2020-01-01 00:01:00 Z).into()),
-            cutoff_interval:         CutOffDuration::from_days(2).unwrap(), // 2 days
+            cutoff_interval: CutOffDuration::from_days(2).unwrap(), // 2 days
             ..Default::default()
         },
     )
@@ -578,7 +570,6 @@ fn old_transmitted_messages_without_effect_are_removed2() {
             mock_time: Some(START_TIME.into()),
             ..Default::default()
         },
-
     )
     .unwrap();
     let mut sess = db.begin_session_mut().unwrap();
@@ -740,7 +731,7 @@ async fn all_up_general_update_sync_test_old_messages_seed1() {
     //setup_tracing();
     {
         let seed = 1;
-            println!("=========== Seed = {seed} ===========");
+        println!("=========== Seed = {seed} ===========");
         all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
     }
 }
@@ -842,8 +833,7 @@ async fn all_up_general_update_sync_test_impl(
         .with(|x| x.borrow_mut().as_mut().unwrap().gen_range(1..20))
         .min(maxlen);
     println!("Steps: {steps}");
-    for i in 0..steps
-    {
+    for i in 0..steps {
         info!("==== write {} =====", i);
         let time_now = noatun_start_time + start_instant.elapsed();
         app1.set_mock_time(time_now).unwrap();
@@ -907,7 +897,10 @@ async fn all_up_general_update_sync_test_impl(
         }
     }
     info!(" -------------- NETWORK HEALED -----------------");
-    println!("{:?} -------------- NETWORK HEALED -----------------", test_elapsed());
+    println!(
+        "{:?} -------------- NETWORK HEALED -----------------",
+        test_elapsed()
+    );
     driver.set_loss(0.0);
     tokio::time::sleep(Duration::from_secs(60)).await;
 
@@ -917,7 +910,6 @@ async fn all_up_general_update_sync_test_impl(
     info!("Test case done");
     println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.messages_snapshot());
-
 
     let msgs1 = app1
         .inner_database()
@@ -945,10 +937,13 @@ async fn all_up_general_update_sync_test_impl(
         if msgs1 != msgs2 {
             println!("App1 cutoff time: {:?}", app1.get_cutoff_time());
             println!("App2 cutoff time: {:?}", app2.get_cutoff_time());
-            for (i,(msg1,msg2)) in msgs1.iter().zip(msgs2.iter()).enumerate() {
-                assert_eq!(msg1, msg2,
+            for (i, (msg1, msg2)) in msgs1.iter().zip(msgs2.iter()).enumerate() {
+                assert_eq!(
+                    msg1,
+                    msg2,
                     "message mismatch for msg #{i}, comparing node {} and {}",
-                    app1.ephemeral_node_id().await.unwrap() ,app2.ephemeral_node_id().await.unwrap(),
+                    app1.ephemeral_node_id().await.unwrap(),
+                    app2.ephemeral_node_id().await.unwrap(),
                 );
             }
         }
@@ -971,7 +966,6 @@ async fn all_up_general_update_sync_test_impl(
     //println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
 
     let correct_root = root1;
-
 
     assert_eq!(app1.get_status().await.unwrap(), Status::Nominal);
     assert_eq!(app2.get_status().await.unwrap(), Status::Nominal);
@@ -1156,7 +1150,6 @@ async fn all_up_huge_desynced_test() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_three_node_resync() {
-
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
@@ -1237,7 +1230,6 @@ async fn all_up_three_node_resync() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_three_node_partial_resync1() {
-    
     setup_tracing();
     MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
     let mut driver = TestDriver::default();
@@ -1643,27 +1635,32 @@ async fn all_up_clock_mismatch_test() {
         persist: false,
         reset: false,
     })
-        .await
-        .unwrap();
-
+    .await
+    .unwrap();
 
     app2.add_message(SyncMessage {
         value: 2,
         persist: false,
         reset: false,
     })
-        .await
-        .unwrap();
+    .await
+    .unwrap();
 
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_secs(5)).await;
         let time_now = noatun_start_time + start_instant.elapsed();
         app1.set_mock_time(time_now).unwrap();
-        app2.set_mock_time(time_now + Duration::from_secs(60)).unwrap();
+        app2.set_mock_time(time_now + Duration::from_secs(60))
+            .unwrap();
     }
 
-    app2.inner_database().begin_session_mut().unwrap().set_mock_time(NoatunTime::from_datetime(START_TIME + Duration::from_secs(30))).unwrap();
-
+    app2.inner_database()
+        .begin_session_mut()
+        .unwrap()
+        .set_mock_time(NoatunTime::from_datetime(
+            START_TIME + Duration::from_secs(30),
+        ))
+        .unwrap();
 
     println!("Start time: {START_TIME:?}");
     println!("{}", driver.raw_frames_snapshot());
@@ -1673,4 +1670,3 @@ async fn all_up_clock_mismatch_test() {
 
     assert_snapshot!(driver.sent_messages_snapshot());
 }
-

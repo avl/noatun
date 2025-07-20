@@ -1,6 +1,8 @@
 use crate::data_types::OpaqueNoatunVec;
 use crate::database::{DatabaseSettings, OpenMode};
-use crate::{Database, Message, OpaqueNoatunCell, NoatunTime, Object, SavefileMessageSerializer, MessageId};
+use crate::{
+    Database, Message, MessageId, NoatunTime, Object, OpaqueNoatunCell, SavefileMessageSerializer,
+};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
@@ -19,7 +21,6 @@ pub struct VecMessage {
     destroy: bool,
 }
 
-
 impl Message for VecMessage {
     type Root = VecDoc;
     type Serializer = SavefileMessageSerializer<Self>;
@@ -36,8 +37,6 @@ impl Message for VecMessage {
             root.items.set_item_infallible(self.index, self.val);
         }
     }
-
-
 }
 
 #[test]
@@ -73,19 +72,22 @@ fn test_vec1() {
     })
     .unwrap();
 
-    assert_eq!(db.count_messages(), 1, "last message is present in clear-registrar");
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "last message is present in clear-registrar"
+    );
 }
 
 #[test]
 fn test_vec2() {
-
     super::setup_tracing();
     let mut db: Database<VecMessage> = Database::create_new(
         "test/test_subsumption2",
         OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
-        .unwrap();
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
 
@@ -101,20 +103,22 @@ fn test_vec2() {
             .unwrap();
         db.mark_transmitted(msg.id).unwrap();
     }
-    assert_eq!(db.count_messages(), 1, "last message is present in clear registrar");
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "last message is present in clear registrar"
+    );
 }
-
 
 #[test]
 fn test_vec3() {
-
     super::setup_tracing();
     let mut db: Database<VecMessage> = Database::create_new(
         "test/test_subsumption3",
         OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
-        .unwrap();
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
 
@@ -130,9 +134,12 @@ fn test_vec3() {
             .unwrap();
         db.mark_transmitted(msg.id).unwrap();
     }
-    assert_eq!(db.count_messages(), 1, "the second message subsumes the first");
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "the second message subsumes the first"
+    );
 }
-
 
 #[test]
 fn test_vec4() {
@@ -142,18 +149,19 @@ fn test_vec4() {
         OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
-        .unwrap();
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
 
     for i in 0..3 {
-        let msg = db.append_local(VecMessage {
-            index: i,
-            val: (i + 10) as u32,
-            reset: false,
-            push: false,
-            destroy: false,
-        })
+        let msg = db
+            .append_local(VecMessage {
+                index: i,
+                val: (i + 10) as u32,
+                reset: false,
+                push: false,
+                destroy: false,
+            })
             .unwrap();
         db.mark_transmitted(msg.id).unwrap();
     }
@@ -166,42 +174,43 @@ fn test_vec4() {
         push: false,
         destroy: false,
     })
-        .unwrap();
+    .unwrap();
 
-    assert_eq!(db.count_messages(), 1, "last message must remain, since earlier messages were non-local");
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "last message must remain, since earlier messages were non-local"
+    );
 }
 
 #[test]
 fn test_vec5() {
-
-    let mut db: Database<VecMessage> = Database::create_in_memory(10_000_000,
-                                                              DatabaseSettings {
-                                                                  mock_time: Some(NoatunTime::debug_time(0)),
-                                                                  ..DatabaseSettings::default()
-                                                              },
+    let mut db: Database<VecMessage> = Database::create_in_memory(
+        10_000_000,
+        DatabaseSettings {
+            mock_time: Some(NoatunTime::debug_time(0)),
+            ..DatabaseSettings::default()
+        },
     )
-        .unwrap();
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
 
     for i in 0..3 {
-        let msg = db.append_local(VecMessage {
-            index: i,
-            val: (i + 10) as u32,
-            reset: false,
-            push: true,
-            destroy: false,
-        })
+        let msg = db
+            .append_local(VecMessage {
+                index: i,
+                val: (i + 10) as u32,
+                reset: false,
+                push: true,
+                destroy: false,
+            })
             .unwrap();
         db.mark_transmitted(msg.id).unwrap();
     }
 
     db.with_root(|root| {
-
-        assert_eq!(
-            root.items[0].query(),
-            10);
-
+        assert_eq!(root.items[0].query(), 10);
     });
 
     assert_eq!(db.count_messages(), 3);
@@ -213,10 +222,13 @@ fn test_vec5() {
         push: false,
         destroy: false,
     })
-        .unwrap();
+    .unwrap();
 
-    assert_eq!(db.count_messages(), 1, "last message must remain, since earlier messages were non-local");
-
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "last message must remain, since earlier messages were non-local"
+    );
 
     db.append_local(VecMessage {
         index: 0,
@@ -225,20 +237,24 @@ fn test_vec5() {
         push: false,
         destroy: true,
     })
-        .unwrap();
+    .unwrap();
 
     // Destroying the vec makes the message a tombstone-message
-    assert_eq!(db.count_messages(), 1, "last message still remains, since it's a tombstone message");
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "last message still remains, since it's a tombstone message"
+    );
 
     db.set_mock_time(NoatunTime::debug_time(1440)).unwrap();
     db.maybe_advance_cutoff().unwrap();
-    assert_eq!(db.count_messages(), 0, "the tombstone is removed after the cutoff-period has elapsed");
+    assert_eq!(
+        db.count_messages(),
+        0,
+        "the tombstone is removed after the cutoff-period has elapsed"
+    );
 
     db.with_root(|root| {
-
-        assert_eq!(
-            root.items.detach(),
-            vec![]);
-
+        assert_eq!(root.items.detach(), vec![]);
     });
 }

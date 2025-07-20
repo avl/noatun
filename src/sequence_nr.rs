@@ -1,9 +1,8 @@
 use crate::NoatunStorable;
 use std::fmt::{Debug, Display, Formatter};
 
-
 /// Sequence number of a message.
-/// 
+///
 /// Each message applied to the database is given a sequence number.
 /// The numbers are monotonically increasing, without gaps.
 #[derive(Copy, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

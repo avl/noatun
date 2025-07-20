@@ -18,7 +18,7 @@
 #![allow(clippy::derivable_impls)]
 #![allow(clippy::manual_is_multiple_of)]
 
-pub use crate::data_types::{OpaqueNoatunCell,NoatunCell};
+pub use crate::data_types::{NoatunCell, OpaqueNoatunCell};
 use crate::private::Sealed;
 use crate::sequence_nr::SequenceNr;
 use crate::undo_store::magic_initialize_ptr;
@@ -26,11 +26,16 @@ use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 pub use cutoff::{CutOffDuration, CutOffState};
 pub use database::{Database, DatabaseSettings, OpenMode};
+use datetime_literal::datetime;
 pub use paste::paste;
 pub(crate) use projection_store::DatabaseContextData;
 use rand::RngCore;
 use savefile::Deserializer;
 pub use savefile_derive::Savefile;
+#[cfg(feature = "serde")]
+use serde::de::DeserializeOwned;
+#[cfg(feature = "serde")]
+use serde::Serialize;
 use std::borrow::Borrow;
 use std::cell::Cell;
 use std::fmt::{Debug, Display, Formatter};
@@ -46,11 +51,6 @@ use std::slice;
 use std::time::Duration;
 #[cfg(not(feature = "tokio"))]
 use std::time::Instant;
-use datetime_literal::datetime;
-#[cfg(feature="serde")]
-use serde::de::DeserializeOwned;
-#[cfg(feature="serde")]
-use serde::Serialize;
 #[cfg(feature = "tokio")]
 use tokio::time::Instant;
 
@@ -58,24 +58,21 @@ use tracing::warn;
 
 mod disk_abstraction;
 mod message_store;
+mod mini_pather;
 mod projection_store;
 #[cfg(feature = "debug")]
 mod term_colors;
 mod undo_store;
-mod mini_pather;
 
 /// The noatun book, in rust code
 #[cfg(doctest)]
 mod book {
     #[doc = include_str!("../book/book.md")]
-    const BOOK:() = ();
+    const BOOK: () = ();
 }
-
 
 #[cfg(feature = "debug")]
 use term_colors as colors;
-
-
 
 #[cfg(not(feature = "debug"))]
 mod dummy_term_colors;
@@ -209,10 +206,9 @@ fn get_context_ptr() -> *const DatabaseContextData {
 pub enum Undetachable {}
 
 impl NoatunContext {
-
     #[inline]
     pub fn assert_opaque_access_allowed(self, used_type: &str, alternative_type: &str) {
-        let context = unsafe{&*get_context_ptr()};
+        let context = unsafe { &*get_context_ptr() };
 
         if context.is_message_apply() {
             panic!(
@@ -222,11 +218,11 @@ impl NoatunContext {
         }
     }
 
-    pub fn update_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool,) {
+    pub fn update_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).update_registrar_ptr(seq, opaque) }
     }
-    pub fn clear_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool,) {
+    pub fn clear_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).clear_registrar_ptr(seq, opaque) }
     }
@@ -469,7 +465,7 @@ impl MessageId {
         MessageId { data: [0, 0, 0, 0] }
     }
 
-    pub(crate) fn raw(&self) -> [u32;4] {
+    pub(crate) fn raw(&self) -> [u32; 4] {
         self.data
     }
 
@@ -504,10 +500,10 @@ impl MessageId {
     ///
     /// Like new_debug, but creates an id with a timestamp of '2020-01-01 T 00:00:00'
     pub fn new_debug2(nr: u64) -> Self {
-        MessageId::from_parts_for_test(NoatunTime::from_datetime(
-            datetime!(2020-01-01 T 00:00:00 Z)
-        ),
-                                       nr)
+        MessageId::from_parts_for_test(
+            NoatunTime::from_datetime(datetime!(2020-01-01 T 00:00:00 Z)),
+            nr,
+        )
     }
 
     pub fn new_random() -> Result<Self> {
@@ -534,7 +530,6 @@ impl MessageId {
             rand::thread_rng().fill_bytes(&mut random_part);
         }
 
-
         let mut temp = Self::from_parts(time, random_part)?;
 
         // Leave space for same-timestamp increments
@@ -545,7 +540,7 @@ impl MessageId {
 
     /// Reserve space for predecessors/successors within the same timestamp
     fn pred_succ_reserve(&mut self) {
-        let mut bits = (self.data[1]>>14)&3;
+        let mut bits = (self.data[1] >> 14) & 3;
         if bits == 0 {
             bits = 1;
         }
@@ -553,7 +548,7 @@ impl MessageId {
             bits = 2;
         }
         self.data[1] &= 0xffff_3fff;
-        self.data[1] |= bits<<14;
+        self.data[1] |= bits << 14;
     }
 
     /// Creates a new message id which is guaranteed to have a greater sort order
@@ -566,9 +561,12 @@ impl MessageId {
     /// The new message-id, or an error if the successor pool is exhausted or if the
     /// timestamp is out of range.
     pub fn unique_successor(&self) -> Result<MessageId> {
-        let mut counter = self.data[1]&0xffff;
+        let mut counter = self.data[1] & 0xffff;
         if counter == 0xffff {
-            bail!("unique successors of {} exhausted, no more can be generated", self);
+            bail!(
+                "unique successors of {} exhausted, no more can be generated",
+                self
+            );
         }
         counter += 1;
         let time = self.timestamp();
@@ -587,9 +585,12 @@ impl MessageId {
     /// The new message-id, or an error if the predecessor pool is exhausted or if the
     /// timestamp is out of range.
     pub fn unique_predecessor(&self) -> Result<MessageId> {
-        let mut counter = self.data[1]&0xffff;
+        let mut counter = self.data[1] & 0xffff;
         if counter == 0 {
-            bail!("unique predecessors of {} exhausted, no more can be generated", self);
+            bail!(
+                "unique predecessors of {} exhausted, no more can be generated",
+                self
+            );
         }
         counter -= 1;
         let time = self.timestamp();
@@ -599,7 +600,6 @@ impl MessageId {
         Ok(raw)
     }
 
-
     pub fn from_parts_for_test(time: NoatunTime, random: u64) -> MessageId {
         let mut data = [0u8; 10];
         data[2..10].copy_from_slice(&random.to_le_bytes());
@@ -608,7 +608,7 @@ impl MessageId {
         temp
     }
     pub fn timestamp(&self) -> NoatunTime {
-        let data : [u8; 16] = cast_storable(self.data);
+        let data: [u8; 16] = cast_storable(self.data);
         let mut time_le_bytes = [0u8; 8];
         time_le_bytes[2..6].copy_from_slice(&data[0..4]);
         time_le_bytes[0..2].copy_from_slice(&data[6..8]);
@@ -625,7 +625,7 @@ impl MessageId {
         Self::from_parts_raw(t, random)
     }
     pub fn is_time_valid_for_message(time: NoatunTime) -> bool {
-        time.as_ms() < 1<< 48
+        time.as_ms() < 1 << 48
     }
     pub fn from_parts_raw(time: u64, random: [u8; 10]) -> Result<MessageId> {
         if time >= 1 << 48 {
@@ -644,16 +644,7 @@ impl MessageId {
     }
 }
 
-#[derive(
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Savefile,
-)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Savefile)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(C)]
 pub struct NoatunTime(pub u64);
@@ -737,7 +728,7 @@ impl NoatunTime {
 
     pub fn debug_time(minutes: u64) -> NoatunTime {
         let noatun = NoatunTime::from(datetime!(2020-01-01 T 00:00:00 Z));
-        noatun + Duration::from_secs(minutes*60)
+        noatun + Duration::from_secs(minutes * 60)
     }
 
     pub fn next_multiple_of(self, other: NoatunTime) -> Option<NoatunTime> {
@@ -762,8 +753,7 @@ impl NoatunTime {
     /// If the time is outside the range [1970-01-01T00:00:00Z, 10889-08-02T05:31:50.655Z],
     /// the returned value will be clamped to this range.
     pub fn now() -> Self {
-        let millis = Utc::now().timestamp_millis()
-            .clamp(0, (1<<48) -1);
+        let millis = Utc::now().timestamp_millis().clamp(0, (1 << 48) - 1);
         Self(millis as u64)
     }
 
@@ -820,7 +810,7 @@ pub enum Persistence {
 ///  * [`Self::Serializer`] - serializer to serialize message to wire and disk.
 ///    See trait [`NoatunMessageSerializer`]. Noatun provides impls for serde postcard and
 ///    savefile out of the box.
-/// 
+///
 /// Note, Noatun will keep message instances in RAM in some contexts, for example
 /// when messages are sitting in internal send buffers. This is generally
 /// ok for messages up to a few kilobytes in size. However, messages that
@@ -857,21 +847,20 @@ pub trait Message: Debug + Sized + 'static {
     }
 }
 
-pub trait MessageExt : Message {
+pub trait MessageExt: Message {
     fn serialize<W: Write>(&self, writer: W) -> Result<()> {
         Self::Serializer::serialize(self, writer)
     }
 
     fn deserialize(buf: &[u8]) -> Result<Self>
     where
-        Self: Sized {
+        Self: Sized,
+    {
         Self::Serializer::deserialize(buf)
     }
 }
 
-impl<T> MessageExt for T where T: Message {
-
-}
+impl<T> MessageExt for T where T: Message {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageHeader {
@@ -1197,7 +1186,7 @@ pub trait Object {
 /// ```rust
 /// use noatun::noatun_object;
 /// use noatun::data_types::{NoatunString, NoatunVec};
-/// 
+///
 /// noatun_object!(
 ///     #[derive(PartialEq)]
 ///     struct Employee {
@@ -1262,7 +1251,7 @@ macro_rules! noatun_object {
         unsafe { ::std::pin::Pin::new_unchecked(&mut $self.$name).set($name); }
     };
     ( getter opod $name:ident $typ: ty  ) => {
-        
+
     };
     ( setter opod $name:ident $typ: ty  ) => {
         $crate::paste!(
@@ -1448,7 +1437,6 @@ where
 }
 
 impl<T: Object<Ptr = ThinPtr> + NoatunStorable + 'static> FixedSizeObject for T {}
-
 
 #[derive(Debug)]
 #[repr(C)]
@@ -1715,9 +1703,7 @@ fn msg_serialize<T: savefile::Serialize + savefile::Packed>(
     Ok(savefile::Serializer::bare_serialize(&mut writer, 0, obj)?)
 }
 
-fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(
-    buf: &[u8],
-) -> anyhow::Result<T> {
+fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(buf: &[u8]) -> anyhow::Result<T> {
     Ok(Deserializer::bare_deserialize(
         &mut std::io::Cursor::new(buf),
         0,
@@ -1737,11 +1723,13 @@ pub trait NoatunMessageSerializer<MSG> {
 }
 
 /// Serializer strategy that uses the serde-based "postcard" serializer
-#[cfg(feature="postcard")]
+#[cfg(feature = "postcard")]
 pub struct PostcardMessageSerializer<MSG: Serialize + DeserializeOwned>(pub PhantomData<MSG>);
 
-#[cfg(feature="postcard")]
-impl<MSG: Serialize+DeserializeOwned> NoatunMessageSerializer<MSG> for PostcardMessageSerializer<MSG> {
+#[cfg(feature = "postcard")]
+impl<MSG: Serialize + DeserializeOwned> NoatunMessageSerializer<MSG>
+    for PostcardMessageSerializer<MSG>
+{
     fn deserialize(buf: &[u8]) -> anyhow::Result<MSG>
     where
         Self: Sized,
@@ -1755,7 +1743,9 @@ impl<MSG: Serialize+DeserializeOwned> NoatunMessageSerializer<MSG> for PostcardM
     }
 }
 
-pub struct SavefileMessageSerializer<MSG: savefile::Serialize+ savefile::Deserialize+savefile::Packed>(pub PhantomData<MSG>);
+pub struct SavefileMessageSerializer<
+    MSG: savefile::Serialize + savefile::Deserialize + savefile::Packed,
+>(pub PhantomData<MSG>);
 
 /// Dummy serializer that panics on all use
 ///
@@ -1766,7 +1756,7 @@ pub struct DummyMessageSerializer;
 impl<MSG> NoatunMessageSerializer<MSG> for DummyMessageSerializer {
     fn deserialize(_buf: &[u8]) -> Result<MSG>
     where
-        Self: Sized
+        Self: Sized,
     {
         panic!("attempt to deserialize message using dummy serializer")
     }
@@ -1776,10 +1766,12 @@ impl<MSG> NoatunMessageSerializer<MSG> for DummyMessageSerializer {
     }
 }
 
-impl<MSG: savefile::Serialize+ savefile::Deserialize+savefile::Packed> NoatunMessageSerializer<MSG> for SavefileMessageSerializer<MSG> {
+impl<MSG: savefile::Serialize + savefile::Deserialize + savefile::Packed>
+    NoatunMessageSerializer<MSG> for SavefileMessageSerializer<MSG>
+{
     fn deserialize(buf: &[u8]) -> Result<MSG>
     where
-        Self: Sized
+        Self: Sized,
     {
         msg_deserialize(buf)
     }

@@ -2,7 +2,10 @@ use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
-use crate::{ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target};
+use crate::{
+    ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader,
+    MessageId, NoatunContext, NoatunTime, Object, Pointer, Target,
+};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::fmt::{Debug, Formatter};
@@ -10,7 +13,6 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::pin::Pin;
 use tracing::{error, info, trace};
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LoadingStatus {
@@ -94,7 +96,7 @@ impl<MSG: Message> Drop for DatabaseSessionMut<'_, MSG> {
     }
 }
 
-impl< MSG: Message+'static> DatabaseSession<'_, MSG> {
+impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
     }
@@ -145,7 +147,9 @@ impl< MSG: Message+'static> DatabaseSession<'_, MSG> {
     }
 
     /// Retrieve all messages in the system.
-    pub fn get_all_messages(&self) -> Result<impl Iterator<Item = MessageFrame<MSG>>+ use<'_, MSG> > {
+    pub fn get_all_messages(
+        &self,
+    ) -> Result<impl Iterator<Item = MessageFrame<MSG>> + use<'_, MSG>> {
         self.db.get_all_messages()
     }
     /// Retrieve all messages in the system in a Vec
@@ -193,7 +197,7 @@ pub enum OpenMode {
     OpenCreate,
     /// Unconditionally overwrite any pre-existing database file
     /// (this is mostly useful for tests)
-    Overwrite
+    Overwrite,
 }
 
 impl OpenMode {
@@ -202,7 +206,7 @@ impl OpenMode {
     }
 }
 
-impl<MSG: Message+'static> DatabaseSessionMut<'_, MSG> {
+impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
     }
@@ -251,7 +255,9 @@ impl<MSG: Message+'static> DatabaseSessionMut<'_, MSG> {
     pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.db.get_message_children(msg)
     }
-    pub fn get_all_messages(&self) -> Result<impl Iterator<Item=MessageFrame<MSG>>+ use<'_, MSG> > {
+    pub fn get_all_messages(
+        &self,
+    ) -> Result<impl Iterator<Item = MessageFrame<MSG>> + use<'_, MSG>> {
         self.db.get_all_messages()
     }
     pub fn get_all_messages_vec(&self) -> Result<Vec<MessageFrame<MSG>>> {
@@ -338,7 +344,10 @@ impl<MSG: Message+'static> DatabaseSessionMut<'_, MSG> {
     // This method allows modifying the state outside of the message apply loop.
     // This is completely broken and only useful in tests.
     #[cfg(test)]
-    pub(crate) fn with_root_mut<R>(&mut self, f: impl FnOnce(Pin<&mut MSG::Root>) -> R) -> Result<R> {
+    pub(crate) fn with_root_mut<R>(
+        &mut self,
+        f: impl FnOnce(Pin<&mut MSG::Root>) -> R,
+    ) -> Result<R> {
         self.db.with_root_mut(f)
     }
 
@@ -387,18 +396,14 @@ impl<MSG: Message+'static> DatabaseSessionMut<'_, MSG> {
         self.db.compact()
     }
 
-    pub fn append_local_at(
-        &mut self,
-        time: NoatunTime,
-        message: MSG,
-    ) -> Result<MessageHeader> {
+    pub fn append_local_at(&mut self, time: NoatunTime, message: MSG) -> Result<MessageHeader> {
         self.db.append_local_at(time, message)
     }
 
     pub fn append_many_local_at(
         &mut self,
         time: NoatunTime,
-        messages: impl Iterator<Item=MSG>,
+        messages: impl Iterator<Item = MSG>,
     ) -> Result<()> {
         self.db.append_many_local_at(time, messages)
     }
@@ -412,15 +417,11 @@ impl<MSG: Message+'static> DatabaseSessionMut<'_, MSG> {
     }
 
     /// Append a single message to the database.
-    /// 
+    ///
     /// Note, this fails if the message cannot be added to the backing store but succeeds
     /// otherwise. Notably, it succeeds even if applying the message to the database
     /// causes a panic. Any such panic will be caught, and an entry will be emitted to the log.
-    pub fn append_single(
-        &mut self,
-        message: &MessageFrame<MSG>,
-        local: bool,
-    ) -> Result<()> {
+    pub fn append_single(&mut self, message: &MessageFrame<MSG>, local: bool) -> Result<()> {
         self.db.append_single(message, local)
     }
 
@@ -450,7 +451,7 @@ impl<MSG: Message> Drop for Database<MSG> {
     }
 }
 
-impl<MSG: Message+'static> Database<MSG> {
+impl<MSG: Message + 'static> Database<MSG> {
     pub fn begin_session_mut(&mut self) -> Result<DatabaseSessionMut<'_, MSG>> {
         self.mark_dirty()?;
         Ok(DatabaseSessionMut { db: self })
@@ -505,7 +506,7 @@ impl<MSG: Message+'static> Database<MSG> {
                 projection_time_limit: self.projection_time_limit,
                 auto_delete: self.auto_delete,
                 ..DatabaseSettings::default()
-            }
+            },
         )?;
         self.do_apply_missing()?;
         Ok(())
@@ -555,7 +556,7 @@ impl<MSG: Message+'static> Database<MSG> {
             return Ok(());
         }
         self.message_store
-            .advance_cutoff(new_cutoff,  &mut self.context)
+            .advance_cutoff(new_cutoff, &mut self.context)
     }
 
     fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
@@ -609,12 +610,10 @@ impl<MSG: Message+'static> Database<MSG> {
     }
 
     /// Retrieve all messages in the database.
-    fn get_all_messages(&self) -> Result<impl Iterator<Item = MessageFrame<MSG>>+ use<'_, MSG> > {
+    fn get_all_messages(&self) -> Result<impl Iterator<Item = MessageFrame<MSG>> + use<'_, MSG>> {
         self.message_store.get_all_messages()
     }
-    fn get_all_messages_with_children(
-        &self,
-    ) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
+    fn get_all_messages_with_children(&self) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
         self.message_store.get_all_messages_with_children()
     }
 
@@ -799,14 +798,8 @@ impl<MSG: Message+'static> Database<MSG> {
             settings,
         )
     }
-    pub fn open(
-        path: impl AsRef<Path>,
-        settings: DatabaseSettings,
-    ) -> Result<Database<MSG>> {
-        Self::create(
-            Target::OpenExisting(path.as_ref().to_path_buf()),
-            settings,
-        )
+    pub fn open(path: impl AsRef<Path>, settings: DatabaseSettings) -> Result<Database<MSG>> {
+        Self::create(Target::OpenExisting(path.as_ref().to_path_buf()), settings)
     }
 
     /// Remove the given message.
@@ -816,7 +809,6 @@ impl<MSG: Message+'static> Database<MSG> {
         if let Some(seq) = self.message_store.remove_message(message_id, force)? {
             self.reproject_from(seq)?;
         }
-
 
         Ok(())
     }
@@ -858,18 +850,14 @@ impl<MSG: Message+'static> Database<MSG> {
         self.message_store.compact()
     }
 
-    fn append_local_at(
-        &mut self,
-        time: NoatunTime,
-        message: MSG,
-    ) -> Result<MessageHeader> {
+    fn append_local_at(&mut self, time: NoatunTime, message: MSG) -> Result<MessageHeader> {
         self.append_local_opt(Some(time), message)
     }
 
     fn append_many_local_at(
         &mut self,
         time: NoatunTime,
-        messages: impl Iterator<Item=MSG>,
+        messages: impl Iterator<Item = MSG>,
     ) -> Result<()> {
         self.append_local_many_opt(Some(time), messages)
     }
@@ -931,12 +919,11 @@ impl<MSG: Message+'static> Database<MSG> {
         Ok(header)
     }
 
-
     // Returns first message header
     fn append_local_many_opt(
         &mut self,
         time: Option<NoatunTime>,
-        messages: impl Iterator<Item=MSG>,
+        messages: impl Iterator<Item = MSG>,
     ) -> Result<()> {
         let cutoff_time = self.message_store.current_cutoff_time()?;
 
@@ -954,14 +941,14 @@ impl<MSG: Message+'static> Database<MSG> {
             new_id = MessageId::generate_for_time(time)?;
         }
 
-        let mut parents : Vec<_> = self.get_update_heads()
+        let mut parents: Vec<_> = self
+            .get_update_heads()
             .iter()
             .copied()
             .filter(|x| *x < new_id)
             .collect();
 
         for message in messages {
-
             self.prev_local = Some(new_id);
 
             let t = MessageFrame::new(
@@ -981,9 +968,7 @@ impl<MSG: Message+'static> Database<MSG> {
             new_id = new_id.successor();
         }
 
-        self.append_many_impl(
-            temp.iter()
-            , true, true)?;
+        self.append_many_impl(temp.iter(), true, true)?;
         Ok(())
     }
 
@@ -1018,10 +1003,7 @@ impl<MSG: Message+'static> Database<MSG> {
     }
     /// Create a database residing entirely in memory.
     /// This is mostly useful for tests
-    pub fn create_in_memory(
-        max_size: usize,
-        settings: DatabaseSettings,
-    ) -> Result<Database<MSG>> {
+    pub fn create_in_memory(max_size: usize, settings: DatabaseSettings) -> Result<Database<MSG>> {
         let mut disk = InMemoryDisk::default();
         let target = Target::CreateNew(PathBuf::default());
         let mut ctx = DatabaseContextData::new(&mut disk, &target, max_size)
@@ -1046,10 +1028,7 @@ impl<MSG: Message+'static> Database<MSG> {
         Ok(db)
     }
 
-    fn create(
-        target: Target,
-        settings: DatabaseSettings,
-    ) -> Result<Database<MSG>> {
+    fn create(target: Target, settings: DatabaseSettings) -> Result<Database<MSG>> {
         let mut disk = StandardDisk;
 
         let mut ctx = DatabaseContextData::new(&mut disk, &target, settings.max_file_size)
@@ -1081,7 +1060,6 @@ impl<MSG: Message+'static> Database<MSG> {
                 load_status = LoadingStatus::NewDatabase;
             } else {
                 load_status = LoadingStatus::RecoveryPerformed;
-                //println!("Load status: {:?}", load_status);
             }
         } else {
             if !message_store.loaded_existing_db() {
@@ -1090,7 +1068,6 @@ impl<MSG: Message+'static> Database<MSG> {
                 load_status = LoadingStatus::CleanLoad;
             }
         }
-        //println!("Load status: {:?}", load_status);
 
         let mut db = Database {
             prev_local: None,

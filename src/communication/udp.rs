@@ -5,7 +5,7 @@ use anyhow::{bail, Context};
 use socket2::{Domain, Protocol, Type};
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
-use tracing::{info};
+use tracing::info;
 
 impl CommunicationDriver for TokioUdpDriver {
     type Receiver = UdpSocket;
@@ -73,8 +73,6 @@ impl CommunicationDriver for TokioUdpDriver {
                     SocketAddr::V6(SocketAddrV6::new(multicast_group, bind_address.port(), 0 ,0))
                 ))?;*/
                 //udp_receive.set_only_v6(true)?;
-                println!("Joining multicastgroup for scope {}", bind_ipv6.scope_id());
-                println!("binding receive socket to {multicast_group:?}");
                 udp_receive
                     .bind(&multicast_group.into())
                     .context("binding multicast group")?;
@@ -115,12 +113,10 @@ impl CommunicationSendSocket<SocketAddr> for CommunicationUdpSendSocket {
         match res {
             Ok(sent_size) => {
                 if sent_size != buf.len() {
-                    return Err(std::io::Error::other(
-                        format!(
-                            "Packet send failure. Expected to send {}, sent {sent_size}",
-                            buf.len()
-                        ),
-                    ));
+                    return Err(std::io::Error::other(format!(
+                        "Packet send failure. Expected to send {}, sent {sent_size}",
+                        buf.len()
+                    )));
                 }
                 Ok(())
             }

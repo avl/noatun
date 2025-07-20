@@ -2,7 +2,11 @@
 use crate::data_types::meta_finder::get_any_empty;
 use crate::sequence_nr::SequenceNr;
 use crate::xxh3_vendored::NoatunHasher;
-use crate::{get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer, ThinPtr, CONTEXT};
+use crate::{
+    get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable,
+    Object, Pointer, ThinPtr, CONTEXT,
+};
+use savefile_derive::Savefile;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
@@ -13,7 +17,6 @@ use std::ops::{Add, AddAssign, Deref, Index, Range, SubAssign};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
-use savefile_derive::Savefile;
 use tracing::trace;
 
 mod noatun_hash_impls;
@@ -139,11 +142,9 @@ pub struct NoatunOption<T: NoatunStorable> {
     present: u8,
 }
 
-unsafe impl<T:NoatunStorable> NoatunStorable for NoatunOption<T> {
+unsafe impl<T: NoatunStorable> NoatunStorable for NoatunOption<T> {}
 
-}
-
-impl<T:NoatunStorable> NoatunOption<T> {
+impl<T: NoatunStorable> NoatunOption<T> {
     pub fn into_option(self) -> Option<T> {
         self.into()
     }
@@ -155,23 +156,21 @@ impl<T:NoatunStorable> NoatunOption<T> {
     }
 }
 
-impl<T:NoatunStorable> From<Option<T>> for NoatunOption<T> {
+impl<T: NoatunStorable> From<Option<T>> for NoatunOption<T> {
     fn from(value: Option<T>) -> Self {
         match value {
-            None => {Self {
+            None => Self {
                 value: T::zeroed(),
                 present: 0,
-            }}
-            Some(t) => {
-                Self {
-                    value: t,
-                    present: 1,
-                }
-            }
+            },
+            Some(t) => Self {
+                value: t,
+                present: 1,
+            },
         }
     }
 }
-impl<T:NoatunStorable> From<NoatunOption<T>> for Option<T> {
+impl<T: NoatunStorable> From<NoatunOption<T>> for Option<T> {
     fn from(value: NoatunOption<T>) -> Self {
         if value.present == 0 {
             None
@@ -180,7 +179,6 @@ impl<T:NoatunStorable> From<NoatunOption<T>> for Option<T> {
         }
     }
 }
-
 
 /// A wrapper around a regular plain old data type. T must implement
 /// `NoatunStorable`, which basically means it must be a Copy type that does
@@ -216,7 +214,6 @@ impl<T: Copy + Debug> Debug for OpaqueNoatunCell<T> {
         value.fmt(f)
     }
 }
-
 
 pub trait NoatunCellArrayExt<T: NoatunStorable> {
     fn observe(&self) -> Vec<T>;
@@ -266,9 +263,6 @@ impl<T: NoatunStorable> NoatunCell<T> {
 }
 
 impl<T: NoatunStorable> OpaqueNoatunCell<T> {
-
-
-
     /// WARNING!
     /// This must only be called from queries, not from message apply.
     ///
@@ -292,8 +286,7 @@ impl<T: NoatunStorable> OpaqueNoatunCell<T> {
     }
 }
 
-
-impl<T: NoatunStorable + AddAssign<T> + Copy > AddAssign<T> for Pin<&mut OpaqueNoatunCell<T>> {
+impl<T: NoatunStorable + AddAssign<T> + Copy> AddAssign<T> for Pin<&mut OpaqueNoatunCell<T>> {
     fn add_assign(&mut self, rhs: T) {
         NoatunContext.observe_registrar(self.registrar);
         let mut new_value = self.value;
@@ -301,7 +294,7 @@ impl<T: NoatunStorable + AddAssign<T> + Copy > AddAssign<T> for Pin<&mut OpaqueN
         self.as_mut().set(new_value);
     }
 }
-impl<T: NoatunStorable + SubAssign<T> + Copy > SubAssign<T> for Pin<&mut OpaqueNoatunCell<T>> {
+impl<T: NoatunStorable + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut OpaqueNoatunCell<T>> {
     fn sub_assign(&mut self, rhs: T) {
         NoatunContext.observe_registrar(self.registrar);
         let mut new_value = self.value;
@@ -310,7 +303,7 @@ impl<T: NoatunStorable + SubAssign<T> + Copy > SubAssign<T> for Pin<&mut OpaqueN
     }
 }
 
-impl<T: NoatunStorable + AddAssign<T> + Copy > AddAssign<T> for Pin<&mut NoatunCell<T>> {
+impl<T: NoatunStorable + AddAssign<T> + Copy> AddAssign<T> for Pin<&mut NoatunCell<T>> {
     fn add_assign(&mut self, rhs: T) {
         NoatunContext.observe_registrar(self.registrar);
         let mut new_value = self.value;
@@ -318,7 +311,7 @@ impl<T: NoatunStorable + AddAssign<T> + Copy > AddAssign<T> for Pin<&mut NoatunC
         self.as_mut().set(new_value);
     }
 }
-impl<T: NoatunStorable + SubAssign<T> + Copy > SubAssign<T> for Pin<&mut NoatunCell<T>> {
+impl<T: NoatunStorable + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut NoatunCell<T>> {
     fn sub_assign(&mut self, rhs: T) {
         NoatunContext.observe_registrar(self.registrar);
         let mut new_value = self.value;
@@ -326,7 +319,6 @@ impl<T: NoatunStorable + SubAssign<T> + Copy > SubAssign<T> for Pin<&mut NoatunC
         self.as_mut().set(new_value);
     }
 }
-
 
 /*impl<T: NoatunStorable> NoatunCell<T> {
     pub fn new(value: T) -> NoatunCell<T> {
@@ -605,9 +597,7 @@ struct DatabaseVecLengthCapData {
     data: usize,
 }
 
-unsafe impl NoatunStorable for DatabaseVecLengthCapData {
-}
-
+unsafe impl NoatunStorable for DatabaseVecLengthCapData {}
 
 //TODO(future): Merge with RawDatabaseVec?
 #[repr(C)]
@@ -830,7 +820,6 @@ where
         self.raw.write(index, val)
     }*/
 
-
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.destroy_items();
@@ -857,19 +846,19 @@ where
     }
 
     pub fn retain(self: Pin<&mut Self>, mut f: impl FnMut(Pin<&mut T>) -> bool) {
-
-        struct PanicHandler<'a, T:FixedSizeObject + 'static> {
+        struct PanicHandler<'a, T: FixedSizeObject + 'static> {
             vec: &'a mut NoatunVec<T>,
             new_count: usize,
             read_offset: usize,
             write_offset: usize,
         }
-        impl<T:FixedSizeObject + 'static> Drop for PanicHandler<'_, T> {
+        impl<T: FixedSizeObject + 'static> Drop for PanicHandler<'_, T> {
             fn drop(&mut self) {
                 while self.read_offset < self.vec.raw.length {
                     let read_ptr = ThinPtr(self.vec.raw.data + self.read_offset * size_of::<T>());
                     if self.read_offset != self.write_offset {
-                        let write_ptr = ThinPtr(self.vec.raw.data + self.write_offset * size_of::<T>());
+                        let write_ptr =
+                            ThinPtr(self.vec.raw.data + self.write_offset * size_of::<T>());
                         NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>());
                     }
                     self.read_offset += 1;
@@ -890,7 +879,8 @@ where
         };
 
         while panic_handler.read_offset < panic_handler.vec.raw.length {
-            let read_ptr = ThinPtr(panic_handler.vec.raw.data + panic_handler.read_offset * size_of::<T>());
+            let read_ptr =
+                ThinPtr(panic_handler.vec.raw.data + panic_handler.read_offset * size_of::<T>());
             let mut val = unsafe { read_ptr.access_mut::<T>() };
             let retain = f(val.as_mut());
             if !retain {
@@ -899,7 +889,9 @@ where
                 panic_handler.read_offset += 1;
             } else {
                 if panic_handler.read_offset != panic_handler.write_offset {
-                    let write_ptr = ThinPtr(panic_handler.vec.raw.data + panic_handler.write_offset * size_of::<T>());
+                    let write_ptr = ThinPtr(
+                        panic_handler.vec.raw.data + panic_handler.write_offset * size_of::<T>(),
+                    );
                     NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>());
                 }
                 panic_handler.read_offset += 1;
@@ -944,7 +936,7 @@ pub struct OpaqueNoatunVec<T: FixedSizeObject> {
     clear_registrar: SequenceNr,
 }
 
-impl<T:FixedSizeObject> Debug for OpaqueNoatunVec<T> {
+impl<T: FixedSizeObject> Debug for OpaqueNoatunVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "OpaqueNoatunVec")
     }
@@ -952,7 +944,7 @@ impl<T:FixedSizeObject> Debug for OpaqueNoatunVec<T> {
 
 unsafe impl<T: FixedSizeObject> NoatunStorable for OpaqueNoatunVec<T> {}
 
-impl<T:FixedSizeObject> Index<usize> for OpaqueNoatunVec<T> {
+impl<T: FixedSizeObject> Index<usize> for OpaqueNoatunVec<T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -961,7 +953,6 @@ impl<T:FixedSizeObject> Index<usize> for OpaqueNoatunVec<T> {
 }
 
 impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
-
     /// Clear all elements of the vector.
     ///
     /// This does not cause any observation of the vector.
@@ -1030,7 +1021,10 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
         tself.raw.push_zeroed();
 
         let index = tself.raw.length - 1;
-        tself.raw.get_index_mut(index).init_from_detached(t.borrow());
+        tself
+            .raw
+            .get_index_mut(index)
+            .init_from_detached(t.borrow());
     }
 }
 
@@ -1067,7 +1061,6 @@ where
         pod
     }
 }
-
 
 impl<T> Object for NoatunVec<T>
 where
@@ -1245,7 +1238,6 @@ struct NoatunHashBucket<K, V> {
 }
 
 unsafe impl<K: NoatunStorable, V: NoatunStorable> NoatunStorable for NoatunHashBucket<K, V> {}
-
 
 /// A collection very similar to std HashMap, for Noatun databases.
 ///
@@ -1510,13 +1502,13 @@ pub fn run_insert_probe_sequence(
 #[cfg(target_feature = "avx2")]
 #[doc(hidden)]
 pub mod meta_finder {
+    use super::HASH_META_GROUP_SIZE;
     use crate::data_types::{BucketNr, Meta, MetaGroup, ProbeRunResult};
     use std::arch::x86_64::{
         __m256i, _mm256_cmpeq_epi8, _mm256_cmpgt_epi8, _mm256_load_si256, _mm256_movemask_epi8,
         _mm256_or_si256, _mm256_set1_epi8,
     };
     use std::ops::Range;
-    use super::HASH_META_GROUP_SIZE;
 
     #[inline]
     pub fn get_any_empty(group: &MetaGroup) -> Option<usize> {
@@ -2027,7 +2019,7 @@ fn get_meta_mut_and_emptyable(metas: &mut [MetaGroup], bucket: BucketNr) -> Meta
                 debug_assert_ne!(subindex, empty);
                 debug_assert_ne!(subindex, empty - 1);
                 debug_assert!(subindex < empty - 1);
-                println!("Group {group}, subindex: {subindex}, empty: {empty}");
+
                 group_obj.validate();
                 let [meta, before_empty] =
                     group_obj.0.get_disjoint_mut([subindex, empty - 1]).unwrap();
@@ -2052,34 +2044,31 @@ impl<'a, K: NoatunKey + PartialEq, V: FixedSizeObject> HashAccessContextMut<'a, 
     }
 }
 
-struct LengthGuard<'a, K:NoatunKey,V:FixedSizeObject> {
+struct LengthGuard<'a, K: NoatunKey, V: FixedSizeObject> {
     new_length: usize,
 
     map: &'a mut NoatunHashMap<K, V>,
     //length_field: *mut usize,
 }
 
-impl<'a, K:NoatunKey,V:FixedSizeObject> LengthGuard<'a, K,V> {
-    fn new(map: &'a mut NoatunHashMap<K,V>) -> LengthGuard<'a, K, V> {
+impl<'a, K: NoatunKey, V: FixedSizeObject> LengthGuard<'a, K, V> {
+    fn new(map: &'a mut NoatunHashMap<K, V>) -> LengthGuard<'a, K, V> {
         LengthGuard {
             new_length: map.length,
-            map
+            map,
         }
     }
 }
 
-impl<K:NoatunKey,V:FixedSizeObject> Drop for LengthGuard<'_,K,V> {
+impl<K: NoatunKey, V: FixedSizeObject> Drop for LengthGuard<'_, K, V> {
     fn drop(&mut self) {
-        println!("Dropping DeleteGuard, writing {}", self.new_length);
         NoatunContext.write_ptr(self.new_length, &mut self.map.length);
     }
 }
 
-
 impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMap<K, V> {
-
     fn assert_not_apply(&self, method: &str, untracked_version_available: bool) {
-        let context = unsafe{&*get_context_ptr()};
+        let context = unsafe { &*get_context_ptr() };
         if context.is_message_apply() {
             let extra = if untracked_version_available {
                 format!(" To bypass this check, use NoatunHashMap::untracked_{method} instead.")
@@ -2092,7 +2081,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                  upon all previous mutations to the map.{extra}"
             );
         }
-
     }
 
     /// Returns the number of elements in the map.
@@ -2100,7 +2088,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// This method panics if called from within [`Message::apply`]. But also see
     /// [`Self::untracked_len`].
     pub fn len(&self) -> usize {
-
         self.assert_not_apply("len", true);
 
         self.length
@@ -2232,7 +2219,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         let (group_nr, key_meta) = MetaGroupNr::from_u64(h.finish(), cap);
 
         let mut result = None;
-        //println!("Group-nr: {:?}, key_meta: {:?}", group_nr, key_meta);
+
         let probe = BucketProbeSequence::new(group_nr, cap.div_ceil(HASH_META_GROUP_SIZE));
 
         run_get_probe_sequence(
@@ -2240,7 +2227,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             cap,
             key_meta,
             |bucket_nr| {
-                //println!("Checking key for bucket {:?}", bucket_nr);
                 if <K as NoatunKey>::eq(
                     unsafe { buckets[bucket_nr.0].assume_init_ref().key.detach_key_ref() },
                     key,
@@ -2288,7 +2274,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// This method does not record any read-dependency on the map. Applications are
     /// encouraged not to count the number of invocations of the predicate, or if they do,
     /// to not base any logic on the numeric value.
-    pub fn retain(self: Pin<&mut Self>, mut predicate: impl FnMut(&K, Pin<&mut V>) -> bool ) {
+    pub fn retain(self: Pin<&mut Self>, mut predicate: impl FnMut(&K, Pin<&mut V>) -> bool) {
         let tself = unsafe { self.get_unchecked_mut() };
         let mut length_guard_and_map = LengthGuard::new(tself);
         let mut context = length_guard_and_map.map.data_meta_len_mut();
@@ -2296,8 +2282,8 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         let buckets_count = context.buckets.len();
         let mut i = 0;
         while i < buckets_count {
-            let meta_group_index = i/HASH_META_GROUP_SIZE;
-            let meta_group_offset = i%HASH_META_GROUP_SIZE;
+            let meta_group_index = i / HASH_META_GROUP_SIZE;
+            let meta_group_offset = i % HASH_META_GROUP_SIZE;
             let meta = &mut context.metas[meta_group_index].0[meta_group_offset];
             if meta.populated() {
                 let bucket = unsafe { context.buckets[i].assume_init_mut() };
@@ -2305,7 +2291,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 if !predicate(&bucket.key, val) {
                     let bucket_nr = BucketNr(i);
                     length_guard_and_map.new_length -= 1;
-                    Self::remove_impl_by_bucket_nr(&mut context, bucket_nr, |_|{});
+                    Self::remove_impl_by_bucket_nr(&mut context, bucket_nr, |_| {});
                 } else {
                     i += 1;
                 }
@@ -2317,7 +2303,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     }
 
     fn clear_impl(&mut self) {
-
         let context = self.data_meta_len_mut();
         let buckets_count = context.buckets.len();
         for i in 0..buckets_count {
@@ -2326,7 +2311,8 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             let meta = &mut context.metas[meta_group_index].0[meta_group_offset];
             if meta.populated() {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
-                let val = unsafe { Pin::new_unchecked(&mut context.buckets[i].assume_init_mut().v) };
+                let val =
+                    unsafe { Pin::new_unchecked(&mut context.buckets[i].assume_init_mut().v) };
                 val.destroy();
             } else if *meta != Meta::EMPTY {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
@@ -2345,7 +2331,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// those invoking 'clear'.
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
-
 
         NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
 
@@ -2499,12 +2484,10 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     }
 
     /// Returns true if the given key is present in the map.
-    pub fn contains_key(&self,
-                        key: &K::DetachedType) -> bool {
+    pub fn contains_key(&self, key: &K::DetachedType) -> bool {
         let context = self.data_meta_len();
         Self::probe_read(context, key).is_some()
     }
-
 
     /// NOTE! This method is not available from within [`Message::apply`],
     /// and will panic if called from there.
@@ -2525,27 +2508,19 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// Return the value for the given key.
     ///
     /// If the key is not present in the map, insert it with an all-zero value.
-    pub fn get_insert<'a>(
-        mut self: Pin<&'a mut Self>,
-        key: &K::DetachedType,
-    ) -> Pin<&'a mut V> {
-
-
+    pub fn get_insert<'a>(mut self: Pin<&'a mut Self>, key: &K::DetachedType) -> Pin<&'a mut V> {
         let context = self.data_meta_len();
         if let Some(bucket) = Self::probe_read(context, key) {
             unsafe {
                 let context = self.get_unchecked_mut().data_meta_len_mut();
-                return
-                    Pin::new_unchecked(
-                        &mut context.buckets[bucket.0].assume_init_mut().v,
-                    );
+                return Pin::new_unchecked(&mut context.buckets[bucket.0].assume_init_mut().v);
             }
         }
 
         {
             let tself = unsafe { self.as_mut().get_unchecked_mut() };
 
-            tself.insert_internal_impl(key,|_target|{
+            tself.insert_internal_impl(key, |_target| {
                 // Leave as zero
             });
         }
@@ -2604,7 +2579,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
     /// This does not update `self.length`
     fn remove_impl_by_bucket_nr(
-        context: &mut HashAccessContextMut<K,V>,
+        context: &mut HashAccessContextMut<K, V>,
         bucket_nr: BucketNr,
         getval: impl FnOnce(&mut Pin<&mut V>),
     ) {
@@ -2616,11 +2591,9 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
         match get_meta_mut_and_emptyable(context.metas, bucket_nr) {
             MetaMutAndEmpty::NoEmpty(meta) => {
-                //println!("No empty found");
                 NoatunContext.write_internal(Meta::DELETED, meta);
             }
             MetaMutAndEmpty::HasEmptyAfterMeta(meta) => {
-                //println!("empty just after meta");
                 NoatunContext.write_internal(Meta::EMPTY, meta);
             }
             MetaMutAndEmpty::HasEmpty {
@@ -2629,8 +2602,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 before_empty_bucket,
                 before_empty,
             } => {
-                //println!("has empty");
-
                 NoatunContext.copy(before_empty, meta);
                 NoatunContext.write_internal(Meta::EMPTY, before_empty);
 
@@ -2649,16 +2620,20 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         }
     }
     pub fn insert(self: Pin<&mut Self>, key: impl Borrow<K::DetachedType>, val: &V::DetachedType) {
-        unsafe {
-            self.get_unchecked_mut().insert_internal(key, val)
-        }
+        unsafe { self.get_unchecked_mut().insert_internal(key, val) }
     }
-    pub(crate) fn insert_internal(&mut self, key: impl Borrow<K::DetachedType>, val: &V::DetachedType) {
-        self.insert_internal_impl(key, |target|
-            V::init_from_detached(target, val)
-        );
+    pub(crate) fn insert_internal(
+        &mut self,
+        key: impl Borrow<K::DetachedType>,
+        val: &V::DetachedType,
+    ) {
+        self.insert_internal_impl(key, |target| V::init_from_detached(target, val));
     }
-    fn insert_internal_impl(&mut self, key: impl Borrow<K::DetachedType>, mut val: impl FnMut(Pin<&mut V>)) {
+    fn insert_internal_impl(
+        &mut self,
+        key: impl Borrow<K::DetachedType>,
+        mut val: impl FnMut(Pin<&mut V>),
+    ) {
         let key = key.borrow();
         let context = self.data_meta_len_mut();
         let probe_result = Self::probe(context.readonly(), key);
@@ -2687,7 +2662,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             }
         }
     }
-
 
     fn insert_impl(&mut self, key: K, val: V) {
         let context = self.data_meta_len_mut();
@@ -2817,7 +2791,6 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
     }
 
     fn destroy(self: Pin<&mut Self>) {
-
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
 
@@ -2840,10 +2813,10 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::DummyTestMessage;
-use super::{NoatunBox, NoatunHashMap, NoatunString};
+    use super::{NoatunBox, NoatunHashMap, NoatunString};
     use crate::database::DatabaseSettings;
-    
+    use crate::tests::DummyTestMessage;
+
     use crate::tests::DummyTestMessageApply;
     use crate::{Database, NoatunCell, NoatunTime, Object};
     use datetime_literal::datetime;
@@ -3081,7 +3054,10 @@ use super::{NoatunBox, NoatunHashMap, NoatunString};
             }
 
             assert_eq!(map.0.len(), 300);
-            assert_eq!(**unsafe{Pin::new_unchecked(&mut map.0)}.get_insert(&10), 10);
+            assert_eq!(
+                **unsafe { Pin::new_unchecked(&mut map.0) }.get_insert(&10),
+                10
+            );
 
             for i in 0..300 {
                 let val = map.0.get(&i).unwrap();
@@ -3101,7 +3077,7 @@ use super::{NoatunBox, NoatunHashMap, NoatunString};
                     ..Default::default()
                 },
             )
-                .unwrap();
+            .unwrap();
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
             let map = unsafe { map.get_unchecked_mut() };
@@ -3110,18 +3086,14 @@ use super::{NoatunBox, NoatunHashMap, NoatunString};
                 map.0.insert_internal(i, &i);
             }
             assert_eq!(map.0.len(), 10);
-            unsafe { Pin::new_unchecked(&mut map.0).retain(|k, _v|{
-                println!("retain cb: {k}");
-                *k%2==0
-            }) };
+            unsafe { Pin::new_unchecked(&mut map.0).retain(|k, _v| *k % 2 == 0) };
             assert_eq!(map.0.len(), 5);
-            for (k,_v) in map.0.iter() {
-                assert_eq!(*k%2, 0, "the odd elements have ben removed by `retain`");
+            for (k, _v) in map.0.iter() {
+                assert_eq!(*k % 2, 0, "the odd elements have ben removed by `retain`");
             }
         })
-            .unwrap();
+        .unwrap();
     }
-
 
     #[test]
     fn test_hashmap_miri_clear() {
@@ -3133,7 +3105,7 @@ use super::{NoatunBox, NoatunHashMap, NoatunString};
                     ..Default::default()
                 },
             )
-                .unwrap();
+            .unwrap();
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
             let map = unsafe { map.get_unchecked_mut() };
@@ -3145,9 +3117,8 @@ use super::{NoatunBox, NoatunHashMap, NoatunString};
             unsafe { Pin::new_unchecked(&mut map.0).clear() };
             assert_eq!(map.0.len(), 0);
             assert!(map.0.iter().next().is_none());
-
         })
-            .unwrap();
+        .unwrap();
     }
 
     #[test]

@@ -1,7 +1,7 @@
-use crate::SavefileMessageSerializer;
 use crate::cutoff::CutOffDuration;
 use crate::data_types::NoatunVec;
 use crate::database::DatabaseSettings;
+use crate::SavefileMessageSerializer;
 use crate::{Database, Message, MessageId};
 use datetime_literal::datetime;
 use savefile_derive::Savefile;
@@ -41,10 +41,7 @@ impl Message for BankMessage {
             }
         }
     }
-
-    
 }
-
 
 #[test]
 fn init_bank_miri() {
@@ -52,9 +49,10 @@ fn init_bank_miri() {
         10_000,
         DatabaseSettings {
             mock_time: Some(datetime!(2023-01-01 Z).into()),
-            cutoff_interval:         CutOffDuration::from_minutes(15),
+            cutoff_interval: CutOffDuration::from_minutes(15),
             ..Default::default()
-        },    )
+        },
+    )
     .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.append_local(BankMessage::AddCustomerAndMoney {

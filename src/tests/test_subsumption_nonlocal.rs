@@ -1,7 +1,10 @@
+use crate::{
+    CutOffDuration, Database, DatabaseSettings, Message, MessageFrame, MessageId,
+    SavefileMessageSerializer,
+};
+use savefile_derive::Savefile;
 use std::pin::Pin;
 use std::time::Duration;
-use savefile_derive::Savefile;
-use crate::{CutOffDuration, Database, DatabaseSettings, Message, MessageFrame, MessageId, SavefileMessageSerializer};
 
 noatun_object!(
     struct Doc {
@@ -15,7 +18,6 @@ pub struct DocMessage {
     reset: bool,
 }
 
-
 impl Message for DocMessage {
     type Root = Doc;
     type Serializer = SavefileMessageSerializer<Self>;
@@ -28,12 +30,10 @@ impl Message for DocMessage {
             root.counter += self.val;
         }
     }
-
-
 }
 
 #[test]
-fn test_subsumption_cutoff_interaction()  {
+fn test_subsumption_cutoff_interaction() {
     // Is cutoff_interval implemented correctly?
     // it needs to know the last time information established by the prune candidate was observable.
     // this time can be looong after the directly written information was overwritten. I guess it
@@ -50,41 +50,63 @@ fn test_subsumption_cutoff_interaction()  {
             cutoff_interval: CutOffDuration::from_hours(1).unwrap(),
             ..DatabaseSettings::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
 
     println!("Cur cutoff time: {:?}", db.current_cutoff_time());
     db.append_single(
-        &MessageFrame::new(MessageId::generate_for_time(t0).unwrap(),vec![], DocMessage {
-            val: 0,
-            reset: true,
-        }), false)
-        .unwrap();
+        &MessageFrame::new(
+            MessageId::generate_for_time(t0).unwrap(),
+            vec![],
+            DocMessage {
+                val: 0,
+                reset: true,
+            },
+        ),
+        false,
+    )
+    .unwrap();
 
     let t1 = t0 + Duration::from_secs(1800);
     db.set_mock_time(t1).unwrap();
 
     db.append_single(
-        &MessageFrame::new(MessageId::generate_for_time(t1).unwrap(),vec![], DocMessage {
-            val: 0,
-            reset: true,
-        }), false)
-        .unwrap();
+        &MessageFrame::new(
+            MessageId::generate_for_time(t1).unwrap(),
+            vec![],
+            DocMessage {
+                val: 0,
+                reset: true,
+            },
+        ),
+        false,
+    )
+    .unwrap();
 
-    assert_eq!(db.count_messages(), 2, "nothing can be pruned, observer could sneak in before t1");
-
+    assert_eq!(
+        db.count_messages(),
+        2,
+        "nothing can be pruned, observer could sneak in before t1"
+    );
 
     let t2 = t1 + Duration::from_secs(1801);
     db.set_mock_time(t2).unwrap();
     db.maybe_advance_cutoff().unwrap();
 
-    assert_eq!(db.count_messages(), 2, "nothing can be pruned, observer could still sneak in before t1");
+    assert_eq!(
+        db.count_messages(),
+        2,
+        "nothing can be pruned, observer could still sneak in before t1"
+    );
 
-    let t3 = t1 + Duration::from_secs(3600+1800);
+    let t3 = t1 + Duration::from_secs(3600 + 1800);
     db.set_mock_time(t3).unwrap();
     db.maybe_advance_cutoff().unwrap();
 
-
-    assert_eq!(db.count_messages(), 1, "first can be pruned, observer can no longer sneak in before t1");
-
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "first can be pruned, observer can no longer sneak in before t1"
+    );
 }

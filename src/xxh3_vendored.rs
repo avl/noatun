@@ -31,8 +31,8 @@ DEALINGS IN THE SOFTWARE.
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::identity_op)]
 
-use std::hash::Hasher;
 use crate::xxh3_vendored::xxh3::Xxh3Default;
+use std::hash::Hasher;
 
 pub(crate) mod xxh32_common {
     #![allow(unused)]
@@ -2066,12 +2066,11 @@ pub mod xxh3 {
     }
 }
 
-
 /// Stable hasher made to be very fast, with predictable output.
 #[allow(clippy::large_enum_variant)]
 pub enum NoatunHasher {
     Small([u8; 64], usize),
-    Large(Xxh3Default)
+    Large(Xxh3Default),
 }
 
 impl Default for NoatunHasher {
@@ -2108,12 +2107,8 @@ impl Hasher for NoatunHasher {
     #[inline]
     fn finish(&self) -> u64 {
         match self {
-            NoatunHasher::Small(data, ptr) => {
-                xxh3::xxh3_64(&data[0..*ptr])
-            }
-            NoatunHasher::Large(d) => {
-                d.digest()
-            }
+            NoatunHasher::Small(data, ptr) => xxh3::xxh3_64(&data[0..*ptr]),
+            NoatunHasher::Large(d) => d.digest(),
         }
     }
     #[inline]
@@ -2121,7 +2116,7 @@ impl Hasher for NoatunHasher {
         match self {
             NoatunHasher::Small(data, ptr) => {
                 if *ptr + a_bytes.len() <= data.len() {
-                    data[*ptr..*ptr+a_bytes.len()].copy_from_slice(a_bytes);
+                    data[*ptr..*ptr + a_bytes.len()].copy_from_slice(a_bytes);
                     *ptr += a_bytes.len();
                 } else {
                     self.transform(a_bytes);
@@ -2133,8 +2128,6 @@ impl Hasher for NoatunHasher {
         }
     }
 }
-
-
 
 #[cfg(test)]
 mod xxh3_tests {

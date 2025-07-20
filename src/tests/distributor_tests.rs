@@ -1,15 +1,15 @@
-use std::sync::RwLock;
-use std::sync::Arc;
 use crate::database::DatabaseSettings;
 use crate::distributor::{Distributor, DistributorMessage, EphemeralNodeId, Neighborhood};
+use crate::mini_pather::MiniPather;
 use crate::tests::CounterMessage;
 use crate::{set_test_epoch, Database, MessageId, NoatunTime};
 use arcshift::ArcShift;
 use datetime_literal::datetime;
 use std::iter::once;
+use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 use tokio::time::Instant;
-use crate::mini_pather::MiniPather;
 
 fn create_app<'a>(
     msgs: impl IntoIterator<
@@ -60,7 +60,6 @@ struct SyncReport {
     num_messages: usize,
 }
 
-
 #[test]
 fn test_distributor() {
     set_test_epoch(Instant::now());
@@ -71,23 +70,31 @@ fn test_distributor() {
         Duration::from_secs(5),
         ArcShift::new(EphemeralNodeId::new(1)),
         Instant::now().into(),
-        None
+        None,
     );
     let mut dist2 = Distributor::new(
         Duration::from_secs(5),
         ArcShift::new(EphemeralNodeId::new(2)),
         Instant::now().into(),
-        None
+        None,
     );
 
-    dist1.neighborhood = Neighborhood::new(Instant::now().into(), Arc::new(RwLock::new(MiniPather::new(1))));
-    dist2.neighborhood = Neighborhood::new(Instant::now().into(), Arc::new(RwLock::new(MiniPather::new(2))));
+    dist1.neighborhood = Neighborhood::new(
+        Instant::now().into(),
+        Arc::new(RwLock::new(MiniPather::new(1))),
+    );
+    dist2.neighborhood = Neighborhood::new(
+        Instant::now().into(),
+        Arc::new(RwLock::new(MiniPather::new(2))),
+    );
     dist1
         .neighborhood
         .get_insert_peer(EphemeralNodeId::new(2), Instant::now().into());
-    
+
     let sess1 = app1.begin_session().unwrap();
-    let mut msg1 = dist1.get_periodic_message(&sess1, Instant::now().into()).unwrap();
+    let mut msg1 = dist1
+        .get_periodic_message(&sess1, Instant::now().into())
+        .unwrap();
     assert_eq!(msg1.len(), 1, "no resync is in progress");
     let msg1 = msg1.pop().unwrap();
 

@@ -1,7 +1,10 @@
 use datetime_literal::datetime;
 use noatun::data_types::{NoatunBox, NoatunCell, NoatunVec};
 use noatun::database::{Database, DatabaseSettings};
-use noatun::{Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunStorable,  Object, SavefileMessageSerializer, ThinPtr};
+use noatun::{
+    Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunStorable, Object,
+    SavefileMessageSerializer, ThinPtr,
+};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
@@ -67,9 +70,7 @@ impl Message for CounterMessage {
             root_counter2.push([self.delta as u8]);
         }
     }
-
 }
-
 
 #[test]
 fn test_counter_object_miri() {

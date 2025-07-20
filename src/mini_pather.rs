@@ -1,6 +1,6 @@
-use std::sync::atomic::AtomicBool;
-use indexmap::{IndexMap};
 use indexmap::map::Entry;
+use indexmap::IndexMap;
+use std::sync::atomic::AtomicBool;
 
 mod known_good_mini_pather;
 
@@ -20,7 +20,7 @@ pub struct MiniPather {
     reverse: IndexMap<u16, Vec<u16>>,
     /// Map from `(origin, received_from) tuple to result of
     /// calling 'should_i_forward(origin, received_from)`
-    memoization: IndexMap<(u16,u16), bool>,
+    memoization: IndexMap<(u16, u16), bool>,
 }
 
 impl MiniPather {
@@ -36,7 +36,7 @@ impl MiniPather {
         }
     }
 
-    pub fn new(whoami: u16,)-> Self {
+    pub fn new(whoami: u16) -> Self {
         Self {
             whoami,
             nodes: Default::default(),
@@ -66,9 +66,8 @@ impl MiniPather {
     }
 
     /// Report which neighbors 'node' can hear
-    pub fn report_neighbors(&mut self, node: u16, hears_neighbors: impl Iterator<Item=u16>) {
-        let mut hears_neighbors : Vec<u16> = hears_neighbors.collect();
-
+    pub fn report_neighbors(&mut self, node: u16, hears_neighbors: impl Iterator<Item = u16>) {
+        let mut hears_neighbors: Vec<u16> = hears_neighbors.collect();
 
         match self.nodes.entry(node) {
             Entry::Occupied(mut cur) => {
@@ -79,7 +78,7 @@ impl MiniPather {
                         cur.get_mut().neighbors.push(*new);
                     }
                 }
-                cur.get_mut().neighbors.retain(|old|{
+                cur.get_mut().neighbors.retain(|old| {
                     if !hears_neighbors.contains(old) {
                         Self::del_reverse(node, &mut self.reverse, &[*old]);
                         self.memoization.clear();
@@ -103,17 +102,17 @@ impl MiniPather {
     }
 
     /// Report which neighbors we ourselves can hear
-    pub fn report_own_neighbors(&mut self, hears_neighbors: impl Iterator<Item=u16>) {
+    pub fn report_own_neighbors(&mut self, hears_neighbors: impl Iterator<Item = u16>) {
         self.report_neighbors(self.whoami, hears_neighbors);
     }
 
     /// Return everybody who can hear 'node'
-    pub fn who_can_hear(&self, node: u16) -> impl Iterator<Item=u16> + use<'_> {
+    pub fn who_can_hear(&self, node: u16) -> impl Iterator<Item = u16> + use<'_> {
         self.reverse.get(&node).into_iter().flatten().copied()
     }
 
     fn ranking(&self, of: u16) -> (isize, u16) {
-        let neighbors = self.nodes.get(&of).map(|x|x.neighbors.len()).unwrap_or(0);
+        let neighbors = self.nodes.get(&of).map(|x| x.neighbors.len()).unwrap_or(0);
         (-(neighbors as isize), of)
     }
 
@@ -129,34 +128,31 @@ impl MiniPather {
         if received_from == self.whoami {
             return None;
         }
-        let Some(neighbor ) = self.nodes.get(&received_from)
-         else {
+        let Some(neighbor) = self.nodes.get(&received_from) else {
             // We *do* ask for retransmission even for nodes we've never actually established
             // contact with, but we do it with some delay to try and avoid storms when connectivity
             // is bad.
-            return Some(2 + self.whoami as usize %10);
+            return Some(2 + self.whoami as usize % 10);
         };
 
         if neighbor.neighbors.is_empty() {
-            return Some(2 + self.whoami as usize %10);
+            return Some(2 + self.whoami as usize % 10);
         }
         if !neighbor.neighbors.contains(&self.whoami) {
             return None;
         }
 
         let my_rank = self.ranking(self.whoami);
-        let mut count = 0;
-        //TODO: Simplify, use 'count' or something
-        for (_other_forwarder, _other_forwarder_hears) in self.nodes.iter().filter(|(x,_)|
-            **x != received_from &&
-            neighbor.neighbors.contains(x) &&
-                self.ranking(**x)
-                    <
-                    my_rank
-        ) {
-            //println!("{} is a better sender", other_forwarder);
-            count += 1;
-        }
+
+        let count = self
+            .nodes
+            .iter()
+            .filter(|(x, _)| {
+                **x != received_from
+                    && neighbor.neighbors.contains(x)
+                    && self.ranking(**x) < my_rank
+            })
+            .count();
 
         Some(count)
     }
@@ -166,8 +162,7 @@ impl MiniPather {
             return false;
         }
 
-        if let Some(memoized ) = self.memoization.get(&(origin, received_from)) {
-
+        if let Some(memoized) = self.memoization.get(&(origin, received_from)) {
             return *memoized;
         }
 
@@ -176,7 +171,7 @@ impl MiniPather {
                 // Since it can't hear us, we can't help it.
                 // We consider it taken care of for the purpose of deciding if to forward
                 peer.visited = AtomicBool::new(true);
-            }   else {
+            } else {
                 peer.visited = AtomicBool::new(false);
             }
         }
@@ -187,44 +182,54 @@ impl MiniPather {
         if let Some(temp) = self.nodes.get_mut(&received_from) {
             temp.visited = AtomicBool::new(true);
         }
-        for temp in self.reverse.get(&origin).into_iter().flatten()/*self.who_can_hear inlined*/ {
+        for temp in self.reverse.get(&origin).into_iter().flatten()
+        /*self.who_can_hear inlined*/
+        {
             if let Some(temp) = self.nodes.get_mut(temp) {
                 temp.visited = AtomicBool::new(true);
             }
         }
-        for temp in self.reverse.get(&received_from).into_iter().flatten()/*self.who_can_hear inlined*/ {
+        for temp in self.reverse.get(&received_from).into_iter().flatten()
+        /*self.who_can_hear inlined*/
+        {
             if let Some(temp) = self.nodes.get_mut(temp) {
                 temp.visited = AtomicBool::new(true);
             }
         }
-
 
         //println!("Node {} decided origin {}.{} reaches {:?} naturally", self.whoami, origin, received_from, recipients_solved);
         let my_rank = self.ranking(self.whoami);
-        for (other_forwarder, other_forwarder_hears) in self.nodes.iter().filter(|(x,_)|
-            **x != origin && **x != received_from &&
-            self.ranking(**x)
-                <
-                my_rank
-        ) {
-            if other_forwarder_hears.neighbors.contains(&origin) || other_forwarder_hears.neighbors.contains(&received_from) {
-
+        for (other_forwarder, other_forwarder_hears) in self
+            .nodes
+            .iter()
+            .filter(|(x, _)| **x != origin && **x != received_from && self.ranking(**x) < my_rank)
+        {
+            if other_forwarder_hears.neighbors.contains(&origin)
+                || other_forwarder_hears.neighbors.contains(&received_from)
+            {
                 //recipients_solved.extend(self.who_can_hear(*other_forwarder));
 
-                for temp in self.reverse.get(other_forwarder).into_iter().flatten()/*self.who_can_hear inlined*/ {
+                for temp in self.reverse.get(other_forwarder).into_iter().flatten()
+                /*self.who_can_hear inlined*/
+                {
                     if let Some(temp) = self.nodes.get(temp) {
-                        temp.visited.store(true, std::sync::atomic::Ordering::Relaxed);
+                        temp.visited
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
         }
 
-        let all_visited = self.nodes.values().all(|x| x.visited.load(std::sync::atomic::Ordering::Relaxed));
+        let all_visited = self
+            .nodes
+            .values()
+            .all(|x| x.visited.load(std::sync::atomic::Ordering::Relaxed));
         if self.memoization.len() > 1000 {
             let l = self.memoization.len() / 2;
             self.memoization.drain(0..l);
         }
-        self.memoization.insert((origin, received_from), !all_visited);
+        self.memoization
+            .insert((origin, received_from), !all_visited);
 
         !all_visited
         /*
@@ -264,17 +269,17 @@ mod tests {
     fn simple_remove_test() {
         let mut t = MiniPather::new(1);
 
-        t.report_own_neighbors([1,2,3].into_iter());
+        t.report_own_neighbors([1, 2, 3].into_iter());
 
-        t.report_neighbors(2, [1,3].into_iter());
-        t.report_neighbors(3, [1,2,4].into_iter());
+        t.report_neighbors(2, [1, 3].into_iter());
+        t.report_neighbors(3, [1, 2, 4].into_iter());
 
-        assert_eq!(t.who_can_hear(3).collect::<Vec<_>>(), [1,2]);
-        assert_eq!(t.who_can_hear(1).collect::<Vec<_>>(), [1,2,3]);
+        assert_eq!(t.who_can_hear(3).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(t.who_can_hear(1).collect::<Vec<_>>(), [1, 2, 3]);
         t.remove_neighbor(3);
 
-        assert_eq!(t.who_can_hear(3).collect::<Vec<_>>(), [1,2]);
-        assert_eq!(t.who_can_hear(1).collect::<Vec<_>>(), [1,2]);
+        assert_eq!(t.who_can_hear(3).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(t.who_can_hear(1).collect::<Vec<_>>(), [1, 2]);
 
         t.remove_neighbor(1);
         t.remove_neighbor(2);
@@ -284,15 +289,12 @@ mod tests {
     }
 
     fn verify_someone_always_forwards(node_neighbors: Vec<Vec<u16>>) {
-
-        //println!("-----------------------");
-
         let islands = islands(&node_neighbors);
         let mut pathers: Vec<MiniPather> = vec![];
         let mut all_nodes = IndexSet::new();
         let node_count = node_neighbors.len();
-        // TODO: Just iterate over indices
-        for (node, _neighbors) in node_neighbors.iter().enumerate(){
+
+        for node in 0..node_neighbors.len() {
             all_nodes.insert(node as u16);
             let mut pather = MiniPather::new(node as u16);
             for (i, neighbors) in node_neighbors.iter().enumerate() {
@@ -305,8 +307,17 @@ mod tests {
             pathers.push(pather);
         }
 
-        fn get_who_hears(node: u16, neighbors: &[Vec<u16>]) -> impl Iterator<Item=u16> + use<'_> {
-            neighbors.iter().enumerate().filter_map(move |(x_node, x_neighbor)| if x_neighbor.contains(&{ node }) { Some(x_node as u16) } else { None })
+        fn get_who_hears(node: u16, neighbors: &[Vec<u16>]) -> impl Iterator<Item = u16> + use<'_> {
+            neighbors
+                .iter()
+                .enumerate()
+                .filter_map(move |(x_node, x_neighbor)| {
+                    if x_neighbor.contains(&{ node }) {
+                        Some(x_node as u16)
+                    } else {
+                        None
+                    }
+                })
         }
 
         for src in 0..node_count {
@@ -314,10 +325,10 @@ mod tests {
             let mut front = IndexSet::new();
             let mut covered = IndexSet::new();
             let mut nodes_that_have_received_msg = IndexSet::new();
-            front.extend(get_who_hears(src as u16, &node_neighbors).map(|x|(x, src as u16)));
+            front.extend(get_who_hears(src as u16, &node_neighbors).map(|x| (x, src as u16)));
             while let Some((dest, received_from)) = front.pop() {
                 nodes_that_have_received_msg.insert(dest);
-                if !covered.insert((dest,received_from)) {
+                if !covered.insert((dest, received_from)) {
                     continue;
                 }
                 //println!(" == == Analyzing what {} does when it receives {}.{} == ==", dest, src, received_from);
@@ -336,10 +347,8 @@ mod tests {
                     }
                 }
             }
-            
-            // TODO: Just iterate over indices
-            for (node_index, _node) in pathers.iter().enumerate() {
 
+            for node_index in 0..pathers.len() {
                 if node_index == src {
                     // We don't want re-delivery to the src
                     continue;
@@ -368,9 +377,12 @@ mod tests {
                     continue;
                 }
                 let ask = pathers[dst].should_i_ask_for_retransmission(src as u16);
-                println!("{} -> {} Ask: {:?} (islands: {} {})",src,dst,ask, islands[src], islands[dst]);
+                println!(
+                    "{} -> {} Ask: {:?} (islands: {} {})",
+                    src, dst, ask, islands[src], islands[dst]
+                );
                 if islands[src] == islands[dst] {
-                    have_same_island+=1;
+                    have_same_island += 1;
                 }
                 //num_in_same_island += 1;
                 if ask.is_some() {
@@ -386,13 +398,14 @@ mod tests {
                 assert!(some_ask0);
             }
         }
-
     }
     fn neighborhood() -> impl Strategy<Value = Vec<Vec<u16>>> {
         let n = 4_usize;
-        proptest::collection::vec(proptest::collection::vec(any::<u16>().prop_map(move |x|x%(n as u16)), n..n+1),n..n+1)
+        proptest::collection::vec(
+            proptest::collection::vec(any::<u16>().prop_map(move |x| x % (n as u16)), n..n + 1),
+            n..n + 1,
+        )
     }
-
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(2_000))]
@@ -433,46 +446,29 @@ mod tests {
 
     #[test]
     fn regression_verify_someone_always_forwards1() {
-        let input = vec! [vec![0, 2, 0], vec![0, 1, 2], vec![0, 0, 1]];
+        let input = vec![vec![0, 2, 0], vec![0, 1, 2], vec![0, 0, 1]];
         verify_someone_always_forwards(input);
     }
     #[test]
     fn regression_verify_someone_always_forwards2() {
         let input = vec![
-            vec![
-                0,
-                0,
-                0,
-                1,
-            ],
-            vec![
-                0,
-                0,
-                0,
-                0,
-            ],
-            vec![
-                0,
-                0,
-                3,
-                0,
-            ],
-            vec![
-                2,
-                2,
-                2,
-                0,
-            ]
+            vec![0, 0, 0, 1],
+            vec![0, 0, 0, 0],
+            vec![0, 0, 3, 0],
+            vec![2, 2, 2, 0],
         ];
 
         verify_someone_always_forwards(input);
     }
 
     fn islands(node_neighbors: &[Vec<u16>]) -> Vec<u8> {
-
         //println!("Input: {:?}", node_neighbors);
         let mut explored = IndexSet::new();
-        fn explore(explored: &mut IndexSet<u16>, seed: u16, neighbors: &[Vec<u16>]) -> BTreeSet<u16> {
+        fn explore(
+            explored: &mut IndexSet<u16>,
+            seed: u16,
+            neighbors: &[Vec<u16>],
+        ) -> BTreeSet<u16> {
             let mut front = IndexSet::new();
             let mut island = BTreeSet::new();
             front.insert(seed);
@@ -497,7 +493,7 @@ mod tests {
         }
 
         let mut ret = vec![0; node_neighbors.len()];
-        for (i,island_contents) in islands.iter().enumerate() {
+        for (i, island_contents) in islands.iter().enumerate() {
             for island_inhabitant in island_contents {
                 ret[*island_inhabitant as usize] = i.try_into().unwrap();
             }
@@ -505,75 +501,31 @@ mod tests {
         ret
     }
 
-
     #[test]
     fn verify_islands() {
-        assert_eq!(
-            islands(&[
-                vec![0,1],
-                vec![0,1],
-            ]),
-            vec![0,0]);
+        assert_eq!(islands(&[vec![0, 1], vec![0, 1],]), vec![0, 0]);
+
+        assert_eq!(islands(&[vec![0], vec![1],]), vec![0, 1]);
+
+        assert_eq!(islands(&[vec![0, 1], vec![1],]), vec![0, 1]);
 
         assert_eq!(
-            islands(&[
-                vec![0],
-                vec![1],
-            ]),
-            vec![0,1]);
+            islands(&[vec![0, 1], vec![1, 2], vec![1, 2],]),
+            vec![0, 1, 1]
+        );
 
+        assert_eq!(islands(&[vec![], vec![2], vec![1],]), vec![0, 1, 1]);
         assert_eq!(
-            islands(&[
-                vec![0,1],
-                vec![1],
-            ]),
-            vec![0,1]);
-
-
+            islands(&[vec![1], vec![0, 2], vec![1, 3], vec![2, 4], vec![3],]),
+            vec![0, 0, 0, 0, 0]
+        );
         assert_eq!(
-            islands(&[
-                vec![0,1],
-                vec![1,2],
-                vec![1,2],
-            ]),
-            vec![0,1,1]);
-
+            islands(&[vec![1], vec![0, 2], vec![1, 3], vec![2], vec![4],]),
+            vec![0, 0, 0, 0, 1]
+        );
         assert_eq!(
-            islands(&[
-                vec![],
-                vec![2],
-                vec![1],
-            ]),
-            vec![0,1,1]);
-        assert_eq!(
-            islands(&[
-                vec![1],
-                vec![0,2],
-                vec![1,3],
-                vec![2,4],
-                vec![3],
-            ]),
-            vec![0,0,0,0,0]);
-        assert_eq!(
-            islands(&[
-                vec![1],
-                vec![0,2],
-                vec![1,3],
-                vec![2],
-                vec![4],
-            ]),
-            vec![0,0,0,0,1]);
-        assert_eq!(
-            islands(&[
-                vec![],
-                vec![],
-                vec![],
-                vec![],
-                vec![],
-            ]),
-            vec![0,1,2,3,4]);
+            islands(&[vec![], vec![], vec![], vec![], vec![],]),
+            vec![0, 1, 2, 3, 4]
+        );
     }
-
-
 }
-

@@ -1,7 +1,7 @@
-use crate::{MessageId, SavefileMessageSerializer};
 use crate::data_types::NoatunHashMap;
 use crate::database::{DatabaseSettings, OpenMode};
-use crate::{ Database, Message, OpaqueNoatunCell, NoatunTime, Object};
+use crate::{Database, Message, NoatunTime, Object, OpaqueNoatunCell};
+use crate::{MessageId, SavefileMessageSerializer};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
@@ -18,7 +18,6 @@ pub struct MapMessage {
     reset: bool,
     destroy: bool,
 }
-
 
 impl Message for MapMessage {
     type Root = MapDoc;
@@ -45,7 +44,7 @@ fn test_map_local1() {
         OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
-        .unwrap();
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
     db.append_local(MapMessage {
@@ -54,7 +53,7 @@ fn test_map_local1() {
         reset: false,
         destroy: false,
     })
-        .unwrap();
+    .unwrap();
     db.compact().unwrap();
     assert_eq!(db.count_messages(), 1);
     db.append_local(MapMessage {
@@ -63,9 +62,13 @@ fn test_map_local1() {
         reset: true,
         destroy: false,
     })
-        .unwrap();
+    .unwrap();
 
-    assert_eq!(db.count_messages(), 1, "1 remains, since tombstones can't be pruned until cutoff");
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "1 remains, since tombstones can't be pruned until cutoff"
+    );
 }
 
 #[test]
@@ -76,15 +79,16 @@ fn test_map2() {
         OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
-        .unwrap();
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
-    let msg1 = db.append_local(MapMessage {
-        index: 42,
-        val: 43,
-        reset: false,
-        destroy: false,
-    })
+    let msg1 = db
+        .append_local(MapMessage {
+            index: 42,
+            val: 43,
+            reset: false,
+            destroy: false,
+        })
         .unwrap();
     db.mark_transmitted(msg1.id).unwrap();
 
@@ -95,9 +99,13 @@ fn test_map2() {
         reset: true,
         destroy: false,
     })
-        .unwrap();
+    .unwrap();
 
-    assert_eq!(db.count_messages(), 1, "all but the last message are subsumed, because local");
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "all but the last message are subsumed, because local"
+    );
 }
 #[test]
 fn test_map3() {
@@ -109,17 +117,17 @@ fn test_map3() {
             mock_time: Some(NoatunTime::debug_time(0)),
             ..DatabaseSettings::default()
         },
-
     )
-        .unwrap();
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
-    let msg1 = db.append_local(MapMessage {
-        index: 42,
-        val: 43,
-        reset: false,
-        destroy: false,
-    })
+    let msg1 = db
+        .append_local(MapMessage {
+            index: 42,
+            val: 43,
+            reset: false,
+            destroy: false,
+        })
         .unwrap();
     db.mark_transmitted(msg1.id).unwrap();
 
@@ -130,13 +138,16 @@ fn test_map3() {
         reset: true,
         destroy: false,
     })
-        .unwrap();
+    .unwrap();
 
     db.set_mock_time(NoatunTime::debug_time(1440)).unwrap();
     db.maybe_advance_cutoff().unwrap();
 
-    assert_eq!(db.count_messages(), 1, "the reset-message is present in the clear-marker for the map");
-
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "the reset-message is present in the clear-marker for the map"
+    );
 
     db.append_local(MapMessage {
         index: 0,
@@ -144,9 +155,13 @@ fn test_map3() {
         reset: false,
         destroy: true,
     })
-        .unwrap();
+    .unwrap();
 
-    db.set_mock_time(NoatunTime::debug_time(2*1440)).unwrap();
+    db.set_mock_time(NoatunTime::debug_time(2 * 1440)).unwrap();
     db.maybe_advance_cutoff().unwrap();
-    assert_eq!(db.count_messages(), 0, "Destroying the map should erase the clear-marker too");
+    assert_eq!(
+        db.count_messages(),
+        0,
+        "Destroying the map should erase the clear-marker too"
+    );
 }

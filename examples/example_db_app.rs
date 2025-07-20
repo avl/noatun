@@ -1,7 +1,7 @@
 use anyhow::Result;
 use noatun::data_types::{NoatunString, NoatunVec};
 use noatun::database::{DatabaseSettings, OpenMode};
-use noatun::{noatun_object, Database, Message, MessageId,  Object, SavefileMessageSerializer};
+use noatun::{noatun_object, Database, Message, MessageId, Object, SavefileMessageSerializer};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
@@ -41,12 +41,15 @@ impl Message for ExampleMessage {
             salary: self.salary,
         });
     }
-
 }
 
 fn main() -> Result<()> {
-    let mut db: Database<ExampleMessage> =
-        Database::create_new("test/example1.bin", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
+    let mut db: Database<ExampleMessage> = Database::create_new(
+        "test/example1.bin",
+        OpenMode::Overwrite,
+        DatabaseSettings::default(),
+    )
+    .unwrap();
 
     let mut s = db.begin_session_mut()?;
     s.append_local(ExampleMessage {

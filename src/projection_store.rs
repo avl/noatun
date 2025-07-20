@@ -52,10 +52,6 @@ mod registrar_info {
             self.uses & 0x4000_0000 != 0
         }
         pub fn wrote_tombstones(&self) -> bool {
-            /*println!("Retrieve registrar tombstone-user: {:x} @  {:?} = {}",
-                     self.uses, &self.uses as *const u32,
-                     self.uses & 0x2000_0000 != 0
-            );*/
             self.uses & 0x2000_0000 != 0
         }
         pub fn get_use(&self) -> u32 {
@@ -74,9 +70,6 @@ mod registrar_info {
                 return;
             }
             raw_uses |= 0x2000_0000;
-            /*println!("Mark registrar as tombstone-user: {:x} @  {:?}",
-                raw_uses, &self.uses as *const u32
-            );*/
             context.write_storable(raw_uses, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
         pub fn decrease_use(
@@ -555,7 +548,7 @@ impl DatabaseContextData {
     fn raw_set_next_seqnr_of(main_db_mmap: &FileAccessor, new_value: SequenceNr) {
         let header: &mut MainDbHeader =
             unsafe { &mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
-        //println!("Rewind to #{}", new_value);
+
         header.next_seqnr = new_value;
     }
 
@@ -748,7 +741,7 @@ impl DatabaseContextData {
         }
 
         info!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
-        //println!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
+
         let result = self.undo_log.rewind(|entry| match entry {
             UndoLogEntry::SetPointer(new_pointer) => {
                 let cur = Self::pointer_of(&self.main_db_mmap);
@@ -1102,10 +1095,6 @@ impl DatabaseContextData {
         };
         let ret = unsafe { transmute_copy(&raw) };
 
-        println!("Raw: {ptr:#?}: {raw:#?}");
-        println!("size-of: {}", size_of_val(ret));
-        println!("T: {}", std::any::type_name::<T>());
-
         // Note: If the below fails, there has already been UB (because we'd already have produced
         // a reference that overlaps invalid memory. However, this check can be best-effort,
         // since this method is unsafe, and it is up to the caller to ensure validity.
@@ -1228,12 +1217,7 @@ impl DatabaseContextData {
             return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
         }
         if registrar_point.is_valid() {
-            self.rt_decrease_use(
-                *registrar_point,
-                current_registrar,
-                self.tainted,
-                !opaque
-            );
+            self.rt_decrease_use(*registrar_point, current_registrar, self.tainted, !opaque);
         }
         if current_registrar.is_invalid() {
             // We're in the 'initialize root' method
@@ -1262,7 +1246,7 @@ impl DatabaseContextData {
                 registrar_point_value,
                 current_registrar,
                 actor_tainted,
-                actor_wrote_non_opaque
+                actor_wrote_non_opaque,
             );
         }
         if current_registrar.is_invalid() {
@@ -1277,21 +1261,11 @@ impl DatabaseContextData {
         self.write_storable_ptr(current_registrar, registrar_point)
     }
     pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
-        self.update_registrar_ptr_impl(
-            registrar_point,
-            self.next_seqnr(),
-            self.tainted,
-            !opaque,
-        );
+        self.update_registrar_ptr_impl(registrar_point, self.next_seqnr(), self.tainted, !opaque);
     }
     pub fn clear_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
         self.wrote_tombstone = true;
-        self.update_registrar_ptr_impl(
-            registrar_point,
-            SequenceNr::INVALID,
-            self.tainted,
-            !opaque,
-        );
+        self.update_registrar_ptr_impl(registrar_point, SequenceNr::INVALID, self.tainted, !opaque);
     }
 
     // Signify that the current message has observed data previously written
@@ -1338,7 +1312,7 @@ impl DatabaseContextData {
         let mut track = unsafe { uses.get_mut(self, message_seqnr.index()) };
 
         if self.wrote_tombstone {
-            // TODO: We probably only need to do this write if get_use() != 0 below.
+            // TODO(future): We probably only need to do this write if get_use() != 0 below.
             // In other cases, I believe nothing ever reads this `uses` slot.
             unsafe {
                 track.as_mut().get_unchecked_mut().set_wrote_tombstone(self);
@@ -1386,7 +1360,7 @@ impl DatabaseContextData {
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
         mut unused_messages: Vec<UnusedInfo>,
-        // TODO: It may seem this should be determined by looking at id:s, not by boolean.
+        // TODO(future): It may seem this should be determined by looking at id:s, not by boolean.
         // However, any such refactor should probably be aware of the fact that the `before_cutoff`
         // currently depends on HOW we ended up here. It is true when called from within the
         // advance_cutoff mechanism.
@@ -1410,9 +1384,8 @@ impl DatabaseContextData {
             );
         }
         'outer: while let Some(msg) = unused_messages.pop() {
-            //TODO: Don't do this read here? It's only used for logging, which seems inefficient
-            let msgobj = messages.read_message_header_and_children_by_index(msg.seq);
-            debug!("considering {:?} = {:?} for deletion", msgobj, msg);
+            //let msgobj = messages.read_message_header_and_children_by_index(msg.seq);
+            debug!("considering {:?} = {:?} for deletion", msg.seq, msg);
             debug!(
                 "unconditionally overwritten: {:?}",
                 msg.can_be_deleted_early
@@ -1432,7 +1405,7 @@ impl DatabaseContextData {
                         // 'observer' - i.e a later message that has not been deleted.
                         debug!(
                             "can't delete {:?}/{:?} because of observer {:?}",
-                            msgobj.map(|x2| x2.map(|x| x.0.id)),
+                            msg.seq, //msgobj.map(|x2| x2.map(|x| x.0.id)),
                             msg,
                             observer
                         );
@@ -1454,7 +1427,9 @@ impl DatabaseContextData {
                     }
                 }
             } else {
-                debug!("can't delete {:?}{:?} yet because it's been transmitted and is after cutoff: {:?} and not unconditionally overwritten", msgobj.map(|x2|x2.map(|x|x.0.id)), msg, before_cutoff);
+                debug!("can't delete {:?}{:?} yet because it's been transmitted and is after cutoff: {:?} and not unconditionally overwritten", 
+                    msg.seq, //msgobj.map(|x2|x2.map(|x|x.0.id)), 
+                    msg, before_cutoff);
                 new_unused_list.push(msg);
                 continue 'outer;
             }
@@ -1484,7 +1459,6 @@ impl DatabaseContextData {
         let unused_list = unsafe { self.get_unused_list() };
 
         for new_unused in new_unused_list.iter().rev() {
-            //println!("Pushing unused: {:?}", new_unused);
             unused_list.push_untracked(self, *new_unused);
         }
 
@@ -1526,7 +1500,7 @@ impl DatabaseContextData {
         registrar: SequenceNr,
         overwriter: SequenceNr,
         overwriter_tainted: bool,
-        wrote_non_opaque: bool
+        wrote_non_opaque: bool,
     ) {
         let uses = unsafe { self.get_uses() };
         let mut cur = unsafe { uses.get_mut(self, registrar.index()) };

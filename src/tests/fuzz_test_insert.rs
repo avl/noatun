@@ -1,9 +1,9 @@
-use crate::{MessageId, SavefileMessageSerializer};
 use crate::cutoff::CutOffDuration;
 use crate::data_types::*;
 use crate::database::DatabaseSettings;
 use crate::sequence_nr::SequenceNr;
 use crate::{Database, Message, NoatunTime};
+use crate::{MessageId, SavefileMessageSerializer};
 use crate::{NoatunStorable, Object};
 use datetime_literal::datetime;
 use rand::prelude::SliceRandom;
@@ -65,10 +65,7 @@ impl Message for TestMessage {
         });
         root.as_mut().set_now(time.timestamp());
     }
-
-
 }
-
 
 #[test]
 fn test() {
@@ -83,7 +80,7 @@ fn test() {
             DatabaseSettings {
                 mock_time: Some(fake_time),
                 projection_time_limit: Some(limit_time),
-                cutoff_interval:         CutOffDuration::from_hours(1).unwrap(), // 2 days
+                cutoff_interval: CutOffDuration::from_hours(1).unwrap(), // 2 days
                 ..Default::default()
             },
         )

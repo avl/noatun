@@ -4,13 +4,14 @@
 use crate::colors::*;
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
-use crate::{test_elapsed, Database, Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunTime};
+use crate::mini_pather::MiniPather;
+use crate::{Database, Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunTime};
 use anyhow::Result;
 use arcshift::ArcShift;
 use arrayvec::ArrayString;
 use indexmap::map::Entry;
 use indexmap::{IndexMap, IndexSet};
-use rand::{random};
+use rand::random;
 use savefile_derive::Savefile;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
@@ -19,7 +20,6 @@ use std::io::Cursor;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
-use crate::mini_pather::MiniPather;
 
 #[derive(Debug)]
 pub(crate) struct MessageSourceInfo {
@@ -82,9 +82,6 @@ impl RecentMessages {
     }
 }
 
-
-
-
 // TODO(future): Consider the responsibilities of 'communciation.rs' and 'distributor.rs'
 // And the latter should perhaps be split into submodules.
 
@@ -100,15 +97,14 @@ enum UpToSpeedStatus {
     /// We are up-to-date with respect to this node.
     ///
     /// That is, we know everything it knows.
-    UpToSpeed
+    UpToSpeed,
 }
 
 impl UpToSpeedStatus {
     pub(crate) fn is_up_to_speed(&self) -> bool {
         match self {
-            UpToSpeedStatus::Uninitialized |
-            UpToSpeedStatus::HeadsNeeded(_) => {false}
-            UpToSpeedStatus::UpToSpeed => {true}
+            UpToSpeedStatus::Uninitialized | UpToSpeedStatus::HeadsNeeded(_) => false,
+            UpToSpeedStatus::UpToSpeed => true,
         }
     }
 }
@@ -123,7 +119,6 @@ pub struct PeerInfo {
     up_to_speed: UpToSpeedStatus,
 
     pub(crate) last_seen: Instant,
-
 }
 impl PeerInfo {
     pub fn new(peer: EphemeralNodeId, now: Instant) -> PeerInfo {
@@ -133,9 +128,7 @@ impl PeerInfo {
             last_seen: now,
         }
     }
-
 }
-
 
 impl Neighborhood {
     pub fn gc_if_necessary(
@@ -158,23 +151,20 @@ impl Neighborhood {
         if now.saturating_duration_since(self.last_gc) > periodic_message {
             self.last_gc = now;
 
-            self.inhibited_request_upstream.retain(|_k,v|{
-                now.saturating_duration_since(v.0) < 32*periodic_message
-            });
+            self.inhibited_request_upstream
+                .retain(|_k, v| now.saturating_duration_since(v.0) < 32 * periodic_message);
 
             let mut removed = vec![];
-            self.peers
-                .retain(|k, v| {
-                    let retained = now.saturating_duration_since(v.last_seen) < 3 * periodic_message;
-                    if !retained {
-                        removed.push(*k);
-                    }
-                    retained
-                });
+            self.peers.retain(|k, v| {
+                let retained = now.saturating_duration_since(v.last_seen) < 3 * periodic_message;
+                if !retained {
+                    removed.push(*k);
+                }
+                retained
+            });
             let mut pather = self.fast_pather.write().unwrap();
             for item in removed {
                 pather.remove_neighbor(item.raw_u16());
-
             }
         }
     }
@@ -211,76 +201,8 @@ pub(crate) struct QuarantinedMessage {
     first_need: Instant,
 }
 
-/// Inhibit mechanism based on node numbers. The idea is that within any neighborhood,
-/// lower node numbers are "designated responders". When anyone is missing a piece of
-/// information, the lowest numbered nodes, and only the lowest numbered nodes, answer. This
-/// alleviates the problem of everyone trying to fill-in the missing information of
-/// a node requesting info.
-///
-/// There are two main requests whose responses we apply the inhibit mechanism to:
-/// * ReportHeads - Inhibit applied to RequestUpstream-responses
-/// * SendMessageAndAllDescendants - Inhibit applied to Message-type
-#[derive(Default, Debug)]
-pub(crate) struct NodeNumberBasedInhibit {
-    /// True if we inhibited a response to this node in the last cycle (since last ReportHeads from peer)
-    ///
-    /// I.e, we didn't send something when we otherwise would have (were it not for this
-    /// inhibit-mechanism).
-    was_inhibited: bool,
-    /// Incremented whenever we receive a ReportHeads, while 'was_inhibited' is true.
-    ///
-    /// I.e, this value increases every time we've inhibited messages, until it's cleared.
-    ///
-    /// The larger this value gets, the less likely the algorithm is to inhibit anything.
-    /// Whenever we decide to _not_ inhibit, we set this to 0.
-    ///
-    /// The consequence is that we're initially likely to inhibit transmission,
-    /// but after some time this value increases too much and we don't inhibit.
-    inhibit_with_no_one_else_taking_up_the_slack_count: usize,
-}
-
-
-impl NodeNumberBasedInhibit {
-    /// This is called when we receive a ReportHeads from this peer
-    pub(crate) fn time_passed(&mut self, constant: usize) {
-        if self.was_inhibited {
-            self.inhibit_with_no_one_else_taking_up_the_slack_count += constant;
-            println!(
-                "Time passed: {} -> {} (p: {:x?})",
-                self.inhibit_with_no_one_else_taking_up_the_slack_count - constant,
-                self.inhibit_with_no_one_else_taking_up_the_slack_count,
-                self as *const _
-            );
-        }
-    }
-    //TODO(future): Remove the separate tracking of neighbors for `NodeNumberBasedInhibit`,
-    //and use the MiniPather instead. We probably only need something like a counter to
-    //keep track of how much patience we should have
-    pub fn is_inhibited(
-        &mut self,
-        other_node: EphemeralNodeId,
-        fast_pather: &mut MiniPather,
-    ) -> bool {
-
-        if let Some(ordinal) = fast_pather.should_i_ask_for_retransmission(other_node.raw_u16()) {
-            if ordinal > self.inhibit_with_no_one_else_taking_up_the_slack_count {
-                // Higher 'ordinal' means we should transmit less.
-                return true;
-            }
-        } else {
-            return true;
-        }
-
-
-        self.inhibit_with_no_one_else_taking_up_the_slack_count = 0;
-        self.was_inhibited = false;
-
-        false
-    }
-}
-
 /// Data structure to detect duplicate requests.
-/// 
+///
 /// If multiple parts of the algorithm decide to do the same request,
 /// we wish to merge these and not emit two identical requests on the net.
 #[derive(Debug)]
@@ -362,7 +284,7 @@ impl Neighborhood {
         request_from: EphemeralNodeId,
         message_ids: &[MessageId],
         now: Instant,
-        periodic_interval: Duration
+        periodic_interval: Duration,
     ) -> bool {
         let mut fast_pather_guard = self.fast_pather.write().unwrap();
         let fast_pather = &mut *fast_pather_guard;
@@ -372,8 +294,10 @@ impl Neighborhood {
             for msg in message_ids {
                 match self.inhibited_request_upstream.entry(*msg) {
                     Entry::Occupied(o) => {
-                        let periods = ((now.duration_since(o.get().0).as_millis() as u64) / (periodic_interval.as_millis().max(1) as u64)) as usize;
-                        if periods > ordinal  {
+                        let periods = ((now.duration_since(o.get().0).as_millis() as u64)
+                            / (periodic_interval.as_millis().max(1) as u64))
+                            as usize;
+                        if periods > ordinal {
                             inhibit = false;
                             o.swap_remove();
                         }
@@ -388,17 +312,14 @@ impl Neighborhood {
                 }
             }
             inhibit
-           // inhibit
+            // inhibit
         } else {
             // They can't hear us.
             true
         }
     }
 
-    pub fn record_message(
-        &mut self,
-        message: &DistributorMessage,
-    ) {
+    pub fn record_message(&mut self, message: &DistributorMessage) {
         match message {
             DistributorMessage::ReportHeads { heads, source, .. } => {
                 for head in heads {
@@ -409,8 +330,11 @@ impl Neighborhood {
             DistributorMessage::SyncAllQuery(_) => {}
             DistributorMessage::SyncAllRequest(_) => {}
             DistributorMessage::SyncAllAck(_) => {}
-            DistributorMessage::RequestUpstream { source:_, query:_, .. } => {
-            }
+            DistributorMessage::RequestUpstream {
+                source: _,
+                query: _,
+                ..
+            } => {}
             DistributorMessage::UpstreamResponse {
                 source, messages, ..
             } => {
@@ -425,7 +349,8 @@ impl Neighborhood {
                 message: msg,
                 ..
             } => {
-                self.inhibited_request_upstream.swap_remove(&msg.message_id());
+                self.inhibited_request_upstream
+                    .swap_remove(&msg.message_id());
 
                 self.recent_messages_source
                     .record_message_source(msg.message_id(), *source, true);
@@ -434,13 +359,11 @@ impl Neighborhood {
     }
 }
 
-
 #[derive(Debug)]
 struct OriginForwardingData {
     forwarder: EphemeralNodeId,
     last_heard: Instant,
 }
-
 
 const MAX_RECENT_SENT_KEPT: usize = 1000;
 //TODO(future): Consider merging this with NeighborHood?
@@ -454,13 +377,12 @@ pub struct QueryableOutbuffer {
 
     recently_sent_message_ids: DuplicationChecker<MessageId>,
     gc_timer: Instant,
-    parentless_messages:
-        IndexMap</*missing parent*/ MessageId, Vec<AccumulatedMessage>>,
+    parentless_messages: IndexMap</*missing parent*/ MessageId, Vec<AccumulatedMessage>>,
 }
 
 impl QueryableOutbuffer {
     pub(crate) fn gc_if_necessary(&mut self, now: Instant) {
-        if now.duration_since(self.gc_timer) > 2*self.periodic_message_interval {
+        if now.duration_since(self.gc_timer) > 2 * self.periodic_message_interval {
             self.gc_timer = now;
             let mut ok = 0;
             let mut size_so_far = 0;
@@ -544,13 +466,14 @@ impl QueryableOutbuffer {
         now: Instant,
         uninhibitable: bool,
     ) {
-        //println!("We: {self_node}, request upstream inhibit check. Messages to request: {messages_to_request:?}");
-        if !uninhibitable && neighbors.is_request_upstream_inhibited(
-            request_from,
-            messages_to_request,
-            now,
-            self.periodic_message_interval
-        ) {
+        if !uninhibitable
+            && neighbors.is_request_upstream_inhibited(
+                request_from,
+                messages_to_request,
+                now,
+                self.periodic_message_interval,
+            )
+        {
             return;
         }
 
@@ -561,20 +484,8 @@ impl QueryableOutbuffer {
                     .request_upstream_message_inhibit
                     .is_duplicate(*msg, now);
                 if is_dup {
-                    /*println!(
-                        "{:?} at {:?}: But {:?} was a duplicate, so not sent",
-                        test_elapsed(),
-                        self_node,
-                        msg
-                    );*/
                     None
                 } else {
-                    /*println!(
-                        "{:?} at {:?}: But {:?} was NOT a duplicate, so sent",
-                        test_elapsed(),
-                        self_node,
-                        msg
-                    );*/
                     Some((*msg, 4))
                 }
             })
@@ -743,7 +654,6 @@ impl EphemeralNodeId {
 //extra ReportHeads, after which the newly joined nodes sends one of its own. Thus we
 //get rid of the 1-periodic msg delay of waiting for ReportHeads-messages
 
-
 #[derive(Debug, Savefile, Clone)]
 pub struct Head {
     pub msg: MessageId,
@@ -760,7 +670,7 @@ pub enum DistributorMessage {
         neighbors: Vec<EphemeralNodeId>,
     },
     /// A query to tell if the listed messages are known.
-    /// 
+    ///
     /// If they are not, they should be requested by SyncAllRequest.
     /// I.e, if the node receiving a SyncAllRequest doesn't have any of the messages
     /// listed, they should be requested using SyncAllRequest.
@@ -969,12 +879,9 @@ pub enum Status {
 
 pub fn truncate_to_arraystring(name: &str) -> Address {
     if name.len() <= Address::MAX_LENGTH {
-        println!("Name len: {}", name.len());
         return Address::from(name);
     }
-    println!("Length: {}", name.len());
     for i in (1..=Address::MAX_LENGTH).rev() {
-        println!("IS char boundary at {}: {}", i, name.is_char_boundary(i));
         if name.is_char_boundary(i) {
             return Address::from(name.split_at(i).0);
         }
@@ -1017,11 +924,12 @@ impl Distributor {
             sync_all_inprogress: SyncAllState::NotActive,
             distributor_state: DistributorStatus::default(),
             periodic_message_interval,
-            neighborhood: Neighborhood::new(now, mini_pather
-                .unwrap_or(Arc::new(RwLock::new(MiniPather::new(node))))),
+            neighborhood: Neighborhood::new(
+                now,
+                mini_pather.unwrap_or(Arc::new(RwLock::new(MiniPather::new(node)))),
+            ),
             ephemeral_node_id: initial_node_id,
             outbuf: QueryableOutbuffer::new(periodic_message_interval, now),
-
         }
     }
 
@@ -1055,14 +963,16 @@ impl Distributor {
     }
 
     /// Call this to retrieve a message that should be sent periodically
-    pub fn get_periodic_message<MSG: Message+'static>(
+    pub fn get_periodic_message<MSG: Message + 'static>(
         &mut self,
         database: &DatabaseSession<MSG>,
-        now: Instant
+        now: Instant,
     ) -> Result<Vec<DistributorMessage>> {
-
-        self.neighborhood
-            .gc_if_necessary(*self.ephemeral_node_id.get(), self.periodic_message_interval, now);
+        self.neighborhood.gc_if_necessary(
+            *self.ephemeral_node_id.get(),
+            self.periodic_message_interval,
+            now,
+        );
 
         self.outbuf.gc_if_necessary(now);
 
@@ -1171,16 +1081,14 @@ impl Distributor {
 
         let our_node_id = *self.ephemeral_node_id.get();
         let mut collision = false;
-        let mut check_node_id_collision = |observed:EphemeralNodeId|{
+        let mut check_node_id_collision = |observed: EphemeralNodeId| {
             if observed == our_node_id {
                 collision = true;
             }
         };
 
         for (src, item) in input {
-            self.neighborhood.record_message(
-                &item,
-            );
+            self.neighborhood.record_message(&item);
 
             self.distributor_state.have_heard_peer = true;
             match item {
@@ -1204,17 +1112,25 @@ impl Distributor {
                                 // If the neighbor has no neighbors of its own, it's just starting up.
                                 // Let's wait a bit before acting on its messages
 
-                                self.neighborhood.fast_pather.write().unwrap().report_neighbors(source.raw_u16(), neighbors.iter().map(|x|x.raw_u16()));
+                                self.neighborhood
+                                    .fast_pather
+                                    .write()
+                                    .unwrap()
+                                    .report_neighbors(
+                                        source.raw_u16(),
+                                        neighbors.iter().map(|x| x.raw_u16()),
+                                    );
 
                                 let peer = self.neighborhood.get_insert_peer(source, now);
 
-
                                 match &mut peer.up_to_speed {
                                     UpToSpeedStatus::Uninitialized => {
-                                        peer.up_to_speed = UpToSpeedStatus::HeadsNeeded(heads.iter().map(|x|x.msg).collect());
+                                        peer.up_to_speed = UpToSpeedStatus::HeadsNeeded(
+                                            heads.iter().map(|x| x.msg).collect(),
+                                        );
                                     }
                                     UpToSpeedStatus::HeadsNeeded(needed) => {
-                                        needed.retain(|x|{
+                                        needed.retain(|x| {
                                             !database.contains_message(*x).unwrap_or(false)
                                         });
                                         if needed.is_empty() {
@@ -1238,14 +1154,19 @@ impl Distributor {
                                 debug!("Acceptability: Nominal");
                                 self.distributor_state.most_recent_unsynced.remove(&src);
                                 self.distributor_state.most_recent_clockdrift.remove(&src);
-                                self.neighborhood.fast_pather.write().unwrap().report_own_neighbors(self.neighborhood.peers.keys().map(|x|x.raw_u16()));
+                                self.neighborhood
+                                    .fast_pather
+                                    .write()
+                                    .unwrap()
+                                    .report_own_neighbors(
+                                        self.neighborhood.peers.keys().map(|x| x.raw_u16()),
+                                    );
 
                                 debug_assert!(neighbors.is_sorted());
                                 break;
                             }
                             Acceptability::Unacceptable => {
                                 debug!("Acceptability: Unacceptable");
-                                println!("{:?} Acceptability: Unacceptable (node {})", test_elapsed(), self.ephemeral_node_id.get());
                                 self.distributor_state
                                     .most_recent_unsynced
                                     .insert(src, database.noatun_now());
@@ -1292,11 +1213,6 @@ impl Distributor {
                     for (msg, count) in query {
                         // TODO(future): Consider if this is fast enough to do unbatched here? (and is batching really faster?)
                         if !database.contains_message(msg)? {
-                            println!(
-                                "Database {} doesn't contain {:?}",
-                                self.ephemeral_node_id.get(),
-                                msg
-                            );
                             continue;
                         }
                         trace!("Considering {:?} query: {:?}", source, msg);
@@ -1523,16 +1439,27 @@ impl Distributor {
                 continue;
             }
 
-            let (min_src, _origin) =
-                if srcs.len() == 1 {srcs[0]} else {
-                    srcs.iter().min_by_key(|(src,_)|
-                        {
-                            let score = self.neighborhood.get_peer(*src)
-                                .map(|x|if x.up_to_speed.is_up_to_speed() {0u8} else {1}).unwrap_or(2);
-                            (score, src)
-                        }
-                    ).copied().unwrap()
-                };
+            let (min_src, _origin) = if srcs.len() == 1 {
+                srcs[0]
+            } else {
+                srcs.iter()
+                    .min_by_key(|(src, _)| {
+                        let score = self
+                            .neighborhood
+                            .get_peer(*src)
+                            .map(|x| {
+                                if x.up_to_speed.is_up_to_speed() {
+                                    0u8
+                                } else {
+                                    1
+                                }
+                            })
+                            .unwrap_or(2);
+                        (score, src)
+                    })
+                    .copied()
+                    .unwrap()
+            };
 
             messages_to_request_from_source
                 .entry(min_src)
@@ -1546,7 +1473,7 @@ impl Distributor {
                 src,
                 &mut self.neighborhood,
                 now,
-                false
+                false,
             );
             self.distributor_state.nominal = false;
         }
@@ -1567,7 +1494,7 @@ impl Distributor {
             let messages: Vec<MessageSubGraphNode> = database
                 .get_upstream_of(heads.into_iter())?
                 // Is the following filter correct?
-                .filter(|x|self.outbuf.upstream_response_blocked(x.0.id, now) == false)
+                .filter(|x| self.outbuf.upstream_response_blocked(x.0.id, now) == false)
                 .map(|(msg, query_count)| MessageSubGraphNode {
                     id: msg.id,
                     parents: msg.parents,
@@ -1612,23 +1539,28 @@ impl Distributor {
 
             let mut err = Ok(());
 
-            let missing_parents = msg_value.parents.iter().copied().filter(|x| {
-                let have_parent = database
-                    .contains_message(*x)
-                    .map_err(|e| {
-                        eprintln!("Error: {e:?}");
-                        err = Err(e);
-                    })
-                    .is_ok_and(|x| x);
-                !have_parent
-            }).collect::<Vec<_>>();
+            let missing_parents = msg_value
+                .parents
+                .iter()
+                .copied()
+                .filter(|x| {
+                    let have_parent = database
+                        .contains_message(*x)
+                        .map_err(|e| {
+                            eprintln!("Error: {e:?}");
+                            err = Err(e);
+                        })
+                        .is_ok_and(|x| x);
+                    !have_parent
+                })
+                .collect::<Vec<_>>();
             debug_assert!(err.is_ok());
             err?;
 
             /*let all_parents_are_also_in_request = msg_value
-                .parents
-                .iter()
-                .all(|x| upstream_response.contains_key(x));*/
+            .parents
+            .iter()
+            .all(|x| upstream_response.contains_key(x));*/
 
             if missing_parents.is_empty() {
                 // We have all the parents, a perfect msg to request!
@@ -1636,26 +1568,16 @@ impl Distributor {
                     "Requesting msg.id={:?}, because we have all its parents: {:?}",
                     msg_id, msg_value.parents
                 );
-                if self.ephemeral_node_id.get().0 == 0 {
-                    println!("process_upstream_response - adding cmd");
-                }
 
-                /*if neighborhood.is_inhibited(*msg_source, self.ephemeral_node_id, |info|&mut info.send_msg_and_descendants_based_on_node_numbers) {
-                    continue;
-                }*/
                 send_cmds.insert(*msg_id, msg_source);
                 continue;
             }
-
-
-
 
             unknowns.entry(*msg_source).or_default().extend(
                 missing_parents
                     .iter()
                     .map(|x| (*x, (2 * msg_value.query_count).min(256))),
             );
-
         }
         if send_cmds.is_empty() == false {
             let mut msg_by_source = IndexMap::<_, Vec<_>>::new();
@@ -1673,7 +1595,6 @@ impl Distributor {
         }
         if unknowns.is_empty() == false {
             for (src_node, unknowns) in unknowns {
-
                 let unknowns = unknowns.into_iter().map(|x| x.0).collect::<Vec<_>>();
                 self.outbuf.request_upstream(
                     &unknowns,
@@ -1681,7 +1602,7 @@ impl Distributor {
                     src_node,
                     &mut self.neighborhood,
                     now,
-                    true
+                    true,
                 );
             }
         }
@@ -1700,7 +1621,6 @@ impl Distributor {
                 Ok(msg) => msg,
                 Err(err) => {
                     tracing::warn!("could not find requested message {:?}: {:?}", msg, err);
-                    println!("{} doesn't have message!", self.ephemeral_node_id.get());
                     continue;
                 }
             };
@@ -1738,7 +1658,6 @@ impl Distributor {
                         actual_children.push(child_msg.id());
                     }
                 }
-                //println!("Actual: {:?}", actual_children);
                 actual_children.sort();
                 children.sort();
                 assert_eq!(actual_children, children);
@@ -1769,25 +1688,23 @@ impl Distributor {
             explicit_retransmit,
         } in message_list.into_iter()
         {
-            println!("{:?} process receiving {:?}", test_elapsed(), msg.id);
             for parent in msg.parents.iter() {
                 if database.contains_message(*parent)? == false
                     && !chosen_messages.contains_key(parent)
                 // message_list is sorted by id (i.e, also by time), so parent should be found here
                 {
-                    println!(
+                    /*println!(
                         "{:?} {:?} MISSING PARENT {:?} of {:?}",
                         test_elapsed(),
                         *self.ephemeral_node_id.shared_get(),
                         parent,
                         msg.id
-                    );
+                    );*/
 
                     warn!(
                         "Could not apply message {:?} because parent {:?} is not known",
                         msg.id, parent
                     );
-
 
                     let parent = *parent;
 
@@ -1800,7 +1717,7 @@ impl Distributor {
                     };
                     match self.outbuf.parentless_messages.entry(parent) {
                         Entry::Occupied(mut e) => {
-                            if !e.get().iter().any(|x|x.msg.id==accum.msg.id) {
+                            if !e.get().iter().any(|x| x.msg.id == accum.msg.id) {
                                 e.get_mut().push(accum);
                             }
                         }
@@ -1814,24 +1731,21 @@ impl Distributor {
 
             let already_present = database.contains_message(msg.id)?;
             if !already_present {
-                //if let Some(peer) = self.neighborhood.peers.get_peer_mut(source) {
-                
-                    //if !peer.forwardings.is_empty() {
-                    if self.neighborhood.fast_pather.write().unwrap().should_i_forward(origin.raw_u16(), source.raw_u16()) {
-                        //println!("#{}: Forwarding message from {:?}.{:?}", self.ephemeral_node_id.get(), origin, source);
-                        self.outbuf.push_back(DistributorMessage::Message {
-                            source: *self.ephemeral_node_id.get(),
-                            message: msg.clone(),
-                            demand_ack: false,
-                            origin,
-                            explicit_retransmit,
-                        });
-                    } else {
-                        //println!("#{}: NOT Forwarding message from {:?}.{:?}", self.ephemeral_node_id.get(), origin, source);
-                    }
-                //}
-            } else {
-                println!("{:?} IGnoring message because we already have it {:?}", test_elapsed(), msg.id);
+                if self
+                    .neighborhood
+                    .fast_pather
+                    .write()
+                    .unwrap()
+                    .should_i_forward(origin.raw_u16(), source.raw_u16())
+                {
+                    self.outbuf.push_back(DistributorMessage::Message {
+                        source: *self.ephemeral_node_id.get(),
+                        message: msg.clone(),
+                        demand_ack: false,
+                        origin,
+                        explicit_retransmit,
+                    });
+                }
             }
 
             if let Some(released) = self.outbuf.parentless_messages.swap_remove(&msg.id) {

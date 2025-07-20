@@ -3,7 +3,6 @@ use anyhow::{anyhow, bail, Result};
 use savefile_derive::Savefile;
 use std::fmt::{Debug, Display, Formatter};
 
-
 pub(crate) struct CutOffConfig {
     /// The approximate time in history at which all nodes must have been in sync.
     /// I.e, all nodes are expected to eventually sync up. I.e, all nodes are expected
@@ -26,7 +25,7 @@ impl CutOffConfig {
             bail!("CutOffConfig::new called with an invalid value '{:?}'. Minimum cutoff time is 4 minutes.", age);
         }
         let stride = CutOffDuration((age.0 / 10).max(1));
-        //println!("Stride: {:?}", stride);
+
         Ok(Self { age, stride })
     }
     pub fn nominal_cutoff(&self, time_now: CutOffTime) -> CutOffTime {
@@ -83,7 +82,7 @@ pub struct CutOffInterval(u32);
 impl CutOffInterval {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct CutOffDuration(/*minutes*/u32);
+pub struct CutOffDuration(/*minutes*/ u32);
 
 impl Debug for CutOffDuration {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -119,7 +118,6 @@ impl Display for CutOffTime {
         write!(f, "{}", self.to_noatun_time())
     }
 }
-
 
 unsafe impl NoatunStorable for CutOffTime {}
 
@@ -258,12 +256,7 @@ impl CutOffHashPos {
         let t = message_id.timestamp();
 
         if t < self.before_time.to_noatun_time() {
-            //let prev = self.hash;
             self.hash.xor_with_msg(message_id);
-            //println!("Xoring out message {:?} ({}), giving hash: {:?} (prev: {:?})", message_id, op, self.hash, prev);
-        } else {
-            //println!("Op at {:?} was not before cutoff-period {:?} ({})", t, self.before_time, op);
         }
-        //println!(" == {} {:?} Resulting hash: {:?}", op, message_id, self);
     }
 }

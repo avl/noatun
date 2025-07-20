@@ -4,8 +4,8 @@ use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
 use crate::{
-    catch_and_log, ContextGuardMut, DatabaseContextData, Message, MessageFrame,
-    MessageHeader, MessageId, NoatunContext, NoatunTime, Persistence, Target,
+    catch_and_log, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader,
+    MessageId, NoatunContext, NoatunTime, Persistence, Target,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -18,7 +18,7 @@ pub(crate) struct Projector<MSG: Message> {
     cut_off_config: CutOffConfig,
 }
 
-impl<MSG: Message+'static> Projector<MSG> {
+impl<MSG: Message + 'static> Projector<MSG> {
     pub(crate) fn disable_filesystem_sync(&mut self) {
         self.messages.disable_filesystem_sync()
     }
@@ -32,7 +32,6 @@ impl<MSG: Message+'static> Projector<MSG> {
         new_cutoff_at: CutOffTime,
         context: &mut DatabaseContextData,
     ) -> Result<()> {
-
         let mut prev_cutoff_state = self.messages.prev_cutoff_hash()?;
         let mut cutoff_state = self.messages.current_cutoff_hash()?;
 
@@ -44,34 +43,29 @@ impl<MSG: Message+'static> Projector<MSG> {
             .messages
             .get_index_after(cutoff_state.before_time.to_noatun_time())?;
 
-
         let cutoff_index = self
             .messages
             .get_index_after(new_cutoff_at.to_noatun_time())?;
 
-        //println!("Advancing cutoff from {:?} to {:?}, index = {}, comp : {}", cutoff_state.before_time, new_cutoff_at, cutoff_index, cutoff_state.before_time >= new_cutoff_at);
         let unused_list = unsafe { context.get_unused_list() };
         let unused_list = unused_list.get_full_slice(context);
 
-        //println!("Unused list: {:#?}", unused_list);
         debug_assert!(unused_list.is_sorted_by_key(|x| x.last_overwriter));
 
-        //println!("Unused list: {:?}", unused_list);
         let (Ok(unused_list_last) | Err(unused_list_last)) =
             unused_list.binary_search_by_key(&cutoff_index, |x| x.last_overwriter);
 
-        //println!("Last index: {}, last overwriter: {:?}", unused_list_last, cutoff_index);
         let mut process_now = vec![];
         assert!(new_cutoff_at > cutoff_state.before_time);
         cutoff_state.before_time = new_cutoff_at;
         prev_cutoff_state.before_time = new_cutoff_at.saturating_sub(self.cut_off_config.stride);
 
         let messages_slice = self.messages.get_messages_slice()?;
-        //let new_cutoff_at_noatun_time = new_cutoff_at.to_noatun_time();
-        //println!("Advancing {:?}", old_cutoff_index.index()..cutoff_index.index());
+
         let mut remove_orders = Vec::new();
 
-        for index_entry in &messages_slice[old_prev_cutoff_index.index()..old_cutoff_index.index()] {
+        for index_entry in &messages_slice[old_prev_cutoff_index.index()..old_cutoff_index.index()]
+        {
             if index_entry.file_offset.is_deleted() {
                 continue;
             }
@@ -98,16 +92,21 @@ impl<MSG: Message+'static> Projector<MSG> {
                 .remove_all_parents_and_some_children(message, &children_to_remove)?;
             for child in children_to_remove {
                 self.messages.add_remove_parents_and_children(
-                    child,&[],Some(message),&[],None)?;
+                    child,
+                    &[],
+                    Some(message),
+                    &[],
+                    None,
+                )?;
             }
         }
         for item in &unused_list[..unused_list_last] {
             debug_assert!(item.last_overwriter < cutoff_index);
             process_now.push(*item);
         }
-        self.messages.advance_cutoff_hash(prev_cutoff_state, cutoff_state)?;
+        self.messages
+            .advance_cutoff_hash(prev_cutoff_state, cutoff_state)?;
 
-        //println!("Advance cutoff batch: {:?}", process_now);
         let must_remove =
             context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?;
         for index in must_remove {
@@ -185,7 +184,9 @@ impl<MSG: Message+'static> Projector<MSG> {
     pub fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.messages.get_children_of(msg)
     }
-    pub fn get_all_messages(&self) -> Result<impl Iterator<Item=MessageFrame<MSG>> + use<'_, MSG> >  {
+    pub fn get_all_messages(
+        &self,
+    ) -> Result<impl Iterator<Item = MessageFrame<MSG>> + use<'_, MSG>> {
         self.messages.get_all_messages()
     }
     pub fn get_all_messages_with_children(
@@ -247,13 +248,7 @@ impl<MSG: Message+'static> Projector<MSG> {
         let cutoff_time = self.messages.current_cutoff_time()?;
         for message in messages.iter_mut() {
             if message.header.id.timestamp() < cutoff_time {
-                #[cfg(debug_assertions)]
-                {
-                    if !message.header.parents.is_empty() {
-                        println!("oops"); //TODO: Remove
-                    }
-                }
-                assert!(message.header.parents.is_empty());
+                debug_assert!(message.header.parents.is_empty());
             }
         }
 
@@ -269,9 +264,7 @@ impl<MSG: Message+'static> Projector<MSG> {
         let cutoff = self.current_cutoff_time()?;
         if let Some(insert_point) = self.messages.append_many_sorted(
             messages,
-            |id, parents| {
-                self.head_tracker.add_new_update_head(id, parents, cutoff)
-            },
+            |id, parents| self.head_tracker.add_new_update_head(id, parents, cutoff),
             local,
         )? {
             if let Some(cur_main_db_next_index) = context.next_seqnr().try_index() {
@@ -295,8 +288,13 @@ impl<MSG: Message+'static> Projector<MSG> {
             Ok(false)
         }
     }
-    pub(crate) fn remove_message(&mut self, message_id: MessageId, force: bool) -> Result<Option<SequenceNr>> {
-        self.messages.delete_many(std::iter::once(message_id), &mut self.head_tracker, force)
+    pub(crate) fn remove_message(
+        &mut self,
+        message_id: MessageId,
+        force: bool,
+    ) -> Result<Option<SequenceNr>> {
+        self.messages
+            .delete_many(std::iter::once(message_id), &mut self.head_tracker, force)
     }
     pub(crate) fn rewind(
         &mut self,
@@ -328,9 +326,8 @@ impl<MSG: Message+'static> Projector<MSG> {
         let guard = ContextGuardMut::new(context, true);
 
         catch_and_log(|| {
-            msg.payload.apply(msg.header.id, unsafe {
-                Pin::new_unchecked(root)
-            });
+            msg.payload
+                .apply(msg.header.id, unsafe { Pin::new_unchecked(root) });
         });
 
         drop(guard);

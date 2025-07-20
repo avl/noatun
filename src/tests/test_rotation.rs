@@ -1,8 +1,8 @@
-use crate::{MessageId, SavefileMessageSerializer};
 use crate::database::{DatabaseSettings, OpenMode};
+use crate::{MessageId, SavefileMessageSerializer};
 
 use crate::Database;
-use crate::{Message};
+use crate::Message;
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
@@ -32,14 +32,16 @@ impl Message for RotMessage {
             root.counter.set(new_counter);
         }
     }
-
-    
 }
 
 #[test]
 fn test_rotation1() {
-    let mut db: Database<RotMessage> =
-        Database::create_new("test/test_rotation1", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
+    let mut db: Database<RotMessage> = Database::create_new(
+        "test/test_rotation1",
+        OpenMode::Overwrite,
+        DatabaseSettings::default(),
+    )
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     for _ in 0..5 {
         for _ in 0..10 {
@@ -59,11 +61,14 @@ fn test_rotation1() {
     }
 }
 
-
 #[test]
 fn test_rotation_big1() {
-    let mut db: Database<RotMessage> =
-        Database::create_new("test/test_rotation2", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
+    let mut db: Database<RotMessage> = Database::create_new(
+        "test/test_rotation2",
+        OpenMode::Overwrite,
+        DatabaseSettings::default(),
+    )
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
     for _ in 0..75 {
@@ -84,16 +89,20 @@ fn test_rotation_big1() {
     }
 
     assert_eq!(db.count_messages(), 1);
-    db.with_root(|root|{
+    db.with_root(|root| {
         assert_eq!(root.counter.get(), 0);
     })
 }
 
 #[test]
-#[cfg(feature="expensive_tests")]
+#[cfg(feature = "expensive_tests")]
 fn test_rotation_big2() {
-    let mut db: Database<RotMessage> =
-        Database::create_new("test/test_rotation2", OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
+    let mut db: Database<RotMessage> = Database::create_new(
+        "test/test_rotation2",
+        OpenMode::Overwrite,
+        DatabaseSettings::default(),
+    )
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
     for _ in 0..200 {
@@ -102,18 +111,18 @@ fn test_rotation_big2() {
                 increment: 1,
                 reset: 0,
             })
-                .unwrap();
+            .unwrap();
             db.compact().unwrap();
         }
         db.append_local(RotMessage {
             increment: 1,
             reset: 0,
         })
-            .unwrap();
+        .unwrap();
         db.compact().unwrap();
     }
 
-    db.with_root(|root|{
-        assert_eq!(root.counter.get(), 200*51);
+    db.with_root(|root| {
+        assert_eq!(root.counter.get(), 200 * 51);
     })
 }
