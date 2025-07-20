@@ -24,7 +24,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 use std::{io, thread};
 use tokio::runtime::Runtime;
@@ -34,6 +34,7 @@ use tokio::time::error::Elapsed;
 use tokio::time::Instant;
 use tokio::{select, spawn};
 use tracing::{debug, error, info, instrument, trace, warn};
+use crate::mini_pather::MiniPather;
 use crate::xxh3_vendored::xxh3::Xxh3Default;
 
 pub mod size_limit_vec_deque;
@@ -1466,31 +1467,28 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG>
         let (sender_tx, sender_rx) = tokio::sync::mpsc::channel(1);
         let (quit_tx, quit_rx) = tokio::sync::oneshot::channel();
         let (receiver_tx, receiver_rx) = tokio::sync::mpsc::channel(1000);
-        let our_node_id = ArcShift::new(
+        let mut our_node_id = ArcShift::new(
             config
                 .initial_ephemeral_node_id
                 .unwrap_or_else(EphemeralNodeId::random),
         );
         let node_peer_info = ArcShift::new(PeerSummaryInfo::default());
 
-        let mut node_peer_info2 = node_peer_info.clone();
-        let mut our_node_id2 = our_node_id.clone();
 
         let retransmit_interval = Duration::from_secs_f32(config.retransmit_interval_seconds);
 
-        let should_retransmit: Box<dyn FnMut(EphemeralNodeId) -> Duration + Send + Sync> =
-            Box::new(move |peer| -> Duration {
-                // #packet_retransmit_logic
+        let mini_pather = Arc::new(RwLock::new(MiniPather::new(our_node_id.get().raw_u16())));
+        let mini_pather2 = mini_pather.clone();
 
-                let info = node_peer_info2.get();
-                println!("--------------------------------------------------------");
-                println!("Peer summary: {info:?}", );
-                let t = info.we_should_retransmit(*our_node_id2.get(), peer, retransmit_interval);
-                println!(
-                    "Conclusion: {t:?} (for peer: {peer}, we:'re: {}",
-                    our_node_id2.get()
-                );
-                t
+        let should_ask_for_retransmission: Box<dyn FnMut(EphemeralNodeId) -> Duration + Send + Sync> =
+            Box::new(move |peer| -> Duration {
+                let Some(ordinal) =  mini_pather2.write().unwrap().should_i_ask_for_retransmission(peer.raw_u16()) else {
+                    // If MiniPather says straight up no, it's because it believes
+                    // the other node can't actually hear us. So there's no point in sending a request.
+                    // We impose a very long timeout in this case.
+                    return 10*retransmit_interval;
+                };
+                return (ordinal as u32) * retransmit_interval;
             });
         let mut sender_loop = MulticastSenderLoop::new(
             driver,
@@ -1505,7 +1503,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG>
             config.retransmit_buffer_size_bytes,
             config.disable_retransmit,
             our_node_id.clone(),
-            should_retransmit,
+            should_ask_for_retransmission,
         )
         .await?;
 
@@ -1522,6 +1520,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG>
                 our_node_id,
                 node_peer_info,
                 Instant::now().into(),
+                Some(mini_pather)
             ),
             node: node.clone(),
             database: database.clone(),

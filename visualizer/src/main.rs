@@ -11,6 +11,7 @@ use std::default::Default;
 use std::fmt::Debug;
 use std::hash::Hasher;
 use std::pin::Pin;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use noatun::data_types::{NoatunHashMap, NoatunKey};
@@ -184,7 +185,7 @@ impl Node {
             db,
             distributor: Distributor::new(Duration::from_secs(5), ArcShift::new(ephemeral_node_id.unwrap_or(
                 EphemeralNodeId::new(id.into())
-            )), peer_info, now),
+            )), peer_info, now, None),
             last_periodic: now,
         }
     }
@@ -579,7 +580,7 @@ impl App for Visualizer {
                             let Some(recv_from_pos) = self.ether.actual_ether.node_metadata.iter().find(|x|*x.ephemeral_node_id.shared_get() == *b_peer_id).map(|x|x.pos) else {
                                 continue;
                             };
-                            if !node.distributor.neighborhood.peers.fast_pather.should_i_forward(a_peer_id.raw_u16(), b_peer_id.raw_u16()) {
+                            if !node.distributor.neighborhood.peers.fast_pather.write().unwrap().should_i_forward(a_peer_id.raw_u16(), b_peer_id.raw_u16()) {
                                 continue;
                             }
 

@@ -17,7 +17,6 @@ use savefile::{
 };
 use savefile_derive::Savefile;
 use std::io::{Read, SeekFrom};
-use insta::assert_debug_snapshot;
 use tracing_subscriber::Layer;
 
 mod all_up_sync_test;

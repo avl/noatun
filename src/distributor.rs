@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::Cursor;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 use crate::mini_pather::MiniPather;
@@ -219,8 +220,6 @@ pub struct PeerInfo {
     /// set to true whenever we decide to inhibit a request based on the idea that
     /// there's another node in our group that should be doing the request
     pub(crate) request_inhibited_based_on_node_numbers: NodeNumberBasedInhibit,
-    //pub(crate) send_msg_and_descendants_based_on_node_numbers: NodeNumberBasedInhibit, //TODO: Unused?
-    //pub(crate) resend_actual_message_based_on_node_numbers: NodeNumberBasedInhibit,
 }
 impl PeerInfo {
     pub fn new(peer: EphemeralNodeId, now: Instant) -> PeerInfo {
@@ -279,7 +278,7 @@ pub struct Peers {
     pub peers: IndexMap<EphemeralNodeId, PeerInfo>,
     peer_summary_info: ArcShift<PeerSummaryInfo>,
     //TODO: GC
-    pub fast_pather: MiniPather,
+    pub fast_pather: Arc<RwLock<MiniPather>>,
     last_gc: Instant,
 }
 
@@ -290,12 +289,16 @@ impl Peers {
         periodic_message: Duration,
         now: Instant,
     ) {
-        if self.fast_pather.my_id() != our_node_id.raw_u16() {
-            info!("identical ephemeral node_id detected, changing our id");
-            self.fast_pather = MiniPather::new(our_node_id.raw_u16());
-            self.peers.clear();
-            self.recalculate_summary(our_node_id);
-            return;
+        {
+            let mut pather = self.fast_pather.write().unwrap();
+            if pather.my_id() != our_node_id.raw_u16() {
+                info!("identical ephemeral node_id detected, changing our id");
+                *pather = MiniPather::new(our_node_id.raw_u16());
+                self.peers.clear();
+                drop(pather);
+                self.recalculate_summary(our_node_id);
+                return;
+            }
         }
 
         if now.saturating_duration_since(self.last_gc) > periodic_message {
@@ -548,12 +551,12 @@ impl Neighborhood {
             }
         }
     }
-    pub fn new(peer_summary_info: ArcShift<PeerSummaryInfo>, now: Instant, own_id: &mut ArcShift<EphemeralNodeId>) -> Neighborhood {
+    pub fn new(peer_summary_info: ArcShift<PeerSummaryInfo>, now: Instant, pather: Arc<RwLock<MiniPather>>) -> Neighborhood {
         Self {
             peers: Peers {
                 peers: Default::default(),
                 peer_summary_info,
-                fast_pather: MiniPather::new(own_id.get().raw_u16()), //TODO: Detect change of ephemeral id and clear FastPath
+                fast_pather: pather,
                 last_gc: now,
             },
             recent_messages: Default::default(),
@@ -639,7 +642,7 @@ impl Neighborhood {
                 }
                 self.peers
                     .gc_if_necessary(our_node_id, periodic_message, now);
-                self.peers.fast_pather.report_own_neighbors(self.peers.peers.keys().map(|x|x.raw_u16()));
+                self.peers.fast_pather.write().unwrap().report_own_neighbors(self.peers.peers.keys().map(|x|x.raw_u16()));
             }
             DistributorMessage::SyncAllQuery(_) => {}
             DistributorMessage::SyncAllRequest(_) => {}
@@ -1222,12 +1225,15 @@ impl Distributor {
         mut initial_node_id: ArcShift<EphemeralNodeId>,
         peer_info: ArcShift<PeerSummaryInfo>,
         now: Instant,
+        mini_pather: Option<Arc<RwLock<MiniPather>>>,
     ) -> Distributor {
+        let node = initial_node_id.get().raw_u16();
         Self {
             sync_all_inprogress: SyncAllState::NotActive,
             distributor_state: DistributorStatus::default(),
             periodic_message_interval,
-            neighborhood: Neighborhood::new(peer_info, now, &mut initial_node_id),
+            neighborhood: Neighborhood::new(peer_info, now, mini_pather
+                .unwrap_or(Arc::new(RwLock::new(MiniPather::new(node))))),
             ephemeral_node_id: initial_node_id,
             outbuf: QueryableOutbuffer::new(periodic_message_interval),
 
@@ -1414,7 +1420,7 @@ impl Distributor {
                                 // If the neighbor has no neighbors of its own, it's just starting up.
                                 // Let's wait a bit before acting on its messages
 
-                                self.neighborhood.peers.fast_pather.report_neighbors(source.raw_u16(), neighbors.iter().map(|x|x.raw_u16()));
+                                self.neighborhood.peers.fast_pather.write().unwrap().report_neighbors(source.raw_u16(), neighbors.iter().map(|x|x.raw_u16()));
 
                                 let peer = self.neighborhood.peers.get_insert_peer(source, now);
 
@@ -2033,7 +2039,7 @@ impl Distributor {
                 //if let Some(peer) = self.neighborhood.peers.get_peer_mut(source) {
                 
                     //if !peer.forwardings.is_empty() {
-                    if self.neighborhood.peers.fast_pather.should_i_forward(origin.raw_u16(), source.raw_u16()) {
+                    if self.neighborhood.peers.fast_pather.write().unwrap().should_i_forward(origin.raw_u16(), source.raw_u16()) {
                         //println!("#{}: Forwarding message from {:?}.{:?}", self.ephemeral_node_id.get(), origin, source);
                         self.outbuf.push_back(DistributorMessage::Message {
                             source: *self.ephemeral_node_id.get(),

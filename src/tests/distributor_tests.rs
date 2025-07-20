@@ -1,3 +1,5 @@
+use std::sync::RwLock;
+use std::sync::Arc;
 use crate::database::DatabaseSettings;
 use crate::distributor::{Distributor, DistributorMessage, EphemeralNodeId, Neighborhood};
 use crate::tests::CounterMessage;
@@ -7,6 +9,7 @@ use datetime_literal::datetime;
 use std::iter::once;
 use std::time::Duration;
 use tokio::time::Instant;
+use crate::mini_pather::MiniPather;
 
 fn create_app<'a>(
     msgs: impl IntoIterator<
@@ -70,16 +73,18 @@ fn test_distributor() {
         ArcShift::new(EphemeralNodeId::new(1)),
         peer_info.clone(),
         Instant::now().into(),
+        None
     );
     let mut dist2 = Distributor::new(
         Duration::from_secs(5),
         ArcShift::new(EphemeralNodeId::new(2)),
         peer_info.clone(),
         Instant::now().into(),
+        None
     );
 
-    dist1.neighborhood = Neighborhood::new(ArcShift::default(), Instant::now().into(), &mut ArcShift::new(EphemeralNodeId::new(1)));
-    dist2.neighborhood = Neighborhood::new(ArcShift::default(), Instant::now().into(), &mut ArcShift::new(EphemeralNodeId::new(2)));
+    dist1.neighborhood = Neighborhood::new(ArcShift::default(), Instant::now().into(), Arc::new(RwLock::new(MiniPather::new(1))));
+    dist2.neighborhood = Neighborhood::new(ArcShift::default(), Instant::now().into(), Arc::new(RwLock::new(MiniPather::new(2))));
     dist1
         .neighborhood
         .peers
