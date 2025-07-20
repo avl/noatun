@@ -1311,8 +1311,6 @@ impl Distributor {
             }
         }
 
-        //let self_node_id = *self.ephemeral_node_id.get();
-
         self.process_reported_heads(&mut database, accumulated_heads, now)?;
 
         accumulated_request_upstream.sort_keys();

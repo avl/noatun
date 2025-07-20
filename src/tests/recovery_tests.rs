@@ -337,7 +337,6 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     let mut contents = std::fs::read("test/test_recover4/data0.bin").unwrap();
     contents[corrupt_at_index] = contents[corrupt_at_index].wrapping_sub(20);
 
-    //println!("\n ========= Corrupted {} file at {}\n", contents.len(), corrupt_at_index);
 
     std::fs::write("test/test_recover4/data0.bin", &contents).unwrap();
 
