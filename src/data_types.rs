@@ -874,12 +874,10 @@ where
                     }
                     self.read_offset += 1;
                     self.write_offset += 1;
-                }                
+                }
                 NoatunContext.write_ptr(self.new_count, addr_of_mut!(self.vec.raw.length));
             }
         }
-
-        //TODO: Handle panics? Test that panics are handled correctly.
 
         let self_mut = unsafe { self.get_unchecked_mut() };
         NoatunContext.observe_registrar(self_mut.length_registrar);
@@ -964,11 +962,20 @@ impl<T:FixedSizeObject> Index<usize> for OpaqueNoatunVec<T> {
 
 impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
 
+    /// Clear all elements of the vector.
+    ///
+    /// This does not cause any observation of the vector.
+    ///
+    /// The current message is recorded as the "most recent clearer" of the vector.
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
         tself.raw.destroy_items();
     }
+
+    /// Iterate over the elements of the vector.
+    ///
+    /// This is not allowed from within [`Message::apply`] (because this is an opaque data-type).
     pub fn iter(&self) -> NoatunVecIterator<'_, T> {
         NoatunContext.assert_opaque_access_allowed("OpaqueNoatunVec", "NoatunVec");
         NoatunVecIterator {
@@ -993,10 +1000,9 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
 
     /// Write the given value to the given index.
     ///
-    /// If the vector isn't large enough, it will be extended with zeroed elements.
-    // TODO: We should name these methods with names that make users understand their
-    // purpose is to write stuff to a collection without causing any observation of the collection.
-    // TODO: Should this exist? Should it be public?
+    /// If the vector isn't large enough, it will be extended with zeroed elements until it is.
+    ///
+    /// Note, this method does not cause any observation of the vector.
     pub fn set_item_infallible(
         self: Pin<&mut Self>,
         index: usize,
@@ -2581,8 +2587,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         let mut context = self.data_meta_len_mut();
         Self::remove_impl_by_bucket_nr(&mut context, bucket, getval);
 
-        //println!("Metas now: {:?}", context.metas);
-
         #[cfg(debug_assertions)]
         {
             for group in context.metas {
@@ -2590,12 +2594,12 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             }
         }
 
-        // TODO: Doing this last means the length would be off if we are aborted during
-        // the remove (perhaps by some other thread terminating the process).
+        // Doing this last means the length would be off if we are aborted during
+        // the remove (perhaps by some other thread terminating the process). However,
+        // this should always be caught and should leave the database in a dirty state.
         let new_length = self.length - 1;
         NoatunContext.write_internal(new_length, &mut self.length);
         true
-
     }
 
     /// This does not update `self.length`
@@ -2813,16 +2817,6 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
     }
 
     fn destroy(self: Pin<&mut Self>) {
-        //TODO: Should clear all values too.
-        //compile_error!("make sure to actually clear all present values too, here!");
-
-        /*compile_error!("
-
-Then, check that the tombstone-mechanism actually works.
-
-Also, fix NoatunVec - it should probably use the same tombstone-mechanism as Map.
-The current approach is just broken and non-intuitive.
-        ")*/
 
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);

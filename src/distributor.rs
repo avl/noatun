@@ -156,9 +156,8 @@ impl DecayingKnowledge {
 }
 
 
-//TODO: Consider the responsibilities of 'communciation.rs' and 'distributor.rs'
-// I think possibly this should be put in 'distributor.rs'. And the latter should perhaps
-// be split into submodules.
+// TODO(future): Consider the responsibilities of 'communciation.rs' and 'distributor.rs'
+// And the latter should perhaps be split into submodules.
 #[derive(Debug)]
 pub(crate) struct PeerOriginInfo {
     /// The peer this information concerns

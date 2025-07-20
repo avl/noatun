@@ -1168,6 +1168,9 @@ pub trait Object {
     /// This means that the value is always valid before init runs.
     /// Init is thus technically an overwrite of an existing value. If that
     /// value had a registrar, it is overwritten.
+    ///
+    /// Implementations of this method should not panic. Doing so doesn't lead to
+    /// unsoundness, but may leave self in an undesirable half-initialized state.
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType);
 
     /// This can in most cases be:

@@ -28,7 +28,6 @@ Each Noatun database has two parts:
  * Event store: contains all events in the database
  * Materialized view: maintained by "applying" all events in order
 
-_Information flow (in operation)_
 
 ```mermaid
 block-beta
@@ -57,6 +56,7 @@ columns 3
     M --> Disk
     Disk --> M
 ```
+_Information flow (in operation)_
 
 Events are applied to the projection in timestamp order. As a user of Noatun, you need to
 implement a method that applies an event to the database [`Message::apply`]. Noatun 
@@ -175,6 +175,30 @@ async fn example() {
 
 
 ```
+# Message model
+
+Noatun messages consist of three parts:
+ * A 16 byte message id (of which 48 bits are a timestamp)
+ * A user-defined payload
+ * A list of parents (message ids)
+
+```mermaid 
+block-beta
+    block
+        columns 3
+        uct1("Message")
+        space:2
+        t("MessageId")
+        b("Parent list")
+        c("User payload")
+    end
+class uct1 BT
+class uct2 BT
+classDef BT stroke:transparent,fill:transparent
+```
+_Message layout_
+
+Message parents are handled automatically by Noatun. See chapter on Internals for more information. 
 
 # Features
 
@@ -187,7 +211,6 @@ Messages are automatically removed from the database when they are no longer nee
 The basic approach is that Noatun tracks exactly what information a message writes.
 Once all that information has been overwritten, the message can be removed.
 
-_Basic Example_
 ```mermaid 
 block-beta
     columns 5
@@ -218,6 +241,7 @@ class uct1 BT
 class uct2 BT
 classDef BT stroke:transparent,fill:transparent
 ```
+_Basic Example_
 
 Event 1 writes both fields. After Event2 has been written, Event1 still needs to be retained, since
 it wrote the most recent value to "FieldB". However, after Event3 has been written, none of what
@@ -226,7 +250,6 @@ some nuance to this statement, please consult the following sections).
 
 However, consider what happens if messages also read from the database:
 
-_Messages with dependencies_
 
 ```mermaid 
 block-beta
@@ -259,6 +282,9 @@ class uct1 BT
 class uct2 BT
 classDef BT stroke:transparent,fill:transparent
 ```
+_Messages with dependencies_
+
+
 In this example, none of the messages can be deleted. None of the values written by Event1 remain in the database.
 However, the value "1", written to field A, was later read by Event2. Any value subsequently written by Event2
 (i.e, the write to Field B) may depend on the value read from field A. In fact, it is highly likely that the
@@ -524,6 +550,12 @@ the original message (but still on the same timestamp). See method
 
 # Details and limitations
 
+## Numerical limitations
+
+The size of Noatun databases is, in practice, only bounded by available disk storage and
+virtual memory size. The max number of messages stored in Noatun is bounded at 2^32. However, 
+many applications never approach this number of simultaneously live messages. 
+
 ## Noatun requires correct time
 
 In distributed systems, a decision often has to be made whether nodes are required to have
@@ -732,12 +764,135 @@ Generally, there are two options:
    of a timestamped event source, but may be the right choice in this particular example.
     
 
+# Internals
+
+This chapter goes into some of the internals of Noatun. While it can be of interest to users,
+the aspiration is that users should not need to know of these details.
+
+## MessageId
+
+```mermaid 
+block-beta
+    block
+        columns 3
+        uct1("MessageId")
+        space:2
+        t("48 bit timestamp")
+        b("2 special bits")
+        c("78 bits random")
+    end
+class uct1 BT
+class uct2 BT
+classDef BT stroke:transparent,fill:transparent
+```
+_MessageId layout_
+
+The message id consists of 3 parts:
+* A 48 bit timestamp (with millisecond precision and a range of more than 10000 years)
+* 2 "special" bits used to provide 16384 'successor' and 'predecessor' values for each original value.
+  For newly generated message ids, these two bits always have the value `01`or `10`.
+  This ensures that there is always room to create new Message-id values before and after
+  any other id, and that these ids will have the same timestamp as the original.
+  These can be used to generate a message id that occurs "immediately before" some other message.
+* A 78 bit random part
+
+With 16 bytes of entropy, accidental collisions between MessageId instances are astronomically
+unlikely.
+
+Every message lists as its parents, the set of update-heads when the message was created.
+The newly added message then becomes the new update-heads (which will thus then have only a single entry).
+If only a single noatun instance exists, there is only ever one update head, and all messages become linked
+in a single long linked list.
+
+With more than one node, the messages and their parents form a DAG (directed acyclic graph). It is
+a Noatun-invariant that a message is never stored in a Noatun database unless all the parents of the message
+also are.
+
+The upshot of all this is that knowing the set of update-heads of a Noatun database is enough to
+know the entire database state (with one caveat, which we'll get to).
+
+This allows Noatun to easily detect if two nodes are in sync or not.
+
+However, Noatun has the concept of "cutoff_time". See
+
+
+## Data storage
+
+Noatun stores data on disk by memory-mapping several files:
+
+### Message store files
+Messages are stored in files `data0.bin` and `data1.bin`. One of these is always active, and the other passive.
+All new writes occur in the active file. The other is slowly being copied over to the active one, a little bit with
+every write to the active file. This means that the passive file eventually becomes empty, at which point the
+files switch purpose (active becoming passive, and vice versa). When messages are deleted, they're just marked
+as deleted and no compaction occurs. However, naturally, deleted files are never migrated from active to passive,
+so over time the on-disk structure remains compact.
+
+### Update heads-file
+
+The file `update_heads.bin` contains the current list of messages without parents, that exist after the cutoff
+time. Messages with timestamps before the cutoff time are never in the update heads file. Update heads
+are used to quickly compare the state of two nodes. If the update heads are the same, and the cutoff hash is the same,
+two nodes are synchronized.
+
+### Index file
+
+The file `index.bin` contains a single linear sorted index of all messages. Each entry contains information on which data-file
+the messsage is in (data0 or data1), as well as offset and size. Since the index is sorted, and memory mapped
+into the process, searching for a specific message by id is very fast.
+
+### Main database file
+
+The file `maindb.bin` contains the materialized view.
+
+### Undo file
+
+The file `undo.bin` contains undo information. This information allows us to "rewind time" in the main database file.
+This is used to effectively implement reception of messages out-of-order.
+
+
+## Memory allocation and re-use of memory
+
+All Noatun files grow serve new allocations by growing the file.
+
+For the main database file, whenever Noatun needs to allocate memory for the root object, a NoatunBox, or any of the 
+collection types, memory is simply allocated at the end. At time of writing, Noatun never reuses memory, even when 
+doing so would be possible. For example, when a vector is grown and needs to be reallocated, this leaves behind
+an unused memory block that could potentially be reused. 
+
+When the database file is grown, it is extended by all-zeros. Noatun guarantees that new allocated memory is always 
+all-zero. Since memory is never reused, user implemented data-types don't need to worry about zeroing memory
+after it is no longer needed.
+
+## Tracking writes
+
+As described in earlier chapters, Noatun keeps track of what information each NoatunMessage updated.
+
+It does this by maintaining a vector of "write counts" for each Message in the database. It also keeps track,
+for each piece of data in the materialized view, what message wrote that piece of data. This piece of
+tracking information is known as a "registrar" (since it registers who wrote it). Each registrar is 32 bits,
+is simply the ordinal number of the Message that updated it.
+
+Whenever a message writes data, its write counter is incremented. Whenever a message overwrites a registrar
+previously written by another message, that other message's write counter is decremented.
+
+When a message write counter reaches 0, the message is added to a list of tentatively 'unused' messages.
+
+Unused messages can be pruned, if either: 
+ * They haven't been transmitted to another node
+ * They only wrote opaque data
+ * All their overwriters are timestamped before the cutoff time.
+
+Note, there is one caveat to the above. Messages that deleted individual items from collections are
+marked as "tombstone" messages. Tombstone messages can only be deleted once the cutoff time advances
+past all their overwriters.
+
+## Tracking reads
+
+Noatun also tracks reads. For each message, a linked list of readers is maintained. This allows
+maintaining a dependency graph for read-dependencies between all messages in the database.
 
 
 
 
 
-
-
-
-   

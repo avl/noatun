@@ -573,7 +573,6 @@ impl App for Visualizer {
                         for (b_peer_id, _b_peer_info) in &node.distributor.neighborhood.peers.peers {
                             
 
-                            // TODO: Can we salvage this? Do a smarter lookup in node_metadata?
                             let Some(origin_pos) = self.ether.actual_ether.node_metadata.iter().find(|x|*x.ephemeral_node_id.shared_get() == *a_peer_id).map(|x|x.pos) else {
                                 continue;
                             };

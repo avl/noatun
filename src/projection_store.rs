@@ -257,6 +257,7 @@ pub struct DatabaseContextData {
     undo_log: UndoLog,
 
     // The current message being written (or None if not open for writing)
+    //TODO: Need this be persisted? If not, write a comment here about why not.
     unused_messages: Vec<UnusedInfo>,
     // Set to true when run from within message apply
     pub(crate) is_mutable: bool,
