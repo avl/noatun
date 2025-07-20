@@ -174,7 +174,7 @@ impl Neighborhood {
             let mut pather = self.fast_pather.write().unwrap();
             for item in removed {
                 pather.remove_neighbor(item.raw_u16());
-                
+
             }
         }
     }
@@ -331,7 +331,6 @@ pub const MAX_RECENT_SENT_MEMORY: usize = 100;
 #[derive(Debug)]
 pub struct Neighborhood {
     pub peers: IndexMap<EphemeralNodeId, PeerInfo>,
-    //TODO: GC
     pub fast_pather: Arc<RwLock<MiniPather>>,
 
     last_gc: Instant,
@@ -342,7 +341,6 @@ pub struct Neighborhood {
     /// because we figured a peer would do it. request_inhibited_based_on_node_numbers has
     /// a counter that is increased when adding stuff here, and decreased whenever we
     /// receive a message in here without having requested it.
-    //TODO: Verify we have gc for this
     pub(crate) inhibited_request_upstream: IndexMap<MessageId, (Instant, EphemeralNodeId)>,
 }
 
@@ -455,12 +453,32 @@ pub struct QueryableOutbuffer {
     recently_sent_upstream_responses_for: DuplicationChecker<MessageId>,
 
     recently_sent_message_ids: DuplicationChecker<MessageId>,
-    //TODO: GC this! This contains complete messages, which may consume lots of RAM.
+    gc_timer: Instant,
     parentless_messages:
         IndexMap</*missing parent*/ MessageId, Vec<AccumulatedMessage>>,
 }
 
 impl QueryableOutbuffer {
+    pub(crate) fn gc_if_necessary(&mut self, now: Instant) {
+        if now.duration_since(self.gc_timer) > 2*self.periodic_message_interval {
+            self.gc_timer = now;
+            let mut ok = 0;
+            let mut size_so_far = 0;
+            for (_msg_id, msg_objs) in self.parentless_messages.iter().rev() {
+                for msg_obj in msg_objs {
+                    size_so_far += msg_obj.ram_size_estimate();
+                    if size_so_far < 50_000_000 {
+                        ok += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if ok != self.parentless_messages.len() {
+                self.parentless_messages.drain(0..ok);
+            }
+        }
+    }
 
     pub fn is_empty(&self) -> bool {
         self.outbuf.is_empty()
@@ -479,7 +497,7 @@ impl QueryableOutbuffer {
 }
 
 impl QueryableOutbuffer {
-    fn new(periodic_message_interval: Duration) -> Self {
+    fn new(periodic_message_interval: Duration, now: Instant) -> Self {
         Self {
             outbuf: Default::default(),
             request_upstream_message_inhibit: DuplicationChecker::new(
@@ -490,10 +508,11 @@ impl QueryableOutbuffer {
                 2 * periodic_message_interval,
             ),
             recently_sent_message_ids: DuplicationChecker::new(2 * periodic_message_interval),
+            gc_timer: now,
             parentless_messages: Default::default(),
         }
     }
-    //TODO: Implement detection of node id duplicates
+
     fn request_upstream_blocked(&mut self, id: MessageId, now: Instant) -> bool {
         self.recently_sent_upstream_responses_for
             .is_duplicate(id, now)
@@ -715,7 +734,7 @@ impl EphemeralNodeId {
     }
 }
 
-//TODO: Add a quick-join mechanism. A newly started node can force all nodes to send an
+//TODO(future): Add a quick-join mechanism. A newly started node can force all nodes to send an
 //extra ReportHeads, after which the newly joined nodes sends one of its own. Thus we
 //get rid of the 1-periodic msg delay of waiting for ReportHeads-messages
 
@@ -742,7 +761,6 @@ pub enum DistributorMessage {
     /// listed, they should be requested using SyncAllRequest.
     SyncAllQuery(Vec<MessageId>),
     /// The given messages should be sent.
-    // TODO: Add dst?
     SyncAllRequest(Vec<MessageId>),
     /// Sent only when doing a full sync
     SyncAllAck(Vec<MessageId>),
@@ -916,6 +934,7 @@ pub struct DistributorStatus {
 
 #[derive(Debug)]
 pub struct Distributor {
+    #[doc(hidden)]
     pub ephemeral_node_id: ArcShift<EphemeralNodeId>,
     // A sync-all request is in progress.
     // It sends all Messages in MessageId-order (which guarantees that all
@@ -925,10 +944,12 @@ pub struct Distributor {
     distributor_state: DistributorStatus,
 
     periodic_message_interval: Duration,
-    // TODO: Clean this up. The repsonsibilities of `QueryableOutbuffer` vs `Neighborhood`
+    // TODO(future): Clean this up. The repsonsibilities of `QueryableOutbuffer` vs `Neighborhood`
     // are very unclear
     // TODO: This should not be public.
+    #[doc(hidden)]
     pub outbuf: QueryableOutbuffer,
+    #[doc(hidden)]
     pub neighborhood: Neighborhood,
 }
 
@@ -969,6 +990,12 @@ pub(crate) struct AccumulatedMessage {
     explicit_retransmit: bool,
 }
 
+impl AccumulatedMessage {
+    fn ram_size_estimate(&self) -> usize {
+        self.msg.data.len() + std::mem::size_of::<Self>()
+    }
+}
+
 impl Distributor {
     pub fn periodic_message_interval(&self) -> Duration {
         self.periodic_message_interval
@@ -988,7 +1015,7 @@ impl Distributor {
             neighborhood: Neighborhood::new(now, mini_pather
                 .unwrap_or(Arc::new(RwLock::new(MiniPather::new(node))))),
             ephemeral_node_id: initial_node_id,
-            outbuf: QueryableOutbuffer::new(periodic_message_interval),
+            outbuf: QueryableOutbuffer::new(periodic_message_interval, now),
 
         }
     }
@@ -1031,6 +1058,8 @@ impl Distributor {
 
         self.neighborhood
             .gc_if_necessary(*self.ephemeral_node_id.get(), self.periodic_message_interval, now);
+
+        self.outbuf.gc_if_necessary(now);
 
         let mut heads = database
             .get_update_heads()
@@ -1091,7 +1120,7 @@ impl Distributor {
     ) -> Result<Vec<DistributorMessage>> {
         self.receive_message(database, input.map(|x| (Address::from("src"), x)), now)?;
         let ret = self.outbuf.outbuf.drain(..).collect();
-        self.outbuf = QueryableOutbuffer::new(self.periodic_message_interval);
+        self.outbuf = QueryableOutbuffer::new(self.periodic_message_interval, now);
         Ok(ret)
     }
 
@@ -1256,7 +1285,7 @@ impl Distributor {
 
                     //if let Some(peer) = neighborhood.peers.get_peer(source) {
                     for (msg, count) in query {
-                        // TODO: Consider if this is fast enough to do unbatched here? (and is batching really faster?)
+                        // TODO(future): Consider if this is fast enough to do unbatched here? (and is batching really faster?)
                         if !database.contains_message(msg)? {
                             println!(
                                 "Database {} doesn't contain {:?}",
@@ -1367,7 +1396,7 @@ impl Distributor {
 
         accumulated_request_upstream.sort_keys();
 
-        self.process_request_upstream(&mut database, accumulated_request_upstream)?;
+        self.process_request_upstream(&mut database, accumulated_request_upstream, now)?;
         self.process_upstream_response(&mut database, accumulated_upstream_responses, now)?;
         self.process_send_message_all_descendants(
             &mut database,
@@ -1522,6 +1551,7 @@ impl Distributor {
         &mut self,
         database: &mut DatabaseSessionMut<MSG>,
         accumulated_heads: IndexMap<MessageId, (usize, /*src:*/ EphemeralNodeId)>,
+        now: Instant,
     ) -> Result<()> {
         let mut by_src: IndexMap<EphemeralNodeId, Vec<(MessageId, usize)>> = IndexMap::new();
 
@@ -1531,7 +1561,8 @@ impl Distributor {
         for (src, heads) in by_src {
             let messages: Vec<MessageSubGraphNode> = database
                 .get_upstream_of(heads.into_iter())?
-                //TODO: Can we re-enable this? .filter(|x|output.upstream_response_blocked(x.0.id) == false)
+                //TODO: Can we re-enable this?
+                .filter(|x|self.outbuf.upstream_response_blocked(x.0.id, now) == false)
                 .map(|(msg, query_count)| MessageSubGraphNode {
                     id: msg.id,
                     parents: msg.parents,
