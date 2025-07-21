@@ -58,7 +58,6 @@ impl MiniPather {
         recipients_solved.extend(self.who_can_hear(origin));
         recipients_solved.extend(self.who_can_hear(received_from));
 
-        //println!("Node {} decided origin {}.{} reaches {:?} naturally", self.whoami, origin, received_from, recipients_solved);
         for (other_forwarder, other_forwarder_hears) in self
             .nodes
             .iter()
@@ -67,8 +66,6 @@ impl MiniPather {
             if other_forwarder_hears.contains(&origin)
                 || other_forwarder_hears.contains(&received_from)
             {
-                //                    println!("Node {} will forward from {}.{}", *other_forwarder, origin, received_from);
-
                 recipients_solved.extend(self.who_can_hear(*other_forwarder));
             }
         }
@@ -79,8 +76,6 @@ impl MiniPather {
             }
             if !recipients_solved.contains(other_node) {
                 return true;
-            } else {
-                //                    println!("Node {} decided {} hears {} (via {}) through other means", self.whoami, other_node, origin, received_from);
             }
         }
 

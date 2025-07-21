@@ -1545,7 +1545,7 @@ impl Distributor {
                     let have_parent = database
                         .contains_message(*x)
                         .map_err(|e| {
-                            eprintln!("Error: {e:?}");
+                            error!("Error: {e:?}");
                             err = Err(e);
                         })
                         .is_ok_and(|x| x);
@@ -1691,13 +1691,6 @@ impl Distributor {
                     && !chosen_messages.contains_key(parent)
                 // message_list is sorted by id (i.e, also by time), so parent should be found here
                 {
-                    /*println!(
-                        "{:?} {:?} MISSING PARENT {:?} of {:?}",
-                        test_elapsed(),
-                        *self.ephemeral_node_id.shared_get(),
-                        parent,
-                        msg.id
-                    );*/
 
                     warn!(
                         "Could not apply message {:?} because parent {:?} is not known",

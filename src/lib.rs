@@ -176,6 +176,35 @@ thread_local! {
     pub static CONTEXT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
 }
 
+#[cfg(debug_assertions)]
+thread_local! {
+    pub static DEBUG_NODE: Cell<u16> = const { Cell::new(0) };
+}
+
+#[doc(hidden)]
+#[inline]
+pub fn track_node(node: u16) {
+    #[cfg(debug_assertions)]
+    DEBUG_NODE.set(node);
+}
+
+#[doc(hidden)]
+pub fn cur_node() -> u16 {
+    #[cfg(debug_assertions)]
+    {
+        DEBUG_NODE.get()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
+
+
+
+
+
 #[derive(Clone, Copy)]
 pub struct NoatunContext;
 
@@ -613,6 +642,12 @@ impl MessageId {
         time_le_bytes[2..6].copy_from_slice(&data[0..4]);
         time_le_bytes[0..2].copy_from_slice(&data[6..8]);
         let restes = u64::from_le_bytes(time_le_bytes);
+
+        //TODO: Use only the alternate impl!
+        let mut alternative_value = (self.data[0] as u64)<<16;
+        alternative_value |= (self.data[1]>>16) as u64;
+        assert_eq!(alternative_value, restes);
+
         NoatunTime(restes)
     }
 

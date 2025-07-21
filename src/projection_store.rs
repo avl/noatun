@@ -4,10 +4,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{
-    bytes_of_mut, bytes_of_mut_uninit, from_bytes, from_bytes_mut, FatPtr, GenPtr, Message,
-    NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr,
-};
+use crate::{bytes_of_mut, bytes_of_mut_uninit, cur_node, from_bytes, from_bytes_mut, FatPtr, GenPtr, Message, MessageId, NoatunStorable, NoatunTime, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
@@ -18,11 +15,11 @@ use std::{iter, slice};
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
 use crate::sequence_nr::SequenceNr;
 use std::pin::Pin;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 mod registrar_info {
     use crate::sequence_nr::SequenceNr;
-    use crate::{DatabaseContextData, NoatunStorable};
+    use crate::{DatabaseContextData, MessageId, NoatunStorable};
     use std::cmp::Ordering;
     use std::fmt::{Debug, Formatter};
     use std::pin::Pin;
@@ -1360,13 +1357,13 @@ impl DatabaseContextData {
         &mut self,
         messages: &mut OnDiskMessageStore<M>,
         mut unused_messages: Vec<UnusedInfo>,
-        // TODO(future): It may seem this should be determined by looking at id:s, not by boolean.
+        // TODO: It may seem this should be determined by looking at id:s, not by boolean.
         // However, any such refactor should probably be aware of the fact that the `before_cutoff`
         // currently depends on HOW we ended up here. It is true when called from within the
         // advance_cutoff mechanism.
         // TODO: Check what happens if we receive a message that is old enough to be before
         // cutoff, or which makes messages before cutoff stale.
-        before_cutoff: bool,
+
     ) -> anyhow::Result<Vec<SequenceNr>> {
         let mut deleted = Vec::new();
         let mut deferred = Vec::new();
@@ -1375,7 +1372,8 @@ impl DatabaseContextData {
         if unused_messages.is_empty() {
             return Ok(vec![]);
         }
-        trace!("Calculating staleness, cutoff: {:?}", before_cutoff);
+        let cutoff_time = messages.current_cutoff_time()?;
+        trace!("Calculating staleness, cutoff-time: {:?}", cutoff_time);
         #[cfg(debug_assertions)]
         {
             debug!(
@@ -1383,6 +1381,9 @@ impl DatabaseContextData {
                 messages.get_all_messages_with_children().unwrap()
             );
         }
+
+
+
         'outer: while let Some(msg) = unused_messages.pop() {
             //let msgobj = messages.read_message_header_and_children_by_index(msg.seq);
             debug!("considering {:?} = {:?} for deletion", msg.seq, msg);
@@ -1390,10 +1391,47 @@ impl DatabaseContextData {
                 "unconditionally overwritten: {:?}",
                 msg.can_be_deleted_early
             );
+            let Ok(message_id) = messages.get_message_id_from_seq(msg.seq) else {
+                warn!("UnusedMessage was already missing from MessageStore");
+                continue;
+            };
+
+
+            let before_cutoff = message_id.timestamp() < cutoff_time;
+
+            let may_have_been_transmitted = messages.may_have_been_transmitted(msg.seq)?;
+
+            compile_error!("There's a bug here. I think it's this:
+
+When we advance cutoff, we only apply unused messages whose last-overwriter is _after_ cutoff.
+But when we calculate messages here "on insert", we don't consult last-overwriter, and
+may thus clean messages earlier.
+
+This used to work, since we had a boolean here that told us if we were running from within
+advance-cutoff or online. Then the only deletes here were always just opaques and non-transmitted
+ones, which don't care about last overwriter.
+
+How to solve?
+
+I gueess we need to track last-overwriter here too?
+
+
+            ")
+
+            let mut debug = false;
+            //TODO: Remove this
+            if message_id.to_string().contains("0-0-0") {
+                println!("@{} Unused2 message #{} id: {}, before cutoff: {} cutoff: {:?}",
+                    cur_node(),
+                         msg.seq, message_id, before_cutoff, cutoff_time);
+                dbg!(msg.wrote_tombstone, may_have_been_transmitted, msg.can_be_deleted_early, before_cutoff);
+                debug = true;
+            }
+
 
             // Condition 1 (referenced below)
             if (!msg.wrote_tombstone
-                && (!messages.may_have_been_transmitted(msg.seq)? || msg.can_be_deleted_early))
+                && (!may_have_been_transmitted || msg.can_be_deleted_early))
                 || before_cutoff
             {
                 for observer in self.read_dependency(msg.seq) {
@@ -1410,9 +1448,12 @@ impl DatabaseContextData {
                             observer
                         );
 
+                        if debug {
+                            println!("Couldn't delete because observed by {:?}", observer);
+                        }
+
                         // The things 'deferred' are carried out at the end of this function (i.e, quickly)
                         deferred.push(move |tself: &mut DatabaseContextData| {
-                            //println!("Record reverse dependency for {:?}. Wrote tombstone: {}", msg.seq, msg.wrote_tombstone);
                             // Remember/record_reverse_dependency
                             tself.record_reverse_dependency(
                                 msg.seq,
@@ -1427,11 +1468,18 @@ impl DatabaseContextData {
                     }
                 }
             } else {
+                if debug {
+                    println!("because after cutoff");
+                }
+
                 debug!("can't delete {:?}{:?} yet because it's been transmitted and is after cutoff: {:?} and not unconditionally overwritten", 
                     msg.seq, //msgobj.map(|x2|x2.map(|x|x.0.id)), 
                     msg, before_cutoff);
                 new_unused_list.push(msg);
                 continue 'outer;
+            }
+            if debug {
+                println!("DELETING!");
             }
 
             info!(
@@ -1443,7 +1491,6 @@ impl DatabaseContextData {
             for (revdep, last_overwriter, can_be_deleted_early, wrote_tombstone) in
                 self.read_reverse_dependency(msg.seq)
             {
-                //println!("Read reverse dependency for {:?}. Wrote tombstone: {}", revdep, wrote_tombstone);
                 // Get messages that depend on the message that we just decided to delete
                 unused_messages.push(UnusedInfo {
                     seq: revdep,
@@ -1478,7 +1525,7 @@ impl DatabaseContextData {
     ) -> anyhow::Result<Vec<SequenceNr>> {
         let mut unused_messages = take(&mut self.unused_messages);
         unused_messages.sort(); //Sort in seq-nr order
-        self.rt_calculate_stale_messages_impl(messages, unused_messages, false)
+        self.rt_calculate_stale_messages_impl(messages, unused_messages)
     }
     pub(crate) fn rt_increase_use(&mut self, registrar: SequenceNr) {
         let uses = unsafe { self.get_uses() };

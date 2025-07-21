@@ -5,7 +5,7 @@ use crate::distributor::{
 use crate::colors::rgb;
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 use crate::communication::udp::TokioUdpDriver;
-use crate::{Database, Message, MessageId, NoatunTime};
+use crate::{track_node, Database, Message, MessageId, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayString;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -362,7 +362,6 @@ impl ReceiveTrack {
                         accum_retransmits.items.insert(x);
                     }
                     if accum_retransmits.wait_until.is_none() {
-                        //TODO: Remove all stale println debug statements
                         accum_retransmits.wait_until = Some(Instant::now() + retransmission_delay);
                     }
                     let mut cur = first.reconstructed_seq;
@@ -1134,6 +1133,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
         let mut messages_received: Vec<(Address, Vec<u8>)> = Vec::new();
         let mut message_to_transmit: Vec<Vec<u8>> = Vec::new();
         loop {
+            #[cfg(debug_assertions)]
+            {
+                track_node(self.distributor.ephemeral_node_id.get().raw_u16());
+            }
             for message in messages_received.drain(..) {
                 if let Err(err) = self.process_packet(message.0, message.1.clone()) {
                     error!("Error processing incoming packet: {:?}", err);
@@ -1195,10 +1198,18 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                     res?;
                 }*/
                 _process_incoming = buffering_timer => {
+                    #[cfg(debug_assertions)]
+                    {
+                        track_node(self.distributor.ephemeral_node_id.get().raw_u16());
+                    }
                     buffer_timer_instant = None;
                     self.process_messages(Instant::now().into())?;
                 }
                 _periodic = tokio::time::sleep_until(self.next_periodic) => {
+                    #[cfg(debug_assertions)]
+                    {
+                        track_node(self.distributor.ephemeral_node_id.get().raw_u16());
+                    }
                     let database = self.database.lock().unwrap();
                     let session = database.begin_session()?;
                     let msgs = self.distributor.get_periodic_message(&session, Instant::now().into())?;
@@ -1207,6 +1218,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                     self.next_periodic += self.report_head_interval;
                 }
                 cmd = self.cmd_rx.recv() => {
+                    #[cfg(debug_assertions)]
+                    {
+                        track_node(self.distributor.ephemeral_node_id.get().raw_u16());
+                    }
                     let Some(cmd) = cmd else {
 
                         info!("cmd rx, sender is gone");

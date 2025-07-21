@@ -3,10 +3,7 @@ use crate::disk_abstraction::Disk;
 use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{
-    catch_and_log, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader,
-    MessageId, NoatunContext, NoatunTime, Persistence, Target,
-};
+use crate::{catch_and_log, cur_node, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Persistence, Target};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::pin::Pin;
@@ -35,6 +32,8 @@ impl<MSG: Message + 'static> Projector<MSG> {
         let mut prev_cutoff_state = self.messages.prev_cutoff_hash()?;
         let mut cutoff_state = self.messages.current_cutoff_hash()?;
 
+        println!("@{} Advancing cutoff {} -> {}", cur_node(), prev_cutoff_state.before_time.to_noatun_time(), new_cutoff_at.to_noatun_time());
+
         let old_prev_cutoff_index = self
             .messages
             .get_index_after(prev_cutoff_state.before_time.to_noatun_time())?;
@@ -50,10 +49,15 @@ impl<MSG: Message + 'static> Projector<MSG> {
         let unused_list = unsafe { context.get_unused_list() };
         let unused_list = unused_list.get_full_slice(context);
 
+        println!("@{} Advancing list: {:?}, cutoff_index: {}", cur_node(), unused_list, cutoff_index);
+
         debug_assert!(unused_list.is_sorted_by_key(|x| x.last_overwriter));
 
         let (Ok(unused_list_last) | Err(unused_list_last)) =
             unused_list.binary_search_by_key(&cutoff_index, |x| x.last_overwriter);
+
+
+        println!("@{} Selected Advancing list: {:?}, last: {}", cur_node(), &unused_list[..unused_list_last] , unused_list_last);
 
         let mut process_now = vec![];
         assert!(new_cutoff_at > cutoff_state.before_time);
@@ -108,7 +112,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
             .advance_cutoff_hash(prev_cutoff_state, cutoff_state)?;
 
         let must_remove =
-            context.rt_calculate_stale_messages_impl(&mut self.messages, process_now, true)?;
+            context.rt_calculate_stale_messages_impl(&mut self.messages, process_now)?;
         for index in must_remove {
             self.messages
                 .mark_deleted_by_index(index, &mut self.head_tracker)?;
@@ -248,6 +252,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         let cutoff_time = self.messages.current_cutoff_time()?;
         for message in messages.iter_mut() {
             if message.header.id.timestamp() < cutoff_time {
+                //TODO: Surely we should just be pruning parents here instead?
                 debug_assert!(message.header.parents.is_empty());
             }
         }
@@ -260,7 +265,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         messages: impl ExactSizeIterator<Item = &'a MessageFrame<MSG>>,
         local: bool,
     ) -> Result<bool> {
-        //debug_assert_eq!(self.messages.count_messages()?, context.next_seqnr().try_index().unwrap_or(0));
+
         let cutoff = self.current_cutoff_time()?;
         if let Some(insert_point) = self.messages.append_many_sorted(
             messages,
@@ -369,10 +374,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
         max_project_to: Option<NoatunTime>,
         auto_delete: bool,
     ) -> Result<Option<SequenceNr> /*earliest deleted index*/> {
-        //println!("Max project to : {:?}", max_project_to);
-        //let cutoff = self.cut_off_config.nominal_cutoff(real_time_now);
-
-        //let cur_seqnr = context.next_seqnr();
 
         context.clear_unused_tracking();
 

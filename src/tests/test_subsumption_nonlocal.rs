@@ -110,3 +110,60 @@ fn test_subsumption_cutoff_interaction() {
         "first can be pruned, observer can no longer sneak in before t1"
     );
 }
+
+
+#[test]
+fn test_subsumption_cutoff_interaction2() {
+    // Receive a message that is older than cutoff
+
+    super::setup_tracing();
+    let t0 = MessageId::new_debug2(0).timestamp();
+    let mut db: Database<DocMessage> = Database::create_in_memory(
+        10_000_000,
+        DatabaseSettings {
+            mock_time: Some(t0),
+            cutoff_interval: CutOffDuration::from_hours(1).unwrap(),
+            ..DatabaseSettings::default()
+        },
+    )
+        .unwrap();
+    let mut db = db.begin_session_mut().unwrap();
+
+    println!("Cur cutoff time: {:?}", db.current_cutoff_time());
+    db.append_single(
+        &MessageFrame::new(
+            MessageId::generate_for_time(t0).unwrap(),
+            vec![],
+            DocMessage {
+                val: 0,
+                reset: true,
+            },
+        ),
+        false,
+    )
+        .unwrap();
+
+    let t0b = t0 + Duration::from_secs(1);
+    let t1 = t0 + Duration::from_secs(7200);
+    db.set_mock_time(t1).unwrap();
+
+    db.append_single(
+        &MessageFrame::new(
+            MessageId::generate_for_time(t0b).unwrap(),
+            vec![],
+            DocMessage {
+                val: 0,
+                reset: true,
+            },
+        ),
+        false,
+    )
+        .unwrap();
+
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "oldest message should be pruned"
+    );
+
+}

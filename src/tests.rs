@@ -1,4 +1,5 @@
 #![allow(non_local_definitions)]
+use tracing::info;
 use super::*;
 use crate::data_types::{NoatunCellArrayExt, NoatunString};
 use crate::disk_access::FileAccessor;
@@ -303,6 +304,7 @@ pub fn setup_tracing() {
     use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
     let subscriber = tracing_subscriber::registry().with(stdout_log);
     _ = tracing::subscriber::set_global_default(subscriber);
+    info!("Tracing enabled");
 }
 
 #[test]

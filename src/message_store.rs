@@ -1133,6 +1133,16 @@ impl<M> OnDiskMessageStore<M> {
             Err(_index) => Ok(None),
         }
     }
+
+    pub fn get_message_id_from_seq(&self, seq: SequenceNr) -> Result<MessageId> {
+        if seq.is_invalid() {
+            return Err(anyhow!("Invalid SequenceNr"));
+        }
+        let (_header, message_index) = self.header_and_index().context("opening index file")?;
+        Ok(message_index.get(seq.index()).ok_or_else(|| anyhow!("SequenceNr out of bounds"))?
+            .message)
+    }
+
     /// Return the index of the given message, if it exists, otherwise None.
     /// If the call itself fails, returns Err.
     pub fn get_index_of(&mut self, id: MessageId) -> Result<Option<usize>> {
@@ -1250,6 +1260,8 @@ impl<M> OnDiskMessageStore<M> {
         }
 
         if let Some((file, _offset)) = entry.file_offset.file_and_offset() {
+            //TODO: Remove debug
+            println!("Actually deleting #{}", delete_index.index());
             header.cutoff.report_delete(entry.message);
             header.prev_cutoff.report_delete(entry.message);
 
@@ -1813,11 +1825,9 @@ impl<M> OnDiskMessageStore<M> {
         #[cfg(debug_assertions)]
         Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
 
-        //let pre_indices = format!("Pre-indices: {:#?}", &mmap_index[0..index_header.entries as usize]);
 
         let mut last_msg_id = None;
         let mut carry_buffer: VecDeque<IndexEntry> = VecDeque::with_capacity(len);
-        //let input_stream_pos = 0;
 
         let first_input_message: &MessageFrame<M> = messages.next().unwrap();
 
@@ -1833,7 +1843,7 @@ impl<M> OnDiskMessageStore<M> {
         while first_index > 0 && mmap_index[first_index-1].message == mmap_index[first_index].message {
             first_index -= 1;
         };
-         */
+        */
 
         let mut cur_index = first_index;
         let mut index_we_must_rewind_db_to = None;
@@ -2033,7 +2043,6 @@ impl<M> OnDiskMessageStore<M> {
                 )
                 .context("flush file to disk")?;
         }
-        //let data_file = &mut index_header.data_files[self.active_file.index()];
 
         let Ok(cur_index_u32) = cur_index.try_into() else {
             bail!("max message count exceeded - database full");
@@ -2857,13 +2866,13 @@ mod tests {
             //
 
             let mut was_inserted = IndexSet::new();
-            println!("To insert: {to_insert:?}");
-            println!("Pre-state:\n{:#?}", store.header_and_index());
+            //println!("To insert: {to_insert:?}");
+            //println!("Pre-state:\n{:#?}", store.header_and_index());
             store
                 .append_many_sorted(
                     to_insert.iter(),
                     |inserted, _| {
-                        println!("Reported insert of {inserted:?}");
+                        //println!("Reported insert of {inserted:?}");
                         was_inserted.insert(inserted);
                         Ok(())
                     },

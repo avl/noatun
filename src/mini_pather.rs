@@ -197,7 +197,6 @@ impl MiniPather {
             }
         }
 
-        //println!("Node {} decided origin {}.{} reaches {:?} naturally", self.whoami, origin, received_from, recipients_solved);
         let my_rank = self.ranking(self.whoami);
         for (other_forwarder, other_forwarder_hears) in self
             .nodes
@@ -207,7 +206,6 @@ impl MiniPather {
             if other_forwarder_hears.neighbors.contains(&origin)
                 || other_forwarder_hears.neighbors.contains(&received_from)
             {
-                //recipients_solved.extend(self.who_can_hear(*other_forwarder));
 
                 for temp in self.reverse.get(other_forwarder).into_iter().flatten()
                 /*self.who_can_hear inlined*/
@@ -232,27 +230,6 @@ impl MiniPather {
             .insert((origin, received_from), !all_visited);
 
         !all_visited
-        /*
-
-        for (other_node, other_hears) in &mut self.nodes {
-
-            if !other_hears.neighbors.contains(&self.whoami) {
-                // Since it can't hear us, we can't help it.
-                // We consider it taken care of for the purpose of deciding if to forward
-                other_hears.visited = AtomicBool::new(true);
-                continue;
-            }
-            if !recipients_solved.contains(other_node)
-            {
-                let all_visited = self.nodes.values().all(|x| x.visited.load(std::sync::atomic::Ordering::Relaxed));
-                assert!(!all_visited);
-                return true;
-            }
-        }
-
-        let all_visited = self.nodes.values().all(|x| x.visited.load(std::sync::atomic::Ordering::Relaxed));
-        assert!(all_visited);
-        false*/
     }
 }
 
