@@ -458,6 +458,7 @@ pub(crate) struct OnDiskMessageStore<M> {
     phantom: PhantomData<M>,
     loaded_existing: bool,
     filesystem_sync_disabled: bool,
+    cutoff_index: usize,
     // MessageId's that aren't parents to any other message
     //update_heads: FileAccessor,
 }
@@ -495,6 +496,53 @@ impl<M> OnDiskMessageStore<M> {
         self.index_mmap.sync_all()?;
         Ok(())
     }
+    fn calculate_cutoff_index(header: &StoreHeader, index_slice: &[IndexEntry]) -> usize {
+        let cutoff_time = header.cutoff.before_time.to_noatun_time();
+        let (Ok(mut index)|Err(mut index)) =index_slice.binary_search_by_key(
+            &cutoff_time,
+            |x|x.message.timestamp());
+        
+        while index > 0 {
+            if index_slice[index-1].message.timestamp() == cutoff_time {
+                index -= 1;
+                continue;
+            } 
+            break;
+        }
+            
+        index
+    }
+    pub(crate) fn debug_verify_cutoff_index(&self) -> Result<()> {
+        let (header, index) = self.header_and_index()?;
+        let mut correct_index = 0;
+        for item in index {
+            if item.message.timestamp() < header.cutoff.before_time {
+                correct_index += 1;
+            } else {
+                break;
+            }
+        }
+        let calc = Self::calculate_cutoff_index(header, index);
+        if correct_index != calc {
+            println!("Index: {:#?}", index);
+            println!("Correct: {}, according to calc: {}", correct_index, calc);
+            std::process::abort();
+        }
+        assert_eq!(correct_index, Self::calculate_cutoff_index(header, index));
+        assert_eq!(correct_index, self.cutoff_index);
+        Ok(())
+    }
+    pub(crate) fn cutoff_index(&self) -> SequenceNr {
+        SequenceNr::from_index(self.cutoff_index)
+    }
+    pub(crate) fn set_cutoff_index(&mut self, cutoff_index: SequenceNr) {
+        self.cutoff_index = cutoff_index.index();
+        #[cfg(debug_assertions)]
+        {
+            self.debug_verify_cutoff_index().unwrap();
+        }
+    }
+
     pub fn get_upstream_of(
         &self,
         message_ids: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
@@ -832,23 +880,19 @@ impl<M> OnDiskMessageStore<M> {
             }
         }
 
-        Self::recover_cutoff_state(now, index_header, index, cutoff_config)?;
+        self.cutoff_index = Self::recover_cutoff_state(now, index_header, index, cutoff_config)?;
+        self.debug_verify_cutoff_index()?;
+
         Ok(())
     }
 
-    /*fn get_cutoff_state(&mut self) -> Result<&mut CutOffHashPos> {
-        let hdr_start = self.index_mmap.map_mut_ptr();
-
-        let (hdr, entries) = Self::header_and_index_mut(&mut self.index_mmap)?;
-
-    }*/
 
     fn recover_cutoff_state(
         time_now: NoatunTime,
         index_header: &mut StoreHeader,
         index: &[IndexEntry],
         config: &CutOffConfig,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let cutoff_time = config.nominal_cutoff(CutOffTime::from_noatun_time(time_now));
         index_header.cutoff.before_time = cutoff_time;
         index_header.prev_cutoff.before_time = cutoff_time.saturating_sub(config.stride);
@@ -863,7 +907,7 @@ impl<M> OnDiskMessageStore<M> {
             index_header.prev_cutoff.apply(item.message, "recovery");
         }
 
-        Ok(())
+        Ok(Self::calculate_cutoff_index(index_header, index))
     }
 
     pub fn contains_message(&self, start: MessageId) -> Result<bool> {
@@ -1112,6 +1156,7 @@ impl<M> OnDiskMessageStore<M> {
         let msg = Self::read_msg_header(entry, data_files, Some(&mut children))?;
         Ok(Some((msg, children)))
     }
+    
     /// Return the given message, or None if it does not exist.
     pub fn read_message_header_and_children(
         &self,
@@ -1171,12 +1216,13 @@ impl<M> OnDiskMessageStore<M> {
         let (Ok(i) | Err(i)) = message_index.binary_search_by_key(&id, |x| x.message);
         Ok(i)
     }
+
     /// Return the greatest index such that all messages with a smaller index occur before
     /// time. All returned messages will be < time, and all messages before < time will have
     /// a smaller index. If there are no messages, this returns 0.
     /// If all messages are < time, this returns an index "one after the end".
     /// The returned index may point at a removed message.
-    pub fn get_index_after(&self, time: NoatunTime) -> Result<SequenceNr> {
+    pub fn get_index_at_or_after(&self, time: NoatunTime) -> Result<SequenceNr> {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
         let needle = MessageId::from_parts_raw(time.0, [0; 10])?;
         match message_index.binary_search_by_key(&needle, |x| x.message) {
@@ -1193,6 +1239,7 @@ impl<M> OnDiskMessageStore<M> {
             .map(|x| x.message)
             .collect())
     }
+
     pub fn get_all_messages(&self) -> Result<impl Iterator<Item = MessageFrame<M>> + use<'_, M>>
     where
         M: Message,
@@ -1210,6 +1257,7 @@ impl<M> OnDiskMessageStore<M> {
                 }
             }))
     }
+
     pub fn get_all_messages_with_children(&self) -> Result<Vec<(MessageFrame<M>, Vec<MessageId>)>>
     where
         M: Message,
@@ -1226,6 +1274,7 @@ impl<M> OnDiskMessageStore<M> {
             })
             .collect()
     }
+
     /// Delete any message with the given index. Idempotent, does nothing if index is already
     /// deleted or does not exist.
     /// If the call itself fails, returns Err.
@@ -1776,6 +1825,9 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message + Debug + 'a,
     {
+        self.debug_verify_cutoff_index()?;
+
+
         let mut prev = None;
 
         let mut messages = messages.inspect(|test| {
@@ -1900,6 +1952,7 @@ impl<M> OnDiskMessageStore<M> {
                 Cases::NextFromPresent => {
                     let input_message_id = cur_input_message.as_ref().map(|x| x.id());
                     if present_id == input_message_id {
+                        // input message (added message) was already present in store
                         cur_input_message = messages.next();
                         cur_index += 1;
                         continue;
@@ -1920,7 +1973,19 @@ impl<M> OnDiskMessageStore<M> {
                         debug_assert!(carry_buffer.iter().is_sorted_by_key(|x| x.message));
                     }
 
+                    /*
+                    TODO: See if we can make this work. It's a more efficient mechanism
+                    to maintain self.cutoff_index 
+                    if cur_index < initial_index_entries && cur_index_entry.message.timestamp() < index_header.cutoff.before_time {
+                        self.cutoff_index -= 1;
+                    }*/
+
                     *cur_index_entry = temp;
+
+                    /*if cur_index_entry.message.timestamp() < index_header.cutoff.before_time {
+                        self.cutoff_index += 1;
+                    }*/
+
 
                     cur_index += 1;
                 }
@@ -2016,11 +2081,20 @@ impl<M> OnDiskMessageStore<M> {
                         carry_buffer.push_back(*cur_index_entry);
                         debug_assert!(carry_buffer.iter().is_sorted_by_key(|x| x.message));
                     }
+                    /*if cur_index < initial_index_entries  && cur_index_entry.message.timestamp() < index_header.cutoff.before_time {
+                        self.cutoff_index -= 1;
+                    }*/
+
                     *cur_index_entry = IndexEntry {
                         message: msg.id(),
                         file_offset: FileOffset::new(start_pos, self.active_file),
                         file_total_size: total_size,
                     };
+
+                    /*if cur_index_entry.message.timestamp() < index_header.cutoff.before_time {
+                        self.cutoff_index += 1;
+                    }*/
+
                     cur_index += 1;
 
                     let full_msg_size = total_size;
@@ -2076,7 +2150,13 @@ impl<M> OnDiskMessageStore<M> {
             assert_eq!(new_cutoff, index_header.cutoff);
         }
 
+
         self.handle_remaining_child_assignments(remaining_child_assignments)?;
+
+        let (index_header, mmap_index) =
+            Self::header_and_index_mut(&mut self.index_mmap)?;
+        self.cutoff_index = Self::calculate_cutoff_index(index_header, mmap_index);
+        self.debug_verify_cutoff_index()?;
 
         //self.compact()?;
 
@@ -2292,6 +2372,10 @@ impl<M> OnDiskMessageStore<M> {
             .unwrap()
             .0;
 
+        
+        let (header, index) = Self::header_and_index_mut(&mut index_file)?;
+        let cutoff_index = Self::calculate_cutoff_index(header, index);
+
         let this = Self {
             target: target.clone(),
             index_mmap: index_file,
@@ -2301,6 +2385,7 @@ impl<M> OnDiskMessageStore<M> {
             loaded_existing: db_existed,
             //update_heads,
             filesystem_sync_disabled: false,
+            cutoff_index,
         };
 
         Ok(this)
@@ -2326,6 +2411,10 @@ impl<M> OnDiskMessageStore<M> {
         let (header, _index) = self.header_and_index()?;
         Ok(header.prev_cutoff)
     }
+
+    /// Messages timestamped _earlier_ are in the cutoff-region
+    /// (included in the cutoff hash). Messages with the exact timestamp of cutoff
+    /// are considered to be on the right (more recent) side of the cutoff.
     pub fn current_cutoff_time(&self) -> Result<NoatunTime> {
         let (header, _index) = self.header_and_index()?;
         Ok(header.cutoff.before_time.to_noatun_time())

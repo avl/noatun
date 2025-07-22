@@ -379,6 +379,7 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     /// [`Self::maybe_advance_cutoff`] to make sure pruning of old messages occurs.
     pub fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
         self.db.set_mock_time(time)
+        //TODO: Do `maybe_advance_cutoff` here?
     }
 
     /// Returns true if the message still exists.

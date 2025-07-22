@@ -1382,6 +1382,12 @@ impl DatabaseContextData {
             );
         }
 
+        #[cfg(debug_assertions)]
+        {
+            messages.debug_verify_cutoff_index()?;
+        }
+        
+        let cutoff_index = messages.cutoff_index();
 
 
         'outer: while let Some(msg) = unused_messages.pop() {
@@ -1396,12 +1402,13 @@ impl DatabaseContextData {
                 continue;
             };
 
-
             let before_cutoff = message_id.timestamp() < cutoff_time;
 
             let may_have_been_transmitted = messages.may_have_been_transmitted(msg.seq)?;
+            let overwriter_is_before_cutoff = msg.last_overwriter < cutoff_index;
+            
 
-            compile_error!("There's a bug here. I think it's this:
+            /*There's a bug here. I think it's this:
 
 When we advance cutoff, we only apply unused messages whose last-overwriter is _after_ cutoff.
 But when we calculate messages here "on insert", we don't consult last-overwriter, and
@@ -1414,25 +1421,27 @@ ones, which don't care about last overwriter.
 How to solve?
 
 I gueess we need to track last-overwriter here too?
-
-
-            ")
-
+*/
             let mut debug = false;
             //TODO: Remove this
             if message_id.to_string().contains("0-0-0") {
-                println!("@{} Unused2 message #{} id: {}, before cutoff: {} cutoff: {:?}",
+                println!("@{} Unused2 message #{} id: {}, before cutoff: {}/{} cutoff: {:?}",
                     cur_node(),
-                         msg.seq, message_id, before_cutoff, cutoff_time);
-                dbg!(msg.wrote_tombstone, may_have_been_transmitted, msg.can_be_deleted_early, before_cutoff);
+                         msg.seq, message_id, before_cutoff, overwriter_is_before_cutoff, cutoff_time);
+                //dbg!(msg.wrote_tombstone, may_have_been_transmitted, msg.can_be_deleted_early, before_cutoff);
                 debug = true;
             }
 
 
+            //TODO: Consider case before_cutoff == true && overwriter_is_before_cutoff == false
+            //Currently, this case will lead to us adding the unused item to `new_unused_list`.
+            //Is this good enough? Will we consider this message again ? Will we consider it when
+            //overwriter moves before cutoff? Verify that we do!
+            
             // Condition 1 (referenced below)
             if (!msg.wrote_tombstone
                 && (!may_have_been_transmitted || msg.can_be_deleted_early))
-                || before_cutoff
+                || (before_cutoff && overwriter_is_before_cutoff)
             {
                 for observer in self.read_dependency(msg.seq) {
                     debug!("considered its observer {:?}", observer);

@@ -12,6 +12,7 @@ use tracing::{error, info, trace};
 pub(crate) struct Projector<MSG: Message> {
     messages: OnDiskMessageStore<MSG>,
     head_tracker: UpdateHeadTracker,
+    /// The configured cutoff interval and stride
     cut_off_config: CutOffConfig,
 }
 
@@ -36,15 +37,17 @@ impl<MSG: Message + 'static> Projector<MSG> {
 
         let old_prev_cutoff_index = self
             .messages
-            .get_index_after(prev_cutoff_state.before_time.to_noatun_time())?;
+            .get_index_at_or_after(prev_cutoff_state.before_time.to_noatun_time())?;
 
         let old_cutoff_index = self
             .messages
-            .get_index_after(cutoff_state.before_time.to_noatun_time())?;
+            .get_index_at_or_after(cutoff_state.before_time.to_noatun_time())?;
+
+        assert_eq!(old_cutoff_index, self.messages.cutoff_index());
 
         let cutoff_index = self
             .messages
-            .get_index_after(new_cutoff_at.to_noatun_time())?;
+            .get_index_at_or_after(new_cutoff_at.to_noatun_time())?;
 
         let unused_list = unsafe { context.get_unused_list() };
         let unused_list = unused_list.get_full_slice(context);
@@ -111,6 +114,8 @@ impl<MSG: Message + 'static> Projector<MSG> {
         self.messages
             .advance_cutoff_hash(prev_cutoff_state, cutoff_state)?;
 
+        self.messages.set_cutoff_index(cutoff_index);
+
         let must_remove =
             context.rt_calculate_stale_messages_impl(&mut self.messages, process_now)?;
         for index in must_remove {
@@ -120,6 +125,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
 
         self.head_tracker
             .remove_before_cutoff(cutoff_state.before_time.to_noatun_time())?;
+
 
         Ok(())
     }

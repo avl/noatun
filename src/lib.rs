@@ -38,6 +38,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::borrow::Borrow;
 use std::cell::Cell;
+use std::cmp::Ordering;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::Write;
 use std::marker::PhantomData;
@@ -82,6 +83,7 @@ use dummy_term_colors as colors;
 
 #[cfg(feature = "debug")]
 use crate::colors::{colored_hex_int, colored_hex_sint};
+use crate::cutoff::CutOffTime;
 
 #[cfg(feature = "tokio")]
 pub mod communication;
@@ -703,6 +705,19 @@ impl Add<NoatunTime> for Duration {
     type Output = NoatunTime;
     fn add(self, rhs: NoatunTime) -> Self::Output {
         NoatunTime(rhs.0 + self.as_millis() as u64)
+    }
+}
+
+
+impl PartialEq<CutOffTime> for NoatunTime {
+    fn eq(&self, other: &CutOffTime) -> bool {
+        *self == other.to_noatun_time()
+    }
+}
+
+impl PartialOrd<CutOffTime> for NoatunTime {
+    fn partial_cmp(&self, other: &CutOffTime) -> Option<Ordering> {
+        Some(self.cmp(&other.to_noatun_time()))
     }
 }
 

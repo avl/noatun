@@ -36,7 +36,7 @@ impl Message for DocMessage {
 fn test_subsumption_cutoff_interaction() {
     // Is cutoff_interval implemented correctly?
     // it needs to know the last time information established by the prune candidate was observable.
-    // this time can be looong after the directly written information was overwritten. I guess it
+    // this time can be long after the directly written information was overwritten. I guess it
     // "just works", because this is actually the first time the pruning candidate can fulfill
     // the "not used" condition. But do we correctly wait for this overwriter to pass into the
     // before-cutoff region, if the overwriter doesn't depend on the overwritten?
@@ -146,6 +146,7 @@ fn test_subsumption_cutoff_interaction2() {
     let t0b = t0 + Duration::from_secs(1);
     let t1 = t0 + Duration::from_secs(7200);
     db.set_mock_time(t1).unwrap();
+    db.maybe_advance_cutoff().unwrap();
 
     db.append_single(
         &MessageFrame::new(
@@ -163,6 +164,66 @@ fn test_subsumption_cutoff_interaction2() {
     assert_eq!(
         db.count_messages(),
         1,
+        "oldest message should be pruned"
+    );
+
+}
+
+
+#[test]
+fn test_subsumption_cutoff_interaction3() {
+    // Receive a message that is older than cutoff, but whose
+    // deleter is younger, and the message should thus not be deleted
+
+    super::setup_tracing();
+    let t0 = MessageId::new_debug2(0).timestamp();
+    let mut db: Database<DocMessage> = Database::create_in_memory(
+        10_000_000,
+        DatabaseSettings {
+            mock_time: Some(t0),
+            cutoff_interval: CutOffDuration::from_hours(1).unwrap(),
+            ..DatabaseSettings::default()
+        },
+    )
+        .unwrap();
+    let mut db = db.begin_session_mut().unwrap();
+
+    let t1 = t0 + Duration::from_secs(7200);
+
+    db.set_mock_time(t1).unwrap();
+    db.maybe_advance_cutoff().unwrap();
+
+    db.append_single(
+        &MessageFrame::new(
+            MessageId::generate_for_time(t1).unwrap(),
+            vec![],
+            DocMessage {
+                val: 0,
+                reset: true,
+            },
+        ),
+        false,
+    )
+        .unwrap();
+
+    let t0b = t0;
+    db.append_single(
+        &MessageFrame::new(
+            MessageId::generate_for_time(t0b).unwrap(),
+            vec![],
+            DocMessage {
+                val: 0,
+                reset: true,
+            },
+        ),
+        false,
+    )
+        .unwrap();
+
+
+    assert_eq!(
+        db.count_messages(),
+        2,
         "oldest message should be pruned"
     );
 
