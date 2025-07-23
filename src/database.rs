@@ -36,6 +36,7 @@ pub struct Database<MSG: Message> {
     time_override: Option<NoatunTime>,
     projection_time_limit: Option<NoatunTime>,
     load_status: LoadingStatus,
+    /// Automatically prune stale messages
     auto_delete: bool,
 }
 impl<T: Message> Debug for Database<T> {
@@ -59,7 +60,7 @@ pub struct DatabaseSettings {
     ///
     /// Default value is true - automatically delete messages that no longer affect the
     /// state.
-    pub auto_delete: bool,
+    pub auto_prune: bool,
     /// The maximum size the noatun database can grow to.
     /// This amount of virtual memory space will be reserved by noatun. Note,
     /// the memory isn't actually used until data is put in the database.
@@ -73,7 +74,7 @@ impl Default for DatabaseSettings {
         DatabaseSettings {
             mock_time: None,
             projection_time_limit: None,
-            auto_delete: true,
+            auto_prune: true,
             max_file_size: 1_000_000_000,
             cutoff_interval: CutOffDuration::from_minutes(15),
         }
@@ -505,7 +506,7 @@ impl<MSG: Message + 'static> Database<MSG> {
             &DatabaseSettings {
                 mock_time: Some(now),
                 projection_time_limit: self.projection_time_limit,
-                auto_delete: self.auto_delete,
+                auto_prune: self.auto_delete,
                 ..DatabaseSettings::default()
             },
         )?;
@@ -1022,7 +1023,7 @@ impl<MSG: Message + 'static> Database<MSG> {
             time_override: settings.mock_time,
             projection_time_limit: settings.projection_time_limit,
             load_status: LoadingStatus::NewDatabase,
-            auto_delete: settings.auto_delete,
+            auto_delete: settings.auto_prune,
         };
         db.do_apply_missing()?;
 
@@ -1052,7 +1053,7 @@ impl<MSG: Message + 'static> Database<MSG> {
                 &DatabaseSettings {
                     mock_time: settings.mock_time,
                     projection_time_limit: settings.projection_time_limit,
-                    auto_delete: settings.auto_delete,
+                    auto_prune: settings.auto_prune,
                     ..Default::default()
                 },
             )?;
@@ -1077,7 +1078,7 @@ impl<MSG: Message + 'static> Database<MSG> {
             time_override: settings.mock_time,
             projection_time_limit: settings.projection_time_limit,
             load_status,
-            auto_delete: settings.auto_delete,
+            auto_delete: settings.auto_prune,
         };
         db.do_apply_missing()?;
         Ok(db)

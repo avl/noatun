@@ -174,7 +174,7 @@ impl Node {
         let db = Database::create_in_memory(1_000_000, DatabaseSettings {
             mock_time: Some(datetime!(2020-01-01 T 00:00:00 Z).into()),
             projection_time_limit: None,
-            auto_delete: false,
+            auto_prune: false,
             max_file_size: 100_000_000,
             cutoff_interval: CutOffDuration::from_minutes(5),
         }).unwrap();

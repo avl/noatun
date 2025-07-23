@@ -55,7 +55,7 @@ mod test_types_rewind {
                 mock_time: Some(datetime!(2020-01-01 Z).into()),
                 cutoff_interval: CutOffDuration::from_days(365).unwrap(),
 
-                auto_delete: false,
+                auto_prune: false,
                 ..Default::default()
             },
         )

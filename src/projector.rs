@@ -3,7 +3,7 @@ use crate::disk_abstraction::Disk;
 use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{catch_and_log, cur_node, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Persistence, Target};
+use crate::{catch_and_log, cur_node, test_elapsed, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Persistence, Target};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::pin::Pin;
@@ -33,7 +33,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         let mut prev_cutoff_state = self.messages.prev_cutoff_hash()?;
         let mut cutoff_state = self.messages.current_cutoff_hash()?;
 
-        println!("@{} Advancing cutoff {} -> {}", cur_node(), prev_cutoff_state.before_time.to_noatun_time(), new_cutoff_at.to_noatun_time());
+        //println!("@{} {:?} Advancing cutoff {} -> {}", cur_node(), test_elapsed(), cutoff_state.before_time.to_noatun_time(), new_cutoff_at.to_noatun_time());
 
         let old_prev_cutoff_index = self
             .messages
@@ -117,7 +117,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         self.messages.set_cutoff_index(cutoff_index);
 
         let must_remove =
-            context.rt_calculate_stale_messages_impl(&mut self.messages, process_now)?;
+            context.rt_calculate_stale_messages_impl(&mut self.messages, &mut process_now)?;
         for index in must_remove {
             self.messages
                 .mark_deleted_by_index(index, &mut self.head_tracker)?;
@@ -392,40 +392,50 @@ impl<MSG: Message + 'static> Projector<MSG> {
             Some(max_project_to) => max_project_to,
         };
 
-        do_run::<MSG>(context, root, first_run, max_project_to)?;
+        let must_remove = do_run::<MSG>(context, &self.messages, root, first_run, max_project_to)?;
         if !auto_delete {
             return Ok(None);
         }
-        return remove_stale_messages(self, context);
+        return remove_stale_messages(self, context, must_remove);
 
         /// If returns true, need to finalize before-cutoff-part, then continue at given index
         fn do_run<MSG: Message>(
             context: &mut DatabaseContextData,
+            messages: &OnDiskMessageStore<MSG>,
             root: &mut MSG::Root,
             items: impl Iterator<Item = (usize, MessageFrame<MSG>)>,
             max_project_to: NoatunTime,
-        ) -> Result<()> {
+        ) -> Result<Vec<SequenceNr>> {
+            let mut must_remove = Vec::new();
             for (seq, msg) in items {
                 if msg.header.id.timestamp() > max_project_to {
-                    return Ok(());
+                    break;
                 }
                 let seqnr = SequenceNr::from_index(seq);
                 Projector::<MSG>::apply_single_message(context, root, &msg, seqnr);
+
+                must_remove.extend(context.calculate_stale_messages(messages)?);
             }
-            Ok(())
+            Ok(must_remove)
         }
 
         fn remove_stale_messages<MSG: Message>(
             tself: &mut Projector<MSG>,
             context: &mut DatabaseContextData,
+            must_remove: Vec<SequenceNr>,
         ) -> Result<Option<SequenceNr /*minimum deleted*/>> {
-            let must_remove = context.calculate_stale_messages(&mut tself.messages)?;
+            //let must_remove = context.calculate_stale_messages(&mut tself.messages)?;
             let mut earliest_deleted = None;
             for index in must_remove {
+
+                //TODO: Remove this lookup, it's just used for logging
                 let rev: Vec<_> = context.read_reverse_dependency(index).collect();
                 info!("Deleting stale msg {:?}, its reverse dep: {:?}", index, rev);
+
+                //TODO: Remove this lookup, it's just used for logging
                 let dep: Vec<_> = context.read_dependency(index).collect();
                 info!("Deleting stale msg {:?}, its dep: {:?}", index, dep);
+
                 let was_deleted = tself
                     .messages
                     .mark_deleted_by_index(index, &mut tself.head_tracker)?;

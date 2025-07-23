@@ -18,6 +18,7 @@
 #![allow(clippy::derivable_impls)]
 //#![allow(clippy::manual_is_multiple_of)]
 
+use crate::distributor::NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER;
 pub use crate::data_types::{NoatunCell, OpaqueNoatunCell};
 use crate::private::Sealed;
 use crate::sequence_nr::SequenceNr;
@@ -458,6 +459,13 @@ static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize =
 thread_local! {
     pub static TEST_EPOCH: Cell<Option<Instant>> = const { Cell::new(None) };
 }
+
+#[cfg(test)]
+pub fn reset_random_id() {
+    NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
+    NON_RANDOM_ID_COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn test_epoch() -> Instant {
     TEST_EPOCH.with(|epoch| match epoch.get() {
         None => {

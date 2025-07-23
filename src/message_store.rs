@@ -4,11 +4,7 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::{sha2, sha2_message};
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{
-    bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut,
-    Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime,
-    Target,
-};
+use crate::{bytes_of, bytes_of_mut, cur_node, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, test_elapsed, Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime, Target};
 use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 #[allow(unused)]
@@ -1310,7 +1306,7 @@ impl<M> OnDiskMessageStore<M> {
 
         if let Some((file, _offset)) = entry.file_offset.file_and_offset() {
             //TODO: Remove debug
-            println!("Actually deleting #{}", delete_index.index());
+            //println!("@{} {:?} Actually deleting #{}", cur_node(), test_elapsed(), delete_index.index());
             header.cutoff.report_delete(entry.message);
             header.prev_cutoff.report_delete(entry.message);
 

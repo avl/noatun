@@ -627,7 +627,7 @@ impl Debug for EphemeralNodeId {
     }
 }
 
-static NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER: std::sync::atomic::AtomicU16 =
+pub(crate) static NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER: std::sync::atomic::AtomicU16 =
     std::sync::atomic::AtomicU16::new(0);
 
 impl EphemeralNodeId {

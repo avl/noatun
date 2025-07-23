@@ -348,7 +348,7 @@ pub mod noatun_bench {
             db = Database::<Task>::create_in_memory(
                 50_000,
                 DatabaseSettings {
-                    auto_delete: false,
+                    auto_prune: false,
                     ..DatabaseSettings::default()
                 }
             )
@@ -358,7 +358,7 @@ pub mod noatun_bench {
                 "test_noatun.bin",
                 OpenMode::Overwrite,
                 DatabaseSettings {
-                    auto_delete: true,
+                    auto_prune: true,
                     max_file_size: 1000_000_000,
                     ..DatabaseSettings::default()
                 }

@@ -4,7 +4,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{bytes_of_mut, bytes_of_mut_uninit, cur_node, from_bytes, from_bytes_mut, FatPtr, GenPtr, Message, MessageId, NoatunStorable, NoatunTime, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
+use crate::{bytes_of_mut, bytes_of_mut_uninit, cur_node, from_bytes, from_bytes_mut, test_elapsed, FatPtr, GenPtr, Message, MessageId, NoatunStorable, NoatunTime, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
@@ -737,6 +737,7 @@ impl DatabaseContextData {
             return;
         }
 
+        //println!("@{} {:?} Rewinding from {:?} to {:?}", cur_node(), test_elapsed(), self.next_seqnr(), new_time);
         info!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
 
         let result = self.undo_log.rewind(|entry| match entry {
@@ -1200,12 +1201,11 @@ impl DatabaseContextData {
     /// Returns all messages that can now be removed.
     pub(crate) fn calculate_stale_messages<MSG: Message + Debug>(
         &mut self,
-        message_store: &mut OnDiskMessageStore<MSG>,
+        message_store: &OnDiskMessageStore<MSG>,
     ) -> Result<Vec<SequenceNr>> {
         Ok(self
             .first_stale_message_step(message_store)?
-            .into_iter()
-            .collect())
+            )
     }
 
     pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr, opaque: bool) {
@@ -1355,16 +1355,15 @@ impl DatabaseContextData {
     /// 2) During advancement of the cutoff time.
     pub(crate) fn rt_calculate_stale_messages_impl<M: Message + Debug>(
         &mut self,
-        messages: &mut OnDiskMessageStore<M>,
-        mut unused_messages: Vec<UnusedInfo>,
-        // TODO: It may seem this should be determined by looking at id:s, not by boolean.
-        // However, any such refactor should probably be aware of the fact that the `before_cutoff`
-        // currently depends on HOW we ended up here. It is true when called from within the
-        // advance_cutoff mechanism.
+        messages: &OnDiskMessageStore<M>,
+        unused_messages: &mut Vec<UnusedInfo>,
         // TODO: Check what happens if we receive a message that is old enough to be before
         // cutoff, or which makes messages before cutoff stale.
-
     ) -> anyhow::Result<Vec<SequenceNr>> {
+
+        /*let unused_list = unsafe { self.get_unused_list() };
+        println!("@{} {:?} pre-calc unused list: {:?}", cur_node(), test_elapsed(), unused_list.get_full_slice(self));*/
+
         let mut deleted = Vec::new();
         let mut deferred = Vec::new();
         let mut new_unused_list = Vec::new();
@@ -1422,15 +1421,6 @@ How to solve?
 
 I gueess we need to track last-overwriter here too?
 */
-            let mut debug = false;
-            //TODO: Remove this
-            if message_id.to_string().contains("0-0-0") {
-                println!("@{} Unused2 message #{} id: {}, before cutoff: {}/{} cutoff: {:?}",
-                    cur_node(),
-                         msg.seq, message_id, before_cutoff, overwriter_is_before_cutoff, cutoff_time);
-                //dbg!(msg.wrote_tombstone, may_have_been_transmitted, msg.can_be_deleted_early, before_cutoff);
-                debug = true;
-            }
 
 
             //TODO: Consider case before_cutoff == true && overwriter_is_before_cutoff == false
@@ -1457,10 +1447,6 @@ I gueess we need to track last-overwriter here too?
                             observer
                         );
 
-                        if debug {
-                            println!("Couldn't delete because observed by {:?}", observer);
-                        }
-
                         // The things 'deferred' are carried out at the end of this function (i.e, quickly)
                         deferred.push(move |tself: &mut DatabaseContextData| {
                             // Remember/record_reverse_dependency
@@ -1477,9 +1463,6 @@ I gueess we need to track last-overwriter here too?
                     }
                 }
             } else {
-                if debug {
-                    println!("because after cutoff");
-                }
 
                 debug!("can't delete {:?}{:?} yet because it's been transmitted and is after cutoff: {:?} and not unconditionally overwritten", 
                     msg.seq, //msgobj.map(|x2|x2.map(|x|x.0.id)), 
@@ -1487,12 +1470,10 @@ I gueess we need to track last-overwriter here too?
                 new_unused_list.push(msg);
                 continue 'outer;
             }
-            if debug {
-                println!("DELETING!");
-            }
 
             info!(
-                "Deleting {:?} (before cutoff: {:?}), may have been transmitted: {:?}",
+                "@{} {:?} Deleting {:?} (before cutoff: {:?}), may have been transmitted: {:?}",
+                cur_node(), test_elapsed(),
                 msg,
                 before_cutoff,
                 messages.may_have_been_transmitted(msg.seq)?
@@ -1518,9 +1499,13 @@ I gueess we need to track last-overwriter here too?
             unused_list.push_untracked(self, *new_unused);
         }
 
+        messages.debug_verify_cutoff_index().unwrap();
+
         for action in deferred {
             action(self);
         }
+
+        messages.debug_verify_cutoff_index().unwrap();
 
         Ok(deleted)
     }
@@ -1530,11 +1515,17 @@ I gueess we need to track last-overwriter here too?
     /// opaque for example).
     pub(crate) fn first_stale_message_step<M: Message + Debug>(
         &mut self,
-        messages: &mut OnDiskMessageStore<M>,
+        messages: &OnDiskMessageStore<M>,
     ) -> anyhow::Result<Vec<SequenceNr>> {
+        // TODO: Remove this commented out sort.
+        // We *want* `unused_messages` in overwriter-order (which we should already have)
+        assert!(self.unused_messages.is_sorted_by_key(|x| x.last_overwriter));
+        //unused_messages.sort(); //Sort in seq-nr order
         let mut unused_messages = take(&mut self.unused_messages);
-        unused_messages.sort(); //Sort in seq-nr order
-        self.rt_calculate_stale_messages_impl(messages, unused_messages)
+        let deleted = self.rt_calculate_stale_messages_impl(messages, &mut unused_messages)?;
+        self.unused_messages = unused_messages;
+        self.unused_messages.clear();
+        Ok(deleted)
     }
     pub(crate) fn rt_increase_use(&mut self, registrar: SequenceNr) {
         let uses = unsafe { self.get_uses() };

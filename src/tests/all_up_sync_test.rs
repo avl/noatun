@@ -1,4 +1,5 @@
 #![allow(clippy::needless_range_loop)]
+use crate::reset_random_id;
 use crate::colors::colored_int;
 use crate::communication::{
     CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
@@ -789,10 +790,23 @@ async fn all_up_general_update_sync_test_mid_age_messages_no_persist_all() {
     setup_tracing();
     //TODO: This test case fails for certain seeds. Try this (and other cases here)
     //with more seeds, and analyze why it fails!
-    for seed in 12..100 {
+    for seed in 0..10000 {
         println!("Seed = {seed}");
+        //TODO: Remove reset here
+        reset_random_id();
         all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX, true).await;
     }
+}
+
+
+#[tokio::test(start_paused = true)]
+async fn all_up_general_update_sync_test_mid_age_messages_no_persist_9895() {
+    setup_tracing();
+    let seed = 9895;
+    println!("Seed = {seed}");
+    //TODO: Remove reset here
+    //reset_random_id();
+    all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX, true).await;
 }
 
 
