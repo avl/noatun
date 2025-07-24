@@ -4,7 +4,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{bytes_of_mut, bytes_of_mut_uninit, cur_node, from_bytes, from_bytes_mut, test_elapsed, FatPtr, GenPtr, Message, MessageId, NoatunStorable, NoatunTime, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
+use crate::{bytes_of_mut, bytes_of_mut_uninit, cur_node, dprintln, from_bytes, from_bytes_mut, test_elapsed, FatPtr, GenPtr, Message, MessageId, NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
@@ -19,7 +19,7 @@ use tracing::{debug, error, info, trace, warn};
 
 mod registrar_info {
     use crate::sequence_nr::SequenceNr;
-    use crate::{DatabaseContextData, MessageId, NoatunStorable};
+    use crate::{DatabaseContextData, NoatunStorable};
     use std::cmp::Ordering;
     use std::fmt::{Debug, Formatter};
     use std::pin::Pin;
@@ -737,7 +737,7 @@ impl DatabaseContextData {
             return;
         }
 
-        //println!("@{} {:?} Rewinding from {:?} to {:?}", cur_node(), test_elapsed(), self.next_seqnr(), new_time);
+        //println!("@{} {:?} Rewinding from {:?} to {:?}", crate::cur_node(), crate::test_elapsed(), self.next_seqnr(), new_time);
         info!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
 
         let result = self.undo_log.rewind(|entry| match entry {
@@ -1362,7 +1362,7 @@ impl DatabaseContextData {
     ) -> anyhow::Result<Vec<SequenceNr>> {
 
         /*let unused_list = unsafe { self.get_unused_list() };
-        println!("@{} {:?} pre-calc unused list: {:?}", cur_node(), test_elapsed(), unused_list.get_full_slice(self));*/
+        println!("@{} {:?} pre-calc unused list: {:?}", crate::cur_node(), crate::test_elapsed(), unused_list.get_full_slice(self));*/
 
         let mut deleted = Vec::new();
         let mut deferred = Vec::new();
@@ -1381,11 +1381,11 @@ impl DatabaseContextData {
             );
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(all(debug_assertions, feature = "debug"))]
         {
-            messages.debug_verify_cutoff_index()?;
+            self.debug_verify_cutoff_index()?;
         }
-        
+
         let cutoff_index = messages.cutoff_index();
 
 
@@ -1407,20 +1407,32 @@ impl DatabaseContextData {
             let overwriter_is_before_cutoff = msg.last_overwriter < cutoff_index;
             
 
-            /*There's a bug here. I think it's this:
+            compile_error!("
+There's a bug here. It goes like this:
 
-When we advance cutoff, we only apply unused messages whose last-overwriter is _after_ cutoff.
-But when we calculate messages here "on insert", we don't consult last-overwriter, and
-may thus clean messages earlier.
+ * Messages, even before cutoff, might sometimes not be cleaned because they have later observers.
+ * When such an observer is removed, logically we need to time-travel back to the earliest
+   message in 'UnusedList' that was blocking because it was observed by the deleted message.
+   Nothing currently causes this to happen. Considew how to implement.
 
-This used to work, since we had a boolean here that told us if we were running from within
-advance-cutoff or online. Then the only deletes here were always just opaques and non-transmitted
-ones, which don't care about last overwriter.
 
-How to solve?
 
-I gueess we need to track last-overwriter here too?
-*/
+            ")
+
+            let mut debug = false;
+            //TODO: Remove this
+            if message_id.to_string().contains("a-0-0") {
+                dprintln!("@{} Unused #{} db-at: {} id: {}, ovr: {:?} bef cut: {}/{} cut: {:?}, tmb: {}, tr: {}, erl: {}",
+                    crate::cur_node(),
+                         msg.seq,
+                         self.next_seqnr(),
+                         message_id,
+                         msg.last_overwriter, before_cutoff, overwriter_is_before_cutoff, cutoff_time,
+                    msg.wrote_tombstone, may_have_been_transmitted, msg.can_be_deleted_early
+                );
+                //dbg!(msg.wrote_tombstone, may_have_been_transmitted, msg.can_be_deleted_early, before_cutoff);
+                debug = true;
+            }
 
 
             //TODO: Consider case before_cutoff == true && overwriter_is_before_cutoff == false
@@ -1447,6 +1459,12 @@ I gueess we need to track last-overwriter here too?
                             observer
                         );
 
+                        if debug {
+                            messages.debug_check_duplicates();
+                            let observer_id = messages.get_message_id_from_seq(observer).unwrap_or(MessageId::zero());
+                            dprintln!("@{} Couldn't delete because observed by {:?} ({:?})", crate::cur_node(), observer, observer_id);
+                        }
+
                         // The things 'deferred' are carried out at the end of this function (i.e, quickly)
                         deferred.push(move |tself: &mut DatabaseContextData| {
                             // Remember/record_reverse_dependency
@@ -1463,6 +1481,9 @@ I gueess we need to track last-overwriter here too?
                     }
                 }
             } else {
+                if debug {
+                    dprintln!("@{} {:?} not deleting #{} because after cutoff", crate::cur_node(), crate::test_elapsed(), msg.seq.index());
+                }
 
                 debug!("can't delete {:?}{:?} yet because it's been transmitted and is after cutoff: {:?} and not unconditionally overwritten", 
                     msg.seq, //msgobj.map(|x2|x2.map(|x|x.0.id)), 
@@ -1470,10 +1491,13 @@ I gueess we need to track last-overwriter here too?
                 new_unused_list.push(msg);
                 continue 'outer;
             }
+            if debug {
+                dprintln!("@{} {:?} DELETING(choice made)!", crate::cur_node(), crate::test_elapsed());
+            }
 
             info!(
                 "@{} {:?} Deleting {:?} (before cutoff: {:?}), may have been transmitted: {:?}",
-                cur_node(), test_elapsed(),
+                crate::cur_node(), crate::test_elapsed(),
                 msg,
                 before_cutoff,
                 messages.may_have_been_transmitted(msg.seq)?
@@ -1499,13 +1523,11 @@ I gueess we need to track last-overwriter here too?
             unused_list.push_untracked(self, *new_unused);
         }
 
-        messages.debug_verify_cutoff_index().unwrap();
 
         for action in deferred {
             action(self);
         }
 
-        messages.debug_verify_cutoff_index().unwrap();
 
         Ok(deleted)
     }

@@ -4,13 +4,13 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::{sha2, sha2_message};
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{bytes_of, bytes_of_mut, cur_node, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, test_elapsed, Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime, Target};
+use crate::{bytes_of, bytes_of_mut, dprintln, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime, Target};
 use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 #[allow(unused)]
 use itertools::Itertools;
 use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
@@ -459,6 +459,7 @@ pub(crate) struct OnDiskMessageStore<M> {
     //update_heads: FileAccessor,
 }
 
+
 struct MessageWriteReport {
     start_pos: u64,
     total_size: u64,
@@ -508,6 +509,22 @@ impl<M> OnDiskMessageStore<M> {
             
         index
     }
+
+    pub(crate) fn debug_check_duplicates(&self) {
+        let mut seen = HashSet::new();
+        let (_header, index) = self.header_and_index().unwrap();
+        for entry in index {
+            if entry.is_deleted() {
+                continue;
+            }
+            if !seen.insert(entry.message) {
+                println!("All messages: {:#?}", index);
+                panic!("Duplicate message entry seen: {:?}", entry.message);
+            }
+        }
+    }
+
+    #[cfg(debug_assertions)]
     pub(crate) fn debug_verify_cutoff_index(&self) -> Result<()> {
         let (header, index) = self.header_and_index()?;
         let mut correct_index = 0;
@@ -533,9 +550,9 @@ impl<M> OnDiskMessageStore<M> {
     }
     pub(crate) fn set_cutoff_index(&mut self, cutoff_index: SequenceNr) {
         self.cutoff_index = cutoff_index.index();
-        #[cfg(debug_assertions)]
+        #[cfg(all(debug_assertions, feature = "debug"))]
         {
-            self.debug_verify_cutoff_index().unwrap();
+            self.debug_verify_cutoff_index()?;
         }
     }
 
@@ -877,7 +894,10 @@ impl<M> OnDiskMessageStore<M> {
         }
 
         self.cutoff_index = Self::recover_cutoff_state(now, index_header, index, cutoff_config)?;
-        self.debug_verify_cutoff_index()?;
+        #[cfg(all(debug_assertions, feature = "debug"))]
+        {
+            self.debug_verify_cutoff_index()?;
+        }
 
         Ok(())
     }
@@ -1306,7 +1326,7 @@ impl<M> OnDiskMessageStore<M> {
 
         if let Some((file, _offset)) = entry.file_offset.file_and_offset() {
             //TODO: Remove debug
-            //println!("@{} {:?} Actually deleting #{}", cur_node(), test_elapsed(), delete_index.index());
+            dprintln!("@{} {:?} Actually deleting #{} ({:?})", crate::cur_node(), crate::test_elapsed(), delete_index.index(), entry.message);
             header.cutoff.report_delete(entry.message);
             header.prev_cutoff.report_delete(entry.message);
 
@@ -1325,6 +1345,12 @@ impl<M> OnDiskMessageStore<M> {
             for child in &children {
                 self.add_remove_parents_and_children(*child, &[], Some(id), &[], None)?;
             }
+            /*{
+                //TODO: Remove
+                let (header, message_index) =
+                    Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
+                dprintln!("Index before delete: {:#?}", message_index);
+            }*/
             Ok(true)
         } else {
             warn!("Message was already deleted");
@@ -1821,7 +1847,11 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message + Debug + 'a,
     {
-        self.debug_verify_cutoff_index()?;
+
+        #[cfg(all(debug_assertions, feature = "debug"))]
+        {
+            self.debug_verify_cutoff_index()?;
+        }
 
 
         let mut prev = None;
@@ -2152,7 +2182,11 @@ impl<M> OnDiskMessageStore<M> {
         let (index_header, mmap_index) =
             Self::header_and_index_mut(&mut self.index_mmap)?;
         self.cutoff_index = Self::calculate_cutoff_index(index_header, mmap_index);
-        self.debug_verify_cutoff_index()?;
+
+        #[cfg(all(debug_assertions, feature = "debug"))]
+        {
+            self.debug_verify_cutoff_index()?;
+        }
 
         //self.compact()?;
 

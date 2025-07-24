@@ -3,7 +3,7 @@ use crate::disk_abstraction::Disk;
 use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{catch_and_log, cur_node, test_elapsed, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Persistence, Target};
+use crate::{catch_and_log, dprintln, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Persistence, Target};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::pin::Pin;
@@ -33,7 +33,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         let mut prev_cutoff_state = self.messages.prev_cutoff_hash()?;
         let mut cutoff_state = self.messages.current_cutoff_hash()?;
 
-        //println!("@{} {:?} Advancing cutoff {} -> {}", cur_node(), test_elapsed(), cutoff_state.before_time.to_noatun_time(), new_cutoff_at.to_noatun_time());
+        dprintln!("@{} {:?} Advancing cutoff {} -> {}", crate::cur_node(), crate::test_elapsed(), cutoff_state.before_time.to_noatun_time(), new_cutoff_at.to_noatun_time());
 
         let old_prev_cutoff_index = self
             .messages
@@ -52,7 +52,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         let unused_list = unsafe { context.get_unused_list() };
         let unused_list = unused_list.get_full_slice(context);
 
-        println!("@{} Advancing list: {:?}, cutoff_index: {}", cur_node(), unused_list, cutoff_index);
+        dprintln!("@{} Advancing list: {:?}, cutoff_index: {}", crate::cur_node(), unused_list, cutoff_index);
 
         debug_assert!(unused_list.is_sorted_by_key(|x| x.last_overwriter));
 
@@ -60,7 +60,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
             unused_list.binary_search_by_key(&cutoff_index, |x| x.last_overwriter);
 
 
-        println!("@{} Selected Advancing list: {:?}, last: {}", cur_node(), &unused_list[..unused_list_last] , unused_list_last);
+        dprintln!("@{} Selected Advancing list: {:?}, last: {}", crate::cur_node(), &unused_list[..unused_list_last] , unused_list_last);
 
         let mut process_now = vec![];
         assert!(new_cutoff_at > cutoff_state.before_time);

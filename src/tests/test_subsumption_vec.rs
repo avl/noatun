@@ -247,7 +247,7 @@ fn test_vec5() {
     );
 
     db.set_mock_time(NoatunTime::debug_time(1440)).unwrap();
-    db.maybe_advance_cutoff().unwrap();
+    
     assert_eq!(
         db.count_messages(),
         0,

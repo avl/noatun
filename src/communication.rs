@@ -34,6 +34,7 @@ use tokio::sync::oneshot;
 use tokio::time::error::Elapsed;
 use tokio::time::Instant;
 use tokio::{select, spawn};
+use tokio::sync::oneshot::error::TryRecvError;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 pub mod size_limit_vec_deque;
@@ -1133,10 +1134,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
         let mut messages_received: Vec<(Address, Vec<u8>)> = Vec::new();
         let mut message_to_transmit: Vec<Vec<u8>> = Vec::new();
         loop {
-            #[cfg(debug_assertions)]
-            {
-                track_node(self.distributor.ephemeral_node_id.get().raw_u16());
-            }
+
+
+            track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
+
             for message in messages_received.drain(..) {
                 if let Err(err) = self.process_packet(message.0, message.1.clone()) {
                     error!("Error processing incoming packet: {:?}", err);
@@ -1198,18 +1199,12 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                     res?;
                 }*/
                 _process_incoming = buffering_timer => {
-                    #[cfg(debug_assertions)]
-                    {
-                        track_node(self.distributor.ephemeral_node_id.get().raw_u16());
-                    }
+                    track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
                     buffer_timer_instant = None;
                     self.process_messages(Instant::now().into())?;
                 }
                 _periodic = tokio::time::sleep_until(self.next_periodic) => {
-                    #[cfg(debug_assertions)]
-                    {
-                        track_node(self.distributor.ephemeral_node_id.get().raw_u16());
-                    }
+                    track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
                     let database = self.database.lock().unwrap();
                     let session = database.begin_session()?;
                     let msgs = self.distributor.get_periodic_message(&session, Instant::now().into())?;
@@ -1218,10 +1213,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                     self.next_periodic += self.report_head_interval;
                 }
                 cmd = self.cmd_rx.recv() => {
-                    #[cfg(debug_assertions)]
-                    {
-                        track_node(self.distributor.ephemeral_node_id.get().raw_u16());
-                    }
+                    track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
                     let Some(cmd) = cmd else {
 
                         info!("cmd rx, sender is gone");
@@ -1288,6 +1280,7 @@ pub struct DatabaseCommunication<MSG: Message> {
     database: Arc<Mutex<Database<MSG>>>,
     cmd_tx: Sender<Cmd<MSG>>,
     node: String,
+    initial_node_id: EphemeralNodeId
 }
 
 impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
@@ -1428,11 +1421,11 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
     pub fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
         let mut db = self.database.lock().unwrap();
         let mut sess = db.begin_session_mut()?;
-
-        sess.set_mock_time(time).unwrap();
-        sess.maybe_advance_cutoff().unwrap();
+        track_node!(self.initial_node_id.raw_u16());
+        sess.set_mock_time(time)?;
         Ok(())
     }
+
     pub fn get_update_heads(&self) -> Result<Vec<crate::MessageId>> {
         let db = self.database.lock().unwrap();
         let sess = db.begin_session()?;
@@ -1523,6 +1516,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
 
         let database = Arc::new(Mutex::new(database));
 
+        let initial_node_id  = *our_node_id.get();
         let main = DatabaseCommunicationLoop {
             distributor: Distributor::new(
                 config.periodic_message_interval,
@@ -1550,6 +1544,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             database,
             cmd_tx,
             node,
+            initial_node_id,
         })
     }
 
@@ -1622,6 +1617,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sender_ipv4() {
+        setup_tracing();
         let (_quit_tx1, quit_rx1) = tokio::sync::oneshot::channel();
 
         let mloop1 = MulticastSenderLoop::new(
@@ -1672,7 +1668,7 @@ mod tests {
                 vec![2u8; 10],
                 vec![3u8; 250],
                 vec![4u8; 1000],
-                vec![5u8; 10000],
+                vec![5u8; 2000],
             ]
         };
         let task1 = async move {
@@ -1680,12 +1676,14 @@ mod tests {
             let mut expect: HashSet<Vec<u8>> = payloads().into_iter().collect();
             let mut ctx = mloop1.create_context()?;
             let mut received = Vec::new();
+            tokio::time::sleep(Duration::from_millis(100)).await;
             while mloop1
                 .run(&mut ctx, &mut received, &mut to_send, &mut false)
                 .await?
                 == false
             {
                 for (_addr, msg) in received.drain(..) {
+                    println!("Task1 received {} byte msg", msg.len());
                     assert!(expect.remove(&msg));
                 }
                 if expect.is_empty() {
@@ -1699,12 +1697,14 @@ mod tests {
             let mut expect: HashSet<Vec<u8>> = payloads().into_iter().collect();
             let mut ctx = mloop2.create_context()?;
             let mut received = Vec::new();
+            tokio::time::sleep(Duration::from_millis(100)).await;
             while mloop2
                 .run(&mut ctx, &mut received, &mut to_send, &mut false)
                 .await?
                 == false
             {
                 for (_addr, msg) in received.drain(..) {
+                    println!("Task2 received {} byte msg", msg.len());
                     assert!(expect.remove(&msg));
                 }
                 if expect.is_empty() {
@@ -1717,12 +1717,12 @@ mod tests {
         let jh1: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(task1);
         let jh2: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(task2);
 
-        tokio::time::timeout(Duration::from_secs(10), jh1)
+        tokio::time::timeout(Duration::from_secs(7), jh1)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(10), jh2)
+        tokio::time::timeout(Duration::from_secs(7), jh2)
             .await
             .unwrap()
             .unwrap()

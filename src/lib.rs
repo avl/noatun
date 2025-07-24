@@ -18,7 +18,6 @@
 #![allow(clippy::derivable_impls)]
 //#![allow(clippy::manual_is_multiple_of)]
 
-use crate::distributor::NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER;
 pub use crate::data_types::{NoatunCell, OpaqueNoatunCell};
 use crate::private::Sealed;
 use crate::sequence_nr::SequenceNr;
@@ -62,7 +61,7 @@ mod disk_abstraction;
 mod message_store;
 mod mini_pather;
 mod projection_store;
-#[cfg(feature = "debug")]
+#[cfg(feature = "debug_color")]
 mod term_colors;
 mod undo_store;
 
@@ -73,16 +72,16 @@ mod book {
     const BOOK: () = ();
 }
 
-#[cfg(feature = "debug")]
+#[cfg(feature = "debug_color")]
 use term_colors as colors;
 
-#[cfg(not(feature = "debug"))]
+#[cfg(not(feature = "debug_color"))]
 mod dummy_term_colors;
 
-#[cfg(not(feature = "debug"))]
+#[cfg(not(feature = "debug_color"))]
 use dummy_term_colors as colors;
 
-#[cfg(feature = "debug")]
+#[cfg(feature = "debug_color")]
 use crate::colors::{colored_hex_int, colored_hex_sint};
 use crate::cutoff::CutOffTime;
 
@@ -112,6 +111,20 @@ mod boot_checksum;
 pub(crate) mod disk_access;
 mod sha2_helper;
 mod xxh3_vendored;
+
+#[doc(hidden)]
+#[cfg(feature = "debug")]
+#[macro_export]
+macro_rules! dprintln {
+    ($($x:tt)*) => { std::println!($($x)*) }
+}
+
+#[doc(hidden)]
+#[cfg(not(feature = "debug"))]
+#[macro_export]
+macro_rules! dprintln {
+    ($($x:tt)*) => {{}};
+}
 
 /// SAFETY requirements:
 /// * Type must not have Drop impl
@@ -179,27 +192,37 @@ thread_local! {
     pub static CONTEXT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(feature ="debug", debug_assertions))]
 thread_local! {
     pub static DEBUG_NODE: Cell<u16> = const { Cell::new(0) };
 }
 
 #[doc(hidden)]
-#[inline]
-pub fn track_node(node: u16) {
-    #[cfg(debug_assertions)]
-    DEBUG_NODE.set(node);
+#[cfg(any(feature ="debug", debug_assertions))]
+#[macro_export]
+macro_rules! track_node {
+    ($node:expr) => {
+        $crate::DEBUG_NODE.set($node);
+    }
 }
 
 #[doc(hidden)]
+#[cfg(not(any(feature ="debug", debug_assertions)))]
+#[macro_export]
+macro_rules! track_node {
+}
+
+
+#[doc(hidden)]
+#[inline]
 pub fn cur_node() -> u16 {
-    #[cfg(debug_assertions)]
+    #[cfg(any(feature ="debug", debug_assertions))]
     {
         DEBUG_NODE.get()
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(feature = "debug", debug_assertions)))]
     {
-        0
+        65535
     }
 }
 
@@ -412,7 +435,7 @@ impl Display for MessageId {
 
         let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
         {
-            #[cfg(feature = "debug")]
+            #[cfg(feature = "debug_color")]
             write!(
                 f,
                 "{:?}-{}-{}-{}",
@@ -423,7 +446,7 @@ impl Display for MessageId {
             )
         }
 
-        #[cfg(not(feature = "debug"))]
+        #[cfg(not(feature = "debug_color"))]
         write!(
             f,
             "{:?}-{:x}-{:x}-{:x}",
@@ -462,7 +485,7 @@ thread_local! {
 
 #[cfg(test)]
 pub fn reset_random_id() {
-    NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
+    crate::distributor::NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
     NON_RANDOM_ID_COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 

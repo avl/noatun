@@ -92,7 +92,7 @@ fn test_subsumption_cutoff_interaction() {
 
     let t2 = t1 + Duration::from_secs(1801);
     db.set_mock_time(t2).unwrap();
-    db.maybe_advance_cutoff().unwrap();
+
 
     assert_eq!(
         db.count_messages(),
@@ -102,7 +102,7 @@ fn test_subsumption_cutoff_interaction() {
 
     let t3 = t1 + Duration::from_secs(3600 + 1800);
     db.set_mock_time(t3).unwrap();
-    db.maybe_advance_cutoff().unwrap();
+
 
     assert_eq!(
         db.count_messages(),
@@ -146,7 +146,7 @@ fn test_subsumption_cutoff_interaction2() {
     let t0b = t0 + Duration::from_secs(1);
     let t1 = t0 + Duration::from_secs(7200);
     db.set_mock_time(t1).unwrap();
-    db.maybe_advance_cutoff().unwrap();
+
 
     db.append_single(
         &MessageFrame::new(
@@ -191,7 +191,7 @@ fn test_subsumption_cutoff_interaction3() {
     let t1 = t0 + Duration::from_secs(7200);
 
     db.set_mock_time(t1).unwrap();
-    db.maybe_advance_cutoff().unwrap();
+
 
     db.append_single(
         &MessageFrame::new(

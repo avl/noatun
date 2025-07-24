@@ -15,6 +15,7 @@ mod unix {
     use std::process::Command;
     use std::ptr::null_mut;
     use std::sync::OnceLock;
+    use tracing::error;
 
     #[cfg(not(miri))]
     pub(crate) fn get_boot_time() -> String {
@@ -54,6 +55,7 @@ mod unix {
         fn drop(&mut self) {
             unsafe {
                 if libc::munmap(self.base_ptr as *mut _, self.total_size) != 0 {
+                    error!("munmap failed");
                     eprintln!("munmap failed");
                 }
             }

@@ -1,5 +1,4 @@
 #![allow(clippy::needless_range_loop)]
-use crate::reset_random_id;
 use crate::colors::colored_int;
 use crate::communication::{
     CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
@@ -9,7 +8,7 @@ use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
 use crate::distributor::Status;
 use crate::tests::setup_tracing;
-use crate::SavefileMessageSerializer;
+use crate::{reset_random_id, SavefileMessageSerializer};
 use crate::{set_test_epoch, test_elapsed, Database, Message, MessageId, NoatunTime, Object};
 use crate::{Persistence, Savefile};
 use arcshift::ArcShift;
@@ -551,7 +550,7 @@ fn old_transmitted_messages_without_effect_are_removed1() {
 
     //println!("Advancing time to 2024");
     sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
-    sess.maybe_advance_cutoff().unwrap();
+
 
     let all_msgs = sess.get_all_messages_vec().unwrap();
     assert_eq!(all_msgs.len(), 1);
@@ -587,7 +586,7 @@ fn old_transmitted_messages_without_effect_are_removed2() {
     //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
     sess.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into())
         .unwrap();
-    sess.maybe_advance_cutoff().unwrap();
+
 
     let msg2 = sess
         .append_local(SyncMessage {
@@ -602,7 +601,7 @@ fn old_transmitted_messages_without_effect_are_removed2() {
 
     //println!("Advancing time to 2024");
     sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
-    sess.maybe_advance_cutoff().unwrap();
+
 
     let all_msgs = sess.get_all_messages_vec().unwrap();
     assert_eq!(all_msgs.len(), 1);
@@ -720,29 +719,35 @@ async fn all_up_gradual_update_sync_test() {
     //  assert_snapshot!(driver.messages_snapshot());
 }
 
+
+const NUM_CASES: u64 = 10000;
+
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_old_messages_all() {
     //setup_tracing();
-    for seed in 0..100 {
+    for seed in 0..NUM_CASES {
         println!("=========== Seed = {seed} ===========");
+        reset_random_id();
         all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_old_messages_seed1() {
+async fn all_up_general_update_sync_test_old_messages_654() {
     //setup_tracing();
     {
-        let seed = 1;
+        let seed = 654;
         println!("=========== Seed = {seed} ===========");
+        reset_random_id();
         all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
     }
 }
+
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_persist() {
     //setup_tracing();
-    for seed in 0..100 {
+    for seed in 0..NUM_CASES {
         println!("=========== Seed = {seed} ===========");
         all_up_general_update_sync_test_impl(seed, 10, true, usize::MAX, true).await;
     }
@@ -751,7 +756,7 @@ async fn all_up_general_update_sync_test_newer_messages_persist() {
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_mid_age_messages_persist() {
     setup_tracing();
-    for seed in 6..100 {
+    for seed in 0..NUM_CASES {
         println!("=========== Seed = {seed} ===========");
         all_up_general_update_sync_test_impl(seed, 900, true, usize::MAX, true).await;
     }
@@ -760,7 +765,7 @@ async fn all_up_general_update_sync_test_mid_age_messages_persist() {
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_no_persist_all() {
     //setup_tracing();
-    for seed in 0..100 {
+    for seed in 0..NUM_CASES {
         println!("\n\n============ Seed {seed} ==============\n\n");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, true).await;
     }
@@ -779,7 +784,7 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist87() {
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_no_persist_no_reset() {
     //setup_tracing();
-    for seed in 0..100 {
+    for seed in 0..NUM_CASES {
         println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, false).await;
     }
@@ -788,42 +793,17 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist_no_reset() {
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_mid_age_messages_no_persist_all() {
     setup_tracing();
-    //TODO: This test case fails for certain seeds. Try this (and other cases here)
-    //with more seeds, and analyze why it fails!
-    for seed in 0..10000 {
-        println!("Seed = {seed}");
-        //TODO: Remove reset here
-        reset_random_id();
-        all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX, true).await;
-    }
-}
-
-
-#[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_mid_age_messages_no_persist_9895() {
-    setup_tracing();
-    let seed = 9895;
-    println!("Seed = {seed}");
-    //TODO: Remove reset here
-    //reset_random_id();
-    all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX, true).await;
-}
-
-
-#[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_mid_age_messages_no_persist87() {
-    //setup_tracing();
-    {
-        let seed = 87;
+    for seed in 0..NUM_CASES {
         println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX, true).await;
     }
 }
+
 
 #[tokio::test(start_paused = true)]
 async fn all_up_special_seed() {
     super::setup_tracing();
-    for seed in 0..1 {
+    for seed in 0..NUM_CASES {
         println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 15, false, 10, true).await;
     }
@@ -943,20 +923,20 @@ async fn all_up_general_update_sync_test_impl(
         .unwrap()
         .get_all_messages_vec()
         .unwrap();
-    println!("Node 1 messages:\n{msgs1:#?}");
-    println!("Node 2 messages:\n{msgs2:#?}");
+    println!("Node 0 messages:\n{msgs1:#?}");
+    println!("Node 1 messages:\n{msgs2:#?}");
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
     let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
     let smsgs2: IndexSet<_> = msgs2.iter().map(|x| x.header.id).collect();
     //println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
     //println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
-    println!("Only in 1: {:?}", smsgs1.sub(&smsgs2));
-    println!("Only in 2: {:?}", smsgs2.sub(&smsgs1));
+    println!("Only in 0: {:?}", smsgs1.sub(&smsgs2));
+    println!("Only in 1: {:?}", smsgs2.sub(&smsgs1));
     if persist {
         if msgs1 != msgs2 {
-            println!("App1 cutoff time: {:?}", app1.get_cutoff_time());
-            println!("App2 cutoff time: {:?}", app2.get_cutoff_time());
+            println!("App0 cutoff time: {:?}", app1.get_cutoff_time());
+            println!("App1 cutoff time: {:?}", app2.get_cutoff_time());
             for (i, (msg1, msg2)) in msgs1.iter().zip(msgs2.iter()).enumerate() {
                 assert_eq!(
                     msg1,
