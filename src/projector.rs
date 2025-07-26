@@ -116,6 +116,8 @@ impl<MSG: Message + 'static> Projector<MSG> {
 
         self.messages.set_cutoff_index(cutoff_index);
 
+        dprintln!("@{} Calling rt_calc with {:?}", crate::cur_node(), process_now);
+
         let must_remove =
             context.rt_calculate_stale_messages_impl(&mut self.messages, &mut process_now)?;
         for index in must_remove {

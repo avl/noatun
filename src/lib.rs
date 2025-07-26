@@ -210,6 +210,8 @@ macro_rules! track_node {
 #[cfg(not(any(feature ="debug", debug_assertions)))]
 #[macro_export]
 macro_rules! track_node {
+    ($_node:expr) => {
+    }
 }
 
 

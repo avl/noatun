@@ -1405,24 +1405,11 @@ impl DatabaseContextData {
 
             let may_have_been_transmitted = messages.may_have_been_transmitted(msg.seq)?;
             let overwriter_is_before_cutoff = msg.last_overwriter < cutoff_index;
-            
-
-            compile_error!("
-There's a bug here. It goes like this:
-
- * Messages, even before cutoff, might sometimes not be cleaned because they have later observers.
- * When such an observer is removed, logically we need to time-travel back to the earliest
-   message in 'UnusedList' that was blocking because it was observed by the deleted message.
-   Nothing currently causes this to happen. Considew how to implement.
-
-
-
-            ")
 
             let mut debug = false;
             //TODO: Remove this
-            if message_id.to_string().contains("a-0-0") {
-                dprintln!("@{} Unused #{} db-at: {} id: {}, ovr: {:?} bef cut: {}/{} cut: {:?}, tmb: {}, tr: {}, erl: {}",
+            if message_id.to_string().contains("a-0-0")  || message_id.to_string().contains("18-0-0"){
+                dprintln!("@{} Unused #{} db-at: {} id: {}, ovr: {:?} bef cut: {}/{} cut: {:?}, tmb: {}, transm: {}, can-del-early: {}",
                     crate::cur_node(),
                          msg.seq,
                          self.next_seqnr(),
@@ -1440,11 +1427,13 @@ There's a bug here. It goes like this:
             //Is this good enough? Will we consider this message again ? Will we consider it when
             //overwriter moves before cutoff? Verify that we do!
             
-            // Condition 1 (referenced below)
-            if (!msg.wrote_tombstone
-                && (!may_have_been_transmitted || msg.can_be_deleted_early))
-                || (before_cutoff && overwriter_is_before_cutoff)
+            // Condition 1 (referenced below) //TODO: Is this condition1 or condition1a
+            let condition1a = (!msg.wrote_tombstone
+                && (!may_have_been_transmitted || msg.can_be_deleted_early));
+            if condition1a
+                || (before_cutoff)
             {
+                let mut found_dependency = false;
                 for observer in self.read_dependency(msg.seq) {
                     debug!("considered its observer {:?}", observer);
                     if !deleted.contains(&observer) {
@@ -1476,10 +1465,18 @@ There's a bug here. It goes like this:
                                 msg.wrote_tombstone,
                             );
                         });
-
-                        continue 'outer;
+                        found_dependency = true;
                     }
                 }
+
+                for action in deferred.drain(..) {
+                    action(self);
+                }
+                compile_error!("Figure out if this new logic is correct. And if condition1a is a good name")
+                if found_dependency || (!condition1a && !overwriter_is_before_cutoff) {
+                    continue 'outer;
+                }
+
             } else {
                 if debug {
                     dprintln!("@{} {:?} not deleting #{} because after cutoff", crate::cur_node(), crate::test_elapsed(), msg.seq.index());
@@ -1492,7 +1489,7 @@ There's a bug here. It goes like this:
                 continue 'outer;
             }
             if debug {
-                dprintln!("@{} {:?} DELETING(choice made)!", crate::cur_node(), crate::test_elapsed());
+                dprintln!("@{} {:?} DELETING {:?} (choice madem reading revdep)!", crate::cur_node(), crate::test_elapsed(), message_id);
             }
 
             info!(
@@ -1505,6 +1502,10 @@ There's a bug here. It goes like this:
             for (revdep, last_overwriter, can_be_deleted_early, wrote_tombstone) in
                 self.read_reverse_dependency(msg.seq)
             {
+                if debug {
+                    dprintln!("@{} {:?} revdep found: {:?}!", crate::cur_node(), crate::test_elapsed(), revdep);
+                }
+
                 // Get messages that depend on the message that we just decided to delete
                 unused_messages.push(UnusedInfo {
                     seq: revdep,
@@ -1523,10 +1524,6 @@ There's a bug here. It goes like this:
             unused_list.push_untracked(self, *new_unused);
         }
 
-
-        for action in deferred {
-            action(self);
-        }
 
 
         Ok(deleted)
