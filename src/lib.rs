@@ -291,10 +291,7 @@ impl NoatunContext {
         let context_ptr = get_context_ptr();
         unsafe { (*context_ptr).start_ptr() }
     }
-    pub(crate) fn clear_unused_tracking(self) {
-        let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).clear_unused_tracking() }
-    }
+
 
     pub fn index_of<T: Object + ?Sized>(self, t: &T) -> T::Ptr {
         let context_ptr = get_context_ptr();

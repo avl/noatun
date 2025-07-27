@@ -582,7 +582,7 @@ fn old_transmitted_messages_without_effect_are_removed2() {
         })
         .unwrap();
     sess.mark_transmitted(msg1.id).unwrap();
-    println!("Add msg1 {:?}", msg1.id);
+    println!("Added msg1 {:?}", msg1.id);
     //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
     sess.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into())
         .unwrap();
@@ -596,7 +596,7 @@ fn old_transmitted_messages_without_effect_are_removed2() {
         })
         .unwrap();
     sess.mark_transmitted(msg2.id).unwrap();
-    println!("Add msg2 {:?}", msg2.id);
+    println!("Added msg2 {:?}", msg2.id);
     assert_eq!(sess.get_all_messages_vec().unwrap().len(), 2);
 
     //println!("Advancing time to 2024");

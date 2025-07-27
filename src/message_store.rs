@@ -552,7 +552,7 @@ impl<M> OnDiskMessageStore<M> {
         self.cutoff_index = cutoff_index.index();
         #[cfg(all(debug_assertions, feature = "debug"))]
         {
-            self.debug_verify_cutoff_index()?;
+            self.debug_verify_cutoff_index().unwrap();
         }
     }
 
@@ -947,6 +947,9 @@ impl<M> OnDiskMessageStore<M> {
             .filter(|x| !x.file_offset.is_deleted()))
     }
 
+    /// Smallest unused index.
+    /// 
+    /// The next index that will be used when a new message is added to the db
     pub fn next_index(&self) -> Result<usize> {
         let (header, _message_index) = self.header_and_index().context("opening index file")?;
         Ok(header.entries as usize)
@@ -1326,7 +1329,9 @@ impl<M> OnDiskMessageStore<M> {
 
         if let Some((file, _offset)) = entry.file_offset.file_and_offset() {
             //TODO: Remove debug
-            dprintln!("@{} {:?} Actually deleting #{} ({:?})", crate::cur_node(), crate::test_elapsed(), delete_index.index(), entry.message);
+            if crate::cur_node() == 0 {
+                dprintln!("@{} {:?} Actually deleting #{} ({:?})", crate::cur_node(), crate::test_elapsed(), delete_index.index(), entry.message);
+            }
             header.cutoff.report_delete(entry.message);
             header.prev_cutoff.report_delete(entry.message);
 

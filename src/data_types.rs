@@ -549,6 +549,14 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
             ctx.write_storable(val, ctx.access_storable_mut(ThinPtr(offset)));
         };
     }
+    pub(crate) fn pop(&mut self, ctx: &mut DatabaseContextData) -> Option<T> where T: Clone{
+        if self.length == 0 {
+            return None;
+        }
+        let ret = self.get(ctx, self.length-1).clone();
+        ctx.write_storable(self.length - 1, Pin::new(&mut self.length));
+        Some(ret)
+    }
     pub(crate) fn push_untracked(&mut self, ctx: &mut DatabaseContextData, t: T) -> ThinPtr
     where
         T: NoatunStorable,
@@ -599,9 +607,65 @@ struct DatabaseVecLengthCapData {
 
 unsafe impl NoatunStorable for DatabaseVecLengthCapData {}
 
+
+#[repr(transparent)]
+pub(crate) struct NoatunUntrackedCell<T: NoatunStorable>(pub(crate) T);
+
+impl<T:NoatunStorable + Clone> Clone for NoatunUntrackedCell<T>{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T:NoatunStorable + Copy> Copy for NoatunUntrackedCell<T>{}
+
+impl<T:NoatunStorable + Debug> Debug for NoatunUntrackedCell<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NoatunUntrackedCell({:?})", self.0)
+    }
+}
+
+unsafe impl<T:NoatunStorable> NoatunStorable for NoatunUntrackedCell<T> {}
+
+impl<T:NoatunStorable> Deref for NoatunUntrackedCell<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: NoatunStorable + Copy> Object for NoatunUntrackedCell<T> {
+    type Ptr = ThinPtr;
+    type DetachedType = T;
+    type DetachedOwnedType = T;
+
+    fn detach(&self) -> Self::DetachedOwnedType {
+        self.0
+    }
+
+    fn destroy(self: Pin<&mut Self>) {
+    }
+
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        unsafe {
+            let value = self.get_unchecked_mut();
+            *value = NoatunUntrackedCell(*detached);
+        }
+    }
+
+    unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+        unimplemented!("NoatunUntrackedCell does not support heap allocation")
+    }
+}
+
+
+
 //TODO(future): Merge with RawDatabaseVec?
+/// Untracked vec, for internal use
+#[derive(Debug)]
 #[repr(C)]
-struct NoatunVecRaw<T: FixedSizeObject> {
+pub(crate) struct NoatunVecRaw<T: FixedSizeObject> {
     //WARNING! These first 3 fields must be identical to DatabaseVecLengthCapData
     length: usize,
     capacity: usize,
@@ -609,35 +673,153 @@ struct NoatunVecRaw<T: FixedSizeObject> {
     phantom_data: PhantomData<T>,
 }
 
+impl<T:FixedSizeObject> Default for NoatunVecRaw<T> {
+    fn default() -> Self {
+        Self {
+            length: 0,
+            capacity: 0,
+            data: 0,
+            phantom_data: Default::default(),
+        }
+    }
+}
+
+
+
 impl<T: FixedSizeObject> NoatunVecRaw<T> {
+
+    pub(crate) fn len(&self) -> usize {
+        self.length
+    }
+
+    pub(crate) fn to_vec(&self) -> Vec<T> where T: Clone{
+        self.iter().map(|x|x.clone()).collect()
+    }
+
+    pub(crate) fn iter(&self) -> NoatunVecIterator<T> {
+        NoatunVecIterator {
+            vec: self,
+            index: 0,
+        }
+    }
+
     #[inline]
-    fn get_index(&self, index: usize) -> &T {
+    pub(crate) fn get_index(&self, index: usize) -> &T {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         unsafe { ThinPtr(offset).access::<T>() }
     }
+    #[inline]
+    pub(crate) fn get_index_ctx(&self, index: usize, ctx: &DatabaseContextData) -> &T {
+        assert!(index < self.length);
+        let offset = self.data + index * size_of::<T>();
+        unsafe { ctx.access_storable(ThinPtr(offset)) }
+    }
+    #[inline]
+    pub(crate) fn try_get_index(&self, index: usize) -> Option<&T> {
+        if index >= self.length {
+            return None;
+        }
+        let offset = self.data + index * size_of::<T>();
+        Some(unsafe { ThinPtr(offset).access::<T>() })
+    }
 
     #[inline]
-    fn get_index_mut(&mut self, index: usize) -> Pin<&mut T> {
+    pub(crate) fn get_index_mut(&mut self, index: usize) -> &mut T {
+        assert!(index < self.length);
+        let offset = self.data + index * size_of::<T>();
+        let t = unsafe { ThinPtr(offset).access_mut::<T>() };
+        unsafe { t.get_unchecked_mut() }
+    }
+
+    #[inline]
+    pub(crate) fn get_index_mut_ctx(&mut self, index: usize, ctx: &mut DatabaseContextData) -> &mut T {
+        assert!(index < self.length);
+        let offset = self.data + index * size_of::<T>();
+        let t: &mut T = unsafe { ctx.access_thin_mut(ThinPtr(offset)) };
+        t
+    }
+    #[inline]
+    pub(crate) fn get_index_mut_pin(&mut self, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
         let t = unsafe { ThinPtr(offset).access_mut::<T>() };
         t
     }
-    fn write(&mut self, index: usize, val: T) {
+    #[inline]
+    pub(crate) fn try_get_index_mut_ctx(&mut self, index: usize, ctx: &mut DatabaseContextData) -> Option<Pin<&mut T>> {
+        if index >= self.length {
+            return None;
+        }
+        let offset = self.data + index * size_of::<T>();
+        let t = unsafe { ctx.access_thin_mut::<T>(ThinPtr(offset)) };
+        unsafe { Some(Pin::new_unchecked(t)) }
+    }
+
+    #[inline]
+    pub(crate) fn try_get_index_mut(&mut self, index: usize) -> Option<Pin<&mut T>> {
+        if index >= self.length {
+            return None;
+        }
+        let offset = self.data + index * size_of::<T>();
+        let t = unsafe { ThinPtr(offset).access_mut::<T>() };
+        Some(t)
+    }
+    pub(crate) fn write(&mut self, index: usize, val: T) {
         let offset = self.data + index * size_of::<T>();
         unsafe {
             let dest = ThinPtr(offset).access_mut::<T>();
             NoatunContext.write(val, dest);
         };
     }
-    fn destroy_items(&mut self) {
+
+    /// Doesn't zero memory.
+    pub fn clear_fast(&mut self, ctx: &mut DatabaseContextData) {
+        unsafe {
+            ctx.write_storable(0, Pin::new_unchecked(&mut self.length))
+        }
+    }
+    pub(crate) fn destroy_items(&mut self) {
         for i in 0..self.length {
-            self.get_index_mut(i).destroy();
+            self.get_index_mut_pin(i).destroy();
         }
         NoatunContext.write_internal(0, &mut self.length);
     }
-    fn realloc_add(&mut self, new_capacity: usize, new_len: usize) {
+
+
+    //TODO: Add tests for this!
+    pub(crate) fn retain(&mut self, mut f: impl FnMut(Pin<&mut T>) -> bool, ctx: &mut DatabaseContextData) {
+
+        let mut read_offset = 0;
+        let mut new_count = self.length;
+        let mut write_offset = 0;
+
+        while read_offset < self.length {
+            let read_ptr =
+                ThinPtr(self.data + read_offset * size_of::<T>());
+            let mut val = unsafe { Pin::new_unchecked(ctx.access_thin_mut::<T>(read_ptr)) };
+            let retain = f(val.as_mut());
+            if !retain {
+                val.destroy();
+                new_count -= 1;
+                read_offset += 1;
+            } else {
+                if read_offset != write_offset {
+                    let write_ptr = ThinPtr(
+                        self.data + write_offset * size_of::<T>(),
+                    );
+
+                    ctx.copy_bytes_len(read_ptr, write_ptr, size_of::<T>());
+                }
+                read_offset += 1;
+                write_offset += 1;
+            }
+        }
+
+        unsafe { ctx.write_storable(new_count, Pin::new_unchecked(&mut self.length)) };
+    }
+
+    pub(crate) fn realloc_add(&mut self, new_capacity: usize, new_len: usize) {
         debug_assert!(new_capacity >= new_len);
         debug_assert!(new_capacity >= self.capacity);
         debug_assert!(new_len >= self.length);
@@ -665,16 +847,33 @@ impl<T: FixedSizeObject> NoatunVecRaw<T> {
         )
     }
 
-    fn push_zeroed(&mut self) -> Pin<&mut T> {
+    pub(crate) fn push(&mut self, item: T) where T: Unpin {
+        let place = self.push_zeroed();
+        *place.get_mut() = item;
+    }
+
+    pub(crate) fn push_zeroed(&mut self) -> Pin<&mut T> {
         if self.length >= self.capacity {
             self.realloc_add((self.capacity + 1) * 2, self.length + 1);
         } else {
             NoatunContext.write_ptr(self.length + 1, addr_of_mut!(self.length));
         }
-        self.get_index_mut(self.length - 1)
+        self.get_index_mut_pin(self.length - 1)
     }
 
-    fn swap_remove(&mut self, index: usize) {
+    pub(crate) fn ensure_size(&mut self, at_least: usize) {
+        if self.length >= at_least {
+            return;
+        }
+
+        if at_least > self.capacity {
+            self.realloc_add((at_least + 1) * 2, at_least);
+        } else {
+            NoatunContext.write_ptr(at_least, addr_of_mut!(self.length));
+        }
+    }
+
+    pub(crate) fn swap_remove(&mut self, index: usize) {
         if index == self.length - 1 {
             NoatunContext.write_ptr(self.length - 1, addr_of_mut!(self.length));
             let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
@@ -692,6 +891,9 @@ impl<T: FixedSizeObject> NoatunVecRaw<T> {
 
         NoatunContext.write_ptr(self.length - 1, addr_of_mut!(self.length));
     }
+
+
+
 }
 
 /// Noatun version of Vec.
@@ -811,10 +1013,10 @@ where
     pub fn get_index_mut(self: Pin<&mut Self>, index: usize) -> Pin<&mut T> {
         NoatunContext.observe_registrar(self.length_registrar);
         let tself = unsafe { self.get_unchecked_mut() };
-        tself.raw.get_index_mut(index)
+        tself.raw.get_index_mut_pin(index)
     }
     fn get_mut_internal(&mut self, index: usize) -> Pin<&mut T> {
-        self.raw.get_index_mut(index)
+        self.raw.get_index_mut_pin(index)
     }
     /*pub(crate) fn write(&mut self, index: usize, val: T) {
         self.raw.write(index, val)
@@ -1023,7 +1225,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
         let index = tself.raw.length - 1;
         tself
             .raw
-            .get_index_mut(index)
+            .get_index_mut_pin(index)
             .init_from_detached(t.borrow());
     }
 }
