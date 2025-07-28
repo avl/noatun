@@ -364,6 +364,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         drop(guard);
 
         context.set_next_seqnr(seqnr.successor());
+        println!("Calling finalize");
         context.rt_finalize_message(seqnr, must_remove, messages)?;
         Ok(())
     }
@@ -452,11 +453,11 @@ impl<MSG: Message + 'static> Projector<MSG> {
             for index in must_remove {
 
                 //TODO: Remove this lookup, it's just used for logging
-                let rev: Vec<_> = context.outgoing_read_dependencies(index).iter().collect();
+                let rev: Vec<_> = context.outgoing_read_dependencies(index).iter(context).collect();
                 info!("Deleting stale msg {:?}, its reverse dep: {:?}", index, rev);
 
                 //TODO: Remove this lookup, it's just used for logging
-                let dep: Vec<_> = context.incoming_read_dependencies(index).iter().collect();
+                let dep: Vec<_> = context.incoming_read_dependencies(index).iter(context).collect();
                 info!("Deleting stale msg {:?}, its dep: {:?}", index, dep);
 
                 let was_deleted = tself

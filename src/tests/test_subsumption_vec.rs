@@ -39,6 +39,45 @@ impl Message for VecMessage {
     }
 }
 
+
+#[test]
+fn test_vec0() {
+    super::setup_tracing();
+    let mut db: Database<VecMessage> = Database::create_new(
+        "test/test_subsumption1",
+        OpenMode::Overwrite,
+        DatabaseSettings::default(),
+    )
+        .unwrap();
+    let mut db = db.begin_session_mut().unwrap();
+    db.disable_filesystem_sync().unwrap();
+
+    db.append_local(VecMessage {
+        index: 0,
+        val: 42,
+        reset: false,
+        push: false,
+        destroy: false,
+    })
+        .unwrap();
+
+    assert_eq!(db.count_messages(), 1);
+    db.append_local(VecMessage {
+        index: 0,
+        val: 0,
+        reset: true,
+        push: false,
+        destroy: false,
+    })
+        .unwrap();
+
+    assert_eq!(
+        db.count_messages(),
+        1,
+        "last message is present in clear-registrar"
+    );
+}
+
 #[test]
 fn test_vec1() {
     super::setup_tracing();
@@ -247,6 +286,7 @@ fn test_vec5() {
     );
 
     db.set_mock_time(NoatunTime::debug_time(1440)).unwrap();
+
     
     assert_eq!(
         db.count_messages(),
