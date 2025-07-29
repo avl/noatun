@@ -44,7 +44,7 @@ impl Message for VecMessage {
 fn test_vec0() {
     super::setup_tracing();
     let mut db: Database<VecMessage> = Database::create_new(
-        "test/test_subsumption1",
+        "test/test_subsumption0",
         OpenMode::Overwrite,
         DatabaseSettings::default(),
     )

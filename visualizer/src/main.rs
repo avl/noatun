@@ -569,8 +569,8 @@ impl App for Visualizer {
                     let node = &mut self.ether.nodes[node_index];
                     //assert_eq!(node_index, node.distributor.ephemeral_node_id.shared_get().raw_u16() as usize);
                     let node_pos = self.ether.actual_ether.node_metadata[node_index].pos;
-                    for (a_peer_id, _a_peer_info) in &node.distributor.neighborhood.peers.peers {
-                        for (b_peer_id, _b_peer_info) in &node.distributor.neighborhood.peers.peers {
+                    for (a_peer_id, _a_peer_info) in &node.distributor.neighborhood.peers {
+                        for (b_peer_id, _b_peer_info) in &node.distributor.neighborhood.peers {
                             
 
                             let Some(origin_pos) = self.ether.actual_ether.node_metadata.iter().find(|x|*x.ephemeral_node_id.shared_get() == *a_peer_id).map(|x|x.pos) else {
@@ -579,7 +579,7 @@ impl App for Visualizer {
                             let Some(recv_from_pos) = self.ether.actual_ether.node_metadata.iter().find(|x|*x.ephemeral_node_id.shared_get() == *b_peer_id).map(|x|x.pos) else {
                                 continue;
                             };
-                            if !node.distributor.neighborhood.peers.fast_pather.write().unwrap().should_i_forward(a_peer_id.raw_u16(), b_peer_id.raw_u16()) {
+                            if !node.distributor.neighborhood.fast_pather.write().unwrap().should_i_forward(a_peer_id.raw_u16(), b_peer_id.raw_u16()) {
                                 continue;
                             }
 

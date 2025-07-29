@@ -4,7 +4,7 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{bytes_of_mut, bytes_of_mut_uninit, cur_node, dprintln, from_bytes, from_bytes_mut, FatPtr, GenPtr, Message,  NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
+use crate::{bytes_of_mut, bytes_of_mut_uninit, cur_node, dprintln, from_bytes, from_bytes_mut, test_elapsed, FatPtr, GenPtr, Message, NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
@@ -442,11 +442,11 @@ impl DatabaseContextData {
             keys.get_index_mut(observer.index(), self)
         ;
 
-        if !right_key_place.incoming_read_dep.iter(self).any(|x|**x == observer) {
-            right_key_place.incoming_read_dep.push(NoatunUntrackedCell(observer), self);
+        if !right_key_place.incoming_read_dep.iter(self).any(|x|**x == observee) {
+            right_key_place.incoming_read_dep.push(NoatunUntrackedCell(observee), self);
         }
     }
-    /*
+    /* TODO: Remove
     fn record_reverse_dependency(
         &mut self,
         // message whose data has been observed
@@ -1468,22 +1468,30 @@ impl DatabaseContextData {
 
         let uses = unsafe { self.get_uses() };
         let mark_delete = if seq.index() >= uses.len() {
+            dprintln!("@{} {:?} mark_delete because index >= uses.len()", cur_node(), test_elapsed());
             // If current message made no imprint at all, it can just as well be deleted.
             // The message has neither read nor written any data.
             true
         } else {
             let cur = uses.get(self, seq.index());
 
+
             let cutoff = messages.cutoff_index();
             if last_overwriter < cutoff {
+                dprintln!("@{} {:?} {} mark_delete because last_overwriter<cutoff", cur_node(), test_elapsed(), seq);
                 true
-
-            } else if !cur.wrote_non_opaques() && (!cur.wrote_tombstones() || seq < messages.cutoff_index()) {
-                compile_error!("Check why seq < messages.cutoff_index check here doesn't work!")
+            } else if !cur.wrote_non_opaques() && (!cur.wrote_tombstones() || seq < cutoff) {
+                dprintln!("@{} {:?} {} mark_delete because !tombstones and seq(!tombstones({}) or {}) < cutoff({})", cur_node(), test_elapsed(), seq, cur.wrote_tombstones(), seq, cutoff);
                 true
             }  else if !messages.may_have_been_transmitted(seq)? && !cur.wrote_tombstones() {
+                dprintln!("@{} {:?} {} mark_delete because !transmitted && !tombstone", cur_node(), test_elapsed(), seq);
                 true
             } else {
+                dprintln!("@{} {:?} {} can't be deleted yet: last_ovr: {}, cutoff: {}, non-opaq: {}, tomb: {}, transmitted: {}", cur_node(), test_elapsed(), seq,
+                    last_overwriter,cutoff,
+                    cur.wrote_non_opaques(),cur.wrote_tombstones(),
+                    messages.may_have_been_transmitted(seq)?
+                );
                 false
             }
         };
@@ -1496,16 +1504,21 @@ impl DatabaseContextData {
             let outgoing_deps = self.outgoing_read_dependencies_mut(seq);
 
             for i in 0..outgoing_deps.len() {
-                self.incoming_read_dependencies_mut(**outgoing_deps.get_index(i, self))
+                let right = **outgoing_deps.get_index(i, self);
+                assert!(right > seq);
+                self.incoming_read_dependencies_mut(right)
                     .retain(|x|**x != seq, self);
             }
 
             let incoming_deps = self.incoming_read_dependencies_mut(seq);
             for i in 0..incoming_deps.len() {
-                self.outgoing_read_dependencies_mut(**incoming_deps.get_index(i, self)).retain(|x|**x != seq, self);
+                let left = **incoming_deps.get_index(i, self);
+
+                debug_assert!(left < seq);
+                self.outgoing_read_dependencies_mut(left).retain(|x|**x != seq, self);
 
                 //TODO: Eliminate this recursion, to make sure we don't overflow the stack
-                self.try_delete(**incoming_deps.get_index(i, self), seq, must_remove, messages)?;
+                self.try_delete(left, seq, must_remove, messages)?;
             }
         }
 
@@ -1836,23 +1849,27 @@ mod tests {
     use crate::{DatabaseContextData, Target};
     use std::time::Instant;
     #[test]
-    fn smoke_deptrack() {
+    fn basic_test_deptrack1() {
         let mut disk = InMemoryDisk::default();
         let mut tracker =
-            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 10000).unwrap();
+            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 20000).unwrap();
 
         tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
 
-        let result: Vec<_> = tracker.incoming_read_dependencies(SequenceNr::from_index(1)).
+        let result: Vec<_> = tracker.incoming_read_dependencies(SequenceNr::from_index(2)).
+            iter(&tracker).map(|x| x.0).collect();
+        assert_eq!(result, vec![SequenceNr::from_index(1)]);
+
+        let result: Vec<_> = tracker.outgoing_read_dependencies(SequenceNr::from_index(1)).
             iter(&tracker).map(|x| x.0).collect();
         assert_eq!(result, vec![SequenceNr::from_index(2)]);
     }
 
     #[test]
-    fn smoke_deptrack_many() {
+    fn basic_test_deptrack_many() {
         let mut disk = InMemoryDisk::default();
         let mut tracker =
-            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 10000).unwrap();
+            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 30000).unwrap();
 
         let t = Instant::now();
         for i in 0..100_usize {
@@ -1864,13 +1881,23 @@ mod tests {
         println!("Time: {:?}", t.elapsed());
 
         let result: Vec<_> = tracker
-            .incoming_read_dependencies(SequenceNr::from_index(8))
+            .outgoing_read_dependencies(SequenceNr::from_index(8))
             .iter(&tracker)
             .map(|x| x.index())
             .collect();
         assert_eq!(
             result,
-            vec![80, 79, 78, 77, 76, 75, 74, 73, 72, 71, 70, 69, 68, 67, 66, 65, 64]
+            vec![64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80]
+        );
+
+        let result: Vec<_> = tracker
+            .incoming_read_dependencies(SequenceNr::from_index(64))
+            .iter(&tracker)
+            .map(|x| x.index())
+            .collect();
+        assert_eq!(
+            result,
+            vec![8]
         );
     }
 }

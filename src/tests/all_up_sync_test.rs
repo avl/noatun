@@ -754,9 +754,18 @@ async fn all_up_general_update_sync_test_newer_messages_persist() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_general_update_sync_test_mid_age_messages_persist() {
+async fn all_up_general_update_sync_test_mid_age_messages_persist_all() {
     setup_tracing();
     for seed in 0..NUM_CASES {
+        println!("=========== Seed = {seed} ===========");
+        all_up_general_update_sync_test_impl(seed, 900, true, usize::MAX, true).await;
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn all_up_general_update_sync_test_mid_age_messages_persist_2413() {
+    setup_tracing();
+    {
+        let seed = 2413;
         println!("=========== Seed = {seed} ===========");
         all_up_general_update_sync_test_impl(seed, 900, true, usize::MAX, true).await;
     }
@@ -904,6 +913,12 @@ async fn all_up_general_update_sync_test_impl(
     driver.set_loss(0.0);
     tokio::time::sleep(Duration::from_secs(90)).await;
 
+
+    let time_now = noatun_start_time + start_instant.elapsed() + Duration::from_secs(1000);
+    app1.set_mock_time(time_now).unwrap();
+    app2.set_mock_time(time_now).unwrap();
+
+
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
 
@@ -931,6 +946,7 @@ async fn all_up_general_update_sync_test_impl(
     let smsgs2: IndexSet<_> = msgs2.iter().map(|x| x.header.id).collect();
     //println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
     //println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
+    println!("Seed: {}", seed);
     println!("Only in 0: {:?}", smsgs1.sub(&smsgs2));
     println!("Only in 1: {:?}", smsgs2.sub(&smsgs1));
     if persist {
@@ -1101,8 +1117,8 @@ async fn all_up_big_nominal_test() {
     let smsgs2: IndexSet<_> = msgs2.iter().map(|x| x.header.id).collect();
     println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
     println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
-    println!("Only in 1: {:?}", smsgs1.sub(&smsgs2));
-    println!("Only in 2: {:?}", smsgs2.sub(&smsgs1));
+    println!("Only in 0: {:?}", smsgs1.sub(&smsgs2));
+    println!("Only in 1: {:?}", smsgs2.sub(&smsgs1));
     {
         assert_eq!(msgs1.len(), msgs2.len());
     }

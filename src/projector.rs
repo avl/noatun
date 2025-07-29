@@ -111,8 +111,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
 
         let mut must_remove = Vec::new();
         
-        context.try_delete_all_that_were_overwritten_by_range(old_cutoff_index.index()..cutoff_index.index(), &mut self.messages,
-                                                              &mut must_remove, cutoff_index)?;
 
         /*
         for index_entry in &messages_slice[old_cutoff_index.index()..cutoff_index.index()] {
@@ -129,6 +127,11 @@ impl<MSG: Message + 'static> Projector<MSG> {
             .advance_cutoff_hash(prev_cutoff_state, cutoff_state)?;
 
         self.messages.set_cutoff_index(cutoff_index);
+
+        dprintln!("advance {:?}..{:?}", old_cutoff_index.index(),cutoff_index.index());
+        context.try_delete_all_that_were_overwritten_by_range(old_cutoff_index.index()..cutoff_index.index(), &mut self.messages,
+                                                              &mut must_remove, cutoff_index)?;
+        
 
         //dprintln!("@{} Calling rt_calc with {:?}", crate::cur_node(), process_now);
 
@@ -364,7 +367,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
         drop(guard);
 
         context.set_next_seqnr(seqnr.successor());
-        println!("Calling finalize");
         context.rt_finalize_message(seqnr, must_remove, messages)?;
         Ok(())
     }
