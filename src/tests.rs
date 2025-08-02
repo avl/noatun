@@ -1,10 +1,10 @@
 #![allow(non_local_definitions)]
-use tracing::info;
 use super::*;
 use crate::data_types::{NoatunCellArrayExt, NoatunString};
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use byteorder::{LittleEndian, WriteBytesExt};
+use tracing::info;
 
 use crate::database::{DatabaseSettings, OpenMode};
 use data_types::NoatunBox;
@@ -160,6 +160,37 @@ mod test_types_rewind {
 
         rewind_tester::<NoatunVec<NoatunCell<u32>>>();
     }
+
+    #[test]
+    fn test_vec_retain() {
+        impl DummyTestMessageApply for NoatunVec<NoatunCell<u64>> {
+            fn test_message_apply(_time: NoatunTime, root: Pin<&mut Self>) {
+                if root.is_empty() {
+                    root.push(1);
+                } else {
+                    root.retain(|_| false);
+                }
+            }
+        }
+        rewind_tester::<NoatunVec<NoatunCell<u64>>>();
+    }
+
+    #[test]
+    fn test_vec_retain_some() {
+        impl DummyTestMessageApply for NoatunVec<NoatunCell<i64>> {
+            fn test_message_apply(_time: NoatunTime, mut root: Pin<&mut Self>) {
+                if root.is_empty() {
+                    root.as_mut().push(1);
+                    root.as_mut().push(2);
+                } else {
+                    root.as_mut().retain(|x| **x == 2);
+                }
+                assert_eq!(**root.iter().next().unwrap(), 1);
+            }
+        }
+        rewind_tester::<NoatunVec<NoatunCell<i64>>>();
+    }
+
     #[test]
     fn rewind_test_hashmap_insert() {
         impl DummyTestMessageApply for crate::data_types::NoatunHashMap<u16, NoatunCell<u16>> {

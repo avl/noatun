@@ -141,7 +141,6 @@ fn test_map3() {
     .unwrap();
 
     db.set_mock_time(NoatunTime::debug_time(1440)).unwrap();
-    
 
     assert_eq!(
         db.count_messages(),
@@ -158,7 +157,7 @@ fn test_map3() {
     .unwrap();
 
     db.set_mock_time(NoatunTime::debug_time(2 * 1440)).unwrap();
-    
+
     assert_eq!(
         db.count_messages(),
         0,

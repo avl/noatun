@@ -4,7 +4,11 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::{sha2, sha2_message};
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{bytes_of, bytes_of_mut, dprintln, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime, Target};
+use crate::{
+    bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut,
+    Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime,
+    Target,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 #[allow(unused)]
@@ -459,7 +463,6 @@ pub(crate) struct OnDiskMessageStore<M> {
     //update_heads: FileAccessor,
 }
 
-
 struct MessageWriteReport {
     start_pos: u64,
     total_size: u64,
@@ -495,18 +498,17 @@ impl<M> OnDiskMessageStore<M> {
     }
     fn calculate_cutoff_index(header: &StoreHeader, index_slice: &[IndexEntry]) -> usize {
         let cutoff_time = header.cutoff.before_time.to_noatun_time();
-        let (Ok(mut index)|Err(mut index)) =index_slice.binary_search_by_key(
-            &cutoff_time,
-            |x|x.message.timestamp());
-        
+        let (Ok(mut index) | Err(mut index)) =
+            index_slice.binary_search_by_key(&cutoff_time, |x| x.message.timestamp());
+
         while index > 0 {
-            if index_slice[index-1].message.timestamp() == cutoff_time {
+            if index_slice[index - 1].message.timestamp() == cutoff_time {
                 index -= 1;
                 continue;
-            } 
+            }
             break;
         }
-            
+
         index
     }
 
@@ -518,7 +520,7 @@ impl<M> OnDiskMessageStore<M> {
                 continue;
             }
             if !seen.insert(entry.message) {
-                println!("All messages: {:#?}", index);
+                println!("All messages: {index:#?}");
                 panic!("Duplicate message entry seen: {:?}", entry.message);
             }
         }
@@ -537,8 +539,8 @@ impl<M> OnDiskMessageStore<M> {
         }
         let calc = Self::calculate_cutoff_index(header, index);
         if correct_index != calc {
-            println!("Index: {:#?}", index);
-            println!("Correct: {}, according to calc: {}", correct_index, calc);
+            println!("Index: {index:#?}");
+            println!("Correct: {correct_index}, according to calc: {calc}");
             std::process::abort();
         }
         assert_eq!(correct_index, Self::calculate_cutoff_index(header, index));
@@ -902,7 +904,6 @@ impl<M> OnDiskMessageStore<M> {
         Ok(())
     }
 
-
     fn recover_cutoff_state(
         time_now: NoatunTime,
         index_header: &mut StoreHeader,
@@ -948,7 +949,7 @@ impl<M> OnDiskMessageStore<M> {
     }
 
     /// Smallest unused index.
-    /// 
+    ///
     /// The next index that will be used when a new message is added to the db
     pub fn next_index(&self) -> Result<usize> {
         let (header, _message_index) = self.header_and_index().context("opening index file")?;
@@ -1175,7 +1176,7 @@ impl<M> OnDiskMessageStore<M> {
         let msg = Self::read_msg_header(entry, data_files, Some(&mut children))?;
         Ok(Some((msg, children)))
     }
-    
+
     /// Return the given message, or None if it does not exist.
     pub fn read_message_header_and_children(
         &self,
@@ -1203,7 +1204,9 @@ impl<M> OnDiskMessageStore<M> {
             return Err(anyhow!("Invalid SequenceNr"));
         }
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
-        Ok(message_index.get(seq.index()).ok_or_else(|| anyhow!("SequenceNr out of bounds"))?
+        Ok(message_index
+            .get(seq.index())
+            .ok_or_else(|| anyhow!("SequenceNr out of bounds"))?
             .message)
     }
 
@@ -1328,10 +1331,6 @@ impl<M> OnDiskMessageStore<M> {
         }
 
         if let Some((file, _offset)) = entry.file_offset.file_and_offset() {
-            //TODO: Remove debug
-            if crate::cur_node() == 0 {
-                dprintln!("@{} {:?} Actually deleting #{} ({:?})", crate::cur_node(), crate::test_elapsed(), delete_index.index(), entry.message);
-            }
             header.cutoff.report_delete(entry.message);
             header.prev_cutoff.report_delete(entry.message);
 
@@ -1350,12 +1349,6 @@ impl<M> OnDiskMessageStore<M> {
             for child in &children {
                 self.add_remove_parents_and_children(*child, &[], Some(id), &[], None)?;
             }
-            /*{
-                //TODO: Remove
-                let (header, message_index) =
-                    Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
-                dprintln!("Index before delete: {:#?}", message_index);
-            }*/
             Ok(true)
         } else {
             warn!("Message was already deleted");
@@ -1852,12 +1845,10 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message + Debug + 'a,
     {
-
         #[cfg(all(debug_assertions, feature = "debug"))]
         {
             self.debug_verify_cutoff_index()?;
         }
-
 
         let mut prev = None;
 
@@ -1907,7 +1898,6 @@ impl<M> OnDiskMessageStore<M> {
 
         #[cfg(debug_assertions)]
         Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
-
 
         let mut last_msg_id = None;
         let mut carry_buffer: VecDeque<IndexEntry> = VecDeque::with_capacity(len);
@@ -2006,7 +1996,7 @@ impl<M> OnDiskMessageStore<M> {
 
                     /*
                     TODO: See if we can make this work. It's a more efficient mechanism
-                    to maintain self.cutoff_index 
+                    to maintain self.cutoff_index
                     if cur_index < initial_index_entries && cur_index_entry.message.timestamp() < index_header.cutoff.before_time {
                         self.cutoff_index -= 1;
                     }*/
@@ -2016,7 +2006,6 @@ impl<M> OnDiskMessageStore<M> {
                     /*if cur_index_entry.message.timestamp() < index_header.cutoff.before_time {
                         self.cutoff_index += 1;
                     }*/
-
 
                     cur_index += 1;
                 }
@@ -2181,11 +2170,9 @@ impl<M> OnDiskMessageStore<M> {
             assert_eq!(new_cutoff, index_header.cutoff);
         }
 
-
         self.handle_remaining_child_assignments(remaining_child_assignments)?;
 
-        let (index_header, mmap_index) =
-            Self::header_and_index_mut(&mut self.index_mmap)?;
+        let (index_header, mmap_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
         self.cutoff_index = Self::calculate_cutoff_index(index_header, mmap_index);
 
         #[cfg(all(debug_assertions, feature = "debug"))]
@@ -2407,7 +2394,6 @@ impl<M> OnDiskMessageStore<M> {
             .unwrap()
             .0;
 
-        
         let (header, index) = Self::header_and_index_mut(&mut index_file)?;
         let cutoff_index = Self::calculate_cutoff_index(header, index);
 

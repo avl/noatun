@@ -39,7 +39,6 @@ impl Message for VecMessage {
     }
 }
 
-
 #[test]
 fn test_vec0() {
     super::setup_tracing();
@@ -48,7 +47,7 @@ fn test_vec0() {
         OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
-        .unwrap();
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
     db.disable_filesystem_sync().unwrap();
 
@@ -59,7 +58,7 @@ fn test_vec0() {
         push: false,
         destroy: false,
     })
-        .unwrap();
+    .unwrap();
 
     assert_eq!(db.count_messages(), 1);
     db.append_local(VecMessage {
@@ -69,7 +68,7 @@ fn test_vec0() {
         push: false,
         destroy: false,
     })
-        .unwrap();
+    .unwrap();
 
     assert_eq!(
         db.count_messages(),
@@ -287,7 +286,6 @@ fn test_vec5() {
 
     db.set_mock_time(NoatunTime::debug_time(1440)).unwrap();
 
-    
     assert_eq!(
         db.count_messages(),
         0,

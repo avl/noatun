@@ -551,7 +551,6 @@ fn old_transmitted_messages_without_effect_are_removed1() {
     //println!("Advancing time to 2024");
     sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
 
-
     let all_msgs = sess.get_all_messages_vec().unwrap();
     assert_eq!(all_msgs.len(), 1);
     assert_eq!(all_msgs[0].header.id, msg2.id);
@@ -587,7 +586,6 @@ fn old_transmitted_messages_without_effect_are_removed2() {
     sess.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into())
         .unwrap();
 
-
     let msg2 = sess
         .append_local(SyncMessage {
             persist: true,
@@ -601,7 +599,6 @@ fn old_transmitted_messages_without_effect_are_removed2() {
 
     //println!("Advancing time to 2024");
     sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
-
 
     let all_msgs = sess.get_all_messages_vec().unwrap();
     assert_eq!(all_msgs.len(), 1);
@@ -719,7 +716,6 @@ async fn all_up_gradual_update_sync_test() {
     //  assert_snapshot!(driver.messages_snapshot());
 }
 
-
 const NUM_CASES: u64 = 10000;
 
 #[tokio::test(start_paused = true)]
@@ -742,7 +738,6 @@ async fn all_up_general_update_sync_test_old_messages_654() {
         all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
     }
 }
-
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_persist() {
@@ -807,7 +802,6 @@ async fn all_up_general_update_sync_test_mid_age_messages_no_persist_all() {
         all_up_general_update_sync_test_impl(seed, 900, false, usize::MAX, true).await;
     }
 }
-
 
 #[tokio::test(start_paused = true)]
 async fn all_up_special_seed() {
@@ -913,11 +907,9 @@ async fn all_up_general_update_sync_test_impl(
     driver.set_loss(0.0);
     tokio::time::sleep(Duration::from_secs(90)).await;
 
-
     let time_now = noatun_start_time + start_instant.elapsed() + Duration::from_secs(1000);
     app1.set_mock_time(time_now).unwrap();
     app2.set_mock_time(time_now).unwrap();
-
 
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
@@ -946,7 +938,7 @@ async fn all_up_general_update_sync_test_impl(
     let smsgs2: IndexSet<_> = msgs2.iter().map(|x| x.header.id).collect();
     //println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
     //println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
-    println!("Seed: {}", seed);
+    println!("Seed: {seed}");
     println!("Only in 0: {:?}", smsgs1.sub(&smsgs2));
     println!("Only in 1: {:?}", smsgs2.sub(&smsgs1));
     if persist {

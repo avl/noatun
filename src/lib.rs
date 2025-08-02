@@ -192,33 +192,31 @@ thread_local! {
     pub static CONTEXT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
 }
 
-#[cfg(any(feature ="debug", debug_assertions))]
+#[cfg(any(feature = "debug", debug_assertions))]
 thread_local! {
     pub static DEBUG_NODE: Cell<u16> = const { Cell::new(0) };
 }
 
 #[doc(hidden)]
-#[cfg(any(feature ="debug", debug_assertions))]
+#[cfg(any(feature = "debug", debug_assertions))]
 #[macro_export]
 macro_rules! track_node {
     ($node:expr) => {
         $crate::DEBUG_NODE.set($node);
-    }
+    };
 }
 
 #[doc(hidden)]
-#[cfg(not(any(feature ="debug", debug_assertions)))]
+#[cfg(not(any(feature = "debug", debug_assertions)))]
 #[macro_export]
 macro_rules! track_node {
-    ($_node:expr) => {
-    }
+    ($_node:expr) => {};
 }
-
 
 #[doc(hidden)]
 #[inline]
 pub fn cur_node() -> u16 {
-    #[cfg(any(feature ="debug", debug_assertions))]
+    #[cfg(any(feature = "debug", debug_assertions))]
     {
         DEBUG_NODE.get()
     }
@@ -227,11 +225,6 @@ pub fn cur_node() -> u16 {
         65535
     }
 }
-
-
-
-
-
 
 #[derive(Clone, Copy)]
 pub struct NoatunContext;
@@ -291,7 +284,6 @@ impl NoatunContext {
         let context_ptr = get_context_ptr();
         unsafe { (*context_ptr).start_ptr() }
     }
-
 
     pub fn index_of<T: Object + ?Sized>(self, t: &T) -> T::Ptr {
         let context_ptr = get_context_ptr();
@@ -484,7 +476,8 @@ thread_local! {
 
 #[cfg(test)]
 pub fn reset_random_id() {
-    crate::distributor::NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
+    crate::distributor::NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER
+        .store(0, std::sync::atomic::Ordering::SeqCst);
     NON_RANDOM_ID_COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -669,18 +662,9 @@ impl MessageId {
         temp
     }
     pub fn timestamp(&self) -> NoatunTime {
-        let data: [u8; 16] = cast_storable(self.data);
-        let mut time_le_bytes = [0u8; 8];
-        time_le_bytes[2..6].copy_from_slice(&data[0..4]);
-        time_le_bytes[0..2].copy_from_slice(&data[6..8]);
-        let restes = u64::from_le_bytes(time_le_bytes);
-
-        //TODO: Use only the alternate impl!
-        let mut alternative_value = (self.data[0] as u64)<<16;
-        alternative_value |= (self.data[1]>>16) as u64;
-        assert_eq!(alternative_value, restes);
-
-        NoatunTime(restes)
+        let mut alternative_value = (self.data[0] as u64) << 16;
+        alternative_value |= (self.data[1] >> 16) as u64;
+        NoatunTime(alternative_value)
     }
 
     /// Create a MessageId from the given time and random part.
@@ -737,7 +721,6 @@ impl Add<NoatunTime> for Duration {
         NoatunTime(rhs.0 + self.as_millis() as u64)
     }
 }
-
 
 impl PartialEq<CutOffTime> for NoatunTime {
     fn eq(&self, other: &CutOffTime) -> bool {

@@ -1691,7 +1691,6 @@ impl Distributor {
                     && !chosen_messages.contains_key(parent)
                 // message_list is sorted by id (i.e, also by time), so parent should be found here
                 {
-
                     warn!(
                         "Could not apply message {:?} because parent {:?} is not known",
                         msg.id, parent

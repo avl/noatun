@@ -3,7 +3,10 @@ use crate::disk_abstraction::Disk;
 use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{catch_and_log, dprintln, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunTime, Persistence, Target};
+use crate::{
+    catch_and_log, dprintln, ContextGuardMut, DatabaseContextData, Message, MessageFrame,
+    MessageHeader, MessageId, NoatunTime, Persistence, Target,
+};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::pin::Pin;
@@ -33,7 +36,13 @@ impl<MSG: Message + 'static> Projector<MSG> {
         let mut prev_cutoff_state = self.messages.prev_cutoff_hash()?;
         let mut cutoff_state = self.messages.current_cutoff_hash()?;
 
-        dprintln!("@{} {:?} Advancing cutoff {} -> {}", crate::cur_node(), crate::test_elapsed(), cutoff_state.before_time.to_noatun_time(), new_cutoff_at.to_noatun_time());
+        dprintln!(
+            "@{} {:?} Advancing cutoff {} -> {}",
+            crate::cur_node(),
+            crate::test_elapsed(),
+            cutoff_state.before_time.to_noatun_time(),
+            new_cutoff_at.to_noatun_time()
+        );
 
         let old_prev_cutoff_index = self
             .messages
@@ -95,43 +104,47 @@ impl<MSG: Message + 'static> Projector<MSG> {
         }
 
         /*
-        let unused_list = unsafe { context.get_unused_list() };
-        let unused_list = unused_list.get_full_slice(context);
+                let unused_list = unsafe { context.get_unused_list() };
+                let unused_list = unused_list.get_full_slice(context);
 
-        dprintln!("@{} Advancing list: {:?}, cutoff_index: {}", crate::cur_node(), unused_list, cutoff_index);
+                dprintln!("@{} Advancing list: {:?}, cutoff_index: {}", crate::cur_node(), unused_list, cutoff_index);
 
-        debug_assert!(unused_list.is_sorted_by_key(|x| x.last_overwriter));
+                debug_assert!(unused_list.is_sorted_by_key(|x| x.last_overwriter));
 
-        let (Ok(unused_list_last) | Err(unused_list_last)) =
-            unused_list.binary_search_by_key(&cutoff_index, |x| x.last_overwriter);
+                let (Ok(unused_list_last) | Err(unused_list_last)) =
+                    unused_list.binary_search_by_key(&cutoff_index, |x| x.last_overwriter);
 
 
-        dprintln!("@{} Selected Advancing list: {:?}, last: {}", crate::cur_node(), &unused_list[..unused_list_last] , unused_list_last);
-*/
+                dprintln!("@{} Selected Advancing list: {:?}, last: {}", crate::cur_node(), &unused_list[..unused_list_last] , unused_list_last);
+        */
 
         let mut must_remove = Vec::new();
-        
 
         /*
         for index_entry in &messages_slice[old_cutoff_index.index()..cutoff_index.index()] {
             context.
         }*/
 
-
-            /*let mut process_now = vec![];
-            for item in &unused_list[..unused_list_last] {
-                debug_assert!(item.last_overwriter < cutoff_index);
-                process_now.push(*item);
-            }*/
+        /*let mut process_now = vec![];
+        for item in &unused_list[..unused_list_last] {
+            debug_assert!(item.last_overwriter < cutoff_index);
+            process_now.push(*item);
+        }*/
         self.messages
             .advance_cutoff_hash(prev_cutoff_state, cutoff_state)?;
 
         self.messages.set_cutoff_index(cutoff_index);
 
-        dprintln!("advance {:?}..{:?}", old_cutoff_index.index(),cutoff_index.index());
-        context.try_delete_all_that_were_overwritten_by_range(old_cutoff_index.index()..cutoff_index.index(), &mut self.messages,
-                                                              &mut must_remove, cutoff_index)?;
-        
+        dprintln!(
+            "advance {:?}..{:?}",
+            old_cutoff_index.index(),
+            cutoff_index.index()
+        );
+        context.try_delete_all_that_were_overwritten_by_range(
+            old_cutoff_index.index()..cutoff_index.index(),
+            &self.messages,
+            &mut must_remove,
+        )?;
 
         //dprintln!("@{} Calling rt_calc with {:?}", crate::cur_node(), process_now);
 
@@ -146,7 +159,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
 
         self.head_tracker
             .remove_before_cutoff(cutoff_state.before_time.to_noatun_time())?;
-
 
         Ok(())
     }
@@ -292,7 +304,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
         messages: impl ExactSizeIterator<Item = &'a MessageFrame<MSG>>,
         local: bool,
     ) -> Result<bool> {
-
         let cutoff = self.current_cutoff_time()?;
         if let Some(insert_point) = self.messages.append_many_sorted(
             messages,
@@ -343,7 +354,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         msg: &MessageFrame<MSG>,
         seqnr: SequenceNr,
         must_remove: &mut Vec<SequenceNr>,
-        messages: &OnDiskMessageStore<M>
+        messages: &OnDiskMessageStore<M>,
     ) -> Result<()> {
         if context.next_seqnr() != seqnr {
             context.set_next_seqnr(seqnr);
@@ -377,7 +388,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
         mut root: Pin<&mut MSG::Root>,
         preview: impl Iterator<Item = MSG>,
     ) -> Result<()> {
-
         let time = NoatunTime(time.timestamp_millis() as u64);
         catch_and_log(|| {
             for msg in preview {
@@ -404,7 +414,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
         max_project_to: Option<NoatunTime>,
         auto_delete: bool,
     ) -> Result<Option<SequenceNr> /*earliest deleted index*/> {
-
         //context.clear_unused_tracking();
 
         let first_run = self
@@ -417,7 +426,14 @@ impl<MSG: Message + 'static> Projector<MSG> {
         };
 
         let mut must_remove = Vec::new();
-        do_run::<MSG>(context, &self.messages, root, first_run, max_project_to, &mut must_remove)?;
+        do_run::<MSG>(
+            context,
+            &self.messages,
+            root,
+            first_run,
+            max_project_to,
+            &mut must_remove,
+        )?;
 
         if !auto_delete {
             return Ok(None);
@@ -438,7 +454,14 @@ impl<MSG: Message + 'static> Projector<MSG> {
                     break;
                 }
                 let seqnr = SequenceNr::from_index(seq);
-                Projector::<MSG>::apply_single_message(context, root, &msg, seqnr, must_remove, messages)?;
+                Projector::<MSG>::apply_single_message(
+                    context,
+                    root,
+                    &msg,
+                    seqnr,
+                    must_remove,
+                    messages,
+                )?;
 
                 //must_remove.extend(context.calculate_stale_messages(messages)?);
             }
@@ -453,15 +476,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
             //let must_remove = context.calculate_stale_messages(&mut tself.messages)?;
             let mut earliest_deleted = None;
             for index in must_remove {
-
-                //TODO: Remove this lookup, it's just used for logging
-                let rev: Vec<_> = context.outgoing_read_dependencies(index).iter(context).collect();
-                info!("Deleting stale msg {:?}, its reverse dep: {:?}", index, rev);
-
-                //TODO: Remove this lookup, it's just used for logging
-                let dep: Vec<_> = context.incoming_read_dependencies(index).iter(context).collect();
-                info!("Deleting stale msg {:?}, its dep: {:?}", index, dep);
-
                 let was_deleted = tself
                     .messages
                     .mark_deleted_by_index(index, &mut tself.head_tracker)?;
@@ -472,7 +486,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
                             .unwrap_or(index),
                     );
                 }
-                //*self.messages.get_index_mut(index.index()).unwrap().1 = None;
             }
             Ok(earliest_deleted)
         }

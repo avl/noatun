@@ -1133,8 +1133,6 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
         let mut messages_received: Vec<(Address, Vec<u8>)> = Vec::new();
         let mut message_to_transmit: Vec<Vec<u8>> = Vec::new();
         loop {
-
-
             track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
 
             for message in messages_received.drain(..) {
@@ -1279,7 +1277,7 @@ pub struct DatabaseCommunication<MSG: Message> {
     database: Arc<Mutex<Database<MSG>>>,
     cmd_tx: Sender<Cmd<MSG>>,
     node: String,
-    initial_node_id: EphemeralNodeId
+    initial_node_id: EphemeralNodeId,
 }
 
 impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
@@ -1515,7 +1513,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
 
         let database = Arc::new(Mutex::new(database));
 
-        let initial_node_id  = *our_node_id.get();
+        let initial_node_id = *our_node_id.get();
         let main = DatabaseCommunicationLoop {
             distributor: Distributor::new(
                 config.periodic_message_interval,

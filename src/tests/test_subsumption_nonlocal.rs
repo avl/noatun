@@ -93,7 +93,6 @@ fn test_subsumption_cutoff_interaction() {
     let t2 = t1 + Duration::from_secs(1801);
     db.set_mock_time(t2).unwrap();
 
-
     assert_eq!(
         db.count_messages(),
         2,
@@ -103,14 +102,12 @@ fn test_subsumption_cutoff_interaction() {
     let t3 = t1 + Duration::from_secs(3600 + 1800);
     db.set_mock_time(t3).unwrap();
 
-
     assert_eq!(
         db.count_messages(),
         1,
         "first can be pruned, observer can no longer sneak in before t1"
     );
 }
-
 
 #[test]
 fn test_subsumption_cutoff_interaction2() {
@@ -126,7 +123,7 @@ fn test_subsumption_cutoff_interaction2() {
             ..DatabaseSettings::default()
         },
     )
-        .unwrap();
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
 
     println!("Cur cutoff time: {:?}", db.current_cutoff_time());
@@ -141,12 +138,11 @@ fn test_subsumption_cutoff_interaction2() {
         ),
         false,
     )
-        .unwrap();
+    .unwrap();
 
     let t0b = t0 + Duration::from_secs(1);
     let t1 = t0 + Duration::from_secs(7200);
     db.set_mock_time(t1).unwrap();
-
 
     db.append_single(
         &MessageFrame::new(
@@ -159,16 +155,10 @@ fn test_subsumption_cutoff_interaction2() {
         ),
         false,
     )
-        .unwrap();
+    .unwrap();
 
-    assert_eq!(
-        db.count_messages(),
-        1,
-        "oldest message should be pruned"
-    );
-
+    assert_eq!(db.count_messages(), 1, "oldest message should be pruned");
 }
-
 
 #[test]
 fn test_subsumption_cutoff_interaction3() {
@@ -185,13 +175,12 @@ fn test_subsumption_cutoff_interaction3() {
             ..DatabaseSettings::default()
         },
     )
-        .unwrap();
+    .unwrap();
     let mut db = db.begin_session_mut().unwrap();
 
     let t1 = t0 + Duration::from_secs(7200);
 
     db.set_mock_time(t1).unwrap();
-
 
     db.append_single(
         &MessageFrame::new(
@@ -204,7 +193,7 @@ fn test_subsumption_cutoff_interaction3() {
         ),
         false,
     )
-        .unwrap();
+    .unwrap();
 
     let t0b = t0;
     db.append_single(
@@ -218,13 +207,7 @@ fn test_subsumption_cutoff_interaction3() {
         ),
         false,
     )
-        .unwrap();
+    .unwrap();
 
-
-    assert_eq!(
-        db.count_messages(),
-        2,
-        "oldest message should be pruned"
-    );
-
+    assert_eq!(db.count_messages(), 2, "oldest message should be pruned");
 }

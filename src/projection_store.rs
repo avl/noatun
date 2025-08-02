@@ -4,19 +4,23 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{bytes_of_mut, bytes_of_mut_uninit, cur_node, dprintln, from_bytes, from_bytes_mut, test_elapsed, FatPtr, GenPtr, Message, NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr};
+use crate::{
+    bytes_of_mut, bytes_of_mut_uninit, cur_node, dprintln, from_bytes, from_bytes_mut, FatPtr,
+    GenPtr, Message, NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target,
+    ThinPtr,
+};
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
-use std::mem::{offset_of,  transmute_copy, MaybeUninit};
+use std::mem::{offset_of, transmute_copy, MaybeUninit};
 use std::ops::Range;
-use std::{slice};
+use std::slice;
 
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
 use crate::sequence_nr::SequenceNr;
 use std::pin::Pin;
 
-use tracing::{ error, info, trace};
+use tracing::{error, info, trace};
 
 mod registrar_info {
     use crate::sequence_nr::SequenceNr;
@@ -281,9 +285,6 @@ pub struct DatabaseContextData {
     //root_index: Option<GenPtr>,
     undo_log: UndoLog,
 
-    // The current message being written (or None if not open for writing)
-    //TODO: Need this be persisted? If not, write a comment here about why not.
-    //unused_messages: Vec<UnusedInfo>,
     // Set to true when run from within message apply
     pub(crate) is_mutable: bool,
     pub(crate) is_message_apply: bool,
@@ -395,18 +396,19 @@ impl DatabaseContextData {
 
     fn record_overwrite(&mut self, overwritten: SequenceNr, overwriter: SequenceNr) {
         let keys = unsafe { self.get_deptrack_keys_mut() };
-        keys.ensure_size(overwriter.index()+1, self);
+        keys.ensure_size(overwriter.index() + 1, self);
 
         let value = keys.get_index_mut(overwriter.index(), self);
 
-        value.last_overwriter_of.push(NoatunUntrackedCell(overwritten), self);
+        value
+            .last_overwriter_of
+            .push(NoatunUntrackedCell(overwritten), self);
     }
 
     /// Record a read dependency between A and B: A <- B.
     /// observee <- observer.
     /// I.e, observer has read from (data written by) observee.
     fn record_dependency(&mut self, observee: SequenceNr, observer: SequenceNr) {
-
         if observee == observer {
             return;
         }
@@ -414,12 +416,11 @@ impl DatabaseContextData {
         self.tainted = true;
         let keys = unsafe { self.get_deptrack_keys_mut() };
 
-
         assert!(observee.is_valid());
         assert!(observer.is_valid());
         debug_assert!(observer > observee);
 
-        keys.ensure_size(observee.max(observer).index()+1, self);
+        keys.ensure_size(observee.max(observer).index() + 1, self);
 
         trace!(
             "Recording dependency observer: {:?} observing {:?}",
@@ -430,81 +431,41 @@ impl DatabaseContextData {
         // No code holds this reference while calling other code that does.
         // Generally, it is not long held. DatabaseContext is neither Sync nor Send.
 
-        let left_key_place =
-            keys.get_index_mut(observee.index(), self)
-        ;
+        let left_key_place = keys.get_index_mut(observee.index(), self);
 
-        if !left_key_place.outgoing_read_dep.iter(self).any(|x|**x == observer) {
-            left_key_place.outgoing_read_dep.push(NoatunUntrackedCell(observer), self);
+        if !left_key_place
+            .outgoing_read_dep
+            .iter(self)
+            .any(|x| **x == observer)
+        {
+            left_key_place
+                .outgoing_read_dep
+                .push(NoatunUntrackedCell(observer), self);
         }
 
-        let right_key_place =
-            keys.get_index_mut(observer.index(), self)
-        ;
+        let right_key_place = keys.get_index_mut(observer.index(), self);
 
-        if !right_key_place.incoming_read_dep.iter(self).any(|x|**x == observee) {
-            right_key_place.incoming_read_dep.push(NoatunUntrackedCell(observee), self);
+        if !right_key_place
+            .incoming_read_dep
+            .iter(self)
+            .any(|x| **x == observee)
+        {
+            right_key_place
+                .incoming_read_dep
+                .push(NoatunUntrackedCell(observee), self);
         }
     }
-    /* TODO: Remove
-    fn record_reverse_dependency(
-        &mut self,
-        // message whose data has been observed
-        observee: SequenceNr,
-        // Message that observed data written by observee
-        observer: SequenceNr,
-        // Last message to overwrite any part of 'observee'
-        last_overwriter: SequenceNr,
-        // Can observee be deleted early?
-        can_be_deleted_early: bool,
-        // Did observee write tombstone?
-        wrote_tombstone: bool,
-    ) {
-        assert!(observee.is_valid());
-        assert!(observer.is_valid());
 
-        // #Safety:
-        // No code holds this reference while calling other code that does.
-        // Generally, it is not long held.
-        let keys = unsafe { self.get_deptrack_keys() };
-
-        if observer.index() >= keys.len() {
-            keys.grow(self, observer.index() + 1);
-        }
-        let key_place = unsafe {
-            keys.get_mut(self, observer.index())
-                .map_unchecked_mut(|x| &mut x.reverse_dep)
-        };
-
-        let new_entry: &mut ReverseDepTrackLinkedListEntry = self.allocate_internal();
-
-        // TODO(future): Create more efficient undo-construct for adjacent fields. Can be used
-        // here and in other places.
-
-        assert!(key_place.0 < 1 << 62);
-
-        let next_and_flag = key_place.0 as u64
-            | (if can_be_deleted_early { 1 << 63 } else { 0 })
-            | (if wrote_tombstone { 1 << 62 } else { 0 });
-        self.write_storable(next_and_flag, unsafe {
-            Pin::new_unchecked(&mut new_entry.next_and_flag)
-        });
-        self.write_storable(observee, unsafe { Pin::new_unchecked(&mut new_entry.seq) });
-        self.write_storable(last_overwriter, unsafe {
-            Pin::new_unchecked(&mut new_entry.last_overwriter)
-        });
-
-        let new_entry_index = self.index_of_sized(new_entry);
-        self.write_storable(new_entry_index, key_place);
-    }
-*/
-
-    pub(crate) fn incoming_read_dependencies_mut<'a>(
+    /// # Safety:
+    ///
+    /// Outgoing read dependencies must not already be accessed in any way, not for any message.
+    /// No accesses other than through the returned reference are allowed while the returned
+    /// reference is live.
+    pub(crate) unsafe fn incoming_read_dependencies_mut<'a>(
         &mut self,
         observee: SequenceNr,
     ) -> &'a mut NoatunVecRaw<NoatunUntrackedCell<SequenceNr>, DatabaseContextData> {
         let keys = unsafe { self.get_deptrack_keys_mut() };
-        //let keys: &NoatunVecRaw<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
 
         &mut keys.get_index_mut(observee.index(), self).incoming_read_dep
     }
@@ -522,21 +483,22 @@ impl DatabaseContextData {
     pub(crate) fn outgoing_read_dependencies(
         &self,
         observer: SequenceNr,
-    ) ->  &NoatunVecRaw<NoatunUntrackedCell<SequenceNr>, DatabaseContextData> {
-        let keys: &NoatunVecRaw<DepTrackEntry, DatabaseContextData> = &self.get_aux_header().deptrack_keys;
+    ) -> &NoatunVecRaw<NoatunUntrackedCell<SequenceNr>, DatabaseContextData> {
+        let keys: &NoatunVecRaw<DepTrackEntry, DatabaseContextData> =
+            &self.get_aux_header().deptrack_keys;
         &keys.get_index(observer.index(), self).outgoing_read_dep
     }
 
-    //TODO: This should be unsafe!
-    //TODO: Can we do a better design than just overriding lifetimes like this?
-    //Maybe just pass the MainHeader thing as a sort of faux root-obj?
-    pub(crate) fn outgoing_read_dependencies_mut<'a>(
+    /// # Safety:
+    ///
+    /// Outgoing read dependencies must not already be accessed in any way, not for any message.
+    /// No accesses other than through the returned reference are allowed while the returned
+    /// reference is live.
+    pub(crate) unsafe fn outgoing_read_dependencies_mut<'a>(
         &mut self,
         observer: SequenceNr,
-    ) ->  &'a mut NoatunVecRaw<NoatunUntrackedCell<SequenceNr>, DatabaseContextData> {
-        //TODO: This method should be unsafe, unless we add some book-keeping. Goes for
-        // most methods that call get_deptrack_keys_mut
-        let keys = unsafe {  self.get_deptrack_keys_mut() };
+    ) -> &'a mut NoatunVecRaw<NoatunUntrackedCell<SequenceNr>, DatabaseContextData> {
+        let keys = unsafe { self.get_deptrack_keys_mut() };
         &mut keys.get_index_mut(observer.index(), self).outgoing_read_dep
     }
 
@@ -675,7 +637,9 @@ impl DatabaseContextData {
     }
     // # SAFETY
     // Must ensure no other access exists, or will exist during the lifetime of the return value
-    unsafe fn get_deptrack_keys_mut<'a>(&mut self) -> &'a mut NoatunVecRaw<DepTrackEntry, DatabaseContextData> {
+    unsafe fn get_deptrack_keys_mut<'a>(
+        &mut self,
+    ) -> &'a mut NoatunVecRaw<DepTrackEntry, DatabaseContextData> {
         unsafe {
             &mut *(self.main_db_mmap.map_mut_ptr().wrapping_add(
                 size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, deptrack_keys),
@@ -794,7 +758,13 @@ impl DatabaseContextData {
         }
 
         if cur_node() == 0 {
-            dprintln!("@{} {:?} Rewinding from {:?} to {:?}", crate::cur_node(), crate::test_elapsed(), self.next_seqnr(), new_time);
+            dprintln!(
+                "@{} {:?} Rewinding from {:?} to {:?}",
+                crate::cur_node(),
+                crate::test_elapsed(),
+                self.next_seqnr(),
+                new_time
+            );
         }
         info!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
 
@@ -1227,9 +1197,9 @@ impl DatabaseContextData {
         *dest = src;
     }
 
-    //TODO: Is this really a false positive? What if 'dest' aliases something?
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] //False positive, we check the bounds
-    pub fn write_storable_ptr<T: NoatunStorable>(&mut self, src: T, dest: *mut T) {
+    /// #Safety:
+    /// No references to dest must exist.
+    pub unsafe fn write_storable_ptr<T: NoatunStorable>(&mut self, src: T, dest: *mut T) {
         let dest_index = self.index_of_ptr(dest);
         assert!(dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space());
 
@@ -1239,6 +1209,7 @@ impl DatabaseContextData {
         });
         unsafe { dest.write_unaligned(src) };
     }
+
     pub fn index_of_sized<T: Sized>(&self, t: &T) -> ThinPtr {
         ThinPtr::create(t, self.main_db_mmap.map_const_ptr())
     }
@@ -1251,7 +1222,6 @@ impl DatabaseContextData {
     pub fn index_of_ptr<T>(&self, t: *const T) -> ThinPtr {
         ThinPtr((t as *const u8 as usize).wrapping_sub(self.main_db_mmap.map_const_ptr() as usize))
     }
-
 
     /*
     /// Call after a complete update, i.e, applying multiple messages
@@ -1268,7 +1238,13 @@ impl DatabaseContextData {
     pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr, opaque: bool) {
         let current_registrar = self.next_seqnr();
 
-        self.update_registrar_ptr_impl(registrar_point, current_registrar, self.tainted, opaque, false);
+        self.update_registrar_ptr_impl(
+            registrar_point,
+            current_registrar,
+            self.tainted,
+            opaque,
+            false,
+        );
         /*if current_registrar == *registrar_point {
             return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
         }
@@ -1313,21 +1289,35 @@ impl DatabaseContextData {
                 // only happen in "destroy", and destroyed memory should never be reused.
                 // In fact, I think correctness hinges on it not being reused, since we
                 // won't find the read-dependency if it is reused!
-                self.write_storable_ptr(SequenceNr::INVALID, registrar_point);
+                unsafe {
+                    self.write_storable_ptr(SequenceNr::INVALID, registrar_point);
+                }
             }
             // We're in the 'initialize root' method
             return;
         }
         self.rt_increase_use(actor);
 
-        self.write_storable_ptr(actor, registrar_point)
+        unsafe { self.write_storable_ptr(actor, registrar_point) }
     }
     pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
-        self.update_registrar_ptr_impl(registrar_point, self.next_seqnr(), self.tainted, !opaque, false);
+        self.update_registrar_ptr_impl(
+            registrar_point,
+            self.next_seqnr(),
+            self.tainted,
+            !opaque,
+            false,
+        );
     }
     pub fn clear_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
         self.wrote_tombstone = true;
-        self.update_registrar_ptr_impl(registrar_point, self.next_seqnr(), self.tainted, !opaque, true);
+        self.update_registrar_ptr_impl(
+            registrar_point,
+            self.next_seqnr(),
+            self.tainted,
+            !opaque,
+            true,
+        );
     }
 
     // Signify that the current message has observed data previously written
@@ -1352,8 +1342,12 @@ impl DatabaseContextData {
         }
     }*/
 
-    pub(crate) fn rt_finalize_message<M:Message>(&mut self, message_seqnr: SequenceNr, must_remove: &mut Vec<SequenceNr>,
-    messages: &OnDiskMessageStore<M>) -> Result<()> {
+    pub(crate) fn rt_finalize_message<M: Message>(
+        &mut self,
+        message_seqnr: SequenceNr,
+        must_remove: &mut Vec<SequenceNr>,
+        messages: &OnDiskMessageStore<M>,
+    ) -> Result<()> {
         debug_assert!(message_seqnr.is_valid());
         //let aux_header = self.get_aux_header();
 
@@ -1367,7 +1361,6 @@ impl DatabaseContextData {
         }
 
         if uses.len() <= message_seqnr.index() {
-
             // This is a bit of a special case. This is a message
             // that did not actually leave any modified state at all after its projection.
             // Note, the message can still have cleared data.
@@ -1414,7 +1407,6 @@ impl DatabaseContextData {
         }
 
         if track.get_use() == 0 {
-
             self.record_overwrite(message_seqnr, message_seqnr);
             self.try_delete(message_seqnr, message_seqnr, must_remove, messages)?;
 
@@ -1460,34 +1452,52 @@ impl DatabaseContextData {
     ///
     /// cutoff is the first SequenceNr that is not before the cutoff time.
     /// cutoff is thus on the right side of the cutoff split.
-    pub(crate) fn try_delete<M:Message>(&mut self, seq: SequenceNr, last_overwriter: SequenceNr, must_remove: &mut Vec<SequenceNr>,
-        messages: &OnDiskMessageStore<M>) -> Result<()> {
+    pub(crate) fn try_delete<M: Message>(
+        &mut self,
+        seq: SequenceNr,
+        last_overwriter: SequenceNr,
+        must_remove: &mut Vec<SequenceNr>,
+        messages: &OnDiskMessageStore<M>,
+    ) -> Result<()> {
         if self.outgoing_read_dependencies(seq).len() != 0 {
             return Ok(());
         }
 
         let uses = unsafe { self.get_uses() };
         let mark_delete = if seq.index() >= uses.len() {
-            dprintln!("@{} {:?} mark_delete because index >= uses.len()", cur_node(), test_elapsed());
+            dprintln!(
+                "@{} {:?} mark_delete because index >= uses.len()",
+                cur_node(),
+                crate::test_elapsed()
+            );
             // If current message made no imprint at all, it can just as well be deleted.
             // The message has neither read nor written any data.
             true
         } else {
             let cur = uses.get(self, seq.index());
 
-
             let cutoff = messages.cutoff_index();
             if last_overwriter < cutoff {
-                dprintln!("@{} {:?} {} mark_delete because last_overwriter<cutoff", cur_node(), test_elapsed(), seq);
+                dprintln!(
+                    "@{} {:?} {} mark_delete because last_overwriter<cutoff",
+                    cur_node(),
+                    crate::test_elapsed(),
+                    seq
+                );
                 true
             } else if !cur.wrote_non_opaques() && (!cur.wrote_tombstones() || seq < cutoff) {
-                dprintln!("@{} {:?} {} mark_delete because !tombstones and seq(!tombstones({}) or {}) < cutoff({})", cur_node(), test_elapsed(), seq, cur.wrote_tombstones(), seq, cutoff);
+                dprintln!("@{} {:?} {} mark_delete because !tombstones and seq(!tombstones({}) or {}) < cutoff({})", cur_node(), crate::test_elapsed(), seq, cur.wrote_tombstones(), seq, cutoff);
                 true
-            }  else if !messages.may_have_been_transmitted(seq)? && !cur.wrote_tombstones() {
-                dprintln!("@{} {:?} {} mark_delete because !transmitted && !tombstone", cur_node(), test_elapsed(), seq);
+            } else if !messages.may_have_been_transmitted(seq)? && !cur.wrote_tombstones() {
+                dprintln!(
+                    "@{} {:?} {} mark_delete because !transmitted && !tombstone",
+                    cur_node(),
+                    crate::test_elapsed(),
+                    seq
+                );
                 true
             } else {
-                dprintln!("@{} {:?} {} can't be deleted yet: last_ovr: {}, cutoff: {}, non-opaq: {}, tomb: {}, transmitted: {}", cur_node(), test_elapsed(), seq,
+                dprintln!("@{} {:?} {} can't be deleted yet: last_ovr: {}, cutoff: {}, non-opaq: {}, tomb: {}, transmitted: {}", cur_node(), crate::test_elapsed(), seq,
                     last_overwriter,cutoff,
                     cur.wrote_non_opaques(),cur.wrote_tombstones(),
                     messages.may_have_been_transmitted(seq)?
@@ -1499,23 +1509,27 @@ impl DatabaseContextData {
         if mark_delete {
             must_remove.push(seq);
 
-
             //TODO: This is insanely unsafe. Motivate why it's sound!
-            let outgoing_deps = self.outgoing_read_dependencies_mut(seq);
+            let outgoing_deps = unsafe { self.outgoing_read_dependencies_mut(seq) };
 
             for i in 0..outgoing_deps.len() {
                 let right = **outgoing_deps.get_index(i, self);
                 assert!(right > seq);
-                self.incoming_read_dependencies_mut(right)
-                    .retain(|x|**x != seq, self);
+                unsafe {
+                    self.incoming_read_dependencies_mut(right)
+                        .retain(|x| **x != seq, self);
+                }
             }
 
-            let incoming_deps = self.incoming_read_dependencies_mut(seq);
+            let incoming_deps = unsafe { self.incoming_read_dependencies_mut(seq) };
             for i in 0..incoming_deps.len() {
                 let left = **incoming_deps.get_index(i, self);
 
                 debug_assert!(left < seq);
-                self.outgoing_read_dependencies_mut(left).retain(|x|**x != seq, self);
+                unsafe {
+                    self.outgoing_read_dependencies_mut(left)
+                        .retain(|x| **x != seq, self)
+                };
 
                 //TODO: Eliminate this recursion, to make sure we don't overflow the stack
                 self.try_delete(left, seq, must_remove, messages)?;
@@ -1525,254 +1539,43 @@ impl DatabaseContextData {
         Ok(())
     }
 
-
     pub(crate) fn try_delete_all_that_were_overwritten_by_range<M: Message + Debug>(
         &mut self,
         range: Range<usize>,
         messages: &OnDiskMessageStore<M>,
         must_remove: &mut Vec<SequenceNr>,
         // The new cutoff value, while advancing cutoff
-        cutoff: SequenceNr,
-    ) -> Result<()>
-    {
-
+    ) -> Result<()> {
         let mut temp = Vec::new();
         for seq_index in range {
             temp.clear();
             {
                 let keys = unsafe { self.get_deptrack_keys_mut() };
-                if let Some(mut overwritten) = keys.try_get_index_mut(seq_index, self) {
+                if let Some(overwritten) = keys.try_get_index_mut(seq_index, self) {
                     let l = overwritten.last_overwriter_of.len();
                     for i in 0..l {
-                        temp.push(**overwritten.last_overwriter_of.try_get_index(i, self).unwrap());
+                        temp.push(
+                            **overwritten
+                                .last_overwriter_of
+                                .try_get_index(i, self)
+                                .unwrap(),
+                        );
                     }
-                    unsafe { overwritten.last_overwriter_of.clear_fast(self); }
+                    overwritten.last_overwriter_of.clear_fast(self);
                 }
             }
             for item in temp.drain(..) {
-                self.try_delete(item, SequenceNr::from_index(seq_index), must_remove, messages)?;
+                self.try_delete(
+                    item,
+                    SequenceNr::from_index(seq_index),
+                    must_remove,
+                    messages,
+                )?;
             }
         }
         Ok(())
     }
-    /*
-    /// Called in two situations:
-    /// 1) Immediately when noticing a message is stale
-    /// 2) During advancement of the cutoff time.
-    pub(crate) fn rt_calculate_stale_messages_impl<M: Message + Debug>(
-        &mut self,
-        messages: &OnDiskMessageStore<M>,
-        range: Range<usize>,
-        //unused_messages: &mut Vec<UnusedInfo>,
-        // TODO: Check what happens if we receive a message that is old enough to be before
-        // cutoff, or which makes messages before cutoff stale.
-    ) -> anyhow::Result<Vec<SequenceNr>> {
 
-        /*let unused_list = unsafe { self.get_unused_list() };
-        println!("@{} {:?} pre-calc unused list: {:?}", crate::cur_node(), crate::test_elapsed(), unused_list.get_full_slice(self));*/
-
-        let mut deleted = Vec::new();
-
-        // TODO: Get rid of temp, add directly to real list?
-        let mut new_unused_list = Vec::new();
-        let unused_messages = unsafe {self.get_unused_list()};
-        trace!("Unused batch: {:?}", unused_messages);
-        if unused_messages.is_empty() {
-            return Ok(vec![]);
-        }
-        let cutoff_time = messages.current_cutoff_time()?;
-        trace!("Calculating staleness, cutoff-time: {:?}", cutoff_time);
-        #[cfg(debug_assertions)]
-        {
-            debug!(
-                "Total message-list: {:#?}",
-                messages.get_all_messages_with_children().unwrap()
-            );
-        }
-
-        #[cfg(all(debug_assertions, feature = "debug"))]
-        {
-            messages.debug_verify_cutoff_index().unwrap();
-        }
-
-        let cutoff_index = messages.cutoff_index();
-
-        #[cfg(debug_assertions)]
-        let mut sanity_index = 0u64;
-
-        'outer: while let Some(msg) = unused_messages.pop(self) {
-            #[cfg(debug_assertions)]
-            {
-                sanity_index += 1;
-                if sanity_index >10000 {
-                    panic!("too many loop iterations");
-                }
-            }
-            //let msgobj = messages.read_message_header_and_children_by_index(msg.seq);
-            debug!("considering {:?} = {:?} for deletion", msg.seq, msg);
-            debug!(
-                "unconditionally overwritten: {:?}",
-                msg.can_be_deleted_early
-            );
-            let Ok(message_id) = messages.get_message_id_from_seq(msg.seq) else {
-                warn!("UnusedMessage was already missing from MessageStore");
-                continue;
-            };
-
-            let before_cutoff = message_id.timestamp() < cutoff_time;
-
-            let may_have_been_transmitted = messages.may_have_been_transmitted(msg.seq)?;
-            let overwriter_is_before_cutoff = msg.last_overwriter < cutoff_index;
-
-            let mut debug = false;
-            //TODO: Remove this
-
-
-            //TODO: Consider case before_cutoff == true && overwriter_is_before_cutoff == false
-            //Currently, this case will lead to us adding the unused item to `new_unused_list`.
-            //Is this good enough? Will we consider this message again ? Will we consider it when
-            //overwriter moves before cutoff? Verify that we do!
-            
-            // Condition 1 (referenced below) //TODO: Is this condition1 or condition1a
-            let condition1a = (!msg.wrote_tombstone
-                && (!may_have_been_transmitted || msg.can_be_deleted_early));
-            if cur_node() == 0 {//message_id.to_string().contains("a-0-0")  || message_id.to_string().contains("18-0-0"){
-                dprintln!("@{} Unused #{} db-at: {} id: {}, ovr: {:?} bef cut: {}/{} cut: {:?}, ovr bef cut: {}, transm: {}, can-del-early: {}. condition1a: {}",
-                    crate::cur_node(),
-                         msg.seq,
-                         self.next_seqnr(),
-                         message_id,
-                         msg.last_overwriter, before_cutoff, overwriter_is_before_cutoff, cutoff_time,
-                    msg.wrote_tombstone, may_have_been_transmitted, msg.can_be_deleted_early, condition1a
-                );
-                //dbg!(msg.wrote_tombstone, may_have_been_transmitted, msg.can_be_deleted_early, before_cutoff);
-                debug = true;
-            }
-
-            if overwriter_is_before_cutoff {
-                debug_assert!(before_cutoff);
-            }
-
-            if condition1a
-                || (overwriter_is_before_cutoff)
-            {
-
-                let mut deferred = None;
-                for observer in self.incoming_read_dependencies(msg.seq) {
-                    debug!("considered its observer {:?}", observer);
-                    if !deleted.contains(&observer) {
-                        debug_assert!(!msg.can_be_deleted_early, "opaque data can't be observed, so a message that wrote only opaques must have no observers. And a message that didn't write only opaques, will have can_be_deleted_early == false");
-
-                        // 'msg' can't be deleted, because it's observed by
-                        // 'observer' - i.e a later message that has not been deleted.
-                        debug!(
-                            "can't delete {:?}/{:?} because of observer {:?}",
-                            msg.seq, //msgobj.map(|x2| x2.map(|x| x.0.id)),
-                            msg,
-                            observer
-                        );
-
-                        if debug {
-                            messages.debug_check_duplicates();
-                            let observer_id = messages.get_message_id_from_seq(observer).unwrap_or(MessageId::zero());
-                            dprintln!("@{} Couldn't delete because observed by {:?} ({:?})", crate::cur_node(), observer, observer_id);
-                        }
-
-                        // The things 'deferred' are carried out at the end of this function (i.e, quickly)
-                        deferred = Some(move |tself: &mut DatabaseContextData| {
-                            // Remember/record_reverse_dependency
-                            if debug {
-                                let next_seqnr = tself.next_seqnr();
-                                dprintln!("@{} {:?} time: {} recording revdep {} -> {}", crate::cur_node(), crate::test_elapsed(), next_seqnr, msg.seq, observer);
-                            }
-                            /*tself.record_reverse_dependency(
-                                msg.seq,
-                                observer,
-                                msg.last_overwriter,
-                                msg.can_be_deleted_early,
-                                msg.wrote_tombstone,
-                            );*/
-                        });
-
-                        break;
-                    }
-                }
-                if let Some(deferred) = deferred {
-                    deferred(self);
-                    continue 'outer;
-                }
-
-            } else {
-                if debug {
-                    dprintln!("@{} {:?} not deleting #{} because after cutoff", crate::cur_node(), crate::test_elapsed(), msg.seq.index());
-                }
-
-                debug!("can't delete {:?}{:?} yet because it's been transmitted and is after cutoff: {:?} and not unconditionally overwritten", 
-                    msg.seq, //msgobj.map(|x2|x2.map(|x|x.0.id)), 
-                    msg, before_cutoff);
-                new_unused_list.push(msg);
-                continue 'outer;
-            }
-            if debug {
-                dprintln!("@{} {:?} DELETING {} {:?} (choice made reading revdep)!", crate::cur_node(), crate::test_elapsed(), msg.seq, message_id);
-            }
-
-            info!(
-                "@{} {:?} Deleting {:?} (before cutoff: {:?}), may have been transmitted: {:?}",
-                crate::cur_node(), crate::test_elapsed(),
-                msg,
-                before_cutoff,
-                messages.may_have_been_transmitted(msg.seq)?
-            );
-            for (revdep, last_overwriter, can_be_deleted_early, wrote_tombstone) in
-                self.outgoing_read_dependencies(msg.seq)
-            {
-                if debug {
-                    dprintln!("@{} {:?} revdep found: {:?}!", crate::cur_node(), crate::test_elapsed(), revdep);
-                }
-
-                // Get messages that depend on the message that we just decided to delete
-                unused_messages.push_untracked(self, UnusedInfo {
-                    seq: revdep,
-                    last_overwriter,
-                    can_be_deleted_early,
-                    wrote_tombstone,
-                    padding: 0,
-                });
-            }
-
-            deleted.push(msg.seq);
-        }
-
-        for new_unused in new_unused_list.iter().rev() {
-            unused_messages.push_untracked(self, *new_unused);
-        }
-
-
-
-        Ok(deleted)
-    }
-*/
-/*
-    /// Called immediately after noticing a message has no live written data.
-    /// In some cases, the message can be removed immediately (non-transmitted or
-    /// opaque for example).
-    pub(crate) fn first_stale_message_step<M: Message + Debug>(
-        &mut self,
-        messages: &OnDiskMessageStore<M>,
-    ) -> anyhow::Result<Vec<SequenceNr>> {
-        // TODO: Remove this commented out sort.
-        // We *want* `unused_messages` in overwriter-order (which we should already have)
-        let unused_messages = unsafe { self.get_unused_list().get_full_slice(self) };
-        assert!(unused_messages.is_sorted_by_key(|x| x.last_overwriter));
-
-        //unused_messages.sort(); //Sort in seq-nr order
-        //let mut unused_messages = take(&mut self.unused_messages);
-        let deleted = self.rt_calculate_stale_messages_impl(messages)?;
-        //self.unused_messages = unused_messages;
-        //self.unused_messages.clear();
-        Ok(deleted)
-    }*/
     pub(crate) fn rt_increase_use(&mut self, registrar: SequenceNr) {
         let uses = unsafe { self.get_uses() };
         if uses.len() <= registrar.index() {
@@ -1856,12 +1659,18 @@ mod tests {
 
         tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
 
-        let result: Vec<_> = tracker.incoming_read_dependencies(SequenceNr::from_index(2)).
-            iter(&tracker).map(|x| x.0).collect();
+        let result: Vec<_> = tracker
+            .incoming_read_dependencies(SequenceNr::from_index(2))
+            .iter(&tracker)
+            .map(|x| x.0)
+            .collect();
         assert_eq!(result, vec![SequenceNr::from_index(1)]);
 
-        let result: Vec<_> = tracker.outgoing_read_dependencies(SequenceNr::from_index(1)).
-            iter(&tracker).map(|x| x.0).collect();
+        let result: Vec<_> = tracker
+            .outgoing_read_dependencies(SequenceNr::from_index(1))
+            .iter(&tracker)
+            .map(|x| x.0)
+            .collect();
         assert_eq!(result, vec![SequenceNr::from_index(2)]);
     }
 
@@ -1895,9 +1704,6 @@ mod tests {
             .iter(&tracker)
             .map(|x| x.index())
             .collect();
-        assert_eq!(
-            result,
-            vec![8]
-        );
+        assert_eq!(result, vec![8]);
     }
 }

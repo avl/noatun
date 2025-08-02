@@ -206,7 +206,6 @@ impl MiniPather {
             if other_forwarder_hears.neighbors.contains(&origin)
                 || other_forwarder_hears.neighbors.contains(&received_from)
             {
-
                 for temp in self.reverse.get(other_forwarder).into_iter().flatten()
                 /*self.who_can_hear inlined*/
                 {

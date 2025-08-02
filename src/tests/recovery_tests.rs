@@ -337,7 +337,6 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     let mut contents = std::fs::read("test/test_recover4/data0.bin").unwrap();
     contents[corrupt_at_index] = contents[corrupt_at_index].wrapping_sub(20);
 
-
     std::fs::write("test/test_recover4/data0.bin", &contents).unwrap();
 
     let db: Database<KeyValMessage> = Database::create_new(
