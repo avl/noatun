@@ -1284,16 +1284,11 @@ impl DatabaseContextData {
             );
         }
         if is_clear {
-            if is_valid {
-                // TODO: Try just removing this line. Clear registrar point should
-                // only happen in "destroy", and destroyed memory should never be reused.
-                // In fact, I think correctness hinges on it not being reused, since we
-                // won't find the read-dependency if it is reused!
-                unsafe {
-                    self.write_storable_ptr(SequenceNr::INVALID, registrar_point);
-                }
-            }
-            // We're in the 'initialize root' method
+            // Clear registrar point should only happen in "destroy", and destroyed memory
+            // should never be reused. In fact, I think correctness hinges on it not being
+            // reused, since we won't find the read-dependency if it is reused!
+            // So we never need to actually write to memory in this case.
+
             return;
         }
         self.rt_increase_use(actor);
@@ -1409,26 +1404,6 @@ impl DatabaseContextData {
         if track.get_use() == 0 {
             self.record_overwrite(message_seqnr, message_seqnr);
             self.try_delete(message_seqnr, message_seqnr, must_remove, messages)?;
-
-            //unreachable!("Message wrote data, but data was overwritten before message application finished. This should not be possible.")
-            //TODO: Remove below
-
-            // Same special case as above - message is not in use, even immediately
-            // after having been projected. This is currently impossible, since 'uses'
-            // was increased, this must mean that data was written, but since the 'use' is
-            // 0, this means something else overwrote that data. Which is not possible.
-            /*trace!(
-                "Message modified nothing2: {:?} (tainted: {})",
-                message_seqnr,
-                self.tainted
-            );
-            self.unused_push(UnusedInfo {
-                seq: message_seqnr,
-                last_overwriter: message_seqnr,
-                can_be_deleted_early: !self.tainted,
-                wrote_tombstone: self.wrote_tombstone,
-                padding: 0,
-            });*/
         }
         Ok(())
     }
@@ -1459,83 +1434,91 @@ impl DatabaseContextData {
         must_remove: &mut Vec<SequenceNr>,
         messages: &OnDiskMessageStore<M>,
     ) -> Result<()> {
-        if self.outgoing_read_dependencies(seq).len() != 0 {
-            return Ok(());
-        }
 
-        let uses = unsafe { self.get_uses() };
-        let mark_delete = if seq.index() >= uses.len() {
-            dprintln!(
-                "@{} {:?} mark_delete because index >= uses.len()",
-                cur_node(),
-                crate::test_elapsed()
-            );
-            // If current message made no imprint at all, it can just as well be deleted.
-            // The message has neither read nor written any data.
-            true
-        } else {
-            let cur = uses.get(self, seq.index());
+        let mut delet_tasks = Vec::new();
+        delet_tasks.push((seq, last_overwriter));
 
-            let cutoff = messages.cutoff_index();
-            if last_overwriter < cutoff {
+        while let Some(task) = delet_tasks.pop() {
+            if self.outgoing_read_dependencies(seq).len() != 0 {
+                continue;
+            }
+            let (seq, last_overwriter) = task;
+
+            let uses = unsafe { self.get_uses() };
+            let mark_delete = if seq.index() >= uses.len() {
                 dprintln!(
-                    "@{} {:?} {} mark_delete because last_overwriter<cutoff",
+                    "@{} {:?} mark_delete because index >= uses.len()",
                     cur_node(),
-                    crate::test_elapsed(),
-                    seq
+                    crate::test_elapsed()
                 );
-                true
-            } else if !cur.wrote_non_opaques() && (!cur.wrote_tombstones() || seq < cutoff) {
-                dprintln!("@{} {:?} {} mark_delete because !tombstones and seq(!tombstones({}) or {}) < cutoff({})", cur_node(), crate::test_elapsed(), seq, cur.wrote_tombstones(), seq, cutoff);
-                true
-            } else if !messages.may_have_been_transmitted(seq)? && !cur.wrote_tombstones() {
-                dprintln!(
-                    "@{} {:?} {} mark_delete because !transmitted && !tombstone",
-                    cur_node(),
-                    crate::test_elapsed(),
-                    seq
-                );
+                // If current message made no imprint at all, it can just as well be deleted.
+                // The message has neither read nor written any data.
                 true
             } else {
-                dprintln!("@{} {:?} {} can't be deleted yet: last_ovr: {}, cutoff: {}, non-opaq: {}, tomb: {}, transmitted: {}", cur_node(), crate::test_elapsed(), seq,
-                    last_overwriter,cutoff,
-                    cur.wrote_non_opaques(),cur.wrote_tombstones(),
-                    messages.may_have_been_transmitted(seq)?
-                );
-                false
-            }
-        };
+                let cur = uses.get(self, seq.index());
 
-        if mark_delete {
-            must_remove.push(seq);
+                let cutoff = messages.cutoff_index();
+                if last_overwriter < cutoff {
+                    dprintln!(
+                        "@{} {:?} {} mark_delete because last_overwriter<cutoff",
+                        cur_node(),
+                        crate::test_elapsed(),
+                        seq
+                    );
+                    true
+                } else if !cur.wrote_non_opaques() && (!cur.wrote_tombstones() || seq < cutoff) {
+                    dprintln!("@{} {:?} {} mark_delete because !tombstones and seq(!tombstones({}) or {}) < cutoff({})", cur_node(), crate::test_elapsed(), seq, cur.wrote_tombstones(), seq, cutoff);
+                    true
+                } else if !messages.may_have_been_transmitted(seq)? && !cur.wrote_tombstones() {
+                    dprintln!(
+                        "@{} {:?} {} mark_delete because !transmitted && !tombstone",
+                        cur_node(),
+                        crate::test_elapsed(),
+                        seq
+                    );
+                    true
+                } else {
+                    dprintln!("@{} {:?} {} can't be deleted yet: last_ovr: {}, cutoff: {}, non-opaq: {}, tomb: {}, transmitted: {}", cur_node(), crate::test_elapsed(), seq,
+                        last_overwriter,cutoff,
+                        cur.wrote_non_opaques(),cur.wrote_tombstones(),
+                        messages.may_have_been_transmitted(seq)?
+                    );
+                    false
+                }
+            };
 
-            //TODO: This is insanely unsafe. Motivate why it's sound!
-            let outgoing_deps = unsafe { self.outgoing_read_dependencies_mut(seq) };
+            if mark_delete {
+                must_remove.push(seq);
 
-            for i in 0..outgoing_deps.len() {
-                let right = **outgoing_deps.get_index(i, self);
-                assert!(right > seq);
-                unsafe {
-                    self.incoming_read_dependencies_mut(right)
-                        .retain(|x| **x != seq, self);
+                // #Safety:
+                // Dependencies are only used here and in a few other places. The references
+                // aren't kept alive over longer periods. Specifically, no references are
+                // alive at this point in the code.
+                let outgoing_deps = unsafe { self.outgoing_read_dependencies_mut(seq) };
+
+                for i in 0..outgoing_deps.len() {
+                    let right = **outgoing_deps.get_index(i, self);
+                    assert!(right > seq);
+                    unsafe {
+                        self.incoming_read_dependencies_mut(right)
+                            .retain(|x| **x != seq, self);
+                    }
+                }
+
+                let incoming_deps = unsafe { self.incoming_read_dependencies_mut(seq) };
+                for i in 0..incoming_deps.len() {
+                    let left = **incoming_deps.get_index(i, self);
+
+                    debug_assert!(left < seq);
+                    unsafe {
+                        self.outgoing_read_dependencies_mut(left)
+                            .retain(|x| **x != seq, self)
+                    };
+
+                    delet_tasks.push((left, seq));
                 }
             }
-
-            let incoming_deps = unsafe { self.incoming_read_dependencies_mut(seq) };
-            for i in 0..incoming_deps.len() {
-                let left = **incoming_deps.get_index(i, self);
-
-                debug_assert!(left < seq);
-                unsafe {
-                    self.outgoing_read_dependencies_mut(left)
-                        .retain(|x| **x != seq, self)
-                };
-
-                //TODO: Eliminate this recursion, to make sure we don't overflow the stack
-                self.try_delete(left, seq, must_remove, messages)?;
-            }
         }
-
         Ok(())
     }
 

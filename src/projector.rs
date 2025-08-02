@@ -7,7 +7,7 @@ use crate::{
     catch_and_log, dprintln, ContextGuardMut, DatabaseContextData, Message, MessageFrame,
     MessageHeader, MessageId, NoatunTime, Persistence, Target,
 };
-use anyhow::Result;
+use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use std::pin::Pin;
 use tracing::{error, info, trace};
@@ -291,8 +291,9 @@ impl<MSG: Message + 'static> Projector<MSG> {
         let cutoff_time = self.messages.current_cutoff_time()?;
         for message in messages.iter_mut() {
             if message.header.id.timestamp() < cutoff_time {
-                //TODO: Surely we should just be pruning parents here instead?
-                debug_assert!(message.header.parents.is_empty());
+                if !message.header.parents.is_empty() {
+                    bail!("Messages with parents cannot be inserted at a timestamp before the cutoff time");
+                }
             }
         }
 
@@ -438,7 +439,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         if !auto_delete {
             return Ok(None);
         }
-        return remove_stale_messages(self, context, must_remove);
+        return remove_stale_messages(self, must_remove);
 
         /// If returns true, need to finalize before-cutoff-part, then continue at given index
         fn do_run<MSG: Message>(
@@ -462,15 +463,12 @@ impl<MSG: Message + 'static> Projector<MSG> {
                     must_remove,
                     messages,
                 )?;
-
-                //must_remove.extend(context.calculate_stale_messages(messages)?);
             }
             Ok(())
         }
 
         fn remove_stale_messages<MSG: Message>(
             tself: &mut Projector<MSG>,
-            context: &mut DatabaseContextData,
             must_remove: Vec<SequenceNr>,
         ) -> Result<Option<SequenceNr /*minimum deleted*/>> {
             //let must_remove = context.calculate_stale_messages(&mut tself.messages)?;
