@@ -110,6 +110,8 @@ pub(crate) mod platform_specific;
 mod boot_checksum;
 pub(crate) mod disk_access;
 mod sha2_helper;
+#[cfg(test)]
+pub(crate) mod test_metrics;
 mod xxh3_vendored;
 
 #[doc(hidden)]

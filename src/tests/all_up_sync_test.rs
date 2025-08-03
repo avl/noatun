@@ -7,6 +7,7 @@ use crate::communication::{
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
 use crate::distributor::Status;
+use crate::test_metrics::TestRecorder;
 use crate::tests::setup_tracing;
 use crate::{reset_random_id, SavefileMessageSerializer};
 use crate::{set_test_epoch, test_elapsed, Database, Message, MessageId, NoatunTime, Object};
@@ -721,11 +722,16 @@ const NUM_CASES: u64 = 10000;
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_old_messages_all() {
     //setup_tracing();
+
+    let test_recorder = TestRecorder::default();
+    let _guard = test_recorder.register();
+
     for seed in 0..NUM_CASES {
         println!("=========== Seed = {seed} ===========");
         reset_random_id();
         all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
     }
+    assert_snapshot!(test_recorder.get_metrics());
 }
 
 #[tokio::test(start_paused = true)]

@@ -5,9 +5,8 @@ use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 use crate::{
-    bytes_of_mut, bytes_of_mut_uninit, cur_node, dprintln, from_bytes, from_bytes_mut, FatPtr,
-    GenPtr, Message, NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target,
-    ThinPtr,
+    bytes_of_mut, bytes_of_mut_uninit, dprintln, from_bytes, from_bytes_mut, FatPtr, GenPtr,
+    Message, NoatunStorable, Object, Pointer, RawFatPtr, SerializableGenPtr, Target, ThinPtr,
 };
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
@@ -757,7 +756,6 @@ impl DatabaseContextData {
             return;
         }
 
-
         info!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
 
         let result = self.undo_log.rewind(|entry| match entry {
@@ -1426,7 +1424,6 @@ impl DatabaseContextData {
         must_remove: &mut Vec<SequenceNr>,
         messages: &OnDiskMessageStore<M>,
     ) -> Result<()> {
-
         let mut delet_tasks = Vec::new();
         delet_tasks.push((seq, last_overwriter));
 
