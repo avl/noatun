@@ -296,7 +296,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         local: bool,
     ) -> Result<bool> {
         let cutoff = self.current_cutoff_time()?;
-        if let Some(insert_point) = self.messages.append_many_sorted(
+        if let Some(mut insert_point) = self.messages.append_many_sorted(
             messages,
             |id, parents| self.head_tracker.add_new_update_head(id, parents, cutoff),
             local,
@@ -313,6 +313,11 @@ impl<MSG: Message + 'static> Projector<MSG> {
                         debug_assert!(self.messages.contains_index(insert_point)?);
                     }
                     //TODO: compact_index_if_needed
+
+                    if self.messages.compact_index_if_needed(false)? {
+                        insert_point = 0;
+                    }
+
                     info!("Rewinding to {} after insertion", insert_point);
                     self.rewind(context, SequenceNr::from_index(insert_point))?;
                 }

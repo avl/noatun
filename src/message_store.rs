@@ -534,6 +534,12 @@ impl<M> OnDiskMessageStore<M> {
     pub(crate) fn debug_verify_cutoff_index(&self) -> Result<()> {
         let (header, index) = self.header_and_index()?;
         let mut correct_index = 0;
+        let mut holes = 0;
+        for item in index {
+            if item.is_deleted() {
+                holes += 1;
+            }
+        }
         for item in index {
             if item.message.timestamp() < header.cutoff.before_time {
                 correct_index += 1;
@@ -541,6 +547,10 @@ impl<M> OnDiskMessageStore<M> {
                 break;
             }
         }
+        if holes != header.holes {
+            println!("Index: {:#?}", index);
+        }
+        assert_eq!(holes, header.holes, "actual hole acount != memoized hole count");
         let calc = Self::calculate_cutoff_index(header, index);
         if correct_index != calc {
             println!("Index: {index:#?}");
@@ -556,7 +566,7 @@ impl<M> OnDiskMessageStore<M> {
     }
     pub(crate) fn set_cutoff_index(&mut self, cutoff_index: SequenceNr) {
         self.cutoff_index = cutoff_index.index();
-        #[cfg(all(debug_assertions, feature = "debug"))]
+        #[cfg(any(debug_assertions, feature = "debug"))]
         {
             self.debug_verify_cutoff_index().unwrap();
         }
@@ -739,13 +749,14 @@ impl<M> OnDiskMessageStore<M> {
 
     /// Compact index if needed.
     ///
-    /// Returns Some(new_cutoff_index) if compaction performed
-    pub fn compact_index_if_needed(&mut self) -> Result<Option<usize>> {
+    /// Returns Ok(true) if compaction needed.
+    pub fn compact_index_if_needed(&mut self, force: bool) -> Result<bool> {
         let (header, _index_entries) = self.header_and_index()?;
-        if header.entries/4 > header.holes {
-            Ok(Some(self.compact_index()?))
+        if force || header.entries/4 > header.holes {
+            self.compact_index()?;
+            Ok(true)
         } else {
-            Ok(None)
+            Ok(false)
         }
     }
 
@@ -753,19 +764,37 @@ impl<M> OnDiskMessageStore<M> {
     ///
     /// Note, this renumbers all messages in the index. The new cutoff index
     /// is returned.
-    pub fn compact_index(&mut self) -> Result<usize> {
+    //TODO: Unit-test this method
+    pub fn compact_index(&mut self) -> Result<()> {
+        self.debug_verify_cutoff_index().unwrap();
+
         let (header, index_entries) = Self::header_and_index_mut(&mut self.index_mmap)?;
 
         let mut write_ptr = 0;
         for read_ptr in 0 .. header.entries {
-            let used = index_entries[read_ptr as usize].file_offset.is_deleted();
-            if used && write_ptr != read_ptr {
-                index_entries[write_ptr as usize] = index_entries[read_ptr as usize];
+            let used = !index_entries[read_ptr as usize].file_offset.is_deleted();
+            if used {
+                if write_ptr != read_ptr {
+                    index_entries[write_ptr as usize] = index_entries[read_ptr as usize];
+                }
                 write_ptr += 1;
             }
         }
+
         header.entries = write_ptr;
-        Ok(Self::calculate_cutoff_index(header, index_entries))
+        header.holes = 0;
+
+        let (header, index_entries) = self.header_and_index()?;
+        let new_cutoff_index = Self::calculate_cutoff_index(header, index_entries);
+        self.cutoff_index = new_cutoff_index;
+
+        #[cfg(debug_assertions)] {
+            let (header, index_entries) = self.header_and_index()?;
+            Self::validate_holes(header, index_entries);
+            self.debug_verify_cutoff_index().unwrap();
+        }
+
+        Ok(())
     }
 
     /// Recover from index corruption.
@@ -931,7 +960,7 @@ impl<M> OnDiskMessageStore<M> {
         }
 
         self.cutoff_index = Self::recover_cutoff_state(now, index_header, index, cutoff_config)?;
-        #[cfg(all(debug_assertions, feature = "debug"))]
+        #[cfg(any(debug_assertions, feature = "debug"))]
         {
             self.debug_verify_cutoff_index()?;
         }
@@ -1376,7 +1405,9 @@ impl<M> OnDiskMessageStore<M> {
             header.data_files[file.index()].bytes_used -= entry.file_total_size;
 
             debug_assert!(delete_index.index() < header.entries as usize);
+
             Self::delete_msg_from_file(entry, &mut self.data_files)?;
+            debug_assert!(entry.is_deleted());
             header.holes += 1;
 
 
@@ -1751,6 +1782,8 @@ impl<M> OnDiskMessageStore<M> {
         Ok(())
     }
 
+    compile_error!("index compaction now seems to work, but add more tests!")
+
     pub(crate) fn add_remove_parents_and_children(
         &mut self,
         id: MessageId,
@@ -1898,7 +1931,7 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message + Debug + 'a,
     {
-        #[cfg(all(debug_assertions, feature = "debug"))]
+        #[cfg(any(debug_assertions, feature = "debug"))]
         {
             self.debug_verify_cutoff_index()?;
         }
@@ -1932,8 +1965,6 @@ impl<M> OnDiskMessageStore<M> {
         let (index_header, mmap_index) =
             Self::header_and_index_mut_uninit(&mut self.index_mmap, len)?;
 
-        #[cfg(debug_assertions)]
-        Self::validate_holes(index_header, mmap_index);
 
         debug_assert!(mmap_index[0..index_header.entries as usize]
             .iter()
@@ -2291,7 +2322,7 @@ impl<M> OnDiskMessageStore<M> {
 
         self.cutoff_index = cutoff_index_cand;
 
-        #[cfg(all(debug_assertions, feature = "debug"))]
+        #[cfg(any(debug_assertions, feature = "debug"))]
         {
             self.debug_verify_cutoff_index()?;
         }

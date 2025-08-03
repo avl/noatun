@@ -512,6 +512,9 @@ impl DatabaseContextData {
     /// Note that it is always possible to rewind to message sequence #0, but not
     /// necessary to any other index, since indices may not always be populated
     /// (only after gc of the index-data structure).
+    ///
+    /// By definition, all messages before the `next_index` have been applied to the
+    /// in memory database.
     #[inline(always)]
     pub fn next_seqnr(&self) -> SequenceNr {
         let header: &MainDbHeader =
