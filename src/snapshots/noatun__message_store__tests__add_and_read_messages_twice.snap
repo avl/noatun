@@ -1,0 +1,8 @@
+---
+source: src/message_store.rs
+expression: test_recorder.get_counters()
+---
+Key(index_compaction_count): 0
+Key(messages_written): 10
+Key(index_size): 10
+Key(index_holes): 0
