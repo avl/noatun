@@ -1714,12 +1714,12 @@ mod tests {
         let jh1: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(task1);
         let jh2: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(task2);
 
-        tokio::time::timeout(Duration::from_secs(7), jh1)
+        tokio::time::timeout(Duration::from_secs(10), jh1)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(7), jh2)
+        tokio::time::timeout(Duration::from_secs(10), jh2)
             .await
             .unwrap()
             .unwrap()

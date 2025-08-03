@@ -541,9 +541,6 @@ impl DatabaseContextData {
     }
     #[inline(always)]
     fn set_pointer_of(main_db_mmap: &FileAccessor, new_value: usize) {
-        /*let header: &mut MainDbHeader =
-            unsafe { &mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
-        header.pointer = new_value as u64;*/
         main_db_mmap.set_used_space(new_value);
     }
     #[inline(always)]
@@ -757,15 +754,7 @@ impl DatabaseContextData {
             return;
         }
 
-        if cur_node() == 0 {
-            dprintln!(
-                "@{} {:?} Rewinding from {:?} to {:?}",
-                crate::cur_node(),
-                crate::test_elapsed(),
-                self.next_seqnr(),
-                new_time
-            );
-        }
+
         info!("Rewinding from {} to {:?}", self.next_seqnr(), new_time);
 
         let result = self.undo_log.rewind(|entry| match entry {

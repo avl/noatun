@@ -266,16 +266,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
         self.messages.compact()
     }
 
-    /// Returns true if the message did not exist and was inserted
-    fn push_message(
-        &mut self,
-        context: &mut DatabaseContextData,
-        message: MessageFrame<MSG>,
-        local: bool,
-    ) -> Result<bool> {
-        self.push_sorted_messages(context, std::iter::once(&message), local)
-    }
-
     /// Returns true if any of the messages were not previously present
     pub(crate) fn push_messages<'a>(
         &mut self,
@@ -322,6 +312,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
                         );
                         debug_assert!(self.messages.contains_index(insert_point)?);
                     }
+                    //TODO: compact_index_if_needed
                     info!("Rewinding to {} after insertion", insert_point);
                     self.rewind(context, SequenceNr::from_index(insert_point))?;
                 }

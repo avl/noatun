@@ -436,7 +436,11 @@ const STATUS_NOK: u32 = 0;
 #[derive(Debug, Clone, Copy)]
 struct StoreHeader {
     entries: u32,
-    padding: u32,
+    /// The number of unused entries in this store-header.
+    ///
+    /// When this count grows too large compared to 'entries', we should
+    /// compact
+    holes: u32,
     // Compact file=1 + old file being compacted=0
     data_files: [DataFileEntry; 2],
     /// Current cutoff information
@@ -731,6 +735,37 @@ impl<M> OnDiskMessageStore<M> {
         let header: &StoreHeader = from_bytes(store_header_bytes);
         let rest = dyn_cast_slice(index_bytes);
         Ok((header, &rest[0..header.entries as usize]))
+    }
+
+    /// Compact index if needed.
+    ///
+    /// Returns Some(new_cutoff_index) if compaction performed
+    pub fn compact_index_if_needed(&mut self) -> Result<Option<usize>> {
+        let (header, _index_entries) = self.header_and_index()?;
+        if header.entries/4 > header.holes {
+            Ok(Some(self.compact_index()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Compact the index.
+    ///
+    /// Note, this renumbers all messages in the index. The new cutoff index
+    /// is returned.
+    pub fn compact_index(&mut self) -> Result<usize> {
+        let (header, index_entries) = Self::header_and_index_mut(&mut self.index_mmap)?;
+
+        let mut write_ptr = 0;
+        for read_ptr in 0 .. header.entries {
+            let used = index_entries[read_ptr as usize].file_offset.is_deleted();
+            if used && write_ptr != read_ptr {
+                index_entries[write_ptr as usize] = index_entries[read_ptr as usize];
+                write_ptr += 1;
+            }
+        }
+        header.entries = write_ptr;
+        Ok(Self::calculate_cutoff_index(header, index_entries))
     }
 
     /// Recover from index corruption.
@@ -1327,6 +1362,9 @@ impl<M> OnDiskMessageStore<M> {
             return Ok(false);
         };
         if entry.file_offset.is_deleted() {
+            // Already deleted, even though still in index (this should be unreachable, since
+            // we already checked it above).
+            debug!("internal error, deletion race");
             return Ok(false);
         }
 
@@ -1337,9 +1375,15 @@ impl<M> OnDiskMessageStore<M> {
             let id = entry.message;
             header.data_files[file.index()].bytes_used -= entry.file_total_size;
 
+            debug_assert!(delete_index.index() < header.entries as usize);
             Self::delete_msg_from_file(entry, &mut self.data_files)?;
+            header.holes += 1;
+
 
             head_tracker.remove_update_head(entry.message)?;
+
+            #[cfg(debug_assertions)]
+            Self::validate_holes(header, message_index);
 
             let parents = msg.parents;
             for parent in &parents {
@@ -1354,6 +1398,13 @@ impl<M> OnDiskMessageStore<M> {
             warn!("Message was already deleted");
             Ok(false)
         }
+    }
+
+    #[cfg(debug_assertions)]
+    #[track_caller]
+    fn validate_holes(header: &StoreHeader, entries: &[IndexEntry]) {
+        let correct_hole_count = entries.iter().filter(|x|x.file_offset.is_deleted()).count();
+        assert_eq!(correct_hole_count as u32, header.holes, "actual hole count != memoized hole count");
     }
 
     /// Advance the cutoff hash to a new later state
@@ -1451,7 +1502,7 @@ impl<M> OnDiskMessageStore<M> {
     }
 
     /// Marks the db as dirty
-    /// Find all the given messages, and mark their entries in their data files as unused.
+    /// Find all the given messages and mark their entries in their data files as unused.
     /// Use heuristics to determine if files should be compacted.
     /// Compact files (moving to higher file if suitable).
     /// Delete from the index.
@@ -1711,8 +1762,7 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message,
     {
-        //dbg!(id,new_parents,new_children, removed_parent, removed_child);
-        let (_header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
+        let (_index_header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
         let Ok(index) = search_index.binary_search_by_key(&id, |x| x.message) else {
             info!(
                 "message not found, can't addremove parents/children {:?}",
@@ -1749,6 +1799,8 @@ impl<M> OnDiskMessageStore<M> {
         Ok(())
     }
 
+
+    /// Add parents and children to message by rewriting it completely.
     fn slow_add_parents_and_children(
         &mut self,
         id: MessageId,
@@ -1763,7 +1815,7 @@ impl<M> OnDiskMessageStore<M> {
             return Ok(());
         };
 
-        let (_header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
+        let (header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
         for new_child in new_children {
             if !children.contains(new_child) {
                 children.push(*new_child);
@@ -1788,6 +1840,7 @@ impl<M> OnDiskMessageStore<M> {
         if let Ok(index) = search_index.binary_search_by_key(&msg.header.id, |x| x.message) {
             let index_entry = &mut search_index[index];
             debug_assert!(!index_entry.file_offset.is_deleted());
+            debug_assert!(index < header.entries as usize);
             Self::delete_msg_from_file(index_entry, &mut self.data_files)?;
             index_entry.file_offset = FileOffset::new(write_report.start_pos, self.active_file);
             Ok(())
@@ -1879,9 +1932,14 @@ impl<M> OnDiskMessageStore<M> {
         let (index_header, mmap_index) =
             Self::header_and_index_mut_uninit(&mut self.index_mmap, len)?;
 
+        #[cfg(debug_assertions)]
+        Self::validate_holes(index_header, mmap_index);
+
         debug_assert!(mmap_index[0..index_header.entries as usize]
             .iter()
             .is_sorted_by_key(|x| x.message));
+
+        let cutoff_time = index_header.cutoff.before_time;
 
         #[cfg(debug_assertions)]
         {
@@ -1924,6 +1982,19 @@ impl<M> OnDiskMessageStore<M> {
         let mut cur_input_message = Some(first_input_message);
 
         let mut remaining_child_assignments = RemainingChildAssignments::default();
+        let mut cutoff_index_min = None;
+        let mut cutoff_index_max = None;
+        let mut dbg_prev_index: isize = -1;
+        let mut update_cutoff = |index: usize, time: NoatunTime| {
+            assert!(index as isize > dbg_prev_index);
+            dbg_prev_index = index as isize;
+            let before = time < cutoff_time;
+            if before {
+                cutoff_index_min = Some(index+1);
+            } else if cutoff_index_max.is_none() {
+                cutoff_index_max = Some(index);
+            }
+        };
 
         loop {
             if carry_buffer.is_empty() && cur_input_message.is_none() {
@@ -1972,6 +2043,9 @@ impl<M> OnDiskMessageStore<M> {
             match now_case {
                 Cases::NextFromPresent => {
                     let input_message_id = cur_input_message.as_ref().map(|x| x.id());
+
+                    update_cutoff(cur_index, cur_index_entry.message.timestamp());
+
                     if present_id == input_message_id {
                         // input message (added message) was already present in store
                         cur_input_message = messages.next();
@@ -1994,18 +2068,17 @@ impl<M> OnDiskMessageStore<M> {
                         debug_assert!(carry_buffer.iter().is_sorted_by_key(|x| x.message));
                     }
 
-                    /*
-                    TODO: See if we can make this work. It's a more efficient mechanism
-                    to maintain self.cutoff_index
-                    if cur_index < initial_index_entries && cur_index_entry.message.timestamp() < index_header.cutoff.before_time {
-                        self.cutoff_index -= 1;
-                    }*/
+                    if cur_index_entry.is_deleted() && cur_index < initial_index_entries {
+                        index_header.holes -= 1;
+                    }
 
                     *cur_index_entry = temp;
 
-                    /*if cur_index_entry.message.timestamp() < index_header.cutoff.before_time {
-                        self.cutoff_index += 1;
-                    }*/
+                    if cur_index_entry.is_deleted() {
+                        index_header.holes += 1;
+                    }
+
+                    update_cutoff(cur_index, cur_index_entry.message.timestamp());
 
                     cur_index += 1;
                 }
@@ -2013,6 +2086,11 @@ impl<M> OnDiskMessageStore<M> {
                     let msg = cur_input_message.take().unwrap();
 
                     let mut was_in_carry = false;
+                    // We're going to pick an entry from the 'input'. However,
+                    // the carry could contain the same message. This is a corner case,
+                    // that we've chosen to handle here in the 'input' path.
+                    // The code here handles multiple duplicates, but that situation should
+                    // not be possible (anymore).
                     while let Some(temp) = carry_buffer.front() {
                         let temp = *temp;
                         if temp.message == msg.header.id {
@@ -2027,13 +2105,26 @@ impl<M> OnDiskMessageStore<M> {
                                                 x.message
                                             });
                                         // TODO(future): Use BTreeMap for carry_buffer?
+                                        // TODO: Check if cur_index_entry is deleted, don't insert into carry if it is! Then remove some checks in other places.
                                         carry_buffer.insert(insert_at, *cur_index_entry);
                                         debug_assert!(carry_buffer
                                             .iter()
                                             .is_sorted_by_key(|x| x.message));
                                     }
 
+                                    assert!(!temp.file_offset.is_deleted());
+                                    if cur_index_entry.is_deleted() && cur_index < initial_index_entries {
+                                        index_header.holes -= 1;
+                                    }
+
                                     *cur_index_entry = temp;
+
+                                    if cur_index_entry.is_deleted() {
+                                        index_header.holes += 1;
+                                    }
+
+                                    update_cutoff(cur_index, cur_index_entry.message.timestamp());
+
                                     cur_input_message = messages.next();
 
                                     cur_index += 1;
@@ -2101,9 +2192,10 @@ impl<M> OnDiskMessageStore<M> {
                         carry_buffer.push_back(*cur_index_entry);
                         debug_assert!(carry_buffer.iter().is_sorted_by_key(|x| x.message));
                     }
-                    /*if cur_index < initial_index_entries  && cur_index_entry.message.timestamp() < index_header.cutoff.before_time {
-                        self.cutoff_index -= 1;
-                    }*/
+
+                    if cur_index_entry.is_deleted() && cur_index < initial_index_entries {
+                        index_header.holes -= 1;
+                    }
 
                     *cur_index_entry = IndexEntry {
                         message: msg.id(),
@@ -2111,9 +2203,9 @@ impl<M> OnDiskMessageStore<M> {
                         file_total_size: total_size,
                     };
 
-                    /*if cur_index_entry.message.timestamp() < index_header.cutoff.before_time {
-                        self.cutoff_index += 1;
-                    }*/
+                    debug_assert!(!cur_index_entry.file_offset.is_deleted());
+
+                    update_cutoff(cur_index, cur_index_entry.message.timestamp());
 
                     cur_index += 1;
 
@@ -2173,7 +2265,31 @@ impl<M> OnDiskMessageStore<M> {
         self.handle_remaining_child_assignments(remaining_child_assignments)?;
 
         let (index_header, mmap_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
-        self.cutoff_index = Self::calculate_cutoff_index(index_header, mmap_index);
+
+        #[cfg(debug_assertions)]
+        Self::validate_holes(index_header, mmap_index);
+
+        let mut cutoff_index_cand = self.cutoff_index;
+        if let Some(max) = cutoff_index_max {
+            cutoff_index_cand = cutoff_index_cand.min(max);
+        }
+        if let Some(min) = cutoff_index_min {
+            cutoff_index_cand = cutoff_index_cand.max(min);
+        }
+        cutoff_index_cand = cutoff_index_cand.min(index_header.entries as usize);
+
+        //TODO: Only run when debug asserts is on
+        //#[cfg(debug_assertions)]
+        {
+            let correct_cutoff_index = Self::calculate_cutoff_index(index_header, mmap_index);
+
+            if cutoff_index_cand != correct_cutoff_index {
+                dbg!(cutoff_index_min, cutoff_index_max, cutoff_index_cand, correct_cutoff_index);
+            }
+            assert_eq!(cutoff_index_cand, correct_cutoff_index);
+        }
+
+        self.cutoff_index = cutoff_index_cand;
 
         #[cfg(all(debug_assertions, feature = "debug"))]
         {
@@ -2911,9 +3027,9 @@ mod tests {
     #[test]
     fn add_and_delete_many_fuzz_all() {
         #[cfg(debug_assertions)]
-        const COUNT: u32 = 1000;
+        const COUNT: u32 = 3000;
         #[cfg(not(debug_assertions))]
-        const COUNT: u32 = 10000;
+        const COUNT: u32 = 20000;
 
         for seed in 0..COUNT {
             println!("===== add_and_delete_many_fuzz seed: {seed} =======");
