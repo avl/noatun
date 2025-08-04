@@ -32,7 +32,6 @@ noatun_object!(
     }
 );
 
-
 #[derive(Debug, Savefile)]
 pub struct KeyValMessage {
     key: String,
@@ -57,7 +56,6 @@ impl Message for KeyValMessage {
         projected.edit_count.set(new_count);
     }
 }
-
 
 #[derive(Debug, Savefile)]
 pub struct KeyValMessage2 {
@@ -156,7 +154,6 @@ fn test_nominal_load_without_recovery() {
     });
 }
 
-
 #[test]
 fn test_recovery_schema_changed() {
     super::setup_tracing();
@@ -165,7 +162,7 @@ fn test_recovery_schema_changed() {
         OpenMode::Overwrite,
         DatabaseSettings::default(),
     )
-        .unwrap();
+    .unwrap();
     let mut sess = db.begin_session_mut().unwrap();
     sess.disable_filesystem_sync().unwrap();
 
@@ -173,19 +170,19 @@ fn test_recovery_schema_changed() {
         key: "Fruit1".to_string(),
         val: "Banana".to_string(),
     })
-        .unwrap();
+    .unwrap();
 
     assert_eq!(sess.get_all_message_ids().unwrap().len(), 1);
     drop(sess);
     drop(db);
-
 
     // Loading with the exact same schema means no recovery is needed
     let db: Database<KeyValMessage> = Database::create_new(
         "test/test_recover_schema_changed1",
         OpenMode::OpenCreate,
         DatabaseSettings::default(),
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(db.load_status(), LoadingStatus::CleanLoad);
     drop(db);
 
@@ -194,24 +191,21 @@ fn test_recovery_schema_changed() {
         "test/test_recover_schema_changed1",
         OpenMode::OpenCreate,
         DatabaseSettings::default(),
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
 
     db.with_root(|root| {
         assert_eq!(root.edit_count.get(), 1);
         assert_eq!(
             root.keyval.detach(),
-            vec![
-                KeyValItemDetached {
-                    key: "Fruit1".to_string(),
-                    value: "Banana".to_string(),
-                }
-            ]
+            vec![KeyValItemDetached {
+                key: "Fruit1".to_string(),
+                value: "Banana".to_string(),
+            }]
         );
     });
-
 }
-
 
 #[test]
 fn test_recovery_simple() {

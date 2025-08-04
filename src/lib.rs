@@ -30,12 +30,13 @@ use datetime_literal::datetime;
 pub use paste::paste;
 pub(crate) use projection_store::DatabaseContextData;
 use rand::RngCore;
-use savefile::{Deserializer};
+use savefile::Deserializer;
 pub use savefile_derive::Savefile;
 #[cfg(feature = "serde")]
 use serde::de::DeserializeOwned;
 #[cfg(feature = "serde")]
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::borrow::Borrow;
 use std::cell::Cell;
 use std::cmp::Ordering;
@@ -52,7 +53,6 @@ use std::slice;
 use std::time::Duration;
 #[cfg(not(feature = "tokio"))]
 use std::time::Instant;
-use sha2::{Digest, Sha256};
 #[cfg(feature = "tokio")]
 use tokio::time::Instant;
 
@@ -142,7 +142,7 @@ impl SchemaHasher {
 }
 
 /// Calculate the correct hash for the schema of the given object
-pub fn calculate_schema_hash<T: Object>() -> [u8;16] {
+pub fn calculate_schema_hash<T: Object>() -> [u8; 16] {
     let mut temp = SchemaHasher(Sha256::default());
     T::hash_object_schema(&mut temp);
     use sha2::digest::FixedOutput;
@@ -159,7 +159,6 @@ impl Write for SchemaHasher {
         Ok(())
     }
 }
-
 
 /// SAFETY requirements:
 /// * Type must not have Drop impl
@@ -200,8 +199,6 @@ pub unsafe trait NoatunStorable: Sized + 'static {
         }
     }
 
-
-
     /// Write a unique value to 'hasher', that uniquely identifies this data type.
     ///
     /// This is used to detect schema conflicts between persisted materialized views
@@ -222,8 +219,8 @@ pub unsafe trait NoatunStorable: Sized + 'static {
 }
 
 mod noatun_storable_impls {
-    use crate::SchemaHasher;
     use super::NoatunStorable;
+    use crate::SchemaHasher;
     macro_rules! make_noatun_storable {
         ($t: ident) => {
             unsafe impl NoatunStorable for $t {
@@ -1338,7 +1335,6 @@ pub trait Object {
     /// not have a fixed size.
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self>;
 
-
     /// Write a unique value to 'hasher', that uniquely identifies this data type.
     ///
     /// This is used to detect schema conflicts between persisted materialized views
@@ -1710,7 +1706,6 @@ unsafe impl NoatunStorable for ThinPtr {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::ThinPtr/1")
     }
-
 }
 unsafe impl NoatunStorable for FatPtr {
     fn hash_schema(hasher: &mut SchemaHasher) {
@@ -1848,7 +1843,6 @@ where
         hasher.write_str("noatun::[T]/1");
         <T as NoatunStorable>::hash_schema(hasher);
     }
-
 }
 
 #[derive(Clone, Copy)]

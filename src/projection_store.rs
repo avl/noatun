@@ -4,7 +4,11 @@ use crate::disk_abstraction::Disk;
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
-use crate::{bytes_of_mut, bytes_of_mut_uninit, dprintln, from_bytes, from_bytes_mut, FatPtr, GenPtr, Message, NoatunStorable, Object, Pointer, RawFatPtr, SchemaHasher, SerializableGenPtr, Target, ThinPtr};
+use crate::{
+    bytes_of_mut, bytes_of_mut_uninit, dprintln, from_bytes, from_bytes_mut, FatPtr, GenPtr,
+    Message, NoatunStorable, Object, Pointer, RawFatPtr, SchemaHasher, SerializableGenPtr, Target,
+    ThinPtr,
+};
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
@@ -198,7 +202,6 @@ unsafe impl NoatunStorable for MainDbStatus {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::MainDbStatus/1")
     }
-
 }
 
 /// The header of the main database
@@ -221,7 +224,7 @@ pub struct MainDbHeader {
     /// since the last access. This only affects recovery after the db has been left in a
     /// dirty state.
     last_boot: [u8; 16],
-    materialized_view_schema_hash: [u8;16],
+    materialized_view_schema_hash: [u8; 16],
     root_ptr: SerializableGenPtr,
 }
 
@@ -275,7 +278,6 @@ unsafe impl NoatunStorable for DepTrackEntry {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::DepTrackEntry/1")
     }
-
 }
 
 #[derive(Debug)]
@@ -300,7 +302,6 @@ unsafe impl NoatunStorable for MainDbAuxHeader {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::MainDbAuxHeader/1")
     }
-
 }
 
 // Note, this type is in a private module and isn't nameable from other crates.
@@ -376,7 +377,6 @@ unsafe impl NoatunStorable for DepTrackLinkedListEntry {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::DepTrackLinkedListEntry/1")
     }
-
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -632,7 +632,7 @@ impl DatabaseContextData {
         self.filesystem_sync_disabled = true;
     }
 
-    pub fn is_wrong_version(&self, correct_hash: [u8;16]) -> bool {
+    pub fn is_wrong_version(&self, correct_hash: [u8; 16]) -> bool {
         let header: &MainDbHeader =
             unsafe { &*(self.main_db_mmap.map_mut_ptr() as *const MainDbHeader) };
         header.materialized_view_schema_hash != correct_hash
@@ -645,7 +645,7 @@ impl DatabaseContextData {
 
         !header.is_clean()
     }
-    pub fn clear(&mut self, schema_hash: [u8;16]) -> Result<()> {
+    pub fn clear(&mut self, schema_hash: [u8; 16]) -> Result<()> {
         self.main_db_mmap.truncate(0)?;
         self.main_db_mmap
             .grow(size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>())?;
@@ -715,7 +715,7 @@ impl DatabaseContextData {
         assert!(self.pointer() >= size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>());
     }
 
-    fn write_initial_header(mmap: &mut FileAccessor, schema_hash: [u8;16]) {
+    fn write_initial_header(mmap: &mut FileAccessor, schema_hash: [u8; 16]) {
         assert_eq!(
             mmap.used_space(),
             size_of::<MainDbHeader>() + size_of::<MainDbAuxHeader>()
@@ -733,7 +733,12 @@ impl DatabaseContextData {
         header.materialized_view_schema_hash = schema_hash;
     }
 
-    pub(crate) fn new<S: Disk>(s: &mut S, name: &Target, max_size: usize, schema_hash: [u8;16]) -> Result<Self> {
+    pub(crate) fn new<S: Disk>(
+        s: &mut S,
+        name: &Target,
+        max_size: usize,
+        schema_hash: [u8; 16],
+    ) -> Result<Self> {
         let (mut main_db_file, _existed) = s
             .open_file(name, "maindb", 0, max_size)
             .context("opening main store file")?;
@@ -1532,8 +1537,11 @@ impl DatabaseContextData {
                     let right = **outgoing_deps.get_index(i, self);
                     assert!(right > seq);
                     unsafe {
-                        self.incoming_read_dependencies_mut(right)
-                            .retain(|x| **x != seq, self, |_|{/*no-op destroy*/});
+                        self.incoming_read_dependencies_mut(right).retain(
+                            |x| **x != seq,
+                            self,
+                            |_| { /*no-op destroy*/ },
+                        );
                     }
                 }
 
@@ -1543,8 +1551,11 @@ impl DatabaseContextData {
 
                     debug_assert!(left < seq);
                     unsafe {
-                        self.outgoing_read_dependencies_mut(left)
-                            .retain(|x| **x != seq, self, |_|{/*no-op destroy*/})
+                        self.outgoing_read_dependencies_mut(left).retain(
+                            |x| **x != seq,
+                            self,
+                            |_| { /*no-op destroy*/ },
+                        )
                     };
 
                     delet_tasks.push((left, seq));
@@ -1670,7 +1681,8 @@ mod tests {
     fn basic_test_deptrack1() {
         let mut disk = InMemoryDisk::default();
         let mut tracker =
-            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 20000, [0;16]).unwrap();
+            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 20000, [0; 16])
+                .unwrap();
 
         tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
 
@@ -1693,7 +1705,8 @@ mod tests {
     fn basic_test_deptrack_many() {
         let mut disk = InMemoryDisk::default();
         let mut tracker =
-            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 30000, [0;16]).unwrap();
+            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 30000, [0; 16])
+                .unwrap();
 
         let t = Instant::now();
         for i in 0..100_usize {

@@ -2,7 +2,10 @@
 use crate::data_types::meta_finder::get_any_empty;
 use crate::sequence_nr::SequenceNr;
 use crate::xxh3_vendored::NoatunHasher;
-use crate::{get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer, SchemaHasher, ThinPtr, CONTEXT};
+use crate::{
+    get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject,
+    NoatunContext, NoatunStorable, Object, Pointer, SchemaHasher, ThinPtr, CONTEXT,
+};
 use savefile_derive::Savefile;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -378,7 +381,6 @@ impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
     fn hash_object_schema(hasher: &mut SchemaHasher) {
         <Self as NoatunStorable>::hash_schema(hasher);
     }
-
 }
 
 impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
@@ -409,7 +411,6 @@ impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
     fn hash_object_schema(hasher: &mut SchemaHasher) {
         <Self as NoatunStorable>::hash_schema(hasher);
     }
-
 }
 
 /// Like NoatunVec, but for crate internal use. Does not track
@@ -635,7 +636,6 @@ where
     fn hash_object_schema(hasher: &mut SchemaHasher) {
         <Self as NoatunStorable>::hash_schema(hasher);
     }
-
 }
 
 #[repr(C)]
@@ -709,7 +709,6 @@ impl<T: NoatunStorable + Copy> Object for NoatunUntrackedCell<T> {
     fn hash_object_schema(hasher: &mut SchemaHasher) {
         <Self as NoatunStorable>::hash_schema(hasher);
     }
-
 }
 
 mod context {
@@ -772,7 +771,7 @@ impl<T: FixedSizeObject, C: ContextGetter> Default for NoatunVecRaw<T, C> {
     }
 }
 
-impl<T:FixedSizeObject> NoatunVecRaw<T, ThreadLocalContext> {
+impl<T: FixedSizeObject> NoatunVecRaw<T, ThreadLocalContext> {
     // This only works with thread local context, since it calls destroy, that may
     // reach user overridden code, that will use NoatunContext thread local global directly.
     pub(crate) fn destroy_items(&mut self, ctx: &mut ThreadLocalContext) {
@@ -871,8 +870,12 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         unsafe { ctx.write_storable(0, Pin::new_unchecked(&mut self.length)) }
     }
 
-
-    pub(crate) fn retain(&mut self, mut f: impl FnMut(Pin<&mut T>) -> bool, ctx0: &mut C, mut destroy: impl FnMut(Pin<&mut T>)) {
+    pub(crate) fn retain(
+        &mut self,
+        mut f: impl FnMut(Pin<&mut T>) -> bool,
+        ctx0: &mut C,
+        mut destroy: impl FnMut(Pin<&mut T>),
+    ) {
         let mut ctx = ctx0.get_context_mut();
 
         let mut read_offset = 0;
@@ -988,8 +991,12 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         ctx.zero(fat_ptr);
     }
 
-
-    pub(crate) fn swap_remove(&mut self, index: usize, ctx0: &mut C, mut destroy: impl FnMut(Pin<&mut T>)) {
+    pub(crate) fn swap_remove(
+        &mut self,
+        index: usize,
+        ctx0: &mut C,
+        mut destroy: impl FnMut(Pin<&mut T>),
+    ) {
         let ctx = ctx0.get_context_mut();
         if index == self.length - 1 {
             unsafe {
@@ -1007,8 +1014,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         let src_ptr = ThinPtr(self.data + (self.length - 1) * size_of::<T>());
         let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
         unsafe {
-            destroy(
-                Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)));
+            destroy(Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)));
             //dst_ptr.access_mut::<T>().destroy();
         }
         let ctx = ctx0.get_context_mut();
@@ -1047,7 +1053,6 @@ unsafe impl<T: FixedSizeObject> NoatunStorable for NoatunVec<T> {
         hasher.write_str("noatun::NoatunVec/1");
         <T as NoatunStorable>::hash_schema(hasher);
     }
-
 }
 
 impl<T: FixedSizeObject + Debug> Debug for NoatunVec<T> {
@@ -1179,7 +1184,9 @@ where
         NoatunContext.observe_registrar(tself.length_registrar);
         NoatunContext.update_registrar(&mut tself.length_registrar, false);
 
-        tself.raw.swap_remove(index, &mut ThreadLocalContext, |x|x.destroy());
+        tself
+            .raw
+            .swap_remove(index, &mut ThreadLocalContext, |x| x.destroy());
     }
 
     pub fn retain(self: Pin<&mut Self>, mut f: impl FnMut(Pin<&mut T>) -> bool) {
@@ -1412,7 +1419,6 @@ where
     fn hash_object_schema(hasher: &mut SchemaHasher) {
         <Self as NoatunStorable>::hash_schema(hasher);
     }
-
 }
 
 impl<T> Object for NoatunVec<T>
@@ -1446,7 +1452,6 @@ where
     fn hash_object_schema(hasher: &mut SchemaHasher) {
         <Self as NoatunStorable>::hash_schema(hasher);
     }
-
 }
 
 #[repr(transparent)]
@@ -1460,7 +1465,6 @@ unsafe impl<T: Object + ?Sized + 'static> NoatunStorable for NoatunBox<T> {
         hasher.write_str("noatun::NoatunBox/1");
         T::hash_object_schema(hasher);
     }
-
 }
 
 impl<T: Object + ?Sized> Copy for NoatunBox<T> {}
@@ -3194,7 +3198,6 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
     fn hash_object_schema(hasher: &mut SchemaHasher) {
         <Self as NoatunStorable>::hash_schema(hasher);
     }
-
 }
 
 #[cfg(test)]

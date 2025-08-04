@@ -23,7 +23,6 @@ unsafe impl NoatunStorable for DummyObj {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::DummyObj/1");
     }
-
 }
 
 noatun_object!(

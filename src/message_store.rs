@@ -4,7 +4,11 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::{sha2, sha2_message};
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime, SchemaHasher, Target};
+use crate::{
+    bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut,
+    Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime,
+    SchemaHasher, Target,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 #[allow(unused)]
@@ -473,7 +477,6 @@ unsafe impl NoatunStorable for StoreHeader {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::StoreHeader/1")
     }
-
 }
 
 pub(crate) struct OnDiskMessageStore<M> {

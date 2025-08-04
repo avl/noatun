@@ -1,7 +1,10 @@
 use datetime_literal::datetime;
 use noatun::data_types::{NoatunBox, NoatunCell, NoatunVec};
 use noatun::database::{Database, DatabaseSettings};
-use noatun::{Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunStorable, Object, SavefileMessageSerializer, SchemaHasher, ThinPtr};
+use noatun::{
+    Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunStorable, Object,
+    SavefileMessageSerializer, SchemaHasher, ThinPtr,
+};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 

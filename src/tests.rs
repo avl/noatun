@@ -234,7 +234,6 @@ unsafe impl<Root: NoatunStorable> NoatunStorable for DummyTestApp<Root> {
         hasher.write_str("DummyTestApp");
         Root::hash_schema(hasher);
     }
-
 }
 
 impl<Root> DummyTestApp<Root> {
@@ -429,8 +428,8 @@ unsafe impl NoatunStorable for CounterObject {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::CounterObject/1");
         hasher.write_usize(2);
-        <NoatunCell::<u32> as NoatunStorable>::hash_schema(hasher);
-        <NoatunCell::<u32> as NoatunStorable>::hash_schema(hasher);
+        <NoatunCell<u32> as NoatunStorable>::hash_schema(hasher);
+        <NoatunCell<u32> as NoatunStorable>::hash_schema(hasher);
     }
 }
 

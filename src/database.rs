@@ -2,7 +2,10 @@ use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
-use crate::{calculate_schema_hash, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target};
+use crate::{
+    calculate_schema_hash, ContextGuard, ContextGuardMut, DatabaseContextData, Message,
+    MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target,
+};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::fmt::{Debug, Formatter};
@@ -1002,9 +1005,13 @@ impl<MSG: Message + 'static> Database<MSG> {
     pub fn create_in_memory(max_size: usize, settings: DatabaseSettings) -> Result<Database<MSG>> {
         let mut disk = InMemoryDisk::default();
         let target = Target::CreateNew(PathBuf::default());
-        let mut ctx = DatabaseContextData::new(&mut disk, &target, max_size,
-            calculate_schema_hash::<MSG::Root>())
-            .context("creating database in memory")?;
+        let mut ctx = DatabaseContextData::new(
+            &mut disk,
+            &target,
+            max_size,
+            calculate_schema_hash::<MSG::Root>(),
+        )
+        .context("creating database in memory")?;
         let mut message_store =
             Projector::new(&mut disk, &target, max_size, settings.cutoff_interval)?;
 
@@ -1028,12 +1035,15 @@ impl<MSG: Message + 'static> Database<MSG> {
     fn create(target: Target, settings: DatabaseSettings) -> Result<Database<MSG>> {
         let mut disk = StandardDisk;
 
-        let mut ctx = DatabaseContextData::new(&mut disk, &target, settings.max_file_size,
-            calculate_schema_hash::<MSG::Root>())
-            .context("opening database")?;
+        let mut ctx = DatabaseContextData::new(
+            &mut disk,
+            &target,
+            settings.max_file_size,
+            calculate_schema_hash::<MSG::Root>(),
+        )
+        .context("opening database")?;
 
-        let is_dirty = ctx.is_dirty()
-            || ctx.is_wrong_version(calculate_schema_hash::<MSG::Root>());
+        let is_dirty = ctx.is_dirty() || ctx.is_wrong_version(calculate_schema_hash::<MSG::Root>());
 
         let mut message_store = Projector::new(
             &mut disk,
@@ -1042,8 +1052,6 @@ impl<MSG: Message + 'static> Database<MSG> {
             settings.cutoff_interval,
         )?;
         let load_status;
-
-
 
         if is_dirty {
             Self::recover_impl(
@@ -1063,8 +1071,6 @@ impl<MSG: Message + 'static> Database<MSG> {
                 load_status = LoadingStatus::RecoveryPerformed;
             }
         } else {
-
-
             if !message_store.loaded_existing_db() {
                 load_status = LoadingStatus::NewDatabase;
             } else {
