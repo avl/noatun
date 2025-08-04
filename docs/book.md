@@ -926,7 +926,7 @@ the underlying network. Specifically:
  * The nodes don't need to know their own address
 
 The only requirement of addresses is that if the network has addresses, nodes may not change addresses too frequently.
-Note that on linux you may need to disable `rp_filter` for 
+Note that on linux you may need to disable `rp_filter`, if there are address duplicates in your network. 
 
 
 

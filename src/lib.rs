@@ -1323,6 +1323,10 @@ pub trait Object {
     ///
     /// Implementations of this method should not panic. Doing so doesn't lead to
     /// unsoundness, but may leave self in an undesirable half-initialized state.
+    ///
+    /// It's explicitly allowed to use this method when `Self` has already been
+    /// initialized. It must be overwritten, with any behavior that arises from that.
+    /// Specifically, a new value must not simply be moved over, replacing the old value.
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType);
 
     /// This can in most cases be:

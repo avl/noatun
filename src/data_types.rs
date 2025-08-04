@@ -1748,7 +1748,7 @@ impl Add<usize> for BucketNr {
 pub struct BucketProbeSequence {
     cur_group: usize,
     group_capacity: usize,
-    grops_visited: usize,
+    groups_visited: usize,
     group_step: usize,
 }
 
@@ -1757,14 +1757,14 @@ impl BucketProbeSequence {
         BucketProbeSequence {
             cur_group: start_group.0,
             group_capacity: total_group_count,
-            grops_visited: start_group.0,
+            groups_visited: start_group.0,
             group_step: 1,
         }
     }
     pub fn probe_next(&mut self) -> Option<MetaGroupNr> {
         // step is >= capacity after approx self.capacity/2 iterations, since
         // step is incremented by 2
-        if self.group_step >= self.group_capacity {
+        if self.group_step > self.group_capacity {
             return None;
         }
         let ret = self.cur_group;
@@ -1845,6 +1845,18 @@ pub enum ProbeRunResult {
     FoundPopulated(BucketNr, Meta),
     /// Found either an empty, or deleted
     FoundUnoccupied(BucketNr, Meta),
+}
+
+impl ProbeRunResult {
+    fn bucket_meta(&self) -> (BucketNr, Meta) {
+        match self {
+            ProbeRunResult::HashFull => {
+                panic!("unexpected error, HashFull")
+            }
+            ProbeRunResult::FoundPopulated(bucket, meta)
+            | ProbeRunResult::FoundUnoccupied(bucket, meta) => (*bucket, *meta),
+        }
+    }
 }
 
 /// Closure should return true iff bucket with given index has the key we're probing for.
@@ -2452,6 +2464,195 @@ impl<K: NoatunKey, V: FixedSizeObject> Drop for LengthGuard<'_, K, V> {
     }
 }
 
+/// Entry type for NoatunHashMap
+pub enum NoatunHashMapEntry<'a, K, V>
+where
+    K: NoatunStorable + NoatunKey + PartialEq,
+    V: FixedSizeObject,
+    K::DetachedType: Sized,
+{
+    Occupied(OccupiedEntry<'a, K, V>),
+    Vacant(VacantEntry<'a, K, V>),
+}
+pub struct NoatunHashMapEntryInternal<'a, K, V>
+where
+    K: NoatunStorable + NoatunKey + PartialEq,
+    V: FixedSizeObject,
+    K::DetachedType: Sized,
+{
+    context: HashAccessContextMut<'a, K, V>,
+    probe_result: (BucketNr, Meta),
+    key: K::DetachedOwnedType,
+    length: &'a mut usize,
+}
+
+pub struct VacantEntry<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject>
+where
+    K::DetachedType: Sized,
+{
+    context: HashAccessContextMut<'a, K, V>,
+    probe_result: (BucketNr, Meta),
+    key: K::DetachedOwnedType,
+    length: &'a mut usize,
+}
+pub struct OccupiedEntry<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject>
+where
+    K::DetachedType: Sized,
+{
+    context: HashAccessContextMut<'a, K, V>,
+    probe_result: (BucketNr, Meta),
+    key: K::DetachedOwnedType,
+    length: &'a mut usize,
+}
+
+impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> VacantEntry<'a, K, V>
+where
+    K::DetachedType: Sized,
+{
+    pub fn insert(self, v: &V::DetachedType) -> Pin<&'a mut V> {
+        NoatunHashMap::insert_at_bucket(
+            true,
+            self.probe_result,
+            self.key.borrow(),
+            self.context,
+            |new, val| {
+                if new {
+                    val.init_from_detached(v)
+                }
+            },
+            self.length,
+        )
+    }
+}
+
+impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> OccupiedEntry<'a, K, V>
+where
+    K::DetachedType: Sized,
+{
+    pub fn get(&self) -> &V {
+        let bucket_nr = self.probe_result.0;
+        unsafe { &self.context.buckets[bucket_nr.0].assume_init_ref().v }
+    }
+    pub fn get_mut(&mut self) -> Pin<&mut V> {
+        let bucket_nr = self.probe_result.0;
+        unsafe { Pin::new_unchecked(&mut self.context.buckets[bucket_nr.0].assume_init_mut().v) }
+    }
+    pub fn insert(&mut self, v: &V::DetachedType) -> V::DetachedOwnedType {
+        let val = self.get_mut();
+        let ret = val.detach();
+        val.init_from_detached(v);
+        ret
+    }
+    pub fn remove(mut self) -> V::DetachedOwnedType {
+        let bucket_nr = self.probe_result.0;
+        let val = self.get();
+        let ret = val.detach();
+
+        NoatunHashMap::remove_impl_by_bucket_nr(&mut self.context, bucket_nr, |_| {});
+        let newlen = *self.length - 1;
+        NoatunContext.write_internal(newlen, self.length);
+
+        ret
+    }
+}
+impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMapEntry<'a, K, V>
+where
+    K::DetachedType: Sized,
+{
+    fn make_enum(
+        probe_result: ProbeRunResult,
+        context: HashAccessContextMut<'a, K, V>,
+        key: K::DetachedOwnedType,
+        length: &'a mut usize,
+    ) -> NoatunHashMapEntry<'a, K, V> {
+        match probe_result {
+            ProbeRunResult::HashFull => {
+                panic!("internal error, HashFull")
+            }
+            ProbeRunResult::FoundPopulated(_, _) => NoatunHashMapEntry::Occupied(OccupiedEntry {
+                context: context,
+                probe_result: probe_result.bucket_meta(),
+                key: key,
+                length: length,
+            }),
+            ProbeRunResult::FoundUnoccupied(_, _) => NoatunHashMapEntry::Vacant(VacantEntry {
+                context: context,
+                probe_result: probe_result.bucket_meta(),
+                key: key,
+                length: length,
+            }),
+        }
+    }
+    fn unify(self) -> NoatunHashMapEntryInternal<'a, K, V> {
+        match self {
+            NoatunHashMapEntry::Occupied(OccupiedEntry {
+                context,
+                probe_result,
+                key,
+                length,
+            })
+            | NoatunHashMapEntry::Vacant(VacantEntry {
+                context,
+                probe_result,
+                key,
+                length,
+            }) => NoatunHashMapEntryInternal {
+                context,
+                probe_result,
+                key,
+                length,
+            },
+        }
+    }
+    fn or_default(self) -> Pin<&'a mut V> {
+        let new = matches!(self, NoatunHashMapEntry::Vacant(_));
+        let mut tself = self.unify();
+        NoatunHashMap::insert_at_bucket(
+            new,
+            tself.probe_result,
+            tself.key.borrow(),
+            tself.context,
+            |_new, _val| {
+                // Leave at default
+            },
+            &mut tself.length,
+        )
+    }
+    /// In
+    fn or_insert(self, v: &V::DetachedType) -> Pin<&'a mut V> {
+        let new = matches!(self, NoatunHashMapEntry::Vacant(_));
+        let mut tself = self.unify();
+        NoatunHashMap::insert_at_bucket(
+            new,
+            tself.probe_result,
+            tself.key.borrow(),
+            tself.context,
+            |new, val| {
+                if new {
+                    val.init_from_detached(v)
+                }
+            },
+            &mut tself.length,
+        )
+    }
+    fn or_insert_with(self, v: impl FnOnce() -> V::DetachedOwnedType) -> Pin<&'a mut V> {
+        let new = matches!(self, NoatunHashMapEntry::Vacant(_));
+        let mut tself = self.unify();
+        NoatunHashMap::insert_at_bucket(
+            new,
+            tself.probe_result,
+            tself.key.borrow(),
+            tself.context,
+            |new, val| {
+                if new {
+                    val.init_from_detached(v().borrow())
+                }
+            },
+            &mut tself.length,
+        )
+    }
+}
+
 impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMap<K, V> {
     fn assert_not_apply(&self, method: &str, untracked_version_available: bool) {
         let context = unsafe { &*get_context_ptr() };
@@ -2537,6 +2738,9 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     }
     fn data_meta_len_mut(&mut self) -> HashAccessContextMut<'_, K, V> {
         self.data_meta_len_mut_unsafe()
+    }
+    fn data_meta_len_mut2<'a>(&'a mut self) -> (HashAccessContextMut<'a, K, V>, &'a mut usize) {
+        (self.data_meta_len_mut_unsafe(), &mut self.length)
     }
     fn data_meta_len_mut_unsafe<'a>(&mut self) -> HashAccessContextMut<'a, K, V> {
         let dptr = NoatunContext.start_ptr_mut().wrapping_add(self.data);
@@ -2906,7 +3110,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         {
             let tself = unsafe { self.as_mut().get_unchecked_mut() };
 
-            tself.insert_internal_impl(key, |_target| {
+            tself.insert_internal_impl(key, |_new, _target| {
                 // Leave as zero
             });
         }
@@ -3005,23 +3209,110 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             }
         }
     }
-    pub fn insert(self: Pin<&mut Self>, key: impl Borrow<K::DetachedType>, val: &V::DetachedType) {
-        unsafe { self.get_unchecked_mut().insert_internal(key, val) }
+
+    /// Insert the given key value pair.
+    ///
+    /// If the key already contained a value, that value is returned.
+    pub fn insert(
+        self: Pin<&mut Self>,
+        key: impl Borrow<K::DetachedType>,
+        val: &V::DetachedType,
+    ) -> Option<V::DetachedOwnedType>
+    where
+        V::DetachedOwnedType: Sized,
+    {
+        let mut ret: Option<V::DetachedOwnedType> = None;
+        unsafe { self.get_unchecked_mut() }.insert_internal_impl(key, |new, target| {
+            if !new {
+                ret = Some(target.detach());
+            }
+            V::init_from_detached(target, val)
+        });
+        ret
     }
+
+    /// Return true if a value with the given key already existed. In this case, it is
+    /// overwritten. If no previous value existed, one is inserted.
+    pub fn insert_fast(
+        self: Pin<&mut Self>,
+        key: impl Borrow<K::DetachedType>,
+        val: &V::DetachedType,
+    ) -> bool {
+        let mut existed = false;
+        unsafe { self.get_unchecked_mut() }.insert_internal_impl(key, |new, target| {
+            if !new {
+                existed = true;
+            }
+            V::init_from_detached(target, val)
+        });
+        existed
+    }
+
     pub(crate) fn insert_internal(
         &mut self,
         key: impl Borrow<K::DetachedType>,
         val: &V::DetachedType,
     ) {
-        self.insert_internal_impl(key, |target| V::init_from_detached(target, val));
+        self.insert_internal_impl(key, |_new, target| V::init_from_detached(target, val))
     }
+
+    fn entry(&mut self, key: K::DetachedOwnedType) -> NoatunHashMapEntry<K, V>
+    where
+        K::DetachedType: Sized,
+    {
+        let self_cap = self.capacity;
+        let context = self.data_meta_len();
+        let mut probe_result = Self::probe(context, key.borrow());
+
+        if !matches!(probe_result, ProbeRunResult::HashFull) {
+            // Nominal, fast path.
+            let (context, length) = self.data_meta_len_mut2();
+            return NoatunHashMapEntry::make_enum(probe_result, context, key, length);
+        }
+
+        self.internal_change_capacity(self_cap + 15);
+        println!("New cap: {}", self_cap);
+        let (context, length) = self.data_meta_len_mut2();
+        probe_result = Self::probe(context.readonly(), key.borrow());
+        assert!(!matches!(probe_result, ProbeRunResult::HashFull));
+        NoatunHashMapEntry::make_enum(probe_result, context, key, length)
+    }
+
+    fn nothing(_k: &V) {}
+
+    fn insert_at_bucket<'a>(
+        new: bool,
+        probe_result: (BucketNr, Meta),
+        key: &K::DetachedType,
+        context: HashAccessContextMut<'a, K, V>,
+        val: impl FnOnce(bool, Pin<&mut V>),
+        length: &mut usize,
+    ) -> Pin<&'a mut V> {
+        let (bucket, meta) = probe_result;
+        let bucket_obj = unsafe { context.buckets[bucket.0].assume_init_mut() };
+
+        let mut old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
+
+        val(new, old_v.as_mut());
+
+        if new {
+            let bucket_meta = get_meta_mut(context.metas, bucket);
+            NoatunContext.write_internal(meta, bucket_meta);
+            let old_k = unsafe { Pin::new_unchecked(&mut bucket_obj.key) };
+            old_k.init_from_detached(key);
+            let new_length = *length + 1;
+            NoatunContext.write_internal(new_length, length);
+        }
+        old_v
+    }
+
     fn insert_internal_impl(
         &mut self,
         key: impl Borrow<K::DetachedType>,
-        mut val: impl FnMut(Pin<&mut V>),
+        val: impl FnMut(bool /*new*/, Pin<&mut V>),
     ) {
         let key = key.borrow();
-        let context = self.data_meta_len_mut();
+        let (context, length) = self.data_meta_len_mut2();
         let probe_result = Self::probe(context.readonly(), key);
         match probe_result {
             ProbeRunResult::HashFull => {
@@ -3031,12 +3322,20 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 // Will not give infinite recursion, since 'new' has a capacity of at least 2 more
                 self.insert_internal_impl(key, val);
             }
-            ProbeRunResult::FoundUnoccupied(bucket, meta)| //Optimization: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
-            ProbeRunResult::FoundPopulated(bucket, meta) => {
+            ProbeRunResult::FoundUnoccupied(_bucket, _meta)| //Optimization: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
+            ProbeRunResult::FoundPopulated(_bucket, _meta) => {
+
+                Self::insert_at_bucket(
+                    matches!(probe_result, ProbeRunResult::FoundUnoccupied(..)),
+                    probe_result.bucket_meta(), key, context, val, length);
+                /*
                 let bucket_obj = unsafe { context.buckets[bucket.0].assume_init_mut() };
+
                 let old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
+
+
                 val(old_v);
-                //V::init_from_detached(old_v, val);
+
                 if matches!(probe_result, ProbeRunResult::FoundUnoccupied(_, _)) {
                     let bucket_meta = get_meta_mut(context.metas, bucket);
                     NoatunContext.write_internal(meta, bucket_meta);
@@ -3045,6 +3344,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                     let new_length = self.length + 1;
                     NoatunContext.write_internal(new_length, &mut self.length);
                 }
+                */
             }
         }
     }
@@ -3109,6 +3409,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         debug_assert!(new_capacity >= new_min_capacity);
         debug_assert!(new_capacity >= capacity);
 
+        println!("Resized to {}", new_capacity);
         self.initialize_with_capacity(new_capacity);
 
         for (item_key, item_val) in i {
@@ -3202,7 +3503,7 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
 
 #[cfg(test)]
 mod tests {
-    use super::{NoatunBox, NoatunHashMap, NoatunString};
+    use super::{NoatunBox, NoatunHashMap, NoatunHashMapEntry, NoatunString};
     use crate::database::DatabaseSettings;
     use crate::tests::DummyTestMessage;
 
@@ -3230,6 +3531,63 @@ mod tests {
             let x = (time.0 % (1u64 << 32)) as u32;
             root.insert_internal(x.to_string(), &x.to_string());
         }
+    }
+
+    #[test]
+    fn test_hashmap_miri_entry0() {
+        let mut db: Database<DummyTestMessage<NoatunHashMap<u32, NoatunCell<u32>>>> =
+            Database::create_in_memory(
+                10000,
+                DatabaseSettings {
+                    mock_time: Some(datetime!(2021-01-01 Z).into()),
+                    projection_time_limit: None,
+                    ..DatabaseSettings::default()
+                },
+            )
+            .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
+        db.with_root_mut(|map| {
+            let map = unsafe { map.get_unchecked_mut() };
+            assert_eq!(map.0.len(), 0);
+
+            map.0.entry(42).or_insert(&420);
+
+            let val = map.0.get(&42).unwrap();
+            assert_eq!(val.get(), 420);
+
+            let mut entry = map.0.entry(42);
+            match &mut entry {
+                NoatunHashMapEntry::Occupied(ref mut occ) => {
+                    assert_eq!(occ.get().get(), 420);
+                    assert_eq!(occ.get_mut().get(), 420);
+                }
+                NoatunHashMapEntry::Vacant(_) => {
+                    unreachable!()
+                }
+            }
+            entry.or_insert(&840);
+            let val = map.0.get(&42).unwrap();
+            assert_eq!(val.get(), 420);
+
+            let entry = map.0.entry(30);
+            let v = entry.or_default();
+            assert_eq!(v.get(), 0);
+
+            let val = map.0.get(&30).unwrap();
+            assert_eq!(val.get(), 0);
+
+            let val = match map.0.entry(50) {
+                NoatunHashMapEntry::Occupied(_) => {
+                    unreachable!()
+                }
+                NoatunHashMapEntry::Vacant(vac) => vac.insert(&500),
+            };
+            assert_eq!(val.get(), 500);
+
+            let val = map.0.get(&50).unwrap();
+            assert_eq!(val.get(), 500);
+        })
+        .unwrap();
     }
 
     #[test]

@@ -1,5 +1,6 @@
+//! Simple app to show using a noatun db, without any replication
 use anyhow::Result;
-use noatun::data_types::{NoatunString, NoatunVec};
+use noatun::data_types::{NoatunHashMap, NoatunString, NoatunVec};
 use noatun::database::{DatabaseSettings, OpenMode};
 use noatun::{noatun_object, Database, Message, MessageId, Object, SavefileMessageSerializer};
 use savefile_derive::Savefile;
@@ -16,7 +17,7 @@ noatun_object!(
 noatun_object!(
     struct ExampleDb {
         pod total_salary_cost: u32,
-        object employees: NoatunVec<Employee>,
+        object employees: NoatunHashMap<NoatunString, Employee>,
     }
 );
 
@@ -36,10 +37,13 @@ impl Message for ExampleMessage {
         let new_total_salary = root.total_salary_cost.detach() + self.salary;
         root.total_salary_cost.set(new_total_salary);
 
-        root.employees.push(EmployeeDetached {
-            name: self.name.clone(),
-            salary: self.salary,
-        });
+        root.employees.insert(
+            self.name.as_str(),
+            &EmployeeDetached {
+                name: self.name.clone(),
+                salary: self.salary,
+            },
+        );
     }
 }
 
@@ -53,27 +57,29 @@ fn main() -> Result<()> {
 
     let mut s = db.begin_session_mut()?;
     s.append_local(ExampleMessage {
-        name: "Kalle".to_string(),
+        name: "Andersen".to_string(),
         salary: 25,
     })?;
     s.append_local(ExampleMessage {
-        name: "Sven".to_string(),
+        name: "Smith".to_string(),
         salary: 20,
     })?;
 
-    let employees = s.with_root(|root| {
+    let mut employees: Vec<_> = s.with_root(|root| {
         assert_eq!(root.total_salary_cost.get(), 45);
-        root.employees.detach()
+        root.employees.detach().values().cloned().collect()
     });
+
+    employees.sort_by_key(|emp| emp.name.clone());
     assert_eq!(
         employees,
         vec![
             EmployeeDetached {
-                name: "Kalle".to_string(),
+                name: "Andersen".to_string(),
                 salary: 25,
             },
             EmployeeDetached {
-                name: "Sven".to_string(),
+                name: "Smith".to_string(),
                 salary: 20,
             },
         ]
