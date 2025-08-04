@@ -24,6 +24,15 @@ noatun_object!(
     }
 );
 
+noatun_object!(
+    #[derive(PartialEq)]
+    struct KeyValStore2 {
+        object keyval: NoatunVec<KeyValItem>,
+        pod edit_count: u64,
+    }
+);
+
+
 #[derive(Debug, Savefile)]
 pub struct KeyValMessage {
     key: String,
@@ -35,6 +44,32 @@ impl Message for KeyValMessage {
     type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
+        let mut projected = root.pin_project();
+        projected
+            .keyval
+            .as_mut()
+            .retain(|item| **item.key() != self.key);
+        projected.keyval.push(KeyValItemDetached {
+            key: self.key.clone(),
+            value: self.val.clone(),
+        });
+        let new_count = projected.edit_count.get() + 1;
+        projected.edit_count.set(new_count);
+    }
+}
+
+
+#[derive(Debug, Savefile)]
+pub struct KeyValMessage2 {
+    key: String,
+    val: String,
+}
+impl Message for KeyValMessage2 {
+    type Root = KeyValStore2;
+    type Serializer = SavefileMessageSerializer<Self>;
+
+    fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
+        println!("Applying: {:?}", self);
         let mut projected = root.pin_project();
         projected
             .keyval
@@ -78,6 +113,7 @@ fn test_nominal_load_without_recovery() {
     .unwrap();
 
     sess.with_root(|root| {
+        assert_eq!(root.edit_count.get(), 3);
         assert_eq!(
             root.keyval.detach(),
             vec![
@@ -103,6 +139,7 @@ fn test_nominal_load_without_recovery() {
     .unwrap();
     assert_eq!(db.load_status(), LoadingStatus::CleanLoad);
     db.with_root(|root| {
+        assert_eq!(root.edit_count.get(), 3);
         assert_eq!(
             root.keyval.detach(),
             vec![
@@ -118,6 +155,63 @@ fn test_nominal_load_without_recovery() {
         );
     });
 }
+
+
+#[test]
+fn test_recovery_schema_changed() {
+    super::setup_tracing();
+    let mut db: Database<KeyValMessage> = Database::create_new(
+        "test/test_recover_schema_changed1",
+        OpenMode::Overwrite,
+        DatabaseSettings::default(),
+    )
+        .unwrap();
+    let mut sess = db.begin_session_mut().unwrap();
+    sess.disable_filesystem_sync().unwrap();
+
+    sess.append_local(KeyValMessage {
+        key: "Fruit1".to_string(),
+        val: "Banana".to_string(),
+    })
+        .unwrap();
+
+    assert_eq!(sess.get_all_message_ids().unwrap().len(), 1);
+    drop(sess);
+    drop(db);
+
+
+    // Loading with the exact same schema means no recovery is needed
+    let db: Database<KeyValMessage> = Database::create_new(
+        "test/test_recover_schema_changed1",
+        OpenMode::OpenCreate,
+        DatabaseSettings::default(),
+    ).unwrap();
+    assert_eq!(db.load_status(), LoadingStatus::CleanLoad);
+    drop(db);
+
+    // Loading with a different schema, causes recovery
+    let db: Database<KeyValMessage2> = Database::create_new(
+        "test/test_recover_schema_changed1",
+        OpenMode::OpenCreate,
+        DatabaseSettings::default(),
+    ).unwrap();
+    assert_eq!(db.load_status(), LoadingStatus::RecoveryPerformed);
+
+    db.with_root(|root| {
+        assert_eq!(root.edit_count.get(), 1);
+        assert_eq!(
+            root.keyval.detach(),
+            vec![
+                KeyValItemDetached {
+                    key: "Fruit1".to_string(),
+                    value: "Banana".to_string(),
+                }
+            ]
+        );
+    });
+
+}
+
 
 #[test]
 fn test_recovery_simple() {

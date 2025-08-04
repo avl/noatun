@@ -4,11 +4,7 @@ use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::{sha2, sha2_message};
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{
-    bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut,
-    Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime,
-    Target,
-};
+use crate::{bytes_of, bytes_of_mut, dyn_cast_slice, dyn_cast_slice_mut, from_bytes, from_bytes_mut, Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunStorable, NoatunTime, SchemaHasher, Target};
 use anyhow::{anyhow, bail, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 #[allow(unused)]
@@ -36,7 +32,11 @@ impl Debug for FileOffset {
     }
 }
 
-unsafe impl NoatunStorable for FileOffset {}
+unsafe impl NoatunStorable for FileOffset {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::FileOffset/1")
+    }
+}
 
 /// Size of header for each individual message in store
 const MSG_HEADER_SIZE: usize = size_of::<FileHeaderEntry>();
@@ -243,7 +243,11 @@ struct FileHeaderEntry {
     padding4: u32,
 }
 
-unsafe impl NoatunStorable for FileHeaderEntry {}
+unsafe impl NoatunStorable for FileHeaderEntry {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::FileHeaderEntry/1")
+    }
+}
 
 impl FileHeaderEntry {
     pub fn is_deleted(&self) -> bool {
@@ -301,7 +305,11 @@ impl<W: Write> WritePod for W {
 #[repr(transparent)]
 struct U1(u8);
 
-unsafe impl NoatunStorable for U1 {}
+unsafe impl NoatunStorable for U1 {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::U1/1")
+    }
+}
 
 impl Display for U1 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -384,7 +392,11 @@ impl IndexEntry {
     }
 }
 
-unsafe impl NoatunStorable for IndexEntry {}
+unsafe impl NoatunStorable for IndexEntry {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::IndexEntry/1")
+    }
+}
 
 const DEFAULT_MAX_COUNT: usize = 1024;
 const DEFAULT_MAX_SIZE_BYTES: usize = DEFAULT_MAX_COUNT * std::mem::size_of::<IndexEntry>();
@@ -421,7 +433,11 @@ struct DataFileEntry {
     compaction_pointer: u64,
 }
 
-unsafe impl NoatunStorable for DataFileEntry {}
+unsafe impl NoatunStorable for DataFileEntry {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::DataFileEntry/1")
+    }
+}
 
 #[derive(Debug)]
 struct DataFileInfo {
@@ -453,7 +469,12 @@ struct StoreHeader {
     prev_cutoff: CutOffHashPos,
 }
 
-unsafe impl NoatunStorable for StoreHeader {}
+unsafe impl NoatunStorable for StoreHeader {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::StoreHeader/1")
+    }
+
+}
 
 pub(crate) struct OnDiskMessageStore<M> {
     target: Target,

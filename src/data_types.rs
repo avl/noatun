@@ -2,10 +2,7 @@
 use crate::data_types::meta_finder::get_any_empty;
 use crate::sequence_nr::SequenceNr;
 use crate::xxh3_vendored::NoatunHasher;
-use crate::{
-    get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject,
-    NoatunContext, NoatunStorable, Object, Pointer, ThinPtr, CONTEXT,
-};
+use crate::{get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer, SchemaHasher, ThinPtr, CONTEXT};
 use savefile_derive::Savefile;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -30,7 +27,11 @@ pub struct NoatunString {
     padding: u32,
 }
 
-unsafe impl NoatunStorable for NoatunString {}
+unsafe impl NoatunStorable for NoatunString {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::NoatunString/1")
+    }
+}
 
 impl Debug for NoatunString {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -79,6 +80,10 @@ impl Object for NoatunString {
         let mut temp: Pin<&mut Self> = NoatunContext.allocate();
         temp.as_mut().assign(detached);
         temp
+    }
+
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        <Self as NoatunStorable>::hash_schema(hasher);
     }
 }
 
@@ -142,7 +147,12 @@ pub struct NoatunOption<T: NoatunStorable> {
     present: u8,
 }
 
-unsafe impl<T: NoatunStorable> NoatunStorable for NoatunOption<T> {}
+unsafe impl<T: NoatunStorable> NoatunStorable for NoatunOption<T> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::NoatunOption/1");
+        T::hash_schema(hasher);
+    }
+}
 
 impl<T: NoatunStorable> NoatunOption<T> {
     pub fn into_option(self) -> Option<T> {
@@ -197,9 +207,19 @@ pub struct OpaqueNoatunCell<T> {
     registrar: SequenceNr,
 }
 
-unsafe impl<T: NoatunStorable> NoatunStorable for OpaqueNoatunCell<T> {}
+unsafe impl<T: NoatunStorable> NoatunStorable for OpaqueNoatunCell<T> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::OpaqueNoatunCell/1");
+        T::hash_schema(hasher);
+    }
+}
 
-unsafe impl<T: NoatunStorable> NoatunStorable for NoatunCell<T> {}
+unsafe impl<T: NoatunStorable> NoatunStorable for NoatunCell<T> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::NoatunCell/1");
+        T::hash_schema(hasher);
+    }
+}
 
 impl<T: Copy + Debug> Debug for NoatunCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -355,6 +375,10 @@ impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
         ret.as_mut().init_from_detached(detached);
         ret
     }
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        <Self as NoatunStorable>::hash_schema(hasher);
+    }
+
 }
 
 impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
@@ -382,6 +406,10 @@ impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
         ret.as_mut().init_from_detached(detached);
         ret
     }
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        <Self as NoatunStorable>::hash_schema(hasher);
+    }
+
 }
 
 /// Like NoatunVec, but for crate internal use. Does not track
@@ -394,7 +422,12 @@ pub(crate) struct RawDatabaseVec<T> {
     phantom_data: PhantomData<T>,
 }
 
-unsafe impl<T: NoatunStorable> NoatunStorable for RawDatabaseVec<T> {}
+unsafe impl<T: NoatunStorable> NoatunStorable for RawDatabaseVec<T> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::RawDatabaseVec/1");
+        T::hash_schema(hasher);
+    }
+}
 
 impl<T> Default for RawDatabaseVec<T> {
     fn default() -> Self {
@@ -599,6 +632,10 @@ where
     unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         panic!("allocate_from_detached is not implemented for RawDatabaseVec");
     }
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        <Self as NoatunStorable>::hash_schema(hasher);
+    }
+
 }
 
 #[repr(C)]
@@ -610,7 +647,11 @@ struct DatabaseVecLengthCapData {
     data: usize,
 }
 
-unsafe impl NoatunStorable for DatabaseVecLengthCapData {}
+unsafe impl NoatunStorable for DatabaseVecLengthCapData {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::DatabaseVecLengthCapData/1");
+    }
+}
 
 #[repr(transparent)]
 pub(crate) struct NoatunUntrackedCell<T: NoatunStorable>(pub(crate) T);
@@ -629,7 +670,12 @@ impl<T: NoatunStorable + Debug> Debug for NoatunUntrackedCell<T> {
     }
 }
 
-unsafe impl<T: NoatunStorable> NoatunStorable for NoatunUntrackedCell<T> {}
+unsafe impl<T: NoatunStorable> NoatunStorable for NoatunUntrackedCell<T> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::NoatunUntrackedCell/1");
+        T::hash_schema(hasher);
+    }
+}
 
 impl<T: NoatunStorable> Deref for NoatunUntrackedCell<T> {
     type Target = T;
@@ -660,6 +706,10 @@ impl<T: NoatunStorable + Copy> Object for NoatunUntrackedCell<T> {
     unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         unimplemented!("NoatunUntrackedCell does not support heap allocation")
     }
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        <Self as NoatunStorable>::hash_schema(hasher);
+    }
+
 }
 
 mod context {
@@ -718,6 +768,20 @@ impl<T: FixedSizeObject, C: ContextGetter> Default for NoatunVecRaw<T, C> {
             capacity: 0,
             data: 0,
             phantom_data: Default::default(),
+        }
+    }
+}
+
+impl<T:FixedSizeObject> NoatunVecRaw<T, ThreadLocalContext> {
+    // This only works with thread local context, since it calls destroy, that may
+    // reach user overridden code, that will use NoatunContext thread local global directly.
+    pub(crate) fn destroy_items(&mut self, ctx: &mut ThreadLocalContext) {
+        for i in 0..self.length {
+            self.get_index_mut_pin(i, ctx).destroy();
+        }
+        let ctx = ctx.get_context_mut();
+        unsafe {
+            ctx.write_storable(0, Pin::new_unchecked(&mut self.length));
         }
     }
 }
@@ -806,18 +870,10 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
     pub fn clear_fast(&mut self, ctx: &mut DatabaseContextData) {
         unsafe { ctx.write_storable(0, Pin::new_unchecked(&mut self.length)) }
     }
-    pub(crate) fn destroy_items(&mut self, ctx: &mut C) {
-        for i in 0..self.length {
-            self.get_index_mut_pin(i, ctx).destroy();
-        }
-        let ctx = ctx.get_context_mut();
-        unsafe {
-            ctx.write_storable(0, Pin::new_unchecked(&mut self.length));
-        }
-    }
 
-    pub(crate) fn retain(&mut self, mut f: impl FnMut(Pin<&mut T>) -> bool, ctx: &mut C) {
-        let ctx = ctx.get_context_mut();
+
+    pub(crate) fn retain(&mut self, mut f: impl FnMut(Pin<&mut T>) -> bool, ctx0: &mut C, mut destroy: impl FnMut(Pin<&mut T>)) {
+        let mut ctx = ctx0.get_context_mut();
 
         let mut read_offset = 0;
         let mut new_count = self.length;
@@ -828,7 +884,8 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
             let mut val = unsafe { Pin::new_unchecked(ctx.access_thin_mut::<T>(read_ptr)) };
             let retain = f(val.as_mut());
             if !retain {
-                val.destroy();
+                destroy(val);
+                ctx = ctx0.get_context_mut();
                 new_count -= 1;
                 read_offset += 1;
             } else {
@@ -931,26 +988,30 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         ctx.zero(fat_ptr);
     }
 
-    pub(crate) fn swap_remove(&mut self, index: usize, ctx: &mut C) {
-        let ctx = ctx.get_context_mut();
+
+    pub(crate) fn swap_remove(&mut self, index: usize, ctx0: &mut C, mut destroy: impl FnMut(Pin<&mut T>)) {
+        let ctx = ctx0.get_context_mut();
         if index == self.length - 1 {
             unsafe {
                 ctx.write_storable_ptr(self.length - 1, addr_of_mut!(self.length));
             }
             let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
             unsafe {
-                Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)).destroy();
+                destroy(Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)));
                 //dst_ptr.access_mut::<T>().destroy();
             }
+            let ctx = ctx0.get_context_mut();
             self.zero(index..index + 1, ctx);
             return;
         }
         let src_ptr = ThinPtr(self.data + (self.length - 1) * size_of::<T>());
         let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
         unsafe {
-            Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)).destroy();
+            destroy(
+                Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)));
             //dst_ptr.access_mut::<T>().destroy();
         }
+        let ctx = ctx0.get_context_mut();
         ctx.copy_bytes(FatPtr::from_idx_count(src_ptr.0, size_of::<T>()), dst_ptr);
         //NoatunContext.copy_ptr(FatPtr::from_idx_count(src_ptr.0, 1), dst_ptr);
 
@@ -981,7 +1042,13 @@ pub struct NoatunVec<T: FixedSizeObject> {
     phantom_data: PhantomData<T>,
 }
 
-unsafe impl<T: FixedSizeObject> NoatunStorable for NoatunVec<T> {}
+unsafe impl<T: FixedSizeObject> NoatunStorable for NoatunVec<T> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::NoatunVec/1");
+        <T as NoatunStorable>::hash_schema(hasher);
+    }
+
+}
 
 impl<T: FixedSizeObject + Debug> Debug for NoatunVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -1112,7 +1179,7 @@ where
         NoatunContext.observe_registrar(tself.length_registrar);
         NoatunContext.update_registrar(&mut tself.length_registrar, false);
 
-        tself.raw.swap_remove(index, &mut ThreadLocalContext);
+        tself.raw.swap_remove(index, &mut ThreadLocalContext, |x|x.destroy());
     }
 
     pub fn retain(self: Pin<&mut Self>, mut f: impl FnMut(Pin<&mut T>) -> bool) {
@@ -1216,7 +1283,12 @@ impl<T: FixedSizeObject> Debug for OpaqueNoatunVec<T> {
     }
 }
 
-unsafe impl<T: FixedSizeObject> NoatunStorable for OpaqueNoatunVec<T> {}
+unsafe impl<T: FixedSizeObject> NoatunStorable for OpaqueNoatunVec<T> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::OpaqueNoatunVec/1");
+        <T as NoatunStorable>::hash_schema(hasher);
+    }
+}
 
 impl<T: FixedSizeObject> Index<usize> for OpaqueNoatunVec<T> {
     type Output = T;
@@ -1337,6 +1409,10 @@ where
         pod.as_mut().init_from_detached(detached);
         pod
     }
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        <Self as NoatunStorable>::hash_schema(hasher);
+    }
+
 }
 
 impl<T> Object for NoatunVec<T>
@@ -1367,6 +1443,10 @@ where
         pod.as_mut().init_from_detached(detached);
         pod
     }
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        <Self as NoatunStorable>::hash_schema(hasher);
+    }
+
 }
 
 #[repr(transparent)]
@@ -1375,7 +1455,13 @@ pub struct NoatunBox<T: Object + ?Sized> {
     phantom: PhantomData<T>,
 }
 
-unsafe impl<T: Object + ?Sized + 'static> NoatunStorable for NoatunBox<T> {}
+unsafe impl<T: Object + ?Sized + 'static> NoatunStorable for NoatunBox<T> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::NoatunBox/1");
+        T::hash_object_schema(hasher);
+    }
+
+}
 
 impl<T: Object + ?Sized> Copy for NoatunBox<T> {}
 
@@ -1416,6 +1502,9 @@ where
         let mut pod: Pin<&mut Self> = NoatunContext.allocate_obj();
         pod.as_mut().init_from_detached(detached);
         pod
+    }
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        <Self as NoatunStorable>::hash_schema(hasher);
     }
 }
 
@@ -1514,7 +1603,13 @@ struct NoatunHashBucket<K, V> {
     v: V,
 }
 
-unsafe impl<K: NoatunStorable, V: NoatunStorable> NoatunStorable for NoatunHashBucket<K, V> {}
+unsafe impl<K: NoatunStorable, V: NoatunStorable> NoatunStorable for NoatunHashBucket<K, V> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::NoatunHashBucket/1");
+        K::hash_schema(hasher);
+        V::hash_schema(hasher);
+    }
+}
 
 /// A collection very similar to std HashMap, for Noatun databases.
 ///
@@ -1572,7 +1667,13 @@ pub struct NoatunHashMap<K: NoatunStorable, V: FixedSizeObject> {
     phantom_data: PhantomData<(K, V)>,
 }
 
-unsafe impl<K: NoatunStorable, V: FixedSizeObject> NoatunStorable for NoatunHashMap<K, V> {}
+unsafe impl<K: NoatunStorable, V: FixedSizeObject> NoatunStorable for NoatunHashMap<K, V> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::NoatunHashMap/1");
+        K::hash_schema(hasher);
+        <V as NoatunStorable>::hash_schema(hasher);
+    }
+}
 
 impl<K: NoatunStorable + NoatunKey + PartialEq + Debug, V: FixedSizeObject + Debug> Debug
     for NoatunHashMap<K, V>
@@ -1685,7 +1786,11 @@ impl BucketProbeSequence {
 #[doc(hidden)]
 pub struct Meta(u8);
 
-unsafe impl NoatunStorable for Meta {}
+unsafe impl NoatunStorable for Meta {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::data_types::Meta/1");
+    }
+}
 
 #[repr(align(32))]
 #[doc(hidden)]
@@ -3086,6 +3191,10 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
         ret.as_mut().init_from_detached(detached);
         ret
     }
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        <Self as NoatunStorable>::hash_schema(hasher);
+    }
+
 }
 
 #[cfg(test)]

@@ -361,6 +361,14 @@ impl FileAccessor {
             )
         }
     }
+    pub(crate) fn map_all_raw_mut(&mut self) -> &mut [u8] {
+        unsafe {
+            slice::from_raw_parts_mut(
+                self.ptr.wrapping_add(Self::HEADER_SIZE),
+                self.committed_size.saturating_sub(Self::HEADER_SIZE),
+            )
+        }
+    }
 
     pub(crate) fn map(&self) -> &[u8] {
         let used = self.used_space();
@@ -598,6 +606,7 @@ impl FileAccessor {
             self.committed_size = new_alloc_size;
         }
         self.set_used_space(new_size);
+        self.map_all_raw_mut().fill(0);
         Ok(())
     }
 }

@@ -111,7 +111,7 @@ impl Recorder for TestRecorder {
 }
 
 impl TestRecorder {
-    pub fn register(&self) -> metrics::LocalRecorderGuard {
+    pub fn register(&self) -> metrics::LocalRecorderGuard<'_> {
         metrics::set_default_local_recorder(self)
     }
     pub fn get_metrics(&self) -> String {

@@ -229,7 +229,13 @@ impl<Root: FixedSizeObject + DummyTestMessageApply> Application for DummyTestApp
 #[derive(Debug)]
 pub struct DummyTestApp<Root>(pub Root);
 
-unsafe impl<Root: NoatunStorable> NoatunStorable for DummyTestApp<Root> {}
+unsafe impl<Root: NoatunStorable> NoatunStorable for DummyTestApp<Root> {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("DummyTestApp");
+        Root::hash_schema(hasher);
+    }
+
+}
 
 impl<Root> DummyTestApp<Root> {
     pub fn inner_mut(self: Pin<&mut Self>) -> Pin<&mut Root> {
@@ -259,6 +265,10 @@ impl<Root: FixedSizeObject> Object for DummyTestApp<Root> {
 
     unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         unimplemented!()
+    }
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("DummyTestApp");
+        Root::hash_schema(hasher);
     }
 }
 
@@ -415,7 +425,14 @@ struct CounterObject {
     counter2: NoatunCell<u32>,
 }
 
-unsafe impl NoatunStorable for CounterObject {}
+unsafe impl NoatunStorable for CounterObject {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::CounterObject/1");
+        hasher.write_usize(2);
+        <NoatunCell::<u32> as NoatunStorable>::hash_schema(hasher);
+        <NoatunCell::<u32> as NoatunStorable>::hash_schema(hasher);
+    }
+}
 
 impl Object for CounterObject {
     type Ptr = ThinPtr;
@@ -440,6 +457,9 @@ impl Object for CounterObject {
 
     unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         unimplemented!()
+    }
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::CounterObject/1");
     }
 }
 

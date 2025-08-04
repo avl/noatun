@@ -1,4 +1,4 @@
-use crate::{cast_slice, cast_storable, MessageId, NoatunStorable, NoatunTime};
+use crate::{cast_slice, cast_storable, MessageId, NoatunStorable, NoatunTime, SchemaHasher};
 use anyhow::{anyhow, bail, Result};
 use savefile_derive::Savefile;
 use std::fmt::{Debug, Display, Formatter};
@@ -38,7 +38,11 @@ impl CutOffConfig {
 pub struct CutoffHash {
     values: [u64; 2],
 }
-unsafe impl NoatunStorable for CutoffHash {}
+unsafe impl NoatunStorable for CutoffHash {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::DepTrCutoffHash/1")
+    }
+}
 
 impl Debug for CutoffHash {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -119,7 +123,11 @@ impl Display for CutOffTime {
     }
 }
 
-unsafe impl NoatunStorable for CutOffTime {}
+unsafe impl NoatunStorable for CutOffTime {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::CutOffTime/1")
+    }
+}
 
 impl Debug for CutOffTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -178,7 +186,11 @@ impl Display for CutOffHashPos {
     }
 }
 
-unsafe impl NoatunStorable for CutOffHashPos {}
+unsafe impl NoatunStorable for CutOffHashPos {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::CutOffHashPos/1")
+    }
+}
 
 #[derive(Clone, Copy, Debug, Savefile)]
 #[repr(C)]
@@ -187,7 +199,11 @@ pub struct CutOffState {
     stamps: CutOffHashPos,
 }
 
-unsafe impl NoatunStorable for CutOffState {}
+unsafe impl NoatunStorable for CutOffState {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::CutOffState/1");
+    }
+}
 
 pub enum Acceptability {
     /// The hashes are identical. This is the nominal case

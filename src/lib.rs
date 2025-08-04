@@ -30,7 +30,7 @@ use datetime_literal::datetime;
 pub use paste::paste;
 pub(crate) use projection_store::DatabaseContextData;
 use rand::RngCore;
-use savefile::Deserializer;
+use savefile::{Deserializer};
 pub use savefile_derive::Savefile;
 #[cfg(feature = "serde")]
 use serde::de::DeserializeOwned;
@@ -52,6 +52,7 @@ use std::slice;
 use std::time::Duration;
 #[cfg(not(feature = "tokio"))]
 use std::time::Instant;
+use sha2::{Digest, Sha256};
 #[cfg(feature = "tokio")]
 use tokio::time::Instant;
 
@@ -128,6 +129,38 @@ macro_rules! dprintln {
     ($($x:tt)*) => {{}};
 }
 
+pub struct SchemaHasher(Sha256);
+
+impl SchemaHasher {
+    pub fn write_str(&mut self, s: &str) {
+        self.0.update(&s.len().to_le_bytes());
+        self.0.update(s.as_bytes());
+    }
+    pub fn write_usize(&mut self, n: usize) {
+        self.0.update(&n.to_le_bytes());
+    }
+}
+
+/// Calculate the correct hash for the schema of the given object
+pub fn calculate_schema_hash<T: Object>() -> [u8;16] {
+    let mut temp = SchemaHasher(Sha256::default());
+    T::hash_object_schema(&mut temp);
+    use sha2::digest::FixedOutput;
+    temp.0.finalize_fixed()[0..16].try_into().unwrap()
+}
+
+impl Write for SchemaHasher {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+
 /// SAFETY requirements:
 /// * Type must not have Drop impl
 /// * Type must have repr(C) or repr(transparent)
@@ -141,6 +174,8 @@ macro_rules! dprintln {
 ///
 /// Note that type is allowed to have padding.
 /// Type is also allowed to contain indices inside the database file ([`ThinPtr`]/[`FatPtr`]).
+///
+/// Note that tuples do not fulfill the criteria (no guaranteed stable memory layout).
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be stored in a noatun database.",
     label = "`{Self}` does not implement NoatunStorable.",
@@ -164,13 +199,38 @@ pub unsafe trait NoatunStorable: Sized + 'static {
             (dest as *mut MaybeUninit<Self> as *mut Self).write(temp);
         }
     }
+
+
+
+    /// Write a unique value to 'hasher', that uniquely identifies this data type.
+    ///
+    /// This is used to detect schema conflicts between persisted materialized views
+    /// and in-memory representations.
+    ///
+    /// The following guidelines are provided:
+    ///  * Structs should write their full name, including crate name, their field count, and the
+    ///    hash of each field.
+    ///  * Newtypes should write their full name, including crate name, and the hash of their
+    ///    inner type (unless the inner type is a primitive), and a '/' followed by a version number.
+    ///    The version number must be changed if memory format changes.
+    ///  * Primitives write their name prefixed by "std::" (this is implemented by Noatun).
+    ///  * Collections, or more advanced types made specifically for Noatun
+    ///    are encouraged to write their full name, plus a '/' followed by version
+    ///    number, and if they are generic, the number of generic parameters and the hashes
+    ///    of each generic.
+    fn hash_schema(hasher: &mut SchemaHasher);
 }
 
 mod noatun_storable_impls {
+    use crate::SchemaHasher;
     use super::NoatunStorable;
     macro_rules! make_noatun_storable {
         ($t: ident) => {
-            unsafe impl NoatunStorable for $t {}
+            unsafe impl NoatunStorable for $t {
+                fn hash_schema(hasher: &mut SchemaHasher) {
+                    hasher.write_str(concat!("std::", stringify!($t)));
+                }
+            }
         };
     }
 
@@ -187,7 +247,12 @@ mod noatun_storable_impls {
     make_noatun_storable!(isize);
     make_noatun_storable!(usize);
 
-    unsafe impl<T: NoatunStorable, const N: usize> NoatunStorable for [T; N] {}
+    unsafe impl<T: NoatunStorable, const N: usize> NoatunStorable for [T; N] {
+        fn hash_schema(hasher: &mut SchemaHasher) {
+            hasher.write_str(concat!("std::[_:", stringify!(N), "]"));
+            T::hash_schema(hasher);
+        }
+    }
 }
 
 thread_local! {
@@ -412,7 +477,11 @@ pub struct MessageId {
     data: [u32; 4],
 }
 
-unsafe impl NoatunStorable for MessageId {}
+unsafe impl NoatunStorable for MessageId {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::MessageId/1")
+    }
+}
 
 const ASSURE_SUPPORTED_USIZE: () = const {
     if size_of::<usize>() != 8 {
@@ -710,7 +779,11 @@ impl MessageId {
 #[repr(C)]
 pub struct NoatunTime(pub u64);
 
-unsafe impl NoatunStorable for NoatunTime {}
+unsafe impl NoatunStorable for NoatunTime {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::NoatunTime/1")
+    }
+}
 
 impl Add<Duration> for NoatunTime {
     type Output = NoatunTime;
@@ -991,7 +1064,11 @@ pub(crate) fn catch_and_log(f: impl FnOnce(), abort: bool) {
 #[repr(C)]
 pub struct DummyUnitObject;
 
-unsafe impl NoatunStorable for DummyUnitObject {}
+unsafe impl NoatunStorable for DummyUnitObject {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::DummyUnitObject/1")
+    }
+}
 
 impl Object for DummyUnitObject {
     type Ptr = ThinPtr;
@@ -1007,6 +1084,10 @@ impl Object for DummyUnitObject {
     unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
         unsafe { Pin::new_unchecked(&mut *std::ptr::dangling_mut::<DummyUnitObject>()) }
     }
+
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::DummyUnitObject/1");
+    }
 }
 
 pub enum GenPtr {
@@ -1021,7 +1102,11 @@ struct SerializableGenPtr {
     count: usize, //usize::MAX for thin
 }
 
-unsafe impl NoatunStorable for SerializableGenPtr {}
+unsafe impl NoatunStorable for SerializableGenPtr {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::SerializableGenPtr/1")
+    }
+}
 
 impl From<SerializableGenPtr> for GenPtr {
     fn from(value: SerializableGenPtr) -> Self {
@@ -1252,9 +1337,37 @@ pub trait Object {
     /// The only cases where some other implementation is required is when 'Self' does
     /// not have a fixed size.
     unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self>;
+
+
+    /// Write a unique value to 'hasher', that uniquely identifies this data type.
+    ///
+    /// This is used to detect schema conflicts between persisted materialized views
+    /// and in-memory representations.
+    ///
+    /// The following guidelines are provided:
+    ///  * Structs should write their full name, including crate name, their field count, and the
+    ///    hash of each field.
+    ///  * Newtypes should write their full name, including crate name, and the hash of their
+    ///    inner type (unless the inner type is a primitive), and a '/' followed by a version number.
+    ///    The version number must be changed if memory format changes.
+    ///  * Primitives write their name prefixed by "std::" (this is implemented by Noatun).
+    ///  * Collections, or more advanced types made specifically for Noatun
+    ///    are encouraged to write their full name, plus a '/' followed by version
+    ///    number, and if they are generic, the number of generic parameters and the hashes
+    ///    of each generic.
+    ///
+    /// Note, `NoatunStorable` also has a similar method. Types that implement both NoatunStorable
+    /// and Object can use the same implementation.
+    fn hash_object_schema(hasher: &mut SchemaHasher);
 }
 
 // TODO(future): Could we support a noatun_enum! macro?
+
+#[macro_export]
+macro_rules! count_ast_nodes {
+    () => (0usize);
+    ( $x:tt $($xs:tt)* ) => (1usize + $crate::count_ast_nodes!($($xs)*));
+}
 
 /// Define a noatun object.
 ///
@@ -1405,7 +1518,21 @@ macro_rules! noatun_object {
                     $name : noatun_object!(declare_field $kind $typ)
                 ),*
             }
-            unsafe impl $crate::NoatunStorable for $n {}
+            unsafe impl $crate::NoatunStorable for $n {
+                fn hash_schema(hasher: &mut $crate::SchemaHasher) {
+                    // type names are not guaranteed to be unique, but that doesn't matter,
+                    // since the name check is just an extra bonus. If all fields match, but
+                    // type differs, everything should still "work", though of course
+                    // there might be surprises. "Real" renames of a type will tend to change
+                    // the `std::any::type_name`.
+                    hasher.write_str(std::any::type_name::<Self>());
+                    hasher.write_usize($crate::count_ast_nodes!($($name)*));
+                    $(
+                        <$typ as $crate::NoatunStorable>::hash_schema(hasher);
+                    )*
+                }
+
+            }
             $crate::paste!(
                 #[doc ="pin_project helper for"]
                 #[doc = stringify!($n)]
@@ -1507,6 +1634,10 @@ macro_rules! noatun_object {
                     ret
                 }
 
+                fn hash_object_schema(hasher: &mut $crate::SchemaHasher) {
+                    <Self as $crate::NoatunStorable>::hash_schema(hasher);
+                }
+
             }
 
 
@@ -1575,8 +1706,17 @@ impl FatPtr {
 #[derive(Copy, Clone, Debug)]
 pub struct ThinPtr(pub usize);
 
-unsafe impl NoatunStorable for ThinPtr {}
-unsafe impl NoatunStorable for FatPtr {}
+unsafe impl NoatunStorable for ThinPtr {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::ThinPtr/1")
+    }
+
+}
+unsafe impl NoatunStorable for FatPtr {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::FatPtr/1")
+    }
+}
 
 impl Sealed for ThinPtr {}
 impl Sealed for FatPtr {}
@@ -1703,6 +1843,12 @@ where
         }
         Pin::new_unchecked(slice)
     }
+
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::[T]/1");
+        <T as NoatunStorable>::hash_schema(hasher);
+    }
+
 }
 
 #[derive(Clone, Copy)]

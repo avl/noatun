@@ -1,4 +1,4 @@
-use crate::NoatunStorable;
+use crate::{NoatunStorable, SchemaHasher};
 use std::fmt::{Debug, Display, Formatter};
 
 /// Sequence number of a message.
@@ -10,7 +10,11 @@ use std::fmt::{Debug, Display, Formatter};
 // 0 is an invalid sequence number, used to represent 'not a number'
 pub struct SequenceNr(u32);
 
-unsafe impl NoatunStorable for SequenceNr {}
+unsafe impl NoatunStorable for SequenceNr {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::SequenceNr/1")
+    }
+}
 
 impl Display for SequenceNr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

@@ -1,10 +1,7 @@
 use datetime_literal::datetime;
 use noatun::data_types::{NoatunBox, NoatunCell, NoatunVec};
 use noatun::database::{Database, DatabaseSettings};
-use noatun::{
-    Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunStorable, Object,
-    SavefileMessageSerializer, ThinPtr,
-};
+use noatun::{Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunStorable, Object, SavefileMessageSerializer, SchemaHasher, ThinPtr};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
@@ -14,7 +11,11 @@ struct CounterObject {
     counter2: NoatunVec<NoatunBox<[NoatunCell<u8>]>>,
 }
 
-unsafe impl NoatunStorable for CounterObject {}
+unsafe impl NoatunStorable for CounterObject {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::test_app1::CounterObject/1");
+    }
+}
 
 impl Object for CounterObject {
     type Ptr = ThinPtr;
@@ -37,6 +38,10 @@ impl Object for CounterObject {
         let mut this: Pin<&mut CounterObject> = NoatunContext.allocate();
         this.as_mut().init_from_detached(detached);
         this
+    }
+
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        Self::hash_schema(hasher);
     }
 }
 
