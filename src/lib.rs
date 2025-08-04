@@ -133,11 +133,11 @@ pub struct SchemaHasher(Sha256);
 
 impl SchemaHasher {
     pub fn write_str(&mut self, s: &str) {
-        self.0.update(&s.len().to_le_bytes());
+        self.0.update(s.len().to_le_bytes());
         self.0.update(s.as_bytes());
     }
     pub fn write_usize(&mut self, n: usize) {
-        self.0.update(&n.to_le_bytes());
+        self.0.update(n.to_le_bytes());
     }
 }
 

@@ -1495,6 +1495,7 @@ impl DatabaseContextData {
                 let cur = uses.get(self, seq.index());
 
                 let cutoff = messages.cutoff_index();
+                #[allow(clippy::if_same_then_else)]
                 if last_overwriter < cutoff {
                     dprintln!(
                         "@{} {:?} {} mark_delete because last_overwriter<cutoff",

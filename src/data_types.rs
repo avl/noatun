@@ -2570,16 +2570,16 @@ where
                 panic!("internal error, HashFull")
             }
             ProbeRunResult::FoundPopulated(_, _) => NoatunHashMapEntry::Occupied(OccupiedEntry {
-                context: context,
+                context,
                 probe_result: probe_result.bucket_meta(),
-                key: key,
-                length: length,
+                key,
+                length,
             }),
             ProbeRunResult::FoundUnoccupied(_, _) => NoatunHashMapEntry::Vacant(VacantEntry {
-                context: context,
+                context,
                 probe_result: probe_result.bucket_meta(),
-                key: key,
-                length: length,
+                key,
+                length,
             }),
         }
     }
@@ -2606,7 +2606,7 @@ where
     }
     fn or_default(self) -> Pin<&'a mut V> {
         let new = matches!(self, NoatunHashMapEntry::Vacant(_));
-        let mut tself = self.unify();
+        let tself = self.unify();
         NoatunHashMap::insert_at_bucket(
             new,
             tself.probe_result,
@@ -2615,13 +2615,13 @@ where
             |_new, _val| {
                 // Leave at default
             },
-            &mut tself.length,
+            tself.length,
         )
     }
     /// In
     fn or_insert(self, v: &V::DetachedType) -> Pin<&'a mut V> {
         let new = matches!(self, NoatunHashMapEntry::Vacant(_));
-        let mut tself = self.unify();
+        let tself = self.unify();
         NoatunHashMap::insert_at_bucket(
             new,
             tself.probe_result,
@@ -2632,12 +2632,12 @@ where
                     val.init_from_detached(v)
                 }
             },
-            &mut tself.length,
+            tself.length,
         )
     }
     fn or_insert_with(self, v: impl FnOnce() -> V::DetachedOwnedType) -> Pin<&'a mut V> {
         let new = matches!(self, NoatunHashMapEntry::Vacant(_));
-        let mut tself = self.unify();
+        let tself = self.unify();
         NoatunHashMap::insert_at_bucket(
             new,
             tself.probe_result,
@@ -2648,7 +2648,7 @@ where
                     val.init_from_detached(v().borrow())
                 }
             },
-            &mut tself.length,
+            tself.length,
         )
     }
 }
@@ -3271,7 +3271,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         }
 
         self.internal_change_capacity(self_cap + 15);
-        println!("New cap: {}", self_cap);
+        println!("New cap: {self_cap}");
         let (context, length) = self.data_meta_len_mut2();
         probe_result = Self::probe(context.readonly(), key.borrow());
         assert!(!matches!(probe_result, ProbeRunResult::HashFull));
@@ -3409,7 +3409,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         debug_assert!(new_capacity >= new_min_capacity);
         debug_assert!(new_capacity >= capacity);
 
-        println!("Resized to {}", new_capacity);
+        println!("Resized to {new_capacity}");
         self.initialize_with_capacity(new_capacity);
 
         for (item_key, item_val) in i {
@@ -3478,7 +3478,7 @@ impl NoatunKey for MessageId {
     }
 
     fn detach_key_ref(&self) -> &Self::DetachedType {
-        &self
+        self
     }
 
     fn detach_key(&self) -> Self::DetachedOwnedType {

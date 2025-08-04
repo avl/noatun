@@ -67,7 +67,7 @@ impl Message for KeyValMessage2 {
     type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
-        println!("Applying: {:?}", self);
+        println!("Applying: {self:?}");
         let mut projected = root.pin_project();
         projected
             .keyval

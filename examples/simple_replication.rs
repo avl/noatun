@@ -38,10 +38,10 @@ impl Message for TodoMessage {
         let mut root = root.pin_project();
         match self {
             TodoMessage::AddText(text) => {
-                root.items.insert(&id, text.as_str());
+                root.items.insert(id, text.as_str());
             }
             TodoMessage::RemoveText(id) => {
-                root.items.remove(&id);
+                root.items.remove(id);
             }
         }
     }
@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             items.sort();
             println!("All messages:");
             for (_msg_id, item) in items {
-                println!("{}", item);
+                println!("{item}");
             }
         })
     }
