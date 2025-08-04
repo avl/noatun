@@ -2,7 +2,10 @@
 use crate::data_types::meta_finder::get_any_empty;
 use crate::sequence_nr::SequenceNr;
 use crate::xxh3_vendored::NoatunHasher;
-use crate::{get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject, MessageId, NoatunContext, NoatunStorable, Object, Pointer, SchemaHasher, ThinPtr, CONTEXT};
+use crate::{
+    get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject, MessageId,
+    NoatunContext, NoatunStorable, Object, Pointer, SchemaHasher, ThinPtr, CONTEXT,
+};
 use savefile_derive::Savefile;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -3469,7 +3472,7 @@ impl NoatunKey for MessageId {
 
     fn hash<H>(tself: &Self::DetachedType, state: &mut H)
     where
-        H: Hasher
+        H: Hasher,
     {
         tself.hash(state)
     }

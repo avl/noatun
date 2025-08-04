@@ -1,12 +1,15 @@
+use noatun::communication::udp::TokioUdpDriver;
+use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
+use noatun::data_types::{NoatunHashMap, NoatunString};
+use noatun::{
+    noatun_object, Database, DatabaseSettings, Message, MessageId, Object,
+    SavefileMessageSerializer,
+};
+use savefile_derive::Savefile;
 use std::error::Error;
-use std::fmt::{Debug};
+use std::fmt::Debug;
 use std::io::stdin;
 use std::pin::Pin;
-use savefile_derive::Savefile;
-use noatun::data_types::{NoatunHashMap, NoatunString};
-use noatun::{noatun_object, Database, DatabaseSettings, Message, MessageId, Object, SavefileMessageSerializer};
-use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
-use noatun::communication::udp::TokioUdpDriver;
 
 noatun_object!(
     struct TodoItem {
@@ -44,30 +47,30 @@ impl Message for TodoMessage {
     }
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let db: Database<TodoMessage> = Database::create_in_memory(
-10_000_000,
-        DatabaseSettings::default(),
-    ).unwrap();
+    let db: Database<TodoMessage> =
+        Database::create_in_memory(10_000_000, DatabaseSettings::default()).unwrap();
 
     let distributed_db = DatabaseCommunication::new_custom(
         &mut TokioUdpDriver,
         db,
-        DatabaseCommunicationConfig::default())
-        .await
-        .unwrap();
+        DatabaseCommunicationConfig::default(),
+    )
+    .await
+    .unwrap();
     loop {
         let mut buffer = String::new();
 
         stdin().read_line(&mut buffer)?;
 
         if !buffer.is_empty() {
-            distributed_db.add_message(TodoMessage::AddText(buffer.trim().to_string())).await?;
+            distributed_db
+                .add_message(TodoMessage::AddText(buffer.trim().to_string()))
+                .await?;
         }
-        distributed_db.with_root(|root|{
-            let mut items: Vec<_> = root.items.iter().map(|(k,v)|(*k,v.detach())).collect();
+        distributed_db.with_root(|root| {
+            let mut items: Vec<_> = root.items.iter().map(|(k, v)| (*k, v.detach())).collect();
             items.sort();
             println!("All messages:");
             for (_msg_id, item) in items {
