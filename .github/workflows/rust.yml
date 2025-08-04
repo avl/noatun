@@ -21,6 +21,8 @@ jobs:
       run: rustup toolchain install stable && rustup toolchain install 1.86
     - name: Install nextest
       run: cargo install cargo-nextest
+    - name: Run bench
+      run: cd db_bench && cargo +stable run --release
     - name: Run tests
       run: cargo +stable nextest run --workspace
     - name: Miri

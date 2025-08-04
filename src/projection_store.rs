@@ -1187,7 +1187,6 @@ impl DatabaseContextData {
         *dest = src;
     }
 
-
     /// #Safety:
     /// No references to dest must exist.
     pub unsafe fn write_storable_ptr<T: NoatunStorable>(&mut self, src: T, dest: *mut T) {

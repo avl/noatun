@@ -55,7 +55,7 @@ use std::time::Instant;
 #[cfg(feature = "tokio")]
 use tokio::time::Instant;
 
-use tracing::{error};
+use tracing::error;
 
 mod disk_abstraction;
 mod message_store;
@@ -1377,7 +1377,7 @@ macro_rules! noatun_object {
             }
         );
     };
-    
+
     ( detached_type $n_detached: ident) => {
         $n_detached
     };

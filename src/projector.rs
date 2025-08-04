@@ -3,7 +3,10 @@ use crate::disk_abstraction::Disk;
 use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{catch_and_log, dprintln, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunTime, Persistence, Target};
+use crate::{
+    catch_and_log, dprintln, ContextGuardMut, DatabaseContextData, Message, MessageFrame,
+    MessageHeader, MessageId, NoatunTime, Persistence, Target,
+};
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use std::pin::Pin;
@@ -370,9 +373,13 @@ impl<MSG: Message + 'static> Projector<MSG> {
         }
         let guard = ContextGuardMut::new(context, true);
 
-        catch_and_log(|| {
-            msg.payload.apply(msg.header.id, unsafe { Pin::new_unchecked(root) });
-        }, abort_on_panic);
+        catch_and_log(
+            || {
+                msg.payload
+                    .apply(msg.header.id, unsafe { Pin::new_unchecked(root) });
+            },
+            abort_on_panic,
+        );
 
         drop(guard);
 
@@ -388,11 +395,14 @@ impl<MSG: Message + 'static> Projector<MSG> {
         preview: impl Iterator<Item = MSG>,
     ) -> Result<()> {
         let time = NoatunTime(time.timestamp_millis() as u64);
-        catch_and_log(|| {
-            for msg in preview {
-                msg.apply(MessageId::from_parts_for_test(time, 0), root.as_mut());
-            }
-        }, false);
+        catch_and_log(
+            || {
+                for msg in preview {
+                    msg.apply(MessageId::from_parts_for_test(time, 0), root.as_mut());
+                }
+            },
+            false,
+        );
 
         Ok(())
     }
@@ -462,7 +472,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
                     seqnr,
                     must_remove,
                     messages,
-                    abort_on_panic
+                    abort_on_panic,
                 )?;
             }
             Ok(())

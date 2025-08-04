@@ -2,7 +2,10 @@
 use crate::data_types::meta_finder::get_any_empty;
 use crate::sequence_nr::SequenceNr;
 use crate::xxh3_vendored::NoatunHasher;
-use crate::{get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer, ThinPtr, CONTEXT};
+use crate::{
+    get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject,
+    NoatunContext, NoatunStorable, Object, Pointer, ThinPtr, CONTEXT,
+};
 use savefile_derive::Savefile;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -839,7 +842,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
             }
         }
         assert_eq!(write_offset, new_count);
-        self.zero(new_count .. self.length, ctx);
+        self.zero(new_count..self.length, ctx);
         unsafe { ctx.write_storable(new_count, Pin::new_unchecked(&mut self.length)) };
     }
 
@@ -851,8 +854,8 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         let dest = ctx.allocate_raw(new_capacity * size_of::<T>(), align_of::<T>());
 
         unsafe {
-            let new_slice = slice::from_raw_parts(dest, new_capacity*size_of::<T>());
-            assert!(new_slice.iter().all(|x|*x==0));
+            let new_slice = slice::from_raw_parts(dest, new_capacity * size_of::<T>());
+            assert!(new_slice.iter().all(|x| *x == 0));
         }
 
         let dest_index = ctx.index_of_ptr(dest);
@@ -899,7 +902,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
 
         let obj = self.get_index_mut_pin(self.length - 1, ctx);
 
-        let bytes:&[u8] = crate::bytes_of(&*obj);
+        let bytes: &[u8] = crate::bytes_of(&*obj);
         assert!(bytes.iter().all(|x| *x == 0));
 
         obj
@@ -923,7 +926,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
     pub fn zero(&mut self, range: Range<usize>, ctx: &mut DatabaseContextData) {
         let fat_ptr = FatPtr::from_idx_count(
             self.data + (range.start) * size_of::<T>(),
-            (range.end - range.start)* size_of::<T>(),
+            (range.end - range.start) * size_of::<T>(),
         );
         ctx.zero(fat_ptr);
     }
@@ -939,7 +942,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
                 Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)).destroy();
                 //dst_ptr.access_mut::<T>().destroy();
             }
-            self.zero(index  .. index + 1, ctx);
+            self.zero(index..index + 1, ctx);
             return;
         }
         let src_ptr = ThinPtr(self.data + (self.length - 1) * size_of::<T>());
@@ -952,7 +955,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         //NoatunContext.copy_ptr(FatPtr::from_idx_count(src_ptr.0, 1), dst_ptr);
 
         //NoatunContext.write_ptr(self.length - 1, addr_of_mut!(self.length));
-        self.zero(self.length - 1 .. self.length, ctx);
+        self.zero(self.length - 1..self.length, ctx);
         unsafe {
             ctx.write_storable_ptr(self.length - 1, addr_of_mut!(self.length));
         }
@@ -1133,7 +1136,9 @@ where
                 }
                 let old_count = self.vec.raw.length;
                 NoatunContext.write_ptr(self.new_count, addr_of_mut!(self.vec.raw.length));
-                self.vec.raw.zero(self.write_offset..old_count, unsafe { &mut *get_context_mut_ptr() });
+                self.vec.raw.zero(self.write_offset..old_count, unsafe {
+                    &mut *get_context_mut_ptr()
+                });
             }
         }
 

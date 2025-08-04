@@ -23,3 +23,5 @@ jobs:
         run: RUSTFLAGS="-Dwarnings" cargo +stable clippy --all-features --workspace
       - name: Run Clippy (no features)
         run: RUSTFLAGS="-Dwarnings" cargo +stable clippy --no-default-features --workspace
+      - name: Check fmt
+        run: cargo +stable fmt --check

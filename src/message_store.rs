@@ -2178,7 +2178,9 @@ impl<M> OnDiskMessageStore<M> {
                             } else {
                                 carry_buffer.pop_front();
                                 if !was_in_carry {
-                                    if cur_index < initial_index_entries && !cur_index_entry.is_deleted() {
+                                    if cur_index < initial_index_entries
+                                        && !cur_index_entry.is_deleted()
+                                    {
                                         let (Ok(insert_at) | Err(insert_at)) = carry_buffer
                                             .binary_search_by_key(&cur_index_entry.message, |x| {
                                                 x.message
@@ -3112,14 +3114,9 @@ mod tests {
     }
     #[test]
     fn test_compact() {
-
         let target = Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into());
-        let mut store = OnDiskMessageStore::new(
-            &mut InMemoryDisk::default(),
-            &target,
-            100_000_000,
-        )
-            .unwrap();
+        let mut store =
+            OnDiskMessageStore::new(&mut InMemoryDisk::default(), &target, 100_000_000).unwrap();
 
         const COUNT: usize = 1_000;
         let msgs: Vec<_> = (0..COUNT)
@@ -3141,9 +3138,13 @@ mod tests {
             .unwrap();
         let mut tracker = UpdateHeadTracker::new(&mut InMemoryDisk::default(), &target).unwrap();
 
-        store.delete_many((0..1000).filter(|x|x%7!=0).map(MessageId::new_debug), &mut tracker, false).unwrap();
-
-
+        store
+            .delete_many(
+                (0..1000).filter(|x| x % 7 != 0).map(MessageId::new_debug),
+                &mut tracker,
+                false,
+            )
+            .unwrap();
 
         assert_eq!(store.count_messages(), 143);
         assert_eq!(store.index_count().unwrap(), 143);
