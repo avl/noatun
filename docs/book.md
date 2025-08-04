@@ -4,19 +4,25 @@ Welcome to Noatun! Noatun is an in-process, multi master, distributed event sour
 garbage collection and an automatically materialized view. It's suitable for unreliable networks and can be 
 used in embedded applications (std required).
 
-Features:
+Unique selling points:
+ * Robust, completely automatic multi-master replication
+ * Full functionality even offline, even for long offline periods.
+ * Noatun fakes a linear history: your application doesn't have to consider concurrency. You're an  
+   expert in your domain, you shouldn't have to solve distributed computing just because your customers 
+   have offline requirements. 
+ * Perfectly suited for when internet connectivity cannot be guaranteed.
 
- * Multi master distribution - writes can be made on any node, even when offline
+Additional features:
  * 100% decentralized - nodes in the network do not need to be assigned unique ids - all they need
-   to agree on is the message format. 
+   to agree on is the event format and definition. 
  * Data model is 100% event based. Current database state is a function only of current events.
  * Works in any network - and does not require unique network addresses
  * Deterministic replay and time travel for easy debugging
  * Robust persistent store optimized for availability
- * Automatic pruning of old messages
+ * Automatic pruning of stale events
  * Excellent read performance. Reading from Noatun is almost as fast as reading from regular pure 
    rust data structures in RAM.
- * Good write performance. Writing messages to disk is very fast, and projecting them
+ * Good write performance. Writing events to disk is very fast, and projecting them
    to the materialized view is often reasonable fast too, but depends on the user logic.
 
 ## Functional overview
@@ -58,8 +64,8 @@ columns 3
 ```
 _Information flow (in operation)_
 
-Events are applied to the projection in timestamp order. As a user of Noatun, you need to
-implement a method that applies an event to the database [`Message::apply`]. Noatun 
+Events (data type `Message`) are applied to the projection in timestamp order. As a user of Noatun, you need to
+implement a method that applies an event to the database `Message::apply`. Noatun 
 then ensures that the materialized view is always just the result of applying all events 
 in order. Noatun will, under the hood, efficiently roll back and reapply events if they 
 arrive over the network out of order.
@@ -162,10 +168,11 @@ async fn example() {
     distributed_db.add_message(WarehouseEvent::Add(43)).await.unwrap();
     distributed_db.add_message(WarehouseEvent::Remove(1)).await.unwrap();
 
-
+    // As an example, read from the database
     distributed_db.with_root(|root|{
-        // The current quantity in the database should now be 42.
-        assert_eq!(*root.quantity, 42);
+        // This will print 42 (unless another node managed to connect
+        // and inserted more messages):
+        println!("Quantity: {}", root.quantity);
     });
     
     // ... run application.
@@ -179,8 +186,8 @@ async fn example() {
 
 Noatun messages consist of three parts:
  * A 16 byte message id (of which 48 bits are a timestamp)
- * A user-defined payload
  * A list of parents (message ids)
+ * A user-defined payload
 
 ```mermaid 
 block-beta
@@ -199,6 +206,8 @@ classDef BT stroke:transparent,fill:transparent
 _Message layout_
 
 Message parents are handled automatically by Noatun. See chapter on Internals for more information. 
+The user payload serialization format is user-defined. By default Noatun uses serde postcard, but
+any serialization mechanism can be used.
 
 # Features
 
@@ -208,8 +217,8 @@ Message parents are handled automatically by Noatun. See chapter on Internals fo
 
 Messages are automatically removed from the database when they are no longer needed.
 
-The basic approach is that Noatun tracks exactly what information a message writes.
-Once all that information has been overwritten, the message can be removed.
+The basic approach is that Noatun tracks exactly what information a message's `apply`-method writes.
+Once all that information has been overwritten, the message can be removed (with some caveats).
 
 ```mermaid 
 block-beta
@@ -245,8 +254,8 @@ _Basic Example_
 
 Event 1 writes both fields. After Event2 has been written, Event1 still needs to be retained, since
 it wrote the most recent value to "FieldB". However, after Event3 has been written, none of what
-Event1 wrote is still in the database, and Event1 will now be automatically pruned (note that there is
-some nuance to this statement, please consult the following sections).
+Event1 wrote is still in the database, and Event1 will now be automatically pruned (note this is not always 100% true, 
+please continue reading).
 
 However, consider what happens if messages also read from the database:
 
@@ -305,7 +314,7 @@ message would read the previous counter value, increment it, and write it back t
 If dependencies were not tracked, the counter value would never increment far, since every message
 would cause the previous message to be pruned.
 
-This sort of dependency tracking is not without problems.
+This sort of dependency tracking is not without problems (though Noatun solves them for you).
 
 ### Actual reads vs potential reads, and the cutoff interval
 
@@ -483,23 +492,23 @@ that is actually read itself by a message, the pruning will not occur.
 
 Tombstones are markers that certain information no longer exists. Intuitively, it may seem that information that
 no longer exists shouldn't require any information to be stored at all. However, in a distributed system this
-isn't always true. The reason is that a node that is not up-to-date could still have information that should 
+isn't always true. The reason is that a node that is not up-to-date could still have information that *should* 
 have been deleted. Other nodes thus need to maintain just enough information to be able to communicate that
 the deleted information is, in fact, deleted,
 
 Noatun marks messages that delete elements from collections as 'tombstone' messages. These are never pruned
-until the cutoff interval has elapsed, even if the message only wrote opaque data.
+until the cutoff interval has elapsed, even if the message only wrote opaque data. 
 
 Emitting tombstones can be costly, so it can make sense for applications to take care to avoid doing so.
 
-Noatun has a tools for avoiding tombstones in some situations: the `clear` method.
+Noatun has a tool for avoiding tombstones in some situations: the `clear` method.
 
 [`NoatunVec`], [`OpaqueNoatunVec`] and [`NoatunHashMap`] all have such a `clear`-method. This method, unsurprisingly,
 removes all elements from the collection. But additionally, and crucially, it does this without marking the 
 message as a tombstone. Instead, it records itself as the writer of a special 'clear' marker in the collection. 
 This write is recorded just like the write to any field. Future calls to 'clear' will overwrite the marker, and 
-allow the previous message to be pruned.
-
+allow the previous message to be pruned. This is in contrast with tombstone messages, that are never pruned
+before cutoff.
 
 
 ## Validation
@@ -508,8 +517,8 @@ Interactive applications often have a need to validate messages before emitting 
 
 In these situations, applications can use [`DatabaseSessionMut::with_root_preview`] to
 apply a message temporarily, and give the application access to the resulting
-materialized view. An application can then run validation on the actual resulting
-state from emitting the message.
+materialized view. An application can then run validation on the actual
+state resulting from applying the message.
 
 If message application has complex application logic, this can be useful for
 reducing code duplication in validators.
@@ -569,10 +578,10 @@ persist the last known correct time. By doing this, nodes can make sure that the
 have the correct time, or have a slow clock. Since all Noatun messages are timestamped,
 on receiving a message that appears to be in the future, a node can know to adjust
 its clock. No such automatic adjustment mechanism is provided by Noatun itself, it
-has to be supplied through other means.
+has to be supplied by the user.
 
 While requiring correct time is a limitation, it is often the case that IT systems
-often need correct time anyway for other purposes, such as validating certificates, 
+need correct time anyway for other purposes, such as validating certificates, 
 correctly timestamping logs, achieving freshness conditions in cryptography, and many more.
 
 The noatun type representing time, `NoatunTime`, has a range from the year 1970 to 
@@ -586,9 +595,11 @@ the `apply` method of the users `Message` type in timestamp order. If messages a
 out-of-order, Noatun will rewind time as needed and re-apply messages. The user
 does not have to think about this.
 
+The user code never sees an out-of-order message.
+
 That said, it is possible for different nodes to issue events that logically conflict.
 Noatun has no built-in conflict resolution, but since messages are always applied
-in order, it is easy to implement last write wins.
+in order, it is easy to implement "last write wins".
 
 ## Philosophy of event applications
 
@@ -622,8 +633,8 @@ impl Message for Event {
 }
 ```
 
-Ice cream cart #1 sells 2 ice cream cones, and records an event `Event::IceCreamSold(2)`.
-This sets the total number of sold ice cream to 2. So far so good.
+Ice cream cart #1 sells 2 cones, and records an event `Event::IceCreamSold(2)`.
+This sets the total number of sold cones to 2. So far so good.
 
 Now, ice cream cart #2 sells 3 cones, and records `Event::IceCreamSold(3)`.
 This sets the total number to 3.
@@ -639,6 +650,10 @@ have information about.
 
 If events only encode actual ground truth information, and no derived information, 
 it is often relatively straightforward to correctly implement the [`Message::apply`] method.
+
+In this example, the information available to each cart was just that a sale had been made
+locally, and that was all the information that should be encoded in the message. Deriving
+the total count of sold cones could only be done in the `apply`-method.
 
 In general, Noatun events should contain events that exactly reflect what has happened
 in the real world, with the timestamp of the actual event, without any extra information.
@@ -669,9 +684,10 @@ enum TollEvent {
 The system photographs cars, and extracts the license plate number. It then looks up
 the numbers in the vehicle registry, and fills in owner and billing information.
 
-The error here is that vehicle ownership changes often are not immediate. Thus,
-a car that passed the camera may have changed owner just the minute before. Thus,
-we should not be including 'owner' in the event, only the license plate number.
+The error here is that vehicle ownership changes are not immediate. Thus,
+a car that passed the camera may have changed owner just the minute before (or earlier). Thus,
+we should not be including 'owner' in the event, only the license plate number. That is actually
+the only information that the camera is sure about.
 
 ### Issuing events with the wrong time stamp
 Let's say we're building an application to support repair technicians keeping track
@@ -757,12 +773,13 @@ Generally, there are two options:
    * Create a new `NewMaintenancePlan` element backdated to December 1st 2024. 
    * Create a new `NewMaintenancePlan` element backdated to January 1st 1970 UTC
      (the earliest supported NoatunTime), and figure out a strategy for when the element
-     needs to be updated: adding milliseconds to the timestamp, for instance. Note that
-     modifying maintenance plans requires such a milliseconds-trick regardless. 
+     needs to be updated: Potentially using `Message::unique_successor`.
  * Use 'data entry' timestamps for all elements. That is, timestamp all events with the
    time at which they were entered into the system. This loses some benefits
    of a timestamped event source, but may be the right choice in this particular example.
-    
+   In this case, all calculations of maintenance timers has to be done after each message
+   application that changes the maintenance plans. Doing this can work, but it reduces 
+   the benefit of Noatun, and if such a pattern is prevalent, Noatun may be the wrong choice.  
 
 # Internals
 
@@ -889,7 +906,7 @@ past all their overwriters.
 
 ## Tracking reads
 
-Noatun also tracks reads. For each message, a linked list of readers is maintained. This allows
+Noatun also tracks reads. For each message, a list of readers is maintained. This allows
 maintaining a dependency graph for read-dependencies between all messages in the database.
 
 # Communication

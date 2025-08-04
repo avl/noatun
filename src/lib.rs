@@ -940,7 +940,7 @@ pub enum Persistence {
     AtLeastUntilCutoff,
 }
 
-/// A message handled by Noatun
+/// An event handled by Noatun
 ///
 /// Messages carry all primary data in Noatun. The noatun materialized
 /// view is a function of the complete set of messages. Messages are the events in
