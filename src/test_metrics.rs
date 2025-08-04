@@ -119,12 +119,12 @@ impl TestRecorder {
         let guard = self.inner.lock().unwrap();
         let mut output = String::new();
         for (key, val) in guard.counters.iter() {
-            write!(&mut output, "{key}: {}\n", val.load(Ordering::Relaxed)).unwrap();
+            writeln!(&mut output, "{key}: {}", val.load(Ordering::Relaxed)).unwrap();
         }
         for (key, val) in guard.gauges.iter() {
-            write!(
+            writeln!(
                 &mut output,
-                "{key}: {}\n",
+                "{key}: {}",
                 f64::from_bits(val.load(Ordering::Relaxed))
             )
             .unwrap();

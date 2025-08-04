@@ -2,10 +2,7 @@
 use crate::data_types::meta_finder::get_any_empty;
 use crate::sequence_nr::SequenceNr;
 use crate::xxh3_vendored::NoatunHasher;
-use crate::{
-    get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject,
-    NoatunContext, NoatunStorable, Object, Pointer, ThinPtr, CONTEXT,
-};
+use crate::{get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer, ThinPtr, CONTEXT};
 use savefile_derive::Savefile;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -737,7 +734,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
     pub(crate) fn iter<'a>(&'a self, c: &'a C) -> NoatunVecIterator<'a, T, C> {
         NoatunVecIterator {
             vec: self,
-            getter: c,
+            context_getter: c,
             index: 0,
         }
     }
@@ -841,7 +838,8 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
                 write_offset += 1;
             }
         }
-
+        assert_eq!(write_offset, new_count);
+        self.zero(new_count .. self.length, ctx);
         unsafe { ctx.write_storable(new_count, Pin::new_unchecked(&mut self.length)) };
     }
 
@@ -851,6 +849,12 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         debug_assert!(new_capacity >= self.capacity);
         debug_assert!(new_len >= self.length);
         let dest = ctx.allocate_raw(new_capacity * size_of::<T>(), align_of::<T>());
+
+        unsafe {
+            let new_slice = slice::from_raw_parts(dest, new_capacity*size_of::<T>());
+            assert!(new_slice.iter().all(|x|*x==0));
+        }
+
         let dest_index = ctx.index_of_ptr(dest);
 
         if self.length > 0 {
@@ -879,7 +883,8 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         T: Unpin,
     {
         let place = self.push_zeroed(ctx);
-        *place.get_mut() = item;
+        let ctx = ctx.get_context_mut();
+        ctx.write_storable(item, place);
     }
 
     pub(crate) fn push_zeroed(&mut self, ctx: &mut C) -> Pin<&mut T> {
@@ -891,7 +896,13 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
                 ctx.write_storable_ptr(self.length + 1, addr_of_mut!(self.length));
             }
         }
-        self.get_index_mut_pin(self.length - 1, ctx)
+
+        let obj = self.get_index_mut_pin(self.length - 1, ctx);
+
+        let bytes:&[u8] = crate::bytes_of(&*obj);
+        assert!(bytes.iter().all(|x| *x == 0));
+
+        obj
     }
 
     pub(crate) fn ensure_size(&mut self, at_least: usize, ctx: &mut C) {
@@ -909,6 +920,14 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         }
     }
 
+    pub fn zero(&mut self, range: Range<usize>, ctx: &mut DatabaseContextData) {
+        let fat_ptr = FatPtr::from_idx_count(
+            self.data + (range.start) * size_of::<T>(),
+            (range.end - range.start)* size_of::<T>(),
+        );
+        ctx.zero(fat_ptr);
+    }
+
     pub(crate) fn swap_remove(&mut self, index: usize, ctx: &mut C) {
         let ctx = ctx.get_context_mut();
         if index == self.length - 1 {
@@ -920,6 +939,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
                 Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)).destroy();
                 //dst_ptr.access_mut::<T>().destroy();
             }
+            self.zero(index  .. index + 1, ctx);
             return;
         }
         let src_ptr = ThinPtr(self.data + (self.length - 1) * size_of::<T>());
@@ -928,10 +948,11 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
             Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)).destroy();
             //dst_ptr.access_mut::<T>().destroy();
         }
-        ctx.copy_bytes(FatPtr::from_idx_count(src_ptr.0, 1), dst_ptr);
+        ctx.copy_bytes(FatPtr::from_idx_count(src_ptr.0, size_of::<T>()), dst_ptr);
         //NoatunContext.copy_ptr(FatPtr::from_idx_count(src_ptr.0, 1), dst_ptr);
 
         //NoatunContext.write_ptr(self.length - 1, addr_of_mut!(self.length));
+        self.zero(self.length - 1 .. self.length, ctx);
         unsafe {
             ctx.write_storable_ptr(self.length - 1, addr_of_mut!(self.length));
         }
@@ -967,7 +988,7 @@ impl<T: FixedSizeObject + Debug> Debug for NoatunVec<T> {
 
 pub struct NoatunVecIterator<'a, T: FixedSizeObject, C: ContextGetter> {
     vec: &'a NoatunVecRaw<T, C>,
-    getter: &'a C,
+    context_getter: &'a C,
     index: usize,
 }
 
@@ -985,7 +1006,7 @@ impl<'a, T: FixedSizeObject + 'static, C: ContextGetter> Iterator for NoatunVecI
         }
         let index = self.index;
         self.index += 1;
-        Some(self.vec.get_index(index, self.getter))
+        Some(self.vec.get_index(index, self.context_getter))
     }
 }
 impl<'a, T: FixedSizeObject + 'static> Iterator for NoatunVecIteratorMut<'a, T> {
@@ -1012,7 +1033,7 @@ impl<T: FixedSizeObject + 'static> NoatunVec<T> {
         NoatunContext.observe_registrar(self.length_registrar);
         NoatunVecIterator {
             vec: &self.raw,
-            getter: &ThreadLocalContext,
+            context_getter: &ThreadLocalContext,
             index: 0,
         }
     }
@@ -1110,7 +1131,9 @@ where
                     self.read_offset += 1;
                     self.write_offset += 1;
                 }
+                let old_count = self.vec.raw.length;
                 NoatunContext.write_ptr(self.new_count, addr_of_mut!(self.vec.raw.length));
+                self.vec.raw.zero(self.write_offset..old_count, unsafe { &mut *get_context_mut_ptr() });
             }
         }
 
@@ -1217,7 +1240,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
         NoatunContext.assert_opaque_access_allowed("OpaqueNoatunVec", "NoatunVec");
         NoatunVecIterator {
             vec: &self.raw,
-            getter: &ThreadLocalContext,
+            context_getter: &ThreadLocalContext,
             index: 0,
         }
     }

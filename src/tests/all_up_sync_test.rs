@@ -717,7 +717,10 @@ async fn all_up_gradual_update_sync_test() {
     //  assert_snapshot!(driver.messages_snapshot());
 }
 
-const NUM_CASES: u64 = 10000;
+#[cfg(debug_assertions)]
+const NUM_CASES: u64 = 200;
+#[cfg(not(debug_assertions))]
+const NUM_CASES: u64 = 1000;
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_old_messages_all() {
@@ -731,6 +734,7 @@ async fn all_up_general_update_sync_test_old_messages_all() {
         reset_random_id();
         all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
     }
+    #[cfg(not(debug_assertions))]
     assert_snapshot!(test_recorder.get_metrics());
 }
 

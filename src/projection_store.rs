@@ -1187,6 +1187,7 @@ impl DatabaseContextData {
         *dest = src;
     }
 
+
     /// #Safety:
     /// No references to dest must exist.
     pub unsafe fn write_storable_ptr<T: NoatunStorable>(&mut self, src: T, dest: *mut T) {
@@ -1278,7 +1279,6 @@ impl DatabaseContextData {
             // should never be reused. In fact, I think correctness hinges on it not being
             // reused, since we won't find the read-dependency if it is reused!
             // So we never need to actually write to memory in this case.
-
             return;
         }
         self.rt_increase_use(actor);
@@ -1437,7 +1437,7 @@ impl DatabaseContextData {
             let mark_delete = if seq.index() >= uses.len() {
                 dprintln!(
                     "@{} {:?} mark_delete because index >= uses.len()",
-                    cur_node(),
+                    crate::cur_node(),
                     crate::test_elapsed()
                 );
                 // If current message made no imprint at all, it can just as well be deleted.
@@ -1450,24 +1450,24 @@ impl DatabaseContextData {
                 if last_overwriter < cutoff {
                     dprintln!(
                         "@{} {:?} {} mark_delete because last_overwriter<cutoff",
-                        cur_node(),
+                        crate::cur_node(),
                         crate::test_elapsed(),
                         seq
                     );
                     true
                 } else if !cur.wrote_non_opaques() && (!cur.wrote_tombstones() || seq < cutoff) {
-                    dprintln!("@{} {:?} {} mark_delete because !tombstones and seq(!tombstones({}) or {}) < cutoff({})", cur_node(), crate::test_elapsed(), seq, cur.wrote_tombstones(), seq, cutoff);
+                    dprintln!("@{} {:?} {} mark_delete because !tombstones and seq(!tombstones({}) or {}) < cutoff({})", crate::cur_node(), crate::test_elapsed(), seq, cur.wrote_tombstones(), seq, cutoff);
                     true
                 } else if !messages.may_have_been_transmitted(seq)? && !cur.wrote_tombstones() {
                     dprintln!(
                         "@{} {:?} {} mark_delete because !transmitted && !tombstone",
-                        cur_node(),
+                        crate::cur_node(),
                         crate::test_elapsed(),
                         seq
                     );
                     true
                 } else {
-                    dprintln!("@{} {:?} {} can't be deleted yet: last_ovr: {}, cutoff: {}, non-opaq: {}, tomb: {}, transmitted: {}", cur_node(), crate::test_elapsed(), seq,
+                    dprintln!("@{} {:?} {} can't be deleted yet: last_ovr: {}, cutoff: {}, non-opaq: {}, tomb: {}, transmitted: {}", crate::cur_node(), crate::test_elapsed(), seq,
                         last_overwriter,cutoff,
                         cur.wrote_non_opaques(),cur.wrote_tombstones(),
                         messages.may_have_been_transmitted(seq)?

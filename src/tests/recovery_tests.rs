@@ -148,7 +148,9 @@ fn test_recovery_simple() {
     .unwrap();
 
     assert_eq!(sess.get_all_message_ids().unwrap().len(), 3);
+
     sess.with_root(|root| {
+        assert_eq!(root.keyval.len(), 2);
         assert_eq!(
             root.keyval.detach(),
             vec![

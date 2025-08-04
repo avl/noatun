@@ -783,7 +783,6 @@ impl<M> OnDiskMessageStore<M> {
     ///
     /// Note, this renumbers all messages in the index. The new cutoff index
     /// is returned.
-    //TODO: Unit-test this method
     pub fn compact_index(&mut self) -> Result<()> {
         #[cfg(any(debug_assertions, feature = "debug"))]
         self.debug_verify_cutoff_index().unwrap();
@@ -2179,13 +2178,12 @@ impl<M> OnDiskMessageStore<M> {
                             } else {
                                 carry_buffer.pop_front();
                                 if !was_in_carry {
-                                    if cur_index < initial_index_entries {
+                                    if cur_index < initial_index_entries && !cur_index_entry.is_deleted() {
                                         let (Ok(insert_at) | Err(insert_at)) = carry_buffer
                                             .binary_search_by_key(&cur_index_entry.message, |x| {
                                                 x.message
                                             });
                                         // TODO(future): Use BTreeMap for carry_buffer?
-                                        // TODO: Check if cur_index_entry is deleted, don't insert into carry if it is! Then remove some checks in other places.
                                         carry_buffer.insert(insert_at, *cur_index_entry);
                                         debug_assert!(carry_buffer
                                             .iter()
@@ -2354,6 +2352,10 @@ impl<M> OnDiskMessageStore<M> {
 
         #[cfg(debug_assertions)]
         Self::validate_holes(index_header, mmap_index);
+        #[cfg(not(debug_assertions))]
+        {
+            _ = mmap_index;
+        }
 
         let mut cutoff_index_cand = self.cutoff_index;
         if let Some(max) = cutoff_index_max {
@@ -2364,8 +2366,7 @@ impl<M> OnDiskMessageStore<M> {
         }
         cutoff_index_cand = cutoff_index_cand.min(index_header.entries as usize);
 
-        //TODO: Only run when debug asserts is on
-        //#[cfg(debug_assertions)]
+        #[cfg(debug_assertions)]
         {
             let correct_cutoff_index = Self::calculate_cutoff_index(index_header, mmap_index);
 
@@ -2663,6 +2664,15 @@ impl<M> OnDiskMessageStore<M> {
 
     pub(crate) fn disable_filesystem_sync(&mut self) {
         self.filesystem_sync_disabled = true;
+    }
+
+    /// The size of the store index.
+    ///
+    /// Each message in the store has a SequenceNr. Messages can be accessed very quickly
+    /// by their SequenceNr. This method returns the number of sequence numbers in the store.
+    /// This will be one larger than the highest existing sequence number.
+    pub fn index_count(&self) -> Result<usize> {
+        Ok(self.header()?.entries as usize)
     }
 
     pub fn count_messages(&self) -> usize {
@@ -3100,7 +3110,48 @@ mod tests {
 
         store.compact_to_target(0).unwrap();
     }
+    #[test]
+    fn test_compact() {
 
+        let target = Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into());
+        let mut store = OnDiskMessageStore::new(
+            &mut InMemoryDisk::default(),
+            &target,
+            100_000_000,
+        )
+            .unwrap();
+
+        const COUNT: usize = 1_000;
+        let msgs: Vec<_> = (0..COUNT)
+            .map(|i| {
+                MessageFrame::new(
+                    MessageId::new_debug(i as u32),
+                    vec![],
+                    OnDiskMessage {
+                        id: (1_000_000 + i) as u64,
+                        seq: i as u64,
+                        data: vec![42u8; 1024],
+                    },
+                )
+            })
+            .collect();
+
+        store
+            .append_many_sorted(msgs.iter(), |_, _| Ok(()), true)
+            .unwrap();
+        let mut tracker = UpdateHeadTracker::new(&mut InMemoryDisk::default(), &target).unwrap();
+
+        store.delete_many((0..1000).filter(|x|x%7!=0).map(MessageId::new_debug), &mut tracker, false).unwrap();
+
+
+
+        assert_eq!(store.count_messages(), 143);
+        assert_eq!(store.index_count().unwrap(), 143);
+        for msg in store.get_all_messages().unwrap() {
+            let val = msg.header.id.debug_value();
+            assert_eq!(val % 7, 0);
+        }
+    }
     #[test]
     fn test_create_disk_store() {
         let mut store = OnDiskMessageStore::new(

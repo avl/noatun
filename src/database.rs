@@ -552,6 +552,13 @@ impl<MSG: Message + 'static> Database<MSG> {
             .advance_cutoff(new_cutoff, &mut self.context)
     }
 
+    /// Set noatun to abort on any panicking message, instead of just catching it
+    /// and loggin an error. This is mostly useful when debugging, as it can sometimes
+    /// be useful to stop immediately at first error.
+    pub fn set_abort_on_panic(&mut self) {
+        self.message_store.set_abort_on_panic();
+    }
+
     fn advance_cutoff(&mut self, new_cutoff: CutOffTime) -> Result<()> {
         self.advance_cutoff_impl(new_cutoff)
     }

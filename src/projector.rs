@@ -3,10 +3,7 @@ use crate::disk_abstraction::Disk;
 use crate::message_store::OnDiskMessageStore;
 use crate::sequence_nr::SequenceNr;
 use crate::update_head_tracker::UpdateHeadTracker;
-use crate::{
-    catch_and_log, dprintln, ContextGuardMut, DatabaseContextData, Message, MessageFrame,
-    MessageHeader, MessageId, NoatunTime, Persistence, Target,
-};
+use crate::{catch_and_log, dprintln, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunTime, Persistence, Target};
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use std::pin::Pin;
@@ -17,6 +14,7 @@ pub(crate) struct Projector<MSG: Message> {
     head_tracker: UpdateHeadTracker,
     /// The configured cutoff interval and stride
     cut_off_config: CutOffConfig,
+    abort_on_panic: bool,
 }
 
 impl<MSG: Message + 'static> Projector<MSG> {
@@ -248,6 +246,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
             messages: OnDiskMessageStore::new(s, target, max_size)?,
             head_tracker: UpdateHeadTracker::new(s, target)?,
             cut_off_config: CutOffConfig::new(cutoff_interval)?,
+            abort_on_panic: false,
         })
     }
 
@@ -312,7 +311,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
                         );
                         debug_assert!(self.messages.contains_index(insert_point)?);
                     }
-                    //TODO: compact_index_if_needed
 
                     if self.messages.compact_index_if_needed(false)? {
                         insert_point = 0;
@@ -345,6 +343,10 @@ impl<MSG: Message + 'static> Projector<MSG> {
         Ok(())
     }
 
+    pub(crate) fn set_abort_on_panic(&mut self) {
+        self.abort_on_panic = true;
+    }
+
     fn apply_single_message<M: Message>(
         context: &mut DatabaseContextData,
         root: &mut MSG::Root,
@@ -352,6 +354,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         seqnr: SequenceNr,
         must_remove: &mut Vec<SequenceNr>,
         messages: &OnDiskMessageStore<M>,
+        abort_on_panic: bool,
     ) -> Result<()> {
         if context.next_seqnr() != seqnr {
             context.set_next_seqnr(seqnr);
@@ -368,9 +371,8 @@ impl<MSG: Message + 'static> Projector<MSG> {
         let guard = ContextGuardMut::new(context, true);
 
         catch_and_log(|| {
-            msg.payload
-                .apply(msg.header.id, unsafe { Pin::new_unchecked(root) });
-        });
+            msg.payload.apply(msg.header.id, unsafe { Pin::new_unchecked(root) });
+        }, abort_on_panic);
 
         drop(guard);
 
@@ -390,7 +392,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
             for msg in preview {
                 msg.apply(MessageId::from_parts_for_test(time, 0), root.as_mut());
             }
-        });
+        }, false);
 
         Ok(())
     }
@@ -430,6 +432,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
             first_run,
             max_project_to,
             &mut must_remove,
+            self.abort_on_panic,
         )?;
 
         if !auto_delete {
@@ -445,6 +448,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
             items: impl Iterator<Item = (usize, MessageFrame<MSG>)>,
             max_project_to: NoatunTime,
             must_remove: &mut Vec<SequenceNr>,
+            abort_on_panic: bool,
         ) -> Result<()> {
             for (seq, msg) in items {
                 if msg.header.id.timestamp() > max_project_to {
@@ -458,6 +462,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
                     seqnr,
                     must_remove,
                     messages,
+                    abort_on_panic
                 )?;
             }
             Ok(())

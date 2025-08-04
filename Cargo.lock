@@ -654,7 +654,6 @@ dependencies = [
  "serde",
  "serde_derive",
  "sha2",
- "smallvec",
  "socket2",
  "tokio",
  "tracing",

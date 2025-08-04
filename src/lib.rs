@@ -55,7 +55,7 @@ use std::time::Instant;
 #[cfg(feature = "tokio")]
 use tokio::time::Instant;
 
-use tracing::warn;
+use tracing::{error};
 
 mod disk_abstraction;
 mod message_store;
@@ -552,6 +552,14 @@ impl MessageId {
         }
     }
 
+    /// For a MessageId created by [`Self::new_debug`], return the value of 'nr' used
+    /// in the construction.
+    ///
+    /// This is just the last 32 bits of the MessageId.
+    pub fn debug_value(&self) -> u32 {
+        self.data[3]
+    }
+
     /// Create an artificial MessageId, mostly useful for tests and possibly debugging.
     ///
     /// Like new_debug, but creates an id with a timestamp of '2020-01-01 T 00:00:00'
@@ -960,16 +968,19 @@ impl<M: Message> MessageFrame<M> {
     }
 }
 
-pub(crate) fn catch_and_log(f: impl FnOnce()) {
+pub(crate) fn catch_and_log(f: impl FnOnce(), abort: bool) {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(()) => {}
         Err(err) => {
             if let Some(err) = (*err).downcast_ref::<String>() {
-                warn!("apply method panicked: {:?}", err);
+                error!("apply method panicked: {:?}", err);
             } else if let Some(err) = err.downcast_ref::<&'static str>() {
-                warn!("apply method panicked: {:?}", err);
+                error!("apply method panicked: {:?}", err);
             } else {
-                warn!("apply method panicked.");
+                error!("apply method panicked.");
+            }
+            if abort {
+                std::process::abort();
             }
         }
     }
@@ -1287,12 +1298,16 @@ macro_rules! noatun_object {
         unsafe { ::std::pin::Pin::new_unchecked(&mut $self.$name).set($name); }
     };
     ( getter pod $name:ident $typ: ty  ) => {
+        #[doc = "Get the value for field"]
+        #[doc = stringify!($name)]
         pub fn $name(&self) -> $typ {
             self.$name.get()
         }
     };
     ( setter pod $name:ident $typ: ty  ) => {
         $crate::paste!(
+            #[doc = "Set a new value for field"]
+            #[doc = stringify!($name)]
             pub fn [<set_ $name>](self: ::std::pin::Pin<&mut Self>, val: $typ) {
                 unsafe { ::std::pin::Pin::new_unchecked(&mut self.get_unchecked_mut().$name).set(val); }
             }
@@ -1320,6 +1335,8 @@ macro_rules! noatun_object {
     };
     ( setter opod $name:ident $typ: ty  ) => {
         $crate::paste!(
+            #[doc = "Set a new value for field"]
+            #[doc = stringify!($name)]
             pub fn [<set_ $name>](self: ::std::pin::Pin<&mut Self>, val: $typ) {
                 unsafe { ::std::pin::Pin::new_unchecked(&mut self.get_unchecked_mut().$name).set(val); }
             }
@@ -1344,49 +1361,57 @@ macro_rules! noatun_object {
         unsafe { <_ as $crate::Object>::init_from_detached(::std::pin::Pin::new_unchecked(&mut $self.$name), $name); }
     };
     ( getter object $name:ident $typ: ty  ) => {
+        #[doc ="Get the value of field"]
+        #[doc=stringify!($name)]
         pub fn $name(&self) -> &$typ {
             &self.$name
         }
     };
     ( setter object $name:ident $typ: ty  ) => {
         $crate::paste!(
+            #[doc ="Set the value of field"]
+            #[doc=stringify!($name)]
             pub fn [<$name _mut>](self: ::std::pin::Pin<&mut Self>) -> ::std::pin::Pin<&mut $typ> {
                 let tself = unsafe { self.get_unchecked_mut() };
                 unsafe { ::std::pin::Pin::new_unchecked(&mut tself.$name) }
             }
         );
     };
-
-    ( declare_detached_struct $n_detached:ident fields { $($derive_item:ident),* }  $( $kind:ident $name: ident $typ:ty ),* ) => {
-        #[derive($($derive_item,)* Debug,Clone,$crate::Savefile)]
-        pub struct $n_detached
-        {
-            $( $name : $crate::noatun_object!(declare_detached_field $kind $typ) ),*
-        }
-    };
-
+    
     ( detached_type $n_detached: ident) => {
         $n_detached
     };
 
     (    $(#[derive( $($derive_item:ident),*  )])?
-         struct $n:ident { $( $kind:ident $name: ident : $typ:ty $(,)* )* } $(;)* ) => {
+         $(#[doc = $doc:expr])*
+         struct $n:ident { $( $(#[doc = $field_doc:expr])* $kind:ident $name: ident : $typ:ty $(,)* )* } $(;)* ) => {
 
+            // We use this little trick instead of putting trait bounds on the struct.
+            // The reason is that this makes the type signature cleaner, and doesn't give
+            // as unwieldy type docs in IDE:s.
+            const _:() = {
+                const fn __items_in_noatun_db_must_impl_noatun_object_trait() where $( noatun_object!(bounded_type $kind $typ) : $crate::Object ),* {}
+                static __ITEMS_IN_NOATUN_DB_MUST_IMPL_NOATUN_OBJECT_TRAIT_CHECKER: () = __items_in_noatun_db_must_impl_noatun_object_trait();
+            };
 
             #[derive(Debug)]
             #[repr(C)]
-            pub struct $n where $( noatun_object!(bounded_type $kind $typ) : $crate::Object ),*
+            $(#[doc = $doc])*
+            pub struct $n
             {
                 phantom: ::std::marker::PhantomPinned,
                 $(
-                    #[doc(hidden)]
+                    $(#[doc = $field_doc])*
                     $name : noatun_object!(declare_field $kind $typ)
                 ),*
             }
             unsafe impl $crate::NoatunStorable for $n {}
             $crate::paste!(
+                #[doc ="pin_project helper for"]
+                #[doc = stringify!($n)]
                 pub struct [<$n PinProject>]<'a> {
                     $(
+                        $(#[doc = $field_doc])*
                         $name: ::std::pin::Pin<&'a mut noatun_object!(declare_field $kind $typ)>
                     ),*
                 }
@@ -1395,6 +1420,9 @@ macro_rules! noatun_object {
 
             impl $n {
 
+                #[doc = "Initialize an instance of"]
+                #[doc = stringify!($n)]
+                #[doc = "with an explicit value for each field"]
                 pub fn init(
                     &mut self,
                     $( $name: noatun_object!(new_declare_param $kind $typ) ),*
@@ -1410,6 +1438,8 @@ macro_rules! noatun_object {
                 )*
 
                 $crate::paste! {
+                    #[doc ="Give pinned access to each field in"]
+                    #[doc=stringify!($n)]
                     pub fn pin_project(self: ::std::pin::Pin<&mut Self>) -> [<$n PinProject>]<'_> {
                         unsafe {
                             let $n {
@@ -1427,7 +1457,19 @@ macro_rules! noatun_object {
             }
 
             $crate::paste! {
-                noatun_object!{declare_detached_struct [<$n Detached>] fields { $($($derive_item),*)? } $($kind $name $typ),*  }
+                $(#[derive($($derive_item,)*)])*
+                #[derive(Debug,Clone,$crate::Savefile)]
+                $(#[doc = $doc])*
+                #[doc = ""]
+                #[doc = "This is a detached version of"]
+                #[doc = stringify!($n)]
+                pub struct [<$n Detached>]
+                {
+                    $(
+                        $(#[doc = $field_doc])*
+                        $name : $crate::noatun_object!(declare_detached_field $kind $typ)
+                    ),*
+                }
             }
 
 
@@ -1513,8 +1555,11 @@ struct RawFatPtr {
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 pub struct FatPtr {
+    /// Start offset in file
     start: usize,
     /// Second part of fat pointer, typically item count of tail
+    ///
+    /// For a u8 ptr, this is the size of the object in bytes.
     count: usize,
 }
 impl FatPtr {
@@ -1524,6 +1569,9 @@ impl FatPtr {
     }
 }
 
+/// An offset into the on disk store.
+///
+/// The numeric value is the offset in bytes, from the start of the file on disk.
 #[derive(Copy, Clone, Debug)]
 pub struct ThinPtr(pub usize);
 
