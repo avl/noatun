@@ -1,6 +1,6 @@
 //! Simple app to show using a noatun db, without any replication
 use anyhow::Result;
-use noatun::data_types::{NoatunHashMap, NoatunString, NoatunVec};
+use noatun::data_types::{NoatunHashMap, NoatunString};
 use noatun::database::{DatabaseSettings, OpenMode};
 use noatun::{noatun_object, Database, Message, MessageId, Object, SavefileMessageSerializer};
 use savefile_derive::Savefile;

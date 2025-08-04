@@ -2,10 +2,7 @@
 use crate::data_types::meta_finder::get_any_empty;
 use crate::sequence_nr::SequenceNr;
 use crate::xxh3_vendored::NoatunHasher;
-use crate::{
-    get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject,
-    NoatunContext, NoatunStorable, Object, Pointer, SchemaHasher, ThinPtr, CONTEXT,
-};
+use crate::{get_context_mut_ptr, get_context_ptr, DatabaseContextData, FatPtr, FixedSizeObject, MessageId, NoatunContext, NoatunStorable, Object, Pointer, SchemaHasher, ThinPtr, CONTEXT};
 use savefile_derive::Savefile;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -3464,6 +3461,35 @@ pub trait NoatunKey: NoatunStorable + Sized + Debug {
     fn eq(a: &Self::DetachedType, b: &Self::DetachedType) -> bool;
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType);
+}
+
+impl NoatunKey for MessageId {
+    type DetachedType = MessageId;
+    type DetachedOwnedType = MessageId;
+
+    fn hash<H>(tself: &Self::DetachedType, state: &mut H)
+    where
+        H: Hasher
+    {
+        tself.hash(state)
+    }
+
+    fn detach_key_ref(&self) -> &Self::DetachedType {
+        &self
+    }
+
+    fn detach_key(&self) -> Self::DetachedOwnedType {
+        *self
+    }
+
+    fn eq(a: &Self::DetachedType, b: &Self::DetachedType) -> bool {
+        a == b
+    }
+
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        *tself = *detached;
+    }
 }
 
 impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V> {

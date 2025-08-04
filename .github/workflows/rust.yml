@@ -23,6 +23,8 @@ jobs:
       run: cargo install cargo-nextest
     - name: Run bench
       run: cd db_bench && cargo +stable run --release
+    - name: Build examples
+      run: cargo build --examples
     - name: Run tests
       run: cargo +stable nextest run --workspace
     - name: Miri
