@@ -1328,7 +1328,13 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
             index: 0,
         }
     }
-
+    /// Get the length of the vector.
+    ///
+    /// This is not allowed from within [`Message::apply`] (because this is an opaque data-type).
+    pub fn len(&self) -> usize {
+        NoatunContext.assert_opaque_access_allowed("OpaqueNoatunVec", "NoatunVec");
+        self.raw.length
+    }
     /// Returns a reference to the element at position 'index' or None if out of bounds.
     ///
     /// This panics if called from within [`Message::apply`]. It must only be used
@@ -3119,7 +3125,12 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     }
 
     /// Return true if a value was removed
-    pub fn remove(&mut self, key: &K::DetachedType) -> bool {
+    pub fn remove(self: Pin<&mut Self>, key: &K::DetachedType) -> bool {
+        unsafe { self.get_unchecked_mut().remove_impl(key, |_| {}) }
+    }
+
+    /// Return true if a value was removed
+    pub(crate) fn remove_internal(&mut self, key: &K::DetachedType) -> bool {
         self.remove_impl(key, |_| {})
     }
 
@@ -3271,7 +3282,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         }
 
         self.internal_change_capacity(self_cap + 15);
-        println!("New cap: {self_cap}");
+
         let (context, length) = self.data_meta_len_mut2();
         probe_result = Self::probe(context.readonly(), key.borrow());
         assert!(!matches!(probe_result, ProbeRunResult::HashFull));
@@ -3409,7 +3420,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         debug_assert!(new_capacity >= new_min_capacity);
         debug_assert!(new_capacity >= capacity);
 
-        println!("Resized to {new_capacity}");
         self.initialize_with_capacity(new_capacity);
 
         for (item_key, item_val) in i {
@@ -3732,7 +3742,7 @@ mod tests {
 
             let reg_map: Vec<_> = map.0.detach().into_iter().collect();
             assert_eq!(&[("hello".to_string(), "world".to_string())], &*reg_map);
-            map.0.remove("hello");
+            map.as_mut().inner_pin().remove("hello");
             let reg_map: Vec<_> = map.0.detach().into_iter().collect();
             assert!(reg_map.is_empty());
         })
@@ -3762,9 +3772,9 @@ mod tests {
             let vals: Vec<u32> = map.0.iter().map(|(k, _)| *k).collect();
             assert_eq!(vals, [42]);
 
-            assert!(!map.0.remove(&41), "remove nonexisting key");
+            assert!(!map.0.remove_internal(&41), "remove nonexisting key");
 
-            assert!(map.0.remove(&42));
+            assert!(map.0.remove_internal(&42));
 
             assert_eq!(map.0.iter().count(), 0);
         })
@@ -3800,7 +3810,7 @@ mod tests {
             }
 
             for i in 0..N {
-                assert!(map.0.remove(&i));
+                assert!(map.0.remove_internal(&i));
                 for j in i + 1..N {
                     map.0
                         .get(&j)

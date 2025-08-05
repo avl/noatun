@@ -60,3 +60,5 @@ proptest = "1.7"
 serde_derive = { version = "1.0"}
 serde = { version = "1.0"}
 postcard = { version = "1.1", features = ["use-std"] }
+ratatui = "0.29.0"
+tui-textarea = "0.7.0"

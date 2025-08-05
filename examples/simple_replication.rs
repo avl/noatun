@@ -59,6 +59,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )
     .await
     .unwrap();
+
     loop {
         let mut buffer = String::new();
 

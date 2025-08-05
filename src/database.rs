@@ -385,6 +385,12 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.append_local(message)
     }
 
+    //TODO: Document this, and other public symbols here (add deny(missing_docs))
+    #[inline]
+    pub fn append_nonlocal(&mut self, message: MSG) -> Result<MessageHeader> {
+        self.db.append_nonlocal(message)
+    }
+    
     pub(crate) fn compact(&mut self) -> Result<()> {
         self.db.compact()
     }
@@ -423,7 +429,7 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         time: Option<NoatunTime>,
         message: MSG,
     ) -> Result<MessageHeader> {
-        self.db.append_local_opt(time, message)
+        self.db.append_opt(time, message, true)
     }
 
     /// For messages before the cutoff-time, all parents are removed.
@@ -436,6 +442,7 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.append_many(messages, local, allow_cutoff_advance)
     }
 }
+
 impl<MSG: Message> Drop for Database<MSG> {
     fn drop(&mut self) {
         if let Err(err) = self.sync_all() {
@@ -837,7 +844,12 @@ impl<MSG: Message + 'static> Database<MSG> {
 
     #[inline]
     fn append_local(&mut self, message: MSG) -> Result<MessageHeader> {
-        self.append_local_opt(None, message)
+        self.append_opt(None, message, true)
+    }
+
+    #[inline]
+    fn append_nonlocal(&mut self, message: MSG) -> Result<MessageHeader> {
+        self.append_opt(None, message, false)
     }
 
     /// This method returns 0 on error.
@@ -850,7 +862,7 @@ impl<MSG: Message + 'static> Database<MSG> {
     }
 
     fn append_local_at(&mut self, time: NoatunTime, message: MSG) -> Result<MessageHeader> {
-        self.append_local_opt(Some(time), message)
+        self.append_opt(Some(time), message, true)
     }
 
     fn append_many_local_at(
@@ -906,15 +918,16 @@ impl<MSG: Message + 'static> Database<MSG> {
         Ok(t)
     }
 
-    fn append_local_opt(
+    fn append_opt(
         &mut self,
         time: Option<NoatunTime>,
         message: MSG,
+        local: bool
     ) -> Result<MessageHeader> {
         let cutoff_time = self.message_store.current_cutoff_time()?;
         let t = self.create_message_frame_impl(time, message, cutoff_time)?;
         let header = t.header.clone();
-        self.append_many_impl(std::iter::once(&t), true, true)?;
+        self.append_many_impl(std::iter::once(&t), local, true)?;
         Ok(header)
     }
 

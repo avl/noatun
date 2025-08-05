@@ -33,6 +33,7 @@ mod test_subsumption_nonlocal_opaque;
 mod tests_using_noatun_object_macro;
 
 mod test_subsumption_map_advanced;
+mod test_issue_tracker;
 
 mod test_types_rewind {
     use crate::data_types::{NoatunHashMap, NoatunString, NoatunVec};

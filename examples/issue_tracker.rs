@@ -1,0 +1,393 @@
+use std::ops::DerefMut;
+use std::pin::Pin;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+use anyhow::{Context, Result};
+use insta::internals::SnapshotContents::Text;
+use ratatui::{backend, crossterm::event::{self, Event, KeyCode}, widgets::Paragraph, DefaultTerminal, Frame};
+use ratatui::crossterm::event::KeyEvent;
+use ratatui::layout::Constraint::Percentage;
+use ratatui::layout::{Flex, Layout};
+use ratatui::prelude::Constraint::{Length, Max, Min};
+use ratatui::prelude::{Constraint, Line, Rect, Style, Stylize};
+use ratatui::text::Span;
+use ratatui::widgets::{Block, Borders, Clear, Row, Table, TableState};
+use savefile_derive::Savefile;
+use tui_textarea::TextArea;
+use noatun::data_types::{NoatunHashMap, NoatunString, NoatunVec, OpaqueNoatunVec};
+use noatun::{noatun_object, Database, DatabaseSettings, Message, MessageId, NoatunTime, Object, OpenMode, SavefileMessageSerializer};
+use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
+
+
+noatun_object!(
+    struct DescriptionText {
+        pod time: NoatunTime,
+        object text: NoatunString,
+        object added_by: NoatunString,
+    }
+);
+
+noatun_object!(
+    struct Issue {
+        pod created: NoatunTime,
+        object reporter: NoatunString,
+        object heading: NoatunString,
+        object description: OpaqueNoatunVec<DescriptionText>,
+    }
+);
+
+noatun_object!(
+    struct IssueDb {
+        object issues: NoatunHashMap<NoatunString, Issue>,
+    }
+);
+
+#[derive(Savefile, Debug)]
+enum IssueMessage {
+    AddIssue {
+        reporter: String,
+        heading: String,
+    },
+    AppendText {
+        id: String,
+        reporter: String,
+        text: String,
+    },
+    RemoveIssue {
+        id: String,
+    }
+}
+
+impl Message for IssueMessage {
+    type Root = IssueDb;
+    type Serializer = SavefileMessageSerializer<IssueMessage>;
+
+    fn apply(&self, message_id: MessageId, root: Pin<&mut Self::Root>) {
+        let mut root = root.pin_project();
+        match self {
+            IssueMessage::AddIssue { reporter, heading } => {
+                let issue = root.issues.get_insert(heading.as_str());
+                let mut issue = issue.pin_project();
+                issue.created.set(message_id.timestamp());
+                issue.reporter.assign(reporter);
+                issue.heading.assign(heading);
+            }
+            IssueMessage::RemoveIssue { id } => {
+                root.issues.remove(id.as_str());
+            }
+            IssueMessage::AppendText { id, reporter, text } => {
+                if let Some(issue) = root.issues.get_mut_val(id.as_str()) {
+                    let issue = issue.pin_project();
+                    issue.description.push(DescriptionTextDetached {
+                        time: message_id.timestamp(),
+                        text: text.to_string(),
+                        added_by: reporter.to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+
+/// This is a bare minimum example. There are many approaches to running an application loop, so
+/// this is not meant to be prescriptive. It is only meant to demonstrate the basic setup and
+/// teardown of a terminal application.
+///
+/// This example does not handle events or update the application state. It just draws a greeting
+/// and exits when the user presses 'q'.
+fn main() -> Result<()> {
+    let terminal = ratatui::init();
+    let app_result = run(terminal).context("app loop failed");
+    ratatui::restore();
+    app_result
+}
+
+
+enum Popup {
+    None,
+    AddHeading(TextArea<'static>),
+    AddText(TextArea<'static>)
+}
+
+impl Popup {
+    fn is_some(&self) -> bool {
+        !matches!(self, Popup::None)
+    }
+}
+
+struct AppState {
+    table: Table<'static>,
+    selected_heading: Option<String>,
+    table_state: TableState,
+    row_count: usize,
+    user: String,
+    comms: DatabaseCommunication<IssueMessage>,
+    popup: Popup
+}
+
+impl AppState {
+    pub fn create_event(&mut self, heading: &str) -> Result<()> {
+        self.comms.blocking_add_message(IssueMessage::AddIssue {
+            reporter: self.user.clone(),
+            heading: heading.to_string(),
+        })
+    }
+    pub fn delete_event(&mut self, heading: &str) -> Result<()> {
+        self.comms.blocking_add_message(IssueMessage::RemoveIssue {
+            id: heading.to_string(),
+        })
+    }
+}
+
+fn start_communication() -> Result<DatabaseCommunication<IssueMessage>> {
+    let db: Database<IssueMessage> =
+        Database::create_new(
+            "issue_db",
+            OpenMode::OpenCreate, DatabaseSettings::default())?;
+
+    let distributed_db = DatabaseCommunication::new(
+        db,
+        DatabaseCommunicationConfig::default(),
+    )?;
+    Ok(distributed_db)
+}
+
+/// Run the application loop. This is where you would handle events and update the application
+/// state. This example exits when the user presses 'q'. Other styles of application loops are
+/// possible, for example, you could have multiple application states and switch between them based
+/// on events, or you could have a single application state and update it based on events.
+fn run(mut terminal: DefaultTerminal) -> Result<()> {
+
+    let comms = start_communication()?;
+
+
+    let user = std::env::var("USER").unwrap_or("default-user".to_string());
+    // Note: TableState should be stored in your application state (not constructed in your render
+    // method) so that the selected row is preserved across renders
+    let mut table_state = TableState::default();
+
+
+    let widths = [
+        Length(25),
+        Min(10),
+        Length(15),
+    ];
+
+    let rows: [Row;0] = [];
+    let table = Table::new(rows, widths)
+        .block(Block::new().title("Table"))
+        .header(Row::new(vec!["Time", "Heading", "Num messages"]))
+        .row_highlight_style(Style::new().reversed())
+        .highlight_symbol(">>");
+    let mut app = AppState {
+        table,
+        selected_heading: None,
+        table_state,
+        row_count: 3,
+        user,
+        comms,
+        popup: Popup::None,
+    };
+
+
+    loop {
+        terminal.draw(|frame|{
+            draw(frame, &mut app).expect("rendering should not fail");
+        })?;
+
+        if poll_input(&mut app)? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Render the application. This is where you would draw the application UI. This example draws a
+/// greeting.
+fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
+
+
+    app.selected_heading = None;
+    let rows: Vec<Row> = app.comms.with_root(|root|{
+        let mut rows = Vec::new();
+        for (idx,(k,v)) in root.issues.iter().enumerate() {
+            if Some(idx) == app.table_state.selected() {
+                app.selected_heading = Some(k.to_string());
+            }
+            rows.push((v.created.get(), v.heading.detach(), v.description.len()));
+        }
+        rows.sort();
+        rows.into_iter().map(|(time,heading,count)|Row::new([
+            time.to_string(), heading, count.to_string()
+        ])).collect()
+    });
+
+
+    let main_status_layout = Layout::vertical([
+        Min(0), // List
+        Length(3), //Status
+    ]);
+
+    let [list_area, prompt_area] = main_status_layout.areas(frame.area());
+
+    let list_details_layout = Layout::horizontal([
+        Percentage(50),
+        Percentage(50),
+    ]);
+
+    let [list_area, details_area] = list_details_layout.areas(list_area);
+
+    let details_layout = Layout::vertical([
+        Length(4), // Time/Heading
+        Min(4), // Texts
+    ]);
+
+    let [time_heading_area, descriptions_label_area] = details_layout.areas(details_area);
+
+    if let Some(selected_row) = &app.selected_heading {
+        let issue_block = Block::new().borders(Borders::ALL).title("Issue");
+
+        if let Some(issue) = app.comms.with_root(|root| {
+            root.issues.get(selected_row).map(|x|x.detach())
+        }) {
+
+            frame.render_widget(
+                Paragraph::new(
+                    vec![
+                        ratatui::prelude::Line::from(
+                            vec![
+                                Span::styled("Timestamp: ", Style::default().bold()),
+                                Span::styled(issue.created.to_string(), Style::default()),
+                            ]),
+                        ratatui::prelude::Line::from(
+                            vec![
+                                Span::styled("Heading:   ", Style::default().bold()),
+                                Span::styled(issue.heading, Style::default()),
+                            ]),
+                    ]).block(issue_block),
+                time_heading_area);
+
+        }
+
+    }
+
+
+
+
+
+    let issue_block = Block::new()
+        .borders(Borders::ALL)
+        .title(format!("Issues"));
+
+
+    let status_block = Block::new()
+        .borders(Borders::ALL)
+        .title(format!("Status"));
+
+    frame.render_widget(
+        Paragraph::new(Line::from(
+            vec![
+                ratatui::prelude::Span::styled("User: ", Style::default()),
+                ratatui::prelude::Span::styled(app.user.to_string(), Style::default().bold()),
+            ])).block(status_block),
+        prompt_area);
+
+
+
+    let table = app.table.clone().rows(rows);
+    frame.render_stateful_widget(table.block(issue_block), list_area, &mut &mut app.table_state);
+
+    match &mut app.popup {
+        Popup::None => {}
+        Popup::AddHeading(text) => {
+            let area = popup_area(frame.area(), 75, 10);
+            frame.render_widget(Clear, area); //this clears out the background
+            frame.render_widget(&*text, area);
+        }
+        Popup::AddText(_) => {}
+    }
+
+    Ok(())
+}
+
+fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    let vertical = Layout::vertical([Constraint::Length(3)]).flex(Flex::Center);
+    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+    let [area] = vertical.areas(area);
+    let [area] = horizontal.areas(area);
+    area
+}
+
+/// Check if the user has pressed 'q'. This is where you would handle events. This example just
+/// checks if the user has pressed 'q' and returns true if they have. It does not handle any other
+/// events. There is a 250ms timeout on the event poll to ensure that the terminal is rendered at
+/// least once every 250ms. This allows you to do other work in the application loop, such as
+/// updating the application state, without blocking the event loop for too long.
+fn poll_input(app: &mut AppState) -> Result<bool> {
+    if event::poll(Duration::from_millis(250)).context("event poll failed")? {
+        let event = event::read().context("event read failed")?;
+        match event {
+            input if app.popup.is_some() => {
+
+
+                match &mut app.popup {
+                    Popup::None => {}
+                    Popup::AddHeading(w) |
+                    Popup::AddText(w) => {
+
+                        match &input {
+                            Event::Key(KeyEvent{code: KeyCode::Esc,..}) => {
+                                app.popup = Popup::None;
+                                return Ok(false);
+                            }
+                            Event::Key(KeyEvent{code: KeyCode::Enter,..}) => {
+                                let heading: String = w.lines()[0].to_string();
+                                app.popup = Popup::None;
+                                app.create_event(&heading)?;
+                                return Ok(false);
+                            }
+                            _ => {}
+                        }
+
+                        w.input(input);
+                    }
+                }
+            }
+            Event::Key(key) => {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        return Ok(true);
+                    }
+                    KeyCode::Delete => {
+                        if let Some(heading) = &app.selected_heading {
+                            let heading = heading.to_string();
+                            app.delete_event(&heading)?;
+                            return Ok(false);
+                        }
+                    }
+                    KeyCode::Char('a') => {
+                        let mut text = TextArea::default();
+                        text.set_block(Block::new().borders(Borders::ALL).title("Enter heading"));
+                        app.popup = Popup::AddHeading(text);
+                    }
+                    KeyCode::Up => {
+                        let next = app.table_state.selected().unwrap_or(0).saturating_sub(1);
+                        let next = next.clamp(0, app.row_count.saturating_sub(1));
+                        app.table_state.select(Some(next));
+                    }
+                    KeyCode::Down => {
+                        let next = app.table_state.selected().unwrap_or(0)+1;
+                        let next = next.clamp(0, app.row_count.saturating_sub(1));
+                        app.table_state.select(Some(next));
+                    }
+                    _ => {}
+                }
+                return Ok(KeyCode::Char('q') == key.code);
+            }
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+

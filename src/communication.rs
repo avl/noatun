@@ -1389,10 +1389,13 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         Ok(())
     }
     pub fn blocking_add_message_at(&self, time: NoatunTime, msg: MSG) -> Result<()> {
-        self.blocking_add_message(Some(time), msg)
+        self.blocking_add_message_at_opt(Some(time), msg)
+    }
+    pub fn blocking_add_message(&self, msg: MSG) -> Result<()> {
+        self.blocking_add_message_at_opt(None, msg)
     }
     /// Must *not* be called from within a tokio runtime.
-    pub fn blocking_add_message(&self, time: Option<NoatunTime>, msg: MSG) -> Result<()> {
+    pub fn blocking_add_message_at_opt(&self, time: Option<NoatunTime>, msg: MSG) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         match self
             .cmd_tx
@@ -1509,7 +1512,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             .map(|x| x.to_string())
             .unwrap_or("?".to_string());
 
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(100);
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(1000);
 
         let database = Arc::new(Mutex::new(database));
 
