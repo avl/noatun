@@ -2554,6 +2554,7 @@ where
         let val = self.get();
         let ret = val.detach();
 
+        trace!("removing HashMap key using entry");
         NoatunHashMap::remove_impl_by_bucket_nr(&mut self.context, bucket_nr, |_| {});
         let newlen = *self.length - 1;
         NoatunContext.write_internal(newlen, self.length);
@@ -2887,6 +2888,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 if !predicate(&bucket.key, val) {
                     let bucket_nr = BucketNr(i);
                     length_guard_and_map.new_length -= 1;
+                    trace!(key=?&bucket.key, "removing hashmap entry using 'retain'");
                     Self::remove_impl_by_bucket_nr(&mut context, bucket_nr, |_| {});
                 } else {
                     i += 1;
@@ -3107,6 +3109,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     pub fn get_insert<'a>(mut self: Pin<&'a mut Self>, key: &K::DetachedType) -> Pin<&'a mut V> {
         let context = self.data_meta_len();
         if let Some(bucket) = Self::probe_read(context, key) {
+            trace!(bucket=?bucket, "Existing bucket found");
             unsafe {
                 let context = self.get_unchecked_mut().data_meta_len_mut();
                 return Pin::new_unchecked(&mut context.buckets[bucket.0].assume_init_mut().v);
@@ -3161,6 +3164,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             return false;
         };
         let mut context = self.data_meta_len_mut();
+        trace!("removing hashmap entry using remove");
         Self::remove_impl_by_bucket_nr(&mut context, bucket, getval);
 
         #[cfg(debug_assertions)]
@@ -3187,8 +3191,11 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         unsafe {
             let mut val = Pin::new_unchecked(&mut context.buckets[bucket_nr.0].assume_init_mut().v);
             getval(&mut val);
-            val.destroy();
+            val.as_mut().destroy();
+            NoatunContext.zero_storable(val);
+            compile_error!("This seemed to have fixed the problem. Test and develop the issue-tracker example more! Add live updates.")
         };
+
 
         match get_meta_mut_and_emptyable(context.metas, bucket_nr) {
             MetaMutAndEmpty::NoEmpty(meta) => {
@@ -3333,8 +3340,9 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 // Will not give infinite recursion, since 'new' has a capacity of at least 2 more
                 self.insert_internal_impl(key, val);
             }
-            ProbeRunResult::FoundUnoccupied(_bucket, _meta)| //Optimization: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
-            ProbeRunResult::FoundPopulated(_bucket, _meta) => {
+            ProbeRunResult::FoundUnoccupied(bucket, _meta)| //Optimization: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
+            ProbeRunResult::FoundPopulated(bucket, _meta) => {
+                trace!(bucket=?bucket, "inserting hashmap element");
 
                 Self::insert_at_bucket(
                     matches!(probe_result, ProbeRunResult::FoundUnoccupied(..)),

@@ -3,7 +3,11 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use anyhow::{Context, Result};
+use flexi_logger::{FileSpec, LogSpecification};
+use flexi_logger::trc::FormatConfig;
+use flexi_logger::writers::FileLogWriter;
 use insta::internals::SnapshotContents::Text;
+use itertools::Itertools;
 use ratatui::{backend, crossterm::event::{self, Event, KeyCode}, widgets::Paragraph, DefaultTerminal, Frame};
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Constraint::Percentage;
@@ -13,6 +17,7 @@ use ratatui::prelude::{Constraint, Line, Rect, Style, Stylize};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Clear, Row, Table, TableState};
 use savefile_derive::Savefile;
+use tracing::trace;
 use tui_textarea::TextArea;
 use noatun::data_types::{NoatunHashMap, NoatunString, NoatunVec, OpaqueNoatunVec};
 use noatun::{noatun_object, Database, DatabaseSettings, Message, MessageId, NoatunTime, Object, OpenMode, SavefileMessageSerializer};
@@ -68,8 +73,11 @@ impl Message for IssueMessage {
             IssueMessage::AddIssue { reporter, heading } => {
                 let issue = root.issues.get_insert(heading.as_str());
                 let mut issue = issue.pin_project();
+                trace!("assigning created");
                 issue.created.set(message_id.timestamp());
+                trace!("assigning reporter");
                 issue.reporter.assign(reporter);
+                trace!("assigning heading");
                 issue.heading.assign(heading);
             }
             IssueMessage::RemoveIssue { id } => {
@@ -97,6 +105,14 @@ impl Message for IssueMessage {
 /// This example does not handle events or update the application state. It just draws a greeting
 /// and exits when the user presses 'q'.
 fn main() -> Result<()> {
+    let _keep_alive_handles = flexi_logger::trc::setup_tracing(
+        LogSpecification::env().unwrap(),
+        None,
+        FileLogWriter::builder(FileSpec::default().suppress_timestamp()),
+        &FormatConfig::default()
+            .with_file(true),
+    )?;
+
     let terminal = ratatui::init();
     let app_result = run(terminal).context("app loop failed");
     ratatui::restore();
@@ -127,7 +143,7 @@ struct AppState {
 }
 
 impl AppState {
-    pub fn create_event(&mut self, heading: &str) -> Result<()> {
+    pub fn create_event(&mut  self, heading: &str) -> Result<()> {
         self.comms.blocking_add_message(IssueMessage::AddIssue {
             reporter: self.user.clone(),
             heading: heading.to_string(),

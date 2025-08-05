@@ -372,6 +372,10 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).zero(dst) }
     }
+    pub fn zero_storable<T:NoatunStorable>(&self, dst: Pin<&mut T>) {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).zero_storable(dst) }
+    }
     pub fn copy_sized(&self, src: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy_bytes_len(src, dest_index, size_bytes) }
@@ -1697,6 +1701,14 @@ impl FatPtr {
     /// Start index, and size in bytes
     pub fn from_idx_count(start: usize, count: usize) -> FatPtr {
         FatPtr { start, count }
+    }
+
+    /// Gives a fatptr to the `size_bytes` bytes starting at `thin`,
+    pub fn from_thin_size(thin: ThinPtr, size_bytes: usize) -> FatPtr {
+        FatPtr {
+            start: thin.0,
+            count: size_bytes,
+        }
     }
 }
 

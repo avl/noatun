@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
 use std::mem::{offset_of, transmute_copy, MaybeUninit};
-use std::ops::Range;
+use std::ops::{Deref, Range};
 use std::slice;
 
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
@@ -922,6 +922,11 @@ impl DatabaseContextData {
             }
         }
     }
+    pub fn zero_storable<T:NoatunStorable>(&mut self, storable: Pin<&mut T>) {
+        let thin = self.index_of_ptr(storable.deref() as *const _);
+        let fat = FatPtr::from_thin_size(thin, size_of::<T>());
+        self.zero(fat);
+    }
     pub fn zero(&mut self, dst: FatPtr) {
         unsafe {
             //dbg!(&source, &dest_index);
@@ -939,6 +944,7 @@ impl DatabaseContextData {
             dest.fill(0);
         }
     }
+    
     pub fn copy_bytes(&mut self, source: FatPtr, dest_index: ThinPtr) {
         unsafe {
             self.undo_log.record(UndoLogEntry::RestorePod {

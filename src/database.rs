@@ -390,7 +390,7 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     pub fn append_nonlocal(&mut self, message: MSG) -> Result<MessageHeader> {
         self.db.append_nonlocal(message)
     }
-    
+
     pub(crate) fn compact(&mut self) -> Result<()> {
         self.db.compact()
     }
@@ -1008,7 +1008,7 @@ impl<MSG: Message + 'static> Database<MSG> {
         self.message_store
             .push_messages(&mut self.context, messages, local)?;
 
-        trace!("apply_missing_messages");
+        trace!(next=?self.context.next_seqnr(),"apply_missing_messages");
 
         self.do_apply_missing()?;
         Ok(())
