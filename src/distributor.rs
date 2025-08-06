@@ -877,6 +877,18 @@ pub enum Status {
     Synchronizing,
 }
 
+impl Display for Status {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Status::Nominal => {write!(f, "Nominal")}
+            Status::BadClocksDetected => {write!(f, "BadClocksDetected")}
+            Status::OutOfSync => {write!(f, "OutOfSync")}
+            Status::NoPeers => {write!(f, "NoPeers")}
+            Status::Synchronizing => {write!(f, "Synchronizing")}
+        }
+    }
+}
+
 pub fn truncate_to_arraystring(name: &str) -> Address {
     if name.len() <= Address::MAX_LENGTH {
         return Address::from(name);

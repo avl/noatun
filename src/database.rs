@@ -852,8 +852,9 @@ impl<MSG: Message + 'static> Database<MSG> {
         self.append_opt(None, message, false)
     }
 
+    /// Return the number of messages in the system.
     /// This method returns 0 on error.
-    fn count_messages(&self) -> usize {
+    pub fn count_messages(&self) -> usize {
         self.message_store.count_messages()
     }
 

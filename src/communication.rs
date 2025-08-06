@@ -1307,6 +1307,20 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         }
     }
 
+    pub fn get_status_blocking(&self) -> Result<Status> {
+        let (oneshot_tx, oneshot_rx) = oneshot::channel();
+        let status = self.cmd_tx.blocking_send(Cmd::GetStatus(oneshot_tx));
+        match status {
+            Ok(()) => {
+                let result: Status = oneshot_rx.blocking_recv()?;
+                Ok(result)
+            }
+            Err(err) => {
+                bail!("Failed to send command to background thread {:?}", err);
+            }
+        }
+    }
+
     /// Install a callback that will receive events describing the operation of the
     /// communication. This is only meant for debugging/logging.
     pub async fn install_debug_logger(
@@ -1415,6 +1429,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
     pub fn with_root<R>(&self, f: impl FnOnce(&MSG::Root) -> R) -> R {
         let db = self.database.lock().unwrap();
         db.with_root(f)
+    }
+
+    pub fn count_messages(&self) -> usize {
+        self.database.lock().unwrap().count_messages()
     }
 
     #[instrument(skip(self),fields(node=?self.node))]

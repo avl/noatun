@@ -776,7 +776,9 @@ impl<T: FixedSizeObject> NoatunVecRaw<T, ThreadLocalContext> {
     // reach user overridden code, that will use NoatunContext thread local global directly.
     pub(crate) fn destroy_items(&mut self, ctx: &mut ThreadLocalContext) {
         for i in 0..self.length {
-            self.get_index_mut_pin(i, ctx).destroy();
+            let mut val = self.get_index_mut_pin(i, ctx);
+            val.as_mut().destroy();
+            NoatunContext.zero_storable(val);
         }
         let ctx = ctx.get_context_mut();
         unsafe {
@@ -3193,7 +3195,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             getval(&mut val);
             val.as_mut().destroy();
             NoatunContext.zero_storable(val);
-            compile_error!("This seemed to have fixed the problem. Test and develop the issue-tracker example more! Add live updates.")
         };
 
 

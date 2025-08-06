@@ -82,6 +82,7 @@ impl Message for IssueMessage {
             }
             IssueMessage::RemoveIssue { id } => {
                 root.issues.remove(id.as_str());
+                compile_error!("Continue figuring out why this sometimes crashes with uses = 0 error!")
             }
             IssueMessage::AppendText { id, reporter, text } => {
                 if let Some(issue) = root.issues.get_mut_val(id.as_str()) {
@@ -133,9 +134,12 @@ impl Popup {
 }
 
 struct AppState {
+    text_table: Table<'static>,
+    text_table_state: TableState,
+
     table: Table<'static>,
-    selected_heading: Option<String>,
     table_state: TableState,
+    selected_heading: Option<String>,
     row_count: usize,
     user: String,
     comms: DatabaseCommunication<IssueMessage>,
@@ -148,6 +152,16 @@ impl AppState {
             reporter: self.user.clone(),
             heading: heading.to_string(),
         })
+    }
+    pub fn add_text(&mut  self, text: &str) -> Result<()> {
+        if let Some(selected_heading) = &self.selected_heading {
+            self.comms.blocking_add_message(IssueMessage::AppendText {
+                reporter: self.user.clone(),
+                id: selected_heading.to_string(),
+                text: text.to_string(),
+            })?;
+        }
+        Ok(())
     }
     pub fn delete_event(&mut self, heading: &str) -> Result<()> {
         self.comms.blocking_add_message(IssueMessage::RemoveIssue {
@@ -182,6 +196,7 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
     // Note: TableState should be stored in your application state (not constructed in your render
     // method) so that the selected row is preserved across renders
     let mut table_state = TableState::default();
+    let mut text_table_state = TableState::default();
 
 
     let widths = [
@@ -191,16 +206,31 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
     ];
 
     let rows: [Row;0] = [];
-    let table = Table::new(rows, widths)
+    let table = Table::new(rows.clone(), widths)
         .block(Block::new().title("Table"))
-        .header(Row::new(vec!["Time", "Heading", "Num messages"]))
+        .header(Row::new(vec!["Time", "Heading", "Reporter"]))
         .row_highlight_style(Style::new().reversed())
         .highlight_symbol(">>");
+
+    let text_widths = [
+        Length(25), //Timestamp
+        Length(25), //Reporter
+        Min(10),    //Text
+    ];
+
+    let text_table = Table::new(rows, text_widths)
+        .block(Block::new().title("Table"))
+        .header(Row::new(vec!["Time", "Reporter", "Text"]))
+        .row_highlight_style(Style::new().reversed())
+        .highlight_symbol(">>");
+
     let mut app = AppState {
+        text_table,
+        text_table_state,
         table,
         selected_heading: None,
         table_state,
-        row_count: 3,
+        row_count: 0, //TODO: Do we need this field?
         user,
         comms,
         popup: Popup::None,
@@ -225,13 +255,38 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
 
 
     app.selected_heading = None;
+
     let rows: Vec<Row> = app.comms.with_root(|root|{
         let mut rows = Vec::new();
         for (idx,(k,v)) in root.issues.iter().enumerate() {
+
             if Some(idx) == app.table_state.selected() {
                 app.selected_heading = Some(k.to_string());
             }
-            rows.push((v.created.get(), v.heading.detach(), v.description.len()));
+            rows.push((v.created.get(), v.heading.detach(), v.reporter.detach()));
+        }
+        rows.sort();
+        app.row_count = rows.len();
+        rows.into_iter().map(|(time,heading,count)|Row::new([
+            time.to_string(), heading, count.to_string()
+        ])).collect()
+    });
+
+    let message_count = app.comms.count_messages();
+
+    //TODO: Document the `blocking` methods (and other methods) on comms
+    let sync_status = app.comms.get_status_blocking().map(|x|
+        x.to_string()
+    ).unwrap_or_else(|_|"Failed".to_string());
+
+    let text_rows: Vec<Row> = app.comms.with_root(|root|{
+        let mut rows = Vec::new();
+        if let Some(selected_heading) = &app.selected_heading {
+            if let Some(item) = root.issues.get(selected_heading) {
+                for text in item.description.iter() {
+                    rows.push((text.time.to_string(), text.added_by.to_string(), text.text.detach()));
+                }
+            }
         }
         rows.sort();
         rows.into_iter().map(|(time,heading,count)|Row::new([
@@ -239,13 +294,13 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
         ])).collect()
     });
 
-
     let main_status_layout = Layout::vertical([
+        Length(3), //Keybinds
         Min(0), // List
         Length(3), //Status
     ]);
 
-    let [list_area, prompt_area] = main_status_layout.areas(frame.area());
+    let [keybinds_area, list_area, status_area] = main_status_layout.areas(frame.area());
 
     let list_details_layout = Layout::horizontal([
         Percentage(50),
@@ -285,34 +340,55 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
                 time_heading_area);
 
         }
-
     }
-
-
-
-
 
     let issue_block = Block::new()
         .borders(Borders::ALL)
         .title(format!("Issues"));
 
+    let text_block = Block::new()
+        .borders(Borders::ALL)
+        .title(format!("Texts"));
 
     let status_block = Block::new()
         .borders(Borders::ALL)
         .title(format!("Status"));
+
+    let keybinds_block = Block::new()
+        .borders(Borders::ALL)
+        .title(format!("Keys"));
+
+
+    frame.render_widget(
+        Paragraph::new(Line::from(
+
+                ratatui::prelude::Span::styled("A - Add entry, DEL - Delete entry, T - Add text", Style::default()),
+            )).block(keybinds_block),
+        keybinds_area);
+
 
     frame.render_widget(
         Paragraph::new(Line::from(
             vec![
                 ratatui::prelude::Span::styled("User: ", Style::default()),
                 ratatui::prelude::Span::styled(app.user.to_string(), Style::default().bold()),
+                ratatui::prelude::Span::styled(", Message count: ", Style::default()),
+                ratatui::prelude::Span::styled(message_count.to_string(), Style::default().bold()),
+                ratatui::prelude::Span::styled(", Sync status: ", Style::default()),
+                ratatui::prelude::Span::styled(sync_status.to_string(), Style::default().bold()),
             ])).block(status_block),
-        prompt_area);
+        status_area);
 
 
 
     let table = app.table.clone().rows(rows);
     frame.render_stateful_widget(table.block(issue_block), list_area, &mut &mut app.table_state);
+
+    if app.selected_heading.is_some() {
+        let text_table = app.text_table.clone().rows(text_rows);
+        frame.render_stateful_widget(text_table.block(text_block), descriptions_label_area, &mut &mut app.text_table_state);
+    }
+
 
     match &mut app.popup {
         Popup::None => {}
@@ -321,7 +397,11 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
             frame.render_widget(Clear, area); //this clears out the background
             frame.render_widget(&*text, area);
         }
-        Popup::AddText(_) => {}
+        Popup::AddText(text) => {
+            let area = popup_area(frame.area(), 75, 10);
+            frame.render_widget(Clear, area); //this clears out the background
+            frame.render_widget(&*text, area);
+        }
     }
 
     Ok(())
@@ -358,9 +438,18 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                                 return Ok(false);
                             }
                             Event::Key(KeyEvent{code: KeyCode::Enter,..}) => {
-                                let heading: String = w.lines()[0].to_string();
+                                match &mut app.popup {
+                                    Popup::AddHeading(w) => {
+                                        let heading: String = w.lines()[0].to_string();
+                                        app.create_event(&heading)?;
+                                    }
+                                    Popup::AddText(w) => {
+                                        let text: String = w.lines()[0].to_string();
+                                        app.add_text(&text)?;
+                                    }
+                                    Popup::None => {}
+                                }
                                 app.popup = Popup::None;
-                                app.create_event(&heading)?;
                                 return Ok(false);
                             }
                             _ => {}
@@ -386,6 +475,11 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                         let mut text = TextArea::default();
                         text.set_block(Block::new().borders(Borders::ALL).title("Enter heading"));
                         app.popup = Popup::AddHeading(text);
+                    }
+                    KeyCode::Char('t') => {
+                        let mut text = TextArea::default();
+                        text.set_block(Block::new().borders(Borders::ALL).title("Enter text"));
+                        app.popup = Popup::AddText(text);
                     }
                     KeyCode::Up => {
                         let next = app.table_state.selected().unwrap_or(0).saturating_sub(1);
