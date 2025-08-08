@@ -376,6 +376,11 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).zero_storable(dst) }
     }
+
+    pub fn zero_object<T:Object+?Sized>(&self, dst: Pin<&mut T>) {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).zero_object(dst) }
+    }
     pub fn copy_sized(&self, src: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy_bytes_len(src, dest_index, size_bytes) }
@@ -1309,7 +1314,19 @@ pub trait Object {
     ///
     /// However, any observables should be overwritten, so that messages that
     /// wrote them can be pruned.
+    ///
+    /// Noatun makes no assumptions about the contents of the memory after this
+    /// method has finished. For collections that can reuse memory, the memory
+    /// will be cleared at the latest before any such reuse.
     fn destroy(self: Pin<&mut Self>);
+
+
+    /// Convenience helper, calls `Self::destroy` and then zeroes out
+    /// the memory.
+    fn destroy_and_clear(mut self: Pin<&mut Self>) {
+        self.as_mut().destroy();
+        NoatunContext.zero_object(self);
+    }
 
     /// Initialize all the fields in 'self' from the given 'detached' type.
     /// The detached type is a regular rust pod struct, with no requirements

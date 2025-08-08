@@ -5,7 +5,7 @@ use crate::distributor::{
 use crate::colors::rgb;
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 use crate::communication::udp::TokioUdpDriver;
-use crate::{track_node, Database, Message, MessageId, NoatunTime};
+use crate::{cur_node, track_node, Database, Message, MessageId, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayString;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -995,6 +995,7 @@ where
     buffered_incoming_messages: Vec<(Address /*src*/, DistributorMessage)>,
     nextsend: Vec<u8>,
     nextsend_id: Option<MessageId>,
+    nextsend_obj: Option<DistributorMessage>,
     node: String, //Address as string
     debug_event_logger: Option<Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>>,
     report_head_interval: Duration,
@@ -1162,8 +1163,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
             if self.nextsend.is_empty() && !self.distributor.outbuf.is_empty() {
                 let msg = self.distributor.outbuf.pop_front().unwrap();
 
-                self.debug_record(&msg)?;
                 self.nextsend_id = msg.message_id();
+                if self.debug_event_logger.is_some() {
+                    self.nextsend_obj = Some(msg.clone());
+                }
                 Serializer::bare_serialize(&mut self.nextsend, 0, &msg)?;
             }
 
@@ -1182,7 +1185,12 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                         self.nextsend_id = None;
                     }
                 }
-                message_to_transmit.push(std::mem::take(&mut self.nextsend));
+                if !self.nextsend.is_empty() {
+                    if let Some(msg) = self.nextsend_obj.take() {
+                        self.debug_record(&msg)?;
+                    }
+                    message_to_transmit.push(std::mem::take(&mut self.nextsend));
+                }
                 //permit.send(std::mem::take(&mut self.nextsend));
             }
 
@@ -1554,6 +1562,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             nextsend_id: None,
             debug_event_logger: config.debug_logger,
             report_head_interval: config.periodic_message_interval,
+            nextsend_obj: None,
         };
 
         spawn(async move { main.run(quit_tx, &mut sender_loop).await });

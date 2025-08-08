@@ -82,7 +82,6 @@ impl Message for IssueMessage {
             }
             IssueMessage::RemoveIssue { id } => {
                 root.issues.remove(id.as_str());
-                compile_error!("Continue figuring out why this sometimes crashes with uses = 0 error!")
             }
             IssueMessage::AppendText { id, reporter, text } => {
                 if let Some(issue) = root.issues.get_mut_val(id.as_str()) {

@@ -927,6 +927,11 @@ impl DatabaseContextData {
         let fat = FatPtr::from_thin_size(thin, size_of::<T>());
         self.zero(fat);
     }
+    pub fn zero_object<T:Object+?Sized>(&mut self, storable: Pin<&mut T>) {
+        let thin = self.index_of(storable.deref()).start();
+        let fat = FatPtr::from_idx_count(thin, size_of_val(&*storable));
+        self.zero(fat);
+    }
     pub fn zero(&mut self, dst: FatPtr) {
         unsafe {
             //dbg!(&source, &dest_index);

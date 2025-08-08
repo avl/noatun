@@ -777,7 +777,7 @@ impl<T: FixedSizeObject> NoatunVecRaw<T, ThreadLocalContext> {
     pub(crate) fn destroy_items(&mut self, ctx: &mut ThreadLocalContext) {
         for i in 0..self.length {
             let mut val = self.get_index_mut_pin(i, ctx);
-            val.as_mut().destroy();
+            val.as_mut().destroy_and_clear();
             NoatunContext.zero_storable(val);
         }
         let ctx = ctx.get_context_mut();
@@ -1007,7 +1007,6 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
             let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
             unsafe {
                 destroy(Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)));
-                //dst_ptr.access_mut::<T>().destroy();
             }
             let ctx = ctx0.get_context_mut();
             self.zero(index..index + 1, ctx);
@@ -1017,7 +1016,6 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
         unsafe {
             destroy(Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)));
-            //dst_ptr.access_mut::<T>().destroy();
         }
         let ctx = ctx0.get_context_mut();
         ctx.copy_bytes(FatPtr::from_idx_count(src_ptr.0, size_of::<T>()), dst_ptr);
@@ -1188,7 +1186,7 @@ where
 
         tself
             .raw
-            .swap_remove(index, &mut ThreadLocalContext, |x| x.destroy());
+            .swap_remove(index, &mut ThreadLocalContext, |x| x.destroy_and_clear());
     }
 
     pub fn retain(self: Pin<&mut Self>, mut f: impl FnMut(Pin<&mut T>) -> bool) {
@@ -1234,7 +1232,7 @@ where
             let mut val = unsafe { read_ptr.access_mut::<T>() };
             let retain = f(val.as_mut());
             if !retain {
-                val.destroy();
+                val.destroy_and_clear();
                 panic_handler.new_count -= 1;
                 panic_handler.read_offset += 1;
             } else {
@@ -1496,7 +1494,7 @@ where
     }
 
     fn destroy(self: Pin<&mut Self>) {
-        Self::get_inner_mut(self).destroy()
+        Self::get_inner_mut(self).destroy();
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -2913,7 +2911,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 NoatunContext.write_internal(Meta::EMPTY, meta);
                 let val =
                     unsafe { Pin::new_unchecked(&mut context.buckets[i].assume_init_mut().v) };
-                val.destroy();
+                val.destroy_and_clear();
             } else if *meta != Meta::EMPTY {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
             }
@@ -3193,7 +3191,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         unsafe {
             let mut val = Pin::new_unchecked(&mut context.buckets[bucket_nr.0].assume_init_mut().v);
             getval(&mut val);
-            val.as_mut().destroy();
+            val.as_mut().destroy_and_clear();
             NoatunContext.zero_storable(val);
         };
 
