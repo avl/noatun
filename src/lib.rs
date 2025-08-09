@@ -41,6 +41,7 @@ use std::borrow::Borrow;
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::marker::PhantomData;
 use std::mem::{transmute_copy, MaybeUninit};
@@ -111,8 +112,9 @@ pub(crate) mod platform_specific;
 mod boot_checksum;
 pub(crate) mod disk_access;
 mod sha2_helper;
-#[cfg(test)]
-pub(crate) mod test_metrics;
+
+
+pub mod simple_metrics;
 mod xxh3_vendored;
 
 #[doc(hidden)]
@@ -376,6 +378,10 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).zero_storable(dst) }
     }
+    pub fn zero_internal<T:NoatunStorable>(&self, dst: &mut T) {
+        let context_ptr = get_context_mut_ptr();
+        unsafe { (*context_ptr).zero_internal(dst) }
+    }
 
     pub fn zero_object<T:Object+?Sized>(&self, dst: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
@@ -477,10 +483,18 @@ impl NoatunContext {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Savefile)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Savefile)]
 #[repr(transparent)]
 pub struct MessageId {
     data: [u32; 4],
+}
+
+impl Hash for MessageId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let data1:[u64;2] = unsafe { std::mem::transmute(self.data) };
+        state.write_u64(data1[0]);
+        state.write_u64(data1[1]);
+    }
 }
 
 unsafe impl NoatunStorable for MessageId {

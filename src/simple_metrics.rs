@@ -1,3 +1,10 @@
+//! Simple metrics recorder
+//!
+//! Noatun uses the `metrics` crate to provide metrics in a flexible way.
+//!
+//! This crate contains a very simple concrete metrics implementation that can be used
+//! to get at the values. For real deployments, you may want to check out something like
+//! prometheus.
 use indexmap::IndexMap;
 use metrics::CounterFn;
 use metrics::GaugeFn;
@@ -13,7 +20,7 @@ struct InnerState {
     gauges: IndexMap<Key, Arc<AtomicU64>>,
 }
 #[derive(Default)]
-pub(crate) struct TestRecorder {
+pub struct SimpleMetricsRecorder {
     inner: Arc<Mutex<InnerState>>,
 }
 struct TestCounter {
@@ -70,7 +77,7 @@ impl GaugeFn for TestGauge {
         self.inner.store(value.to_bits(), Ordering::Relaxed);
     }
 }
-impl Recorder for TestRecorder {
+impl Recorder for SimpleMetricsRecorder {
     fn describe_counter(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
 
     fn describe_gauge(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
@@ -110,7 +117,7 @@ impl Recorder for TestRecorder {
     }
 }
 
-impl TestRecorder {
+impl SimpleMetricsRecorder {
     pub fn register(&self) -> metrics::LocalRecorderGuard<'_> {
         metrics::set_default_local_recorder(self)
     }

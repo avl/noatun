@@ -927,6 +927,11 @@ impl DatabaseContextData {
         let fat = FatPtr::from_thin_size(thin, size_of::<T>());
         self.zero(fat);
     }
+    pub fn zero_internal<T:NoatunStorable>(&mut self, storable: &mut T) {
+        let thin = self.index_of_ptr(storable as *mut _);
+        let fat = FatPtr::from_thin_size(thin, size_of::<T>());
+        self.zero(fat);
+    }
     pub fn zero_object<T:Object+?Sized>(&mut self, storable: Pin<&mut T>) {
         let thin = self.index_of(storable.deref()).start();
         let fat = FatPtr::from_idx_count(thin, size_of_val(&*storable));
@@ -1622,10 +1627,11 @@ impl DatabaseContextData {
         let mut info = unsafe { uses.get_mut(self, registrar.index()) };
         info.increase_use(self);
         trace!(
-            "increased use of {:?} to {} (tainted:{})",
+            "increased use of {:?} to {} (tainted:{}, cur: {})",
             registrar,
             info.get_use(),
-            info.tainted()
+            info.tainted(),
+            self.next_seqnr()
         );
     }
 
@@ -1640,7 +1646,10 @@ impl DatabaseContextData {
         let mut cur = unsafe { uses.get_mut(self, registrar.index()) };
         let cur_use = cur.get_use();
         if cur_use == 0 {
-            panic!("Corrupt use count for sequence nr {registrar:?}, use = {cur_use}");
+
+            //panic!("Corrupt use count for sequence nr {registrar:?}, use = {cur_use}");
+            println!("Corrupt use count for sequence nr {registrar:?}, use = {cur_use}");
+            std::process::abort();
         }
 
         unsafe {

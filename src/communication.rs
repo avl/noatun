@@ -994,7 +994,6 @@ where
     next_periodic: tokio::time::Instant,
     buffered_incoming_messages: Vec<(Address /*src*/, DistributorMessage)>,
     nextsend: Vec<u8>,
-    nextsend_id: Option<MessageId>,
     nextsend_obj: Option<DistributorMessage>,
     node: String, //Address as string
     debug_event_logger: Option<Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>>,
@@ -1161,30 +1160,36 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
             };
 
             if self.nextsend.is_empty() && !self.distributor.outbuf.is_empty() {
-                let msg = self.distributor.outbuf.pop_front().unwrap();
+                let mut msg = self.distributor.outbuf.pop_front().unwrap();
 
-                self.nextsend_id = msg.message_id();
-                if self.debug_event_logger.is_some() {
-                    self.nextsend_obj = Some(msg.clone());
-                }
-                Serializer::bare_serialize(&mut self.nextsend, 0, &msg)?;
-            }
-
-            if !self.nextsend.is_empty() && sender.has_send_capacity(&mut context) {
-                //let permit = self.sender_tx.reserve().await?;
-                if let Some(nextsend_id) = self.nextsend_id {
+                let mut inhibit_send = false;
+                if let DistributorMessage::Message { message: msg, .. } = &mut msg {
                     let mut db = self
                         .database
                         .lock()
                         .map_err(|e| anyhow!("mutex lock failed: {:?}", e))?;
                     let mut sess = db.begin_session_mut()?;
-                    if !sess.mark_transmitted(nextsend_id)? {
-                        self.nextsend_id = None;
+                    if !sess.mark_transmitted(msg.message_id())? {
+                        inhibit_send = true;
+                    }
+                    msg.retain_parents(|message_id|{
+                        sess.contains_message(message_id).unwrap_or(false)
+                    });
+                }
+                if !inhibit_send {
+                    let result = Serializer::bare_serialize(&mut self.nextsend, 0, &msg);
+                    if result.is_err() {
                         self.nextsend.clear();
-                    } else {
-                        self.nextsend_id = None;
+                    }
+                    result?;
+                    if self.debug_event_logger.is_some() {
+                        self.nextsend_obj = Some(msg);
                     }
                 }
+            }
+
+            if !self.nextsend.is_empty() && sender.has_send_capacity(&mut context) {
+                //let permit = self.sender_tx.reserve().await?;
                 if !self.nextsend.is_empty() {
                     if let Some(msg) = self.nextsend_obj.take() {
                         self.debug_record(&msg)?;
@@ -1559,7 +1564,6 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             next_periodic: tokio::time::Instant::now(),
             buffered_incoming_messages: vec![],
             nextsend: vec![],
-            nextsend_id: None,
             debug_event_logger: config.debug_logger,
             report_head_interval: config.periodic_message_interval,
             nextsend_obj: None,

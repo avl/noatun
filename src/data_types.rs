@@ -26,6 +26,10 @@ mod noatun_hash_impls;
 pub struct NoatunString {
     start: ThinPtr,
     length: usize,
+    //TODO: Should we have an opaquestring type?
+    // What about strings used as keys in HashMaps, do we want every hash map access
+    // to cause an observation? Even worse, what about hash collisions - do they cause
+    // false observations?
     registrar: SequenceNr,
     padding: u32,
 }
@@ -2909,9 +2913,11 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             let meta = &mut context.metas[meta_group_index].0[meta_group_offset];
             if meta.populated() {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
+                let mut kv = unsafe { context.buckets[i].assume_init_mut() };
                 let val =
-                    unsafe { Pin::new_unchecked(&mut context.buckets[i].assume_init_mut().v) };
+                    unsafe { Pin::new_unchecked(&mut kv.v) };
                 val.destroy_and_clear();
+                kv.key.destroy_and_clear();
             } else if *meta != Meta::EMPTY {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
             }
@@ -3189,10 +3195,10 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         getval: impl FnOnce(&mut Pin<&mut V>),
     ) {
         unsafe {
+            compile_error!("Add clearing of key here too!")
             let mut val = Pin::new_unchecked(&mut context.buckets[bucket_nr.0].assume_init_mut().v);
             getval(&mut val);
             val.as_mut().destroy_and_clear();
-            NoatunContext.zero_storable(val);
         };
 
 
@@ -3448,7 +3454,8 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 ///
 /// 1) `rustc-hash` never explicitly guarantees that new versions will yield exactly the same values.
 /// 2) Types which implement `Hash` may not always guarantee that future implementations return
-///    the same values
+///    the same values (i.e, even if the underlying hasher hasn't changed, the implementation
+///    of the `hash`-method may).
 ///
 /// For these reasons, noatun requires users to implement `NoatunHash` for all types used as hash
 /// keys. If you know that the underlying `Hash` implementation is actually stable, you can of
@@ -3472,6 +3479,9 @@ pub trait NoatunKey: NoatunStorable + Sized + Debug {
     where
         H: Hasher;
 
+    /// Clear out any registrars, then clear the memory.
+    fn destroy_and_clear(&mut self);
+
     /// Return a reference to a detached key. This method should be fast, usually
     /// just returning a reference to something in memory.
     fn detach_key_ref(&self) -> &Self::DetachedType;
@@ -3491,7 +3501,12 @@ impl NoatunKey for MessageId {
     where
         H: Hasher,
     {
-        tself.hash(state)
+        let data:[u64;2] = unsafe { std::mem::transmute(tself.data) };
+        state.write_u64(data[0]^data[1])
+    }
+
+    fn destroy_and_clear(&mut self) {
+        NoatunContext.zero_internal(self)
     }
 
     fn detach_key_ref(&self) -> &Self::DetachedType {

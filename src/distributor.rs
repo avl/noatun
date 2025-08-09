@@ -521,6 +521,9 @@ impl SerializedMessage {
     ) -> Result<SerializedMessage> {
         Self::new(MessageFrame { header, payload })
     }
+    pub fn retain_parents(&mut self, mut predicate: impl FnMut(MessageId) -> bool) {
+        self.parents.retain(move |id| predicate(*id));
+    }
     pub fn message_id(&self) -> MessageId {
         self.id
     }

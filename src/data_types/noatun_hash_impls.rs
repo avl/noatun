@@ -1,6 +1,7 @@
 use crate::data_types::{NoatunKey, NoatunString};
 use std::hash::Hasher;
 use std::pin::Pin;
+use crate::NoatunContext;
 
 macro_rules! noatun_hash_primitive {
     ($t: ident, $tm: ident) => {
@@ -12,6 +13,9 @@ macro_rules! noatun_hash_primitive {
                 H: Hasher,
             {
                 state.$tm(*tself);
+            }
+            fn destroy_and_clear(&mut self) {
+                $crate::NoatunContext.zero_internal(self)
             }
             fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
                 let tself = unsafe { self.get_unchecked_mut() };
@@ -69,5 +73,10 @@ impl NoatunKey for NoatunString {
     fn init_from_detached<'a>(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         let tself = unsafe { self.get_unchecked_mut() };
         tself.assign_untracked(detached);
+    }
+
+    fn destroy_and_clear(&mut self) {
+        NoatunContext.clear_registrar_ptr(&mut self.registrar, false);
+        NoatunContext.zero_internal(self);
     }
 }

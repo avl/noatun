@@ -1,4 +1,4 @@
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use std::ops::DerefMut;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
@@ -43,7 +43,7 @@ noatun_object!(
     }
 );
 
-#[derive(Savefile, Debug)]
+#[derive(Savefile, Debug, PartialEq)]
 enum IssueMessage {
     AddIssue {
         reporter: String,
@@ -163,18 +163,34 @@ async fn create_app(
 }
 
 #[tokio::test(start_paused = true)]
-async fn all_up_issue_tracker_repro1() {
+async fn all_up_issue_tracker_all() {
+    setup_tracing();
+    for seed in 0..1000 {
+        println!("-----------Seed: {}-------------", seed);
+        all_up_issue_iteration(seed).await;
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn all_up_issue_tracker_8() {
+    setup_tracing();
+    {
+        let seed = 8;
+        println!("-----------Seed: {}-------------", seed);
+        all_up_issue_iteration(seed).await;
+    }
+}
+async fn all_up_issue_iteration(seed: u64) {
     // Note, this test triggers a suboptimal (but mostly benign) behavior:
     // It removes a message that has been referenced as the parent of an outgoing
     // message
-    setup_tracing();
     let start_instant = Instant::now();
     set_test_epoch(start_instant);
     let noatun_start_time: NoatunTime = START_TIME.into();
-    MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(2)));
+    MY_THREAD_RNG.set(Some(SmallRng::seed_from_u64(seed)));
 
     let mut driver = TestDriver::new(2);
     let mut app1 = create_app(&mut driver, None).await;
+    let mut app2 = create_app(&mut driver, None).await;
 
     let mut advance_time = async |app1: &mut DatabaseCommunication<IssueMessage>, millis: u64| {
         tokio::time::sleep(Duration::from_millis(millis)).await;
@@ -182,83 +198,49 @@ async fn all_up_issue_tracker_repro1() {
         app1.set_mock_time(time_now).unwrap();
     };
 
-    println!("Root0: {:?}", app1.with_root(|root| root.detach()));
-    app1.add_message(IssueMessage::AddIssue {
-        reporter: "user1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa".to_string(),
-        heading: "heading1".to_string(),
-    })
-        .await
-        .unwrap();
-    advance_time(&mut app1, 500).await;
-
-    println!("Root0a: {:?}", app1.with_root(|root| root.detach()));
-    app1.add_message(IssueMessage::AppendText {
-        reporter: "user1BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBa".to_string(),
-        id: "heading1".to_string(),
-        text: "text1".to_string(),
-    })
-        .await
-        .unwrap();
-    advance_time(&mut app1, 500).await;
-
-    println!("Root0b: {:?}", app1.with_root(|root| root.detach()));
-    app1.add_message(IssueMessage::AppendText {
-        reporter: "user1".to_string(),
-        id: "heading1".to_string(),
-        text: "text2".to_string(),
-    })
-        .await
-        .unwrap();
-    advance_time(&mut app1, 500).await;
-    println!("Root1: {:?}", app1.with_root(|root| root.detach()));
-    app1.add_message(IssueMessage::RemoveIssue {
-        id: "heading1".to_string(),
-    })
-        .await
-        .unwrap();
-    compile_error!("Continue testing issue tracker. Does it actually work now? \
-    Add more stats to the issue-tracker ui
- Probably make it possible to show metrics from issue-tracker ui.
-Then show all metrics.
-Add good metrics that allow easy troubleshooting
-    
-
-    ")
-    advance_time(&mut app1, 500).await;
-    println!("Root2: {:?}", app1.with_root(|root| root.detach()));
-    app1.add_message(IssueMessage::AddIssue {
-        reporter: "user1".to_string(),
-        heading: "heading1".to_string(),
-    })
-        .await
-        .unwrap();
-    advance_time(&mut app1, 500).await;
-    println!("Root3: {:?}", app1.with_root(|root| root.detach()));
-    app1.add_message(IssueMessage::AppendText {
-        reporter: "user1".to_string(),
-        id: "heading1".to_string(),
-        text: "text1".to_string(),
-    })
-        .await
-        .unwrap();
-    advance_time(&mut app1, 500).await;
-    app1.add_message(IssueMessage::AppendText {
-        reporter: "user1".to_string(),
-        id: "heading1".to_string(),
-        text: "text2".to_string(),
-    })
-        .await
-        .unwrap();
-
-    advance_time(&mut app1, 15000).await;
+    for _ in 0..20 {
+        let msg = MY_THREAD_RNG.with(|rng|{
+            let mut rng = rng.borrow_mut();
+            let mut rng = rng.as_mut().unwrap();
+            match rng.gen_range(0..=2) {
+                0 => {
+                    IssueMessage::AddIssue {
+                        reporter: format!("user{}", rng.gen_range(0..4u32)),
+                        heading: format!("head{}", rng.gen_range(0..4u32)),
+                    }
+                }
+                1 => {
+                    IssueMessage::AppendText {
+                        id: format!("head{}", rng.gen_range(0..4u32)),
+                        reporter: format!("user{}", rng.gen_range(0..4u32)),
+                        text: format!("text{}", rng.gen::<u128>()),
+                    }
+                }
+                2 => {
+                    IssueMessage::RemoveIssue {
+                        id: format!("head{}", rng.gen_range(0..4u32)),
+                    }
+                }
+                _ => unreachable!()
+            }
+        });
+        app1.add_message(msg).await.unwrap();
+    }
 
 
-    let root1 = app1.with_root(|root| root.detach());
+    advance_time(&mut app1, 50000).await;
 
-    println!("End state: {:?}", root1);
-    assert_eq!(root1.issues.len(), 1);
+
     println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.messages_snapshot());
+
+    crate::tests::all_up_sync_test::assert_equal(&mut app1, &mut app2, seed).await;
+
+    let root1 = app1.with_root(|root| root.detach());
+    let root2 = app2.with_root(|root| root.detach());
+
+    println!("End state: {:?}", root1);
+    assert_eq!(root1, root2);
 
     //assert_snapshot!(driver.messages_snapshot());
 }

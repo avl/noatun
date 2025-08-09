@@ -7,7 +7,7 @@ use crate::communication::{
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
 use crate::distributor::Status;
-use crate::test_metrics::TestRecorder;
+use crate::simple_metrics::SimpleMetricsRecorder;
 use crate::tests::setup_tracing;
 use crate::{reset_random_id, SavefileMessageSerializer};
 use crate::{set_test_epoch, test_elapsed, Database, Message, MessageId, NoatunTime, Object};
@@ -433,7 +433,7 @@ const NUM_CASES: u64 = 1000;
 async fn all_up_general_update_sync_test_old_messages_all() {
     //setup_tracing();
 
-    let test_recorder = TestRecorder::default();
+    let test_recorder = SimpleMetricsRecorder::default();
     let _guard = test_recorder.register();
 
     for seed in 0..NUM_CASES {
@@ -527,6 +527,50 @@ async fn all_up_special_seed() {
         println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 15, false, 10, true).await;
     }
+}
+
+pub async fn assert_equal<T:Message+Send+PartialEq>(app1: &mut DatabaseCommunication<T>, app2: &mut DatabaseCommunication<T>, seed: u64) {
+
+    let msgs1 = app1
+        .inner_database()
+        .begin_session()
+        .unwrap()
+        .get_all_messages_vec()
+        .unwrap();
+    let msgs2 = app2
+        .inner_database()
+        .begin_session()
+        .unwrap()
+        .get_all_messages_vec()
+        .unwrap();
+    println!("Node 0 messages:\n{msgs1:#?}");
+    println!("Node 1 messages:\n{msgs2:#?}");
+    assert!(msgs1.is_sorted_by_key(|x| x.header.id));
+    assert!(msgs2.is_sorted_by_key(|x| x.header.id));
+    let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
+    let smsgs2: IndexSet<_> = msgs2.iter().map(|x| x.header.id).collect();
+    //println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
+    //println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
+    println!("Seed: {seed}");
+    println!("Only in 0: {:?}", smsgs1.sub(&smsgs2));
+    println!("Only in 1: {:?}", smsgs2.sub(&smsgs1));
+
+    if msgs1 != msgs2 {
+        println!("App0 cutoff time: {:?}", app1.get_cutoff_time());
+        println!("App1 cutoff time: {:?}", app2.get_cutoff_time());
+        for (i, (msg1, msg2)) in msgs1.iter().zip(msgs2.iter()).enumerate() {
+            assert_eq!(
+                msg1,
+                msg2,
+                "message mismatch for msg #{i}, comparing node {} and {}",
+                app1.ephemeral_node_id().await.unwrap(),
+                app2.ephemeral_node_id().await.unwrap(),
+            );
+        }
+    }
+    assert_eq!(msgs1.len(), msgs2.len());
+    assert_eq!(msgs1, msgs2, "Failed for seed {seed}");
+
 }
 
 async fn all_up_general_update_sync_test_impl(
@@ -635,45 +679,8 @@ async fn all_up_general_update_sync_test_impl(
     println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.messages_snapshot());
 
-    let msgs1 = app1
-        .inner_database()
-        .begin_session()
-        .unwrap()
-        .get_all_messages_vec()
-        .unwrap();
-    let msgs2 = app2
-        .inner_database()
-        .begin_session()
-        .unwrap()
-        .get_all_messages_vec()
-        .unwrap();
-    println!("Node 0 messages:\n{msgs1:#?}");
-    println!("Node 1 messages:\n{msgs2:#?}");
-    assert!(msgs1.is_sorted_by_key(|x| x.header.id));
-    assert!(msgs2.is_sorted_by_key(|x| x.header.id));
-    let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
-    let smsgs2: IndexSet<_> = msgs2.iter().map(|x| x.header.id).collect();
-    //println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
-    //println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
-    println!("Seed: {seed}");
-    println!("Only in 0: {:?}", smsgs1.sub(&smsgs2));
-    println!("Only in 1: {:?}", smsgs2.sub(&smsgs1));
     if persist {
-        if msgs1 != msgs2 {
-            println!("App0 cutoff time: {:?}", app1.get_cutoff_time());
-            println!("App1 cutoff time: {:?}", app2.get_cutoff_time());
-            for (i, (msg1, msg2)) in msgs1.iter().zip(msgs2.iter()).enumerate() {
-                assert_eq!(
-                    msg1,
-                    msg2,
-                    "message mismatch for msg #{i}, comparing node {} and {}",
-                    app1.ephemeral_node_id().await.unwrap(),
-                    app2.ephemeral_node_id().await.unwrap(),
-                );
-            }
-        }
-        assert_eq!(msgs1.len(), msgs2.len());
-        assert_eq!(msgs1, msgs2, "Failed for seed {seed}");
+        assert_equal(&mut app1, &mut app2, seed).await;
     }
 
     assert!(root1.sum >= 1);

@@ -376,6 +376,9 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
 
     /// Returns true if the message still exists.
     /// If this returns false, the message has been deleted, and *MUST* not *BE* transmitted.
+    /// 
+    /// Note, this function thus does not fail if the message to mark as transmitted
+    /// does not exist, it just returns false.
     pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<bool> {
         self.db.mark_transmitted(message_id)
     }

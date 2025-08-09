@@ -2765,7 +2765,7 @@ impl<M> OnDiskMessageStore<M> {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_metrics::TestRecorder;
+    use crate::simple_metrics::SimpleMetricsRecorder;
     use indexmap::IndexSet;
     use insta::assert_snapshot;
     use std::collections::BTreeSet;
@@ -2963,7 +2963,7 @@ mod tests {
 
     #[test]
     fn add_and_read_messages_twice() {
-        let test_recorder = TestRecorder::default();
+        let test_recorder = SimpleMetricsRecorder::default();
         let _guard = test_recorder.register();
 
         let mut store = OnDiskMessageStore::new(
@@ -3022,7 +3022,7 @@ mod tests {
 
     #[test]
     fn add_and_delete_messages() {
-        let test_recorder = TestRecorder::default();
+        let test_recorder = SimpleMetricsRecorder::default();
         let _guard = test_recorder.register();
         let target = Target::CreateNewOrOverwrite("test/add_and_delete_messages4.bin".into());
         let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 10000).unwrap();
@@ -3080,7 +3080,7 @@ mod tests {
 
     #[test]
     fn add_and_delete_some_messages() {
-        let test_recorder = TestRecorder::default();
+        let test_recorder = SimpleMetricsRecorder::default();
         let _guard = test_recorder.register();
         let target = Target::CreateNewOrOverwrite("test/add_and_delete_messages5.bin".into());
         let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 10000).unwrap();
