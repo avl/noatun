@@ -1335,13 +1335,6 @@ pub trait Object {
     fn destroy(self: Pin<&mut Self>);
 
 
-    /// Convenience helper, calls `Self::destroy` and then zeroes out
-    /// the memory.
-    fn destroy_and_clear(mut self: Pin<&mut Self>) {
-        self.as_mut().destroy();
-        NoatunContext.zero_object(self);
-    }
-
     /// Initialize all the fields in 'self' from the given 'detached' type.
     /// The detached type is a regular rust pod struct, with no requirements
     /// on alignment, pinning or similar. It can therefore be passed around freely,

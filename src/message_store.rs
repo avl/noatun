@@ -2964,7 +2964,7 @@ mod tests {
     #[test]
     fn add_and_read_messages_twice() {
         let test_recorder = SimpleMetricsRecorder::default();
-        let _guard = test_recorder.register();
+        let _guard = test_recorder.register_local();
 
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
@@ -3017,13 +3017,13 @@ mod tests {
             .unwrap();
         assert_eq!(msg.payload.id, 2);
         assert_eq!(msg.payload.data, [42, 42, 42, 42]);
-        assert_snapshot!(test_recorder.get_metrics());
+        assert_snapshot!(test_recorder.get_metrics_text());
     }
 
     #[test]
     fn add_and_delete_messages() {
         let test_recorder = SimpleMetricsRecorder::default();
-        let _guard = test_recorder.register();
+        let _guard = test_recorder.register_local();
         let target = Target::CreateNewOrOverwrite("test/add_and_delete_messages4.bin".into());
         let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 10000).unwrap();
 
@@ -3073,7 +3073,7 @@ mod tests {
             0
         );
 
-        assert_snapshot!(test_recorder.get_metrics());
+        assert_snapshot!(test_recorder.get_metrics_text());
 
         store.compact_to_target(0).unwrap();
     }
@@ -3081,7 +3081,7 @@ mod tests {
     #[test]
     fn add_and_delete_some_messages() {
         let test_recorder = SimpleMetricsRecorder::default();
-        let _guard = test_recorder.register();
+        let _guard = test_recorder.register_local();
         let target = Target::CreateNewOrOverwrite("test/add_and_delete_messages5.bin".into());
         let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 10000).unwrap();
 
@@ -3132,7 +3132,7 @@ mod tests {
             1
         );
 
-        assert_snapshot!(test_recorder.get_metrics());
+        assert_snapshot!(test_recorder.get_metrics_text());
 
         store.compact_to_target(0).unwrap();
     }

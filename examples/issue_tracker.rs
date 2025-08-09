@@ -1,28 +1,26 @@
-use std::ops::DerefMut;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use anyhow::{Context, Result};
 use flexi_logger::{FileSpec, LogSpecification};
 use flexi_logger::trc::FormatConfig;
 use flexi_logger::writers::FileLogWriter;
-use insta::internals::SnapshotContents::Text;
-use itertools::Itertools;
-use ratatui::{backend, crossterm::event::{self, Event, KeyCode}, widgets::Paragraph, DefaultTerminal, Frame};
+
+use ratatui::{ crossterm::event::{self, Event, KeyCode}, widgets::Paragraph, DefaultTerminal, Frame};
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Constraint::Percentage;
 use ratatui::layout::{Flex, Layout};
-use ratatui::prelude::Constraint::{Length, Max, Min};
+use ratatui::prelude::Constraint::{Length,  Min};
 use ratatui::prelude::{Constraint, Line, Rect, Style, Stylize};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Clear, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Clear, Row, Table, TableState, Wrap};
 use savefile_derive::Savefile;
 use tracing::trace;
+
 use tui_textarea::TextArea;
-use noatun::data_types::{NoatunHashMap, NoatunString, NoatunVec, OpaqueNoatunVec};
+use noatun::data_types::{NoatunHashMap, NoatunString,  OpaqueNoatunVec};
 use noatun::{noatun_object, Database, DatabaseSettings, Message, MessageId, NoatunTime, Object, OpenMode, SavefileMessageSerializer};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
-
+use noatun::simple_metrics::SimpleMetricsRecorder;
 
 noatun_object!(
     struct DescriptionText {
@@ -68,11 +66,11 @@ impl Message for IssueMessage {
     type Serializer = SavefileMessageSerializer<IssueMessage>;
 
     fn apply(&self, message_id: MessageId, root: Pin<&mut Self::Root>) {
-        let mut root = root.pin_project();
+        let root = root.pin_project();
         match self {
             IssueMessage::AddIssue { reporter, heading } => {
                 let issue = root.issues.get_insert(heading.as_str());
-                let mut issue = issue.pin_project();
+                let issue = issue.pin_project();
                 trace!("assigning created");
                 issue.created.set(message_id.timestamp());
                 trace!("assigning reporter");
@@ -113,6 +111,7 @@ fn main() -> Result<()> {
             .with_file(true),
     )?;
 
+
     let terminal = ratatui::init();
     let app_result = run(terminal).context("app loop failed");
     ratatui::restore();
@@ -142,7 +141,8 @@ struct AppState {
     row_count: usize,
     user: String,
     comms: DatabaseCommunication<IssueMessage>,
-    popup: Popup
+    popup: Popup,
+    recorder: SimpleMetricsRecorder
 }
 
 impl AppState {
@@ -187,6 +187,8 @@ fn start_communication() -> Result<DatabaseCommunication<IssueMessage>> {
 /// possible, for example, you could have multiple application states and switch between them based
 /// on events, or you could have a single application state and update it based on events.
 fn run(mut terminal: DefaultTerminal) -> Result<()> {
+    let recorder = SimpleMetricsRecorder::default();
+    recorder.clone().register_global();
 
     let comms = start_communication()?;
 
@@ -194,8 +196,8 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
     let user = std::env::var("USER").unwrap_or("default-user".to_string());
     // Note: TableState should be stored in your application state (not constructed in your render
     // method) so that the selected row is preserved across renders
-    let mut table_state = TableState::default();
-    let mut text_table_state = TableState::default();
+    let table_state = TableState::default();
+    let text_table_state = TableState::default();
 
 
     let widths = [
@@ -233,6 +235,7 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
         user,
         comms,
         popup: Popup::None,
+        recorder,
     };
 
 
@@ -278,6 +281,26 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
         x.to_string()
     ).unwrap_or_else(|_|"Failed".to_string());
 
+    let mut debug_spans = vec![
+        ratatui::prelude::Span::styled("User: ", Style::default()),
+        ratatui::prelude::Span::styled(app.user.to_string(), Style::default().bold()),
+        ratatui::prelude::Span::styled(", Message count: ", Style::default()),
+        ratatui::prelude::Span::styled(message_count.to_string(), Style::default().bold()),
+        ratatui::prelude::Span::styled(", Sync status: ", Style::default()),
+        ratatui::prelude::Span::styled(sync_status.to_string(), Style::default().bold()),
+    ];
+    for (key, val) in app.recorder.metrics_items() {
+        debug_spans.push(ratatui::prelude::Span::styled(format!(", {}: ", key), Style::default()));
+        debug_spans.push(ratatui::prelude::Span::styled(val, Style::default().bold()));
+    }
+
+    let metrics_paragraph = Paragraph::new(Line::from(
+        debug_spans)).wrap(Wrap {
+        trim: true
+    });
+
+
+
     let text_rows: Vec<Row> = app.comms.with_root(|root|{
         let mut rows = Vec::new();
         if let Some(selected_heading) = &app.selected_heading {
@@ -293,10 +316,12 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
         ])).collect()
     });
 
+    compile_error!("Add more metrics? Maybe add ratatui UI plugin-feature that shows update heads, message logs etc?");
+
     let main_status_layout = Layout::vertical([
         Length(3), //Keybinds
         Min(0), // List
-        Length(3), //Status
+        Length((2+metrics_paragraph.line_count(frame.area().width-2) as u16).min(20)), //Status
     ]);
 
     let [keybinds_area, list_area, status_area] = main_status_layout.areas(frame.area());
@@ -367,15 +392,7 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
 
 
     frame.render_widget(
-        Paragraph::new(Line::from(
-            vec![
-                ratatui::prelude::Span::styled("User: ", Style::default()),
-                ratatui::prelude::Span::styled(app.user.to_string(), Style::default().bold()),
-                ratatui::prelude::Span::styled(", Message count: ", Style::default()),
-                ratatui::prelude::Span::styled(message_count.to_string(), Style::default().bold()),
-                ratatui::prelude::Span::styled(", Sync status: ", Style::default()),
-                ratatui::prelude::Span::styled(sync_status.to_string(), Style::default().bold()),
-            ])).block(status_block),
+        metrics_paragraph.block(status_block),
         status_area);
 
 
@@ -392,12 +409,12 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
     match &mut app.popup {
         Popup::None => {}
         Popup::AddHeading(text) => {
-            let area = popup_area(frame.area(), 75, 10);
+            let area = popup_area(frame.area(), 75);
             frame.render_widget(Clear, area); //this clears out the background
             frame.render_widget(&*text, area);
         }
         Popup::AddText(text) => {
-            let area = popup_area(frame.area(), 75, 10);
+            let area = popup_area(frame.area(), 75);
             frame.render_widget(Clear, area); //this clears out the background
             frame.render_widget(&*text, area);
         }
@@ -406,7 +423,7 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
     Ok(())
 }
 
-fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+fn popup_area(area: Rect, percent_x: u16) -> Rect {
     let vertical = Layout::vertical([Constraint::Length(3)]).flex(Flex::Center);
     let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
     let [area] = vertical.areas(area);

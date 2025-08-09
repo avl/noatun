@@ -5,7 +5,7 @@ use crate::colors::*;
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
 use crate::mini_pather::MiniPather;
-use crate::{Database, Message, MessageExt, MessageFrame, MessageHeader, MessageId, NoatunTime};
+use crate::{Database, Message, MessageExt, MessageFrame, MessageHeader, MessageId};
 use anyhow::Result;
 use arcshift::ArcShift;
 use arrayvec::ArrayString;
@@ -18,7 +18,8 @@ use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::Cursor;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration};
+use tokio::time::Instant;
 use tracing::{debug, error, info, trace, warn};
 
 #[derive(Debug)]
@@ -842,12 +843,27 @@ impl SyncAllState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DistributorStatus {
     nominal: bool,
-    most_recent_clockdrift: HashMap<Address, NoatunTime>,
-    most_recent_unsynced: HashMap<Address, NoatunTime>,
+    most_recent_clockdrift: HashMap<Address, tokio::time::Instant>,
+    most_recent_unsynced: HashMap<Address, tokio::time::Instant>,
     have_heard_peer: bool,
+    last_gc: tokio::time::Instant,
+}
+
+impl DistributorStatus {
+    fn gc_if_necessary(&mut self, now: tokio::time::Instant) {
+        if now.saturating_duration_since(self.last_gc).as_millis() > 60000 {
+            self.last_gc = now;
+            self.most_recent_unsynced.retain(|_k,v|{
+                now.saturating_duration_since(*v).as_millis() < 60000
+            });
+            self.most_recent_clockdrift.retain(|_k,v|{
+                now.saturating_duration_since(*v).as_millis() < 60000
+            });
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -869,6 +885,7 @@ pub struct Distributor {
     pub outbuf: QueryableOutbuffer,
     #[doc(hidden)]
     pub neighborhood: Neighborhood,
+
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -924,6 +941,7 @@ impl AccumulatedMessage {
 }
 
 impl Distributor {
+
     pub fn periodic_message_interval(&self) -> Duration {
         self.periodic_message_interval
     }
@@ -937,7 +955,13 @@ impl Distributor {
         let node = initial_node_id.get().raw_u16();
         Self {
             sync_all_inprogress: SyncAllState::NotActive,
-            distributor_state: DistributorStatus::default(),
+            distributor_state: DistributorStatus {
+                nominal: false,
+                most_recent_clockdrift: Default::default(),
+                most_recent_unsynced: Default::default(),
+                have_heard_peer: false,
+                last_gc: now.into(),
+            },
             periodic_message_interval,
             neighborhood: Neighborhood::new(
                 now,
@@ -956,14 +980,15 @@ impl Distributor {
     ///
     /// If clock drift has been observed with the last 60 seconds, it will be reported
     /// by this method.
-    pub(crate) fn get_status(&self, now: NoatunTime) -> Status {
+    pub(crate) fn get_status(&self, now: tokio::time::Instant) -> Status {
         for drift in self.distributor_state.most_recent_clockdrift.values() {
-            if drift.elapsed_ms_since(now) < 60000 {
+            if now.saturating_duration_since(*drift).as_millis() < 60000 {
                 return Status::BadClocksDetected;
             }
         }
+
         for unsync in self.distributor_state.most_recent_unsynced.values() {
-            let unsync_t = unsync.elapsed_ms_since(now);
+            let unsync_t = now.saturating_duration_since(*unsync).as_millis();
             if unsync_t < 60000 {
                 return Status::OutOfSync;
             }
@@ -990,6 +1015,8 @@ impl Distributor {
         );
 
         self.outbuf.gc_if_necessary(now);
+
+        self.distributor_state.gc_if_necessary(now.into());
 
         let mut heads = database
             .get_update_heads()
@@ -1069,7 +1096,7 @@ impl Distributor {
         &mut self,
         database: &mut Database<MSG>,
         input: impl Iterator<Item = (Address, DistributorMessage)>,
-        now: Instant,
+        now: tokio::time::Instant,
     ) -> Result<()> {
         let mut database = database.begin_session_mut()?;
         let mut accumulated_heads: IndexMap<
@@ -1184,7 +1211,8 @@ impl Distributor {
                                 debug!("Acceptability: Unacceptable");
                                 self.distributor_state
                                     .most_recent_unsynced
-                                    .insert(src, database.noatun_now());
+                                    .insert(src, tokio::time::Instant::now().into());
+
                                 if self.sync_all_inprogress.idle() {
                                     self.sync_all_inprogress = SyncAllState::Starting;
                                 }
@@ -1211,7 +1239,7 @@ impl Distributor {
                                 info!("Acceptability: Clockdrift");
                                 self.distributor_state
                                     .most_recent_clockdrift
-                                    .insert(src, database.noatun_now());
+                                    .insert(src, tokio::time::Instant::now());
                                 break;
                             }
                         }

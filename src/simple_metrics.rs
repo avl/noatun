@@ -19,7 +19,7 @@ struct InnerState {
     counters: IndexMap<Key, Arc<AtomicU64>>,
     gauges: IndexMap<Key, Arc<AtomicU64>>,
 }
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SimpleMetricsRecorder {
     inner: Arc<Mutex<InnerState>>,
 }
@@ -118,10 +118,28 @@ impl Recorder for SimpleMetricsRecorder {
 }
 
 impl SimpleMetricsRecorder {
-    pub fn register(&self) -> metrics::LocalRecorderGuard<'_> {
+    pub fn register_local(&self) -> metrics::LocalRecorderGuard<'_> {
         metrics::set_default_local_recorder(self)
     }
-    pub fn get_metrics(&self) -> String {
+    pub fn register_global(self) {
+        metrics::set_global_recorder(self).unwrap();
+    }
+    pub fn metrics_items(&self) -> Vec<(String, String)> {
+        let mut ret = Vec::new();
+        let guard = self.inner.lock().unwrap();
+        for (key, val) in guard.counters.iter() {
+            ret.push((key.name().to_string(), val.load(Ordering::Relaxed).to_string()));
+        }
+        for (key, val) in guard.gauges.iter() {
+
+            ret.push((key.name().to_string(),
+                      f64::from_bits(val.load(Ordering::Relaxed)).to_string()
+            ));
+        }
+
+        ret
+    }
+    pub fn get_metrics_text(&self) -> String {
         use std::fmt::Write;
         let guard = self.inner.lock().unwrap();
         let mut output = String::new();

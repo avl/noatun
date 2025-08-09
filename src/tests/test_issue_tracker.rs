@@ -1,19 +1,16 @@
 use rand::{Rng, SeedableRng};
-use std::ops::DerefMut;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use anyhow::{Context, Result};
+use anyhow::{Result};
 use chrono::{DateTime, Utc};
 use datetime_literal::datetime;
-use insta::assert_snapshot;
 use rand::prelude::SmallRng;
 use savefile_derive::Savefile;
 use tokio::time::Instant;
-use crate::data_types::{NoatunHashMap, NoatunString, NoatunVec, OpaqueNoatunVec};
+use crate::data_types::{NoatunHashMap, NoatunString, OpaqueNoatunVec};
 use crate::{set_test_epoch, Database, DatabaseSettings, Message, MessageId, NoatunTime, Object, OpenMode, SavefileMessageSerializer};
 use crate::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
-use crate::tests::all_up_sync_test::{SyncMessage, MY_THREAD_RNG};
+use crate::tests::all_up_sync_test::{MY_THREAD_RNG};
 use crate::tests::setup_tracing;
 use crate::tests::test_driver::TestDriver;
 
@@ -64,11 +61,11 @@ impl Message for IssueMessage {
     type Serializer = SavefileMessageSerializer<IssueMessage>;
 
     fn apply(&self, message_id: MessageId, root: Pin<&mut Self::Root>) {
-        let mut root = root.pin_project();
+        let root = root.pin_project();
         match self {
             IssueMessage::AddIssue { reporter, heading } => {
                 let issue = root.issues.get_insert(heading.as_str());
-                let mut issue = issue.pin_project();
+                let issue = issue.pin_project();
                 issue.created.set(message_id.timestamp());
                 issue.reporter.assign(reporter);
                 issue.heading.assign(heading);
@@ -162,10 +159,16 @@ async fn create_app(
     comm
 }
 
+#[cfg(debug_assertions)]
+const COUNT:u64 = 100;
+#[cfg(not(debug_assertions))]
+const COUNT:u64 = 2000;
+
+
 #[tokio::test(start_paused = true)]
 async fn all_up_issue_tracker_all() {
     setup_tracing();
-    for seed in 0..1000 {
+    for seed in 0..COUNT {
         println!("-----------Seed: {}-------------", seed);
         all_up_issue_iteration(seed).await;
     }
@@ -192,7 +195,7 @@ async fn all_up_issue_iteration(seed: u64) {
     let mut app1 = create_app(&mut driver, None).await;
     let mut app2 = create_app(&mut driver, None).await;
 
-    let mut advance_time = async |app1: &mut DatabaseCommunication<IssueMessage>, millis: u64| {
+    let advance_time = async |app1: &mut DatabaseCommunication<IssueMessage>, millis: u64| {
         tokio::time::sleep(Duration::from_millis(millis)).await;
         let time_now = noatun_start_time + start_instant.elapsed();
         app1.set_mock_time(time_now).unwrap();
@@ -201,7 +204,7 @@ async fn all_up_issue_iteration(seed: u64) {
     for _ in 0..20 {
         let msg = MY_THREAD_RNG.with(|rng|{
             let mut rng = rng.borrow_mut();
-            let mut rng = rng.as_mut().unwrap();
+            let rng = rng.as_mut().unwrap();
             match rng.gen_range(0..=2) {
                 0 => {
                     IssueMessage::AddIssue {

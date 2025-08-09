@@ -5,7 +5,7 @@ use crate::distributor::{
 use crate::colors::rgb;
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 use crate::communication::udp::TokioUdpDriver;
-use crate::{cur_node, track_node, Database, Message, MessageId, NoatunTime};
+use crate::{track_node, Database, Message, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayString;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -1066,7 +1066,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
         self.buffered_incoming_messages.push((src, msg));
         Ok(())
     }
-    fn process_messages(&mut self, now: std::time::Instant) -> Result<()> {
+    fn process_messages(&mut self, now: tokio::time::Instant) -> Result<()> {
         if self.buffered_incoming_messages.is_empty() {
             return Ok(());
         }
@@ -1211,7 +1211,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                 _process_incoming = buffering_timer => {
                     track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
                     buffer_timer_instant = None;
-                    self.process_messages(Instant::now().into())?;
+                    self.process_messages(Instant::now())?;
                 }
                 _periodic = tokio::time::sleep_until(self.next_periodic) => {
                     track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
@@ -1239,9 +1239,9 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                             return Ok(Some(sender));
                         }
                         Cmd::GetStatus(sender) => {
-                            let db = self.database.lock().unwrap();
-                            let now = db.noatun_now();
-                            sender.send(self.distributor.get_status(now)).map_err(|_|anyhow!("oneshot sender failed"))?;
+                            //let db = self.database.lock().unwrap();
+                            //let now = db.noatun_now();
+                            sender.send(self.distributor.get_status(Instant::now())).map_err(|_|anyhow!("oneshot sender failed"))?;
                         }
                         Cmd::AddMessage(time, msg,result) => {
 

@@ -1,8 +1,8 @@
 #![allow(clippy::needless_range_loop)]
+#[allow(unused)]
 use crate::colors::colored_int;
 use crate::communication::{
-    CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
-    DatabaseCommunication, DatabaseCommunicationConfig, DebugEvent, DebugEventMsg,
+    DatabaseCommunication, DatabaseCommunicationConfig, 
 };
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
@@ -12,28 +12,21 @@ use crate::tests::setup_tracing;
 use crate::{reset_random_id, SavefileMessageSerializer};
 use crate::{set_test_epoch, test_elapsed, Database, Message, MessageId, NoatunTime, Object};
 use crate::{Persistence, Savefile};
-use arcshift::ArcShift;
-use bytes::BufMut;
 use chrono::DateTime;
 use chrono::TimeDelta;
 use chrono::Utc;
 use datetime_literal::datetime;
 use indexmap::IndexSet;
 use insta::assert_snapshot;
-use rand::distributions::uniform::SampleUniform;
 use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::fmt::Debug;
 use std::ops::Add;
 use std::ops::Sub;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
-use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::Instant;
 use tracing::info;
 use super::test_driver::*;
@@ -434,7 +427,7 @@ async fn all_up_general_update_sync_test_old_messages_all() {
     //setup_tracing();
 
     let test_recorder = SimpleMetricsRecorder::default();
-    let _guard = test_recorder.register();
+    let _guard = test_recorder.register_local();
 
     for seed in 0..NUM_CASES {
         println!("=========== Seed = {seed} ===========");

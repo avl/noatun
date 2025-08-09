@@ -1,7 +1,6 @@
-use crate::data_types::{NoatunKey, NoatunString};
+use crate::data_types::{NoatunKey};
 use std::hash::Hasher;
 use std::pin::Pin;
-use crate::NoatunContext;
 
 macro_rules! noatun_hash_primitive {
     ($t: ident, $tm: ident) => {
@@ -14,8 +13,7 @@ macro_rules! noatun_hash_primitive {
             {
                 state.$tm(*tself);
             }
-            fn destroy_and_clear(&mut self) {
-                $crate::NoatunContext.zero_internal(self)
+            fn destroy(&mut self) {
             }
             fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
                 let tself = unsafe { self.get_unchecked_mut() };
@@ -47,36 +45,3 @@ noatun_hash_primitive!(i32, write_i32);
 noatun_hash_primitive!(i64, write_i64);
 noatun_hash_primitive!(i128, write_i128);
 
-impl NoatunKey for NoatunString {
-    type DetachedType = str;
-    type DetachedOwnedType = String;
-
-    fn hash<H>(tself: &Self::DetachedType, state: &mut H)
-    where
-        H: Hasher,
-    {
-        state.write_usize(tself.len());
-        state.write(tself.as_bytes());
-    }
-
-    fn detach_key(&self) -> String {
-        (*self).to_string()
-    }
-    fn detach_key_ref(&self) -> &Self::DetachedType {
-        self
-    }
-
-    fn eq(a: &Self::DetachedType, b: &Self::DetachedType) -> bool {
-        *a == *b
-    }
-
-    fn init_from_detached<'a>(self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        let tself = unsafe { self.get_unchecked_mut() };
-        tself.assign_untracked(detached);
-    }
-
-    fn destroy_and_clear(&mut self) {
-        NoatunContext.clear_registrar_ptr(&mut self.registrar, false);
-        NoatunContext.zero_internal(self);
-    }
-}

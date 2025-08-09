@@ -1,4 +1,5 @@
 #![allow(non_local_definitions)]
+use crate::data_types::NoatunVec;
 use super::*;
 use crate::data_types::{NoatunCellArrayExt, NoatunString};
 use crate::disk_access::FileAccessor;
@@ -9,7 +10,6 @@ use tracing::info;
 use crate::database::{DatabaseSettings, OpenMode};
 use data_types::NoatunBox;
 use data_types::NoatunCell;
-use data_types::NoatunVec;
 use database::Database;
 use datetime_literal::datetime;
 use savefile::{
@@ -989,7 +989,6 @@ fn test_vec_undo() {
 
 #[test]
 fn test_object_macro() {
-    use crate::data_types::NoatunVec;
     noatun_object!(
         struct Kalle {
             pod hej:u32,
