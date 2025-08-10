@@ -887,7 +887,7 @@ pub enum NoatunHashMapEntry<'a, K, V>
 where
     K: NoatunStorable + NoatunKey + PartialEq,
     V: FixedSizeObject,
-    K::DetachedType: Sized,
+    K::DetachedOwnedType: Sized,
 {
     Occupied(OccupiedEntry<'a, K, V>),
     Vacant(VacantEntry<'a, K, V>),
@@ -896,7 +896,7 @@ pub struct NoatunHashMapEntryInternal<'a, K, V>
 where
     K: NoatunStorable + NoatunKey + PartialEq,
     V: FixedSizeObject,
-    K::DetachedType: Sized,
+    K::DetachedOwnedType: Sized,
 {
     context: HashAccessContextMut<'a, K, V>,
     probe_result: (BucketNr, Meta),
@@ -906,7 +906,7 @@ where
 
 pub struct VacantEntry<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject>
 where
-    K::DetachedType: Sized,
+    K::DetachedOwnedType: Sized,
 {
     context: HashAccessContextMut<'a, K, V>,
     probe_result: (BucketNr, Meta),
@@ -915,7 +915,7 @@ where
 }
 pub struct OccupiedEntry<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject>
 where
-    K::DetachedType: Sized,
+    K::DetachedOwnedType: Sized,
 {
     context: HashAccessContextMut<'a, K, V>,
     probe_result: (BucketNr, Meta),
@@ -945,7 +945,7 @@ where
 
 impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> OccupiedEntry<'a, K, V>
 where
-    K::DetachedType: Sized,
+    K::DetachedOwnedType: Sized,
 {
     pub fn get(&self) -> &V {
         let bucket_nr = self.probe_result.0;
@@ -976,7 +976,7 @@ where
 }
 impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMapEntry<'a, K, V>
 where
-    K::DetachedType: Sized,
+    K::DetachedOwnedType: Sized,
 {
     fn make_enum(
         probe_result: ProbeRunResult,
@@ -1699,23 +1699,24 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         self.insert_internal_impl(key, |_new, target| V::init_from_detached(target, val))
     }
 
-    pub fn entry(&mut self, key: K::DetachedOwnedType) -> NoatunHashMapEntry<K, V>
+    pub fn entry(self: Pin<&mut Self>, key: K::DetachedOwnedType) -> NoatunHashMapEntry<K, V>
     where
-        K::DetachedType: Sized,
+        K::DetachedOwnedType: Sized,
     {
-        let self_cap = self.capacity;
-        let context = self.data_meta_len();
+        let tself = unsafe { self.get_unchecked_mut() };
+        let self_cap = tself.capacity;
+        let context = tself.data_meta_len();
         let mut probe_result = Self::probe(context, key.borrow());
 
         if !matches!(probe_result, ProbeRunResult::HashFull) {
             // Nominal, fast path.
-            let (context, length) = self.data_meta_len_mut2();
+            let (context, length) = tself.data_meta_len_mut2();
             return NoatunHashMapEntry::make_enum(probe_result, context, key, length);
         }
 
-        self.internal_change_capacity(self_cap + 15);
+        tself.internal_change_capacity(self_cap + 15);
 
-        let (context, length) = self.data_meta_len_mut2();
+        let (context, length) = tself.data_meta_len_mut2();
         probe_result = Self::probe(context.readonly(), key.borrow());
         assert!(!matches!(probe_result, ProbeRunResult::HashFull));
         NoatunHashMapEntry::make_enum(probe_result, context, key, length)

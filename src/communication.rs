@@ -28,6 +28,7 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 use std::{io, thread};
+use metrics::{counter, describe_counter, Counter, Unit};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
@@ -35,6 +36,8 @@ use tokio::time::error::Elapsed;
 use tokio::time::Instant;
 use tokio::{select, spawn};
 use tracing::{debug, error, info, instrument, trace, warn};
+use crate::diagnostics::DiagnosticsData;
+use crate::diagnostics::{MessageRow, PacketRow};
 
 pub mod size_limit_vec_deque;
 pub mod udp;
@@ -263,11 +266,12 @@ impl ReceiveTrack {
     async fn process(
         &mut self,
         packet: TransmittedEntitySortable,
+        raw_address: Option<Address>,
         packet_source: EphemeralNodeId,
 
         // Messages that have been received by socket, and are to be signaled
         // to upper layer
-        message_tx: &mut Vec<(Address, Vec<u8>)>,
+        message_tx: &mut Vec<(Option<Address>, EphemeralNodeId, Vec<u8>)>,
         retransmit_requests: &mut IndexMap<EphemeralNodeId, RetransmitInfo>,
 
         retransmit_responsibility_query: &mut (dyn FnMut(EphemeralNodeId) -> Duration
@@ -400,7 +404,8 @@ impl ReceiveTrack {
                     ))
                     .unwrap();*/
                     message_tx.push((
-                        Address::from(packet_source),
+                        raw_address,
+                        packet_source,
                         self.accum.iter().copied().collect(),
                     ));
                     self.accum.clear();
@@ -422,7 +427,7 @@ impl ReceiveTrack {
                         /*tx_finished_received_frame
                         .try_send((Address::from(packet_source), temp.clone()))
                         .unwrap();*/
-                        message_tx.push((Address::from(packet_source), temp));
+                        message_tx.push((raw_address, packet_source, temp));
                     }
 
                     cur_boundary += next_size;
@@ -472,11 +477,12 @@ impl<Socket: CommunicationDriver> SenderLoopTrait<Socket::Endpoint>
     async fn pump(
         &mut self,
         context: &mut ExecutionContext<Socket::Endpoint>,
-        message_tx: &mut Vec<(Address, Vec<u8>)>,
+        message_tx: &mut Vec<(Option<Address>, EphemeralNodeId, Vec<u8>)>,
         message_rx: &mut Vec<Vec<u8>>,
         node_id_collision_detected: &mut bool,
+        diagnostics: Option<&Mutex<DiagnosticsData>>,
     ) -> Result<bool> {
-        self.run(context, message_tx, message_rx, node_id_collision_detected)
+        self.run(context, message_tx, message_rx, node_id_collision_detected, diagnostics)
             .await
     }
 }
@@ -510,6 +516,10 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     hasher: Xxh3Default,
     sent_packets: IndexSet<u128>,
     gc_time: Instant,
+    raw_packets_received: Counter,
+    valid_packets_received: Counter,
+    packets_sent: Counter,
+    retransmit_request_count: Counter,
 }
 impl<Socket: CommunicationDriver> Drop for MulticastSenderLoop<Socket> {
     fn drop(&mut self) {
@@ -557,6 +567,7 @@ pub struct ExecutionContext<T> {
     /// Empty if not in use.
     /// We assume any real packet will be at least 1 byte
     cursend: Vec<u8>,
+    cursend_is_retransmit:bool,
     send_local_addr: Option<T>,
     next_retransmit: Instant,
     next_retransmit_active: bool,
@@ -589,6 +600,32 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         if max_payload_per_packet < 100 {
             bail!("Unreasonably small MTU specified: {}", mtu);
         }
+
+        let raw_packets_received = counter!("raw_packets_received");
+        describe_counter!(
+            "raw_packets_received",
+            Unit::Count,
+            "Number of raw network packets received"
+        );
+        let valid_packets_received = counter!("valid_packets_received");
+        describe_counter!(
+            "valid_packets_received",
+            Unit::Count,
+            "Number of valid network packets received"
+        );
+        let packets_sent = counter!("packets_sent");
+        describe_counter!(
+            "packets_sent",
+            Unit::Count,
+            "Number of network packets sent"
+        );
+        let retransmit_request_count = counter!("retransmit_request_count");
+        describe_counter!(
+            "retransmit_request_count",
+            Unit::Count,
+            "Number of retransmit-requests sent"
+        );
+
         Ok(Self {
             quit_rx,
             bind_address: send_socket.local_addr()?,
@@ -613,6 +650,10 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             hasher: Default::default(),
             sent_packets: Default::default(),
             gc_time: Instant::now(),
+            raw_packets_received,
+            valid_packets_received,
+            packets_sent,
+            retransmit_request_count,
         })
     }
     pub(crate) fn send_buf(
@@ -709,20 +750,23 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
     pub fn create_context(&self) -> Result<ExecutionContext<Socket::Endpoint>> {
         Ok(ExecutionContext {
             cursend: vec![],
+            cursend_is_retransmit: false,
             send_local_addr: self.send_socket.local_addr()?,
             next_retransmit: Instant::now(),
             next_retransmit_active: false,
         })
     }
 
-    #[instrument(skip(self, context),fields(local=?self.bind_address))]
+    #[instrument(skip(self, context),fields(local=?self.bind_address, diagnostics))]
     pub async fn run(
         &mut self,
         context: &mut ExecutionContext<Socket::Endpoint>,
-        messages_received_new_buffer: &mut Vec<(Address, Vec<u8>)>,
+        messages_received_new_buffer: &mut Vec<(Option<Address>, EphemeralNodeId,  Vec<u8>)>,
         messages_transmit_new_buffer: &mut Vec<Vec<u8>>,
         node_id_collision_detected: &mut bool,
+        mut diagnostics: Option<&Mutex<DiagnosticsData>>,
     ) -> Result<bool /*quit*/> {
+
         self.recvbuf.clear();
         let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
 
@@ -767,7 +811,23 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         who: first_key,
                         what,
                     };
+
+
                     Serializer::bare_serialize(&mut context.cursend, 0, &packet).unwrap();
+
+                    if let Some(diagnostics) = diagnostics {
+                        let mut diagnostics = diagnostics.lock().unwrap();
+                        diagnostics.sent_packets.push_back(PacketRow {
+                            time: Instant::now(),
+                            packet: format!("{:?}", packet),
+                            size: context.cursend.len(),
+                        });
+                        if diagnostics.sent_packets.len() > 10 {
+                            diagnostics.sent_packets.pop_front();
+                        }
+                    }
+
+                    context.cursend_is_retransmit = true;
                     trace!(
                         "Sending raw retransmit {:?} ({} bytes)",
                         packet,
@@ -794,12 +854,27 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                 if let Some(x) = self.queue.pop_front() {
                     // Consider if savefile really is the best here. Some more space efficiency
                     // wouldn't hurt!
+                    let packet = NetworkPacket::Data(x.entity.clone());
                     Serializer::bare_serialize(
                         &mut context.cursend,
                         0,
-                        &NetworkPacket::Data(x.entity.clone()),
+                        &packet,
                     )
                     .unwrap();
+
+                    if let Some(diagnostics) = diagnostics.as_mut() {
+                        let mut diagnostics = diagnostics.lock().unwrap();
+                        diagnostics.sent_packets.push_back(PacketRow {
+                            time: Instant::now(),
+                            packet: format!("{:?}", packet),
+                            size: context.cursend.len(),
+                        });
+                        if diagnostics.sent_packets.len() > 10 {
+                            diagnostics.sent_packets.pop_front();
+                        }
+                    }
+
+                    context.cursend_is_retransmit = false;
 
                     self.hasher.reset();
                     self.hasher.update(&context.cursend);
@@ -823,6 +898,10 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
 
                 match self.send_socket.send_to(&context.cursend).await {
                     Ok(()) => {
+                        if context.cursend_is_retransmit {
+                            self.retransmit_request_count.increment(1);
+                        }
+                        self.packets_sent.increment(1);
                         self.limiter.incur_debt(send_size as u64);
 
                         //trace!("Actually sent {} raw bytes", sent);
@@ -852,14 +931,15 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                 Ok(false)
             }
             msg = receive => {
+                //TODO: Should we perhaps not `expect` here?
                 let (size, src_addr) = msg.expect("network should not fail");
+                self.raw_packets_received.increment(1);
 
                 assert_eq!(size, self.recvbuf.len());
                 let Ok(packet): Result<NetworkPacket,_> = Deserializer::bare_deserialize(&mut Cursor::new(&self.recvbuf),0) else {
                     error!("Invalid packet received");
                     return Ok(false);
                 };
-
 
 
                 if let NetworkPacket::Data(TransmittedEntitySortable{src,..}) = &packet {
@@ -879,7 +959,20 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         }
                     }
                 }
+                self.valid_packets_received.increment(1);
 
+                if let Some(diagnostics) = diagnostics {
+                    let mut diagnostics = diagnostics.lock().unwrap();
+                    diagnostics.received_packets.push_back(PacketRow {
+                        time: Instant::now(),
+                        packet: format!("{:?}", packet),
+                        size: self.recvbuf.len(),
+                    });
+                    if diagnostics.received_packets.len() > 10 {
+                        diagnostics.received_packets.pop_front();
+                    }
+
+                }
 
 
 
@@ -897,7 +990,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                             }
                         };
 
-                        match track.process(entity, src_node, messages_received_new_buffer, &mut self.outgoing_retransmit_requests, &mut self.retransmit_responsibility_query, new_track).await {
+                        match track.process(entity, src_addr.map(|x|Address::from(x)), src_node, messages_received_new_buffer, &mut self.outgoing_retransmit_requests, &mut self.retransmit_responsibility_query, new_track).await {
                             Ok(()) => {
                                 Ok(false)
                             }
@@ -992,12 +1085,13 @@ where
     /// When the first item was put into the buffer
     buffer_life_start: Instant,
     next_periodic: tokio::time::Instant,
-    buffered_incoming_messages: Vec<(Address /*src*/, DistributorMessage)>,
+    buffered_incoming_messages: Vec<(Option<Address> /*src*/, EphemeralNodeId, DistributorMessage)>,
     nextsend: Vec<u8>,
     nextsend_obj: Option<DistributorMessage>,
     node: String, //Address as string
     debug_event_logger: Option<Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>>,
     report_head_interval: Duration,
+    diagnostics: Option<Arc<Mutex<DiagnosticsData>>>
 }
 
 impl<MSG: Message + Send> Drop for DatabaseCommunicationLoop<MSG>
@@ -1026,6 +1120,10 @@ pub struct DatabaseCommunicationConfig {
     ///
     /// This is basically never recommended, but can possibly be useful for troubleshooting.
     pub disable_retransmit: bool,
+    /// Enable collection of in-memory diagnostics logs.
+    ///
+    /// This in turn enables use of the ratatui feature, to render a TUI debug UI
+    pub enable_diagnostics: bool,
 }
 const REPORT_HEAD_INTERVAL_DEFAULT: Duration = Duration::from_secs(5);
 
@@ -1042,6 +1140,7 @@ impl Default for DatabaseCommunicationConfig {
             periodic_message_interval: REPORT_HEAD_INTERVAL_DEFAULT,
             initial_ephemeral_node_id: None,
             disable_retransmit: false,
+            enable_diagnostics: false,
         }
     }
 }
@@ -1053,17 +1152,18 @@ pub(crate) trait SenderLoopTrait<E> {
     async fn pump(
         &mut self,
         context: &mut ExecutionContext<E>,
-        messages_received: &mut Vec<(Address, Vec<u8>)>,
+        messages_received: &mut Vec<(Option<Address>, EphemeralNodeId, Vec<u8>)>,
         messages_to_transmit_rx: &mut Vec<Vec<u8>>,
         node_id_collision_detected: &mut bool,
+        inspector: Option<&Mutex<DiagnosticsData>>,
     ) -> Result<bool /*quit*/>;
 }
 
 impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
-    fn process_packet(&mut self, src: Address, packet: Vec<u8>) -> Result<()> {
+    fn process_packet(&mut self, src_addr: Option<Address>, src: EphemeralNodeId, packet: Vec<u8>) -> Result<()> {
         let msg: DistributorMessage = Deserializer::bare_deserialize(&mut Cursor::new(&packet), 0)?;
         trace!("Received DistributorMessage {:?}", msg);
-        self.buffered_incoming_messages.push((src, msg));
+        self.buffered_incoming_messages.push((src_addr, src, msg));
         Ok(())
     }
     fn process_messages(&mut self, now: tokio::time::Instant) -> Result<()> {
@@ -1071,13 +1171,32 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
             return Ok(());
         }
         let mut database = self.database.lock().unwrap();
-        if let Some(dbg) = &mut self.debug_event_logger {
+        if self.debug_event_logger.is_some() || self.diagnostics.is_some() {
             for msg in self.buffered_incoming_messages.iter() {
-                dbg(DebugEvent {
-                    node: ArrayString::from(&self.node).unwrap_or_else(|_| Default::default()),
-                    time: Instant::now(),
-                    msg: DebugEventMsg::Receive(msg.1.debug_format::<MSG>()?),
-                });
+
+                if let Some(diagnostics) = self.diagnostics.as_ref() {
+                    let mut diagnostics = diagnostics.lock().unwrap();
+                    diagnostics.received_messages.push_back(
+                        MessageRow {
+                            time: Instant::now(),
+                            //TODO: Better format here
+                            message: msg.2.debug_format::<MSG>()?,
+                            from: msg.1,
+                            src_addr: msg.0
+                        }
+                    );
+                    if diagnostics.received_messages.len() > 10 {
+                        diagnostics.received_messages.pop_front();
+                    }
+                }
+
+                if let Some(dbg) = &mut self.debug_event_logger {
+                    dbg(DebugEvent {
+                        node: ArrayString::from(&self.node).unwrap_or_else(|_| Default::default()),
+                        time: Instant::now(),
+                        msg: DebugEventMsg::Receive(msg.2.debug_format::<MSG>()?),
+                    });
+                }
             }
         }
 
@@ -1090,7 +1209,21 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
         Ok(())
     }
 
-    fn debug_record(&mut self, msg: &DistributorMessage) -> Result<()> {
+    fn debug_record_sent(&mut self, msg: &DistributorMessage) -> Result<()> {
+        if let Some(data) = &mut self.diagnostics {
+            let mut data = data.lock().unwrap();
+            data.sent_messages.push_back(MessageRow {
+                time: Instant::now(),
+                //TODO: Add "ratatui_format" method, with ratatui coloring!
+                message: msg.debug_format::<MSG>()?,
+                from: *self.distributor.ephemeral_node_id.get(),
+                src_addr: None,
+            });
+            if data.sent_messages.len() > 10 {
+                data.sent_messages.pop_front();
+            }
+
+        }
         if let Some(dbg) = &mut self.debug_event_logger {
             dbg(DebugEvent {
                 node: ArrayString::from(&self.node).unwrap_or_else(|_| Default::default()),
@@ -1130,13 +1263,13 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
         self.nextsend.clear();
         let mut buffer_timer_instant = None;
         let mut context = sender.make_context()?;
-        let mut messages_received: Vec<(Address, Vec<u8>)> = Vec::new();
+        let mut messages_received: Vec<(Option<Address>, EphemeralNodeId, Vec<u8>)> = Vec::new();
         let mut message_to_transmit: Vec<Vec<u8>> = Vec::new();
         loop {
             track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
 
             for message in messages_received.drain(..) {
-                if let Err(err) = self.process_packet(message.0, message.1.clone()) {
+                if let Err(err) = self.process_packet(message.0,message.1, message.2.clone()) {
                     error!("Error processing incoming packet: {:?}", err);
                 }
             }
@@ -1182,7 +1315,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                         self.nextsend.clear();
                     }
                     result?;
-                    if self.debug_event_logger.is_some() {
+                    if self.debug_event_logger.is_some() || self.diagnostics.is_some() {
                         self.nextsend_obj = Some(msg);
                     }
                 }
@@ -1192,7 +1325,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                 //let permit = self.sender_tx.reserve().await?;
                 if !self.nextsend.is_empty() {
                     if let Some(msg) = self.nextsend_obj.take() {
-                        self.debug_record(&msg)?;
+                        self.debug_record_sent(&msg)?;
                     }
                     message_to_transmit.push(std::mem::take(&mut self.nextsend));
                 }
@@ -1200,9 +1333,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
             }
 
             let mut node_id_collision = false;
+
             select!(
                 biased;
-                _ = sender.pump(&mut context, &mut messages_received, &mut message_to_transmit, &mut node_id_collision) => {
+                _ = sender.pump(&mut context, &mut messages_received, &mut message_to_transmit, &mut node_id_collision, self.diagnostics.as_ref().map(|x|&**x)) => {
 
                 }
                 /*res = sendtask => {
@@ -1291,6 +1425,7 @@ pub struct DatabaseCommunication<MSG: Message> {
     cmd_tx: Sender<Cmd<MSG>>,
     node: String,
     initial_node_id: EphemeralNodeId,
+    diagnostics: Option<Arc<Mutex<DiagnosticsData>>>,
 }
 
 impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
@@ -1304,6 +1439,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
                 bail!("Failed to send command to background thread {:?}", err);
             }
         }
+    }
+
+    pub fn inspector_data(&self) -> Option<DiagnosticsData> {
+        Some(self.diagnostics.as_ref()?.lock().unwrap().clone())
     }
 
     pub async fn get_status(&self) -> Result<Status> {
@@ -1548,6 +1687,11 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         let database = Arc::new(Mutex::new(database));
 
         let initial_node_id = *our_node_id.get();
+
+        let diagnostics = config.enable_diagnostics.then_some(
+            Arc::new(Mutex::new(DiagnosticsData::default()))
+        );
+
         let main = DatabaseCommunicationLoop {
             distributor: Distributor::new(
                 config.periodic_message_interval,
@@ -1567,6 +1711,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             debug_event_logger: config.debug_logger,
             report_head_interval: config.periodic_message_interval,
             nextsend_obj: None,
+            diagnostics: diagnostics.clone()
         };
 
         spawn(async move { main.run(quit_tx, &mut sender_loop).await });
@@ -1576,6 +1721,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             cmd_tx,
             node,
             initial_node_id,
+            diagnostics
         })
     }
 
@@ -1709,11 +1855,11 @@ mod tests {
             let mut received = Vec::new();
             tokio::time::sleep(Duration::from_millis(100)).await;
             while mloop1
-                .run(&mut ctx, &mut received, &mut to_send, &mut false)
+                .run(&mut ctx, &mut received, &mut to_send, &mut false, None)
                 .await?
                 == false
             {
-                for (_addr, msg) in received.drain(..) {
+                for (_addr, _srcnode, msg) in received.drain(..) {
                     println!("Task1 received {} byte msg", msg.len());
                     assert!(expect.remove(&msg));
                 }
@@ -1730,11 +1876,11 @@ mod tests {
             let mut received = Vec::new();
             tokio::time::sleep(Duration::from_millis(100)).await;
             while mloop2
-                .run(&mut ctx, &mut received, &mut to_send, &mut false)
+                .run(&mut ctx, &mut received, &mut to_send, &mut false, None)
                 .await?
                 == false
             {
-                for (_addr, msg) in received.drain(..) {
+                for (_addr, _srcnode, msg) in received.drain(..) {
                     println!("Task2 received {} byte msg", msg.len());
                     assert!(expect.remove(&msg));
                 }

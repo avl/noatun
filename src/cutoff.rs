@@ -21,8 +21,8 @@ impl Default for CutOffConfig {
 }
 impl CutOffConfig {
     pub fn new(age: CutOffDuration) -> Result<Self> {
-        if age.0 < 4 {
-            bail!("CutOffConfig::new called with an invalid value '{:?}'. Minimum cutoff time is 4 minutes.", age);
+        if age.0 < 2 {
+            bail!("CutOffConfig::new called with an invalid value '{:?}'. Minimum cutoff time is 2 minutes.", age);
         }
         let stride = CutOffDuration((age.0 / 10).max(1));
 

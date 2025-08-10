@@ -308,15 +308,15 @@ mod tests {
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
-            let map = unsafe { map.get_unchecked_mut() };
-            assert_eq!(map.0.len(), 0);
+            let mut map = unsafe { map.map_unchecked_mut(|x|&mut x.0) };
+            assert_eq!(map.len(), 0);
 
-            map.0.entry(42).or_insert(&420);
+            map.as_mut().entry(42).or_insert(&420);
 
-            let val = map.0.get(&42).unwrap();
+            let val = map.get(&42).unwrap();
             assert_eq!(val.get(), 420);
 
-            let mut entry = map.0.entry(42);
+            let mut entry = map.as_mut().entry(42);
             match &mut entry {
                 NoatunHashMapEntry::Occupied(ref mut occ) => {
                     assert_eq!(occ.get().get(), 420);
@@ -327,17 +327,17 @@ mod tests {
                 }
             }
             entry.or_insert(&840);
-            let val = map.0.get(&42).unwrap();
+            let val = map.get(&42).unwrap();
             assert_eq!(val.get(), 420);
 
-            let entry = map.0.entry(30);
+            let entry = map.as_mut().entry(30);
             let v = entry.or_default();
             assert_eq!(v.get(), 0);
 
-            let val = map.0.get(&30).unwrap();
+            let val = map.get(&30).unwrap();
             assert_eq!(val.get(), 0);
 
-            let val = match map.0.entry(50) {
+            let val = match map.as_mut().entry(50) {
                 NoatunHashMapEntry::Occupied(_) => {
                     unreachable!()
                 }
@@ -345,7 +345,7 @@ mod tests {
             };
             assert_eq!(val.get(), 500);
 
-            let val = map.0.get(&50).unwrap();
+            let val = map.get(&50).unwrap();
             assert_eq!(val.get(), 500);
         })
         .unwrap();
@@ -365,15 +365,15 @@ mod tests {
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
-            let map = unsafe { map.get_unchecked_mut() };
-            assert_eq!(map.0.len(), 0);
+            let mut map = unsafe { map.map_unchecked_mut(|x|&mut x.0) };
+            assert_eq!(map.len(), 0);
 
-            map.0.insert_internal(42, &42);
+            map.insert_internal(42, &42);
 
-            let val = map.0.get(&42).unwrap();
+            let val = map.get(&42).unwrap();
             assert_eq!(val.get(), 42);
 
-            let vals: Vec<u32> = map.0.iter().map(|(k, _)| *k).collect();
+            let vals: Vec<u32> = map.iter().map(|(k, _)| *k).collect();
             assert_eq!(vals, [42]);
         })
         .unwrap();

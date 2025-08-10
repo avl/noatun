@@ -17,9 +17,10 @@ use savefile_derive::Savefile;
 use tracing::trace;
 
 use tui_textarea::TextArea;
-use noatun::data_types::{NoatunHashMap, NoatunString,  OpaqueNoatunVec};
-use noatun::{noatun_object, Database, DatabaseSettings, Message, MessageId, NoatunTime, Object, OpenMode, SavefileMessageSerializer};
+use noatun::data_types::{NoatunHashMap, NoatunHashMapEntry, NoatunString, NoatunVec};
+use noatun::{noatun_object, CutOffDuration, Database, DatabaseSettings, Message, MessageId, NoatunTime, Object, OpenMode, SavefileMessageSerializer};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
+use noatun::ratatui_inspector::RatatuiInspector;
 use noatun::simple_metrics::SimpleMetricsRecorder;
 
 noatun_object!(
@@ -34,8 +35,7 @@ noatun_object!(
     struct Issue {
         pod created: NoatunTime,
         object reporter: NoatunString,
-        object heading: NoatunString,
-        object description: OpaqueNoatunVec<DescriptionText>,
+        object description: NoatunVec<DescriptionText>,
     }
 );
 
@@ -58,6 +58,10 @@ enum IssueMessage {
     },
     RemoveIssue {
         id: String,
+    },
+    RenameIssue {
+        id: String,
+        id_new: String,
     }
 }
 
@@ -66,7 +70,7 @@ impl Message for IssueMessage {
     type Serializer = SavefileMessageSerializer<IssueMessage>;
 
     fn apply(&self, message_id: MessageId, root: Pin<&mut Self::Root>) {
-        let root = root.pin_project();
+        let mut root = root.pin_project();
         match self {
             IssueMessage::AddIssue { reporter, heading } => {
                 let issue = root.issues.get_insert(heading.as_str());
@@ -75,8 +79,7 @@ impl Message for IssueMessage {
                 issue.created.set(message_id.timestamp());
                 trace!("assigning reporter");
                 issue.reporter.assign(reporter);
-                trace!("assigning heading");
-                issue.heading.assign(heading);
+
             }
             IssueMessage::RemoveIssue { id } => {
                 root.issues.remove(id.as_str());
@@ -89,6 +92,17 @@ impl Message for IssueMessage {
                         text: text.to_string(),
                         added_by: reporter.to_string(),
                     });
+                }
+            }
+            IssueMessage::RenameIssue { id, id_new } => {
+                if !root.issues.as_mut().contains_key(id_new) {
+                    match root.issues.as_mut().entry(id.to_string()) {
+                        NoatunHashMapEntry::Occupied(o) => {
+                            let prev = o.remove();
+                            root.issues.as_mut().insert(id_new.as_str(), &prev);
+                        }
+                        NoatunHashMapEntry::Vacant(_) => {}
+                    }
                 }
             }
         }
@@ -122,7 +136,8 @@ fn main() -> Result<()> {
 enum Popup {
     None,
     AddHeading(TextArea<'static>),
-    AddText(TextArea<'static>)
+    AddText(TextArea<'static>),
+    Rename(String, TextArea<'static>)
 }
 
 impl Popup {
@@ -142,7 +157,10 @@ struct AppState {
     user: String,
     comms: DatabaseCommunication<IssueMessage>,
     popup: Popup,
-    recorder: SimpleMetricsRecorder
+    diagnostics: bool,
+    recorder: SimpleMetricsRecorder,
+    inspector: RatatuiInspector,
+
 }
 
 impl AppState {
@@ -150,6 +168,12 @@ impl AppState {
         self.comms.blocking_add_message(IssueMessage::AddIssue {
             reporter: self.user.clone(),
             heading: heading.to_string(),
+        })
+    }
+    pub fn rename(&mut self, old: String, new: String) -> Result<()> {
+        self.comms.blocking_add_message(IssueMessage::RenameIssue {
+            id: old,
+            id_new: new,
         })
     }
     pub fn add_text(&mut  self, text: &str) -> Result<()> {
@@ -173,12 +197,19 @@ fn start_communication() -> Result<DatabaseCommunication<IssueMessage>> {
     let db: Database<IssueMessage> =
         Database::create_new(
             "issue_db",
-            OpenMode::OpenCreate, DatabaseSettings::default())?;
+            OpenMode::OpenCreate, DatabaseSettings {
+                cutoff_interval: CutOffDuration::from_minutes(2),
+                ..DatabaseSettings::default()
+            })?;
 
-    let distributed_db = DatabaseCommunication::new(
+    let mut distributed_db = DatabaseCommunication::new(
         db,
-        DatabaseCommunicationConfig::default(),
+        DatabaseCommunicationConfig {
+            enable_diagnostics: true,
+            ..Default::default()
+        },
     )?;
+
     Ok(distributed_db)
 }
 
@@ -191,6 +222,7 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
     recorder.clone().register_global();
 
     let comms = start_communication()?;
+
 
 
     let user = std::env::var("USER").unwrap_or("default-user".to_string());
@@ -235,13 +267,41 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
         user,
         comms,
         popup: Popup::None,
+        diagnostics: false,
         recorder,
+        inspector: RatatuiInspector::new(),
     };
 
 
     loop {
+
         terminal.draw(|frame|{
-            draw(frame, &mut app).expect("rendering should not fail");
+            if app.diagnostics {
+                app.inspector.draw(frame, &app.recorder, &app.comms);
+            } else {
+                draw(frame, &mut app).expect("rendering should not fail");
+            }
+
+
+            match &mut app.popup {
+                Popup::None => {}
+                Popup::AddHeading(text) => {
+                    let area = popup_area(frame.area(), 75);
+                    frame.render_widget(Clear, area); //this clears out the background
+                    frame.render_widget(&*text, area);
+                }
+                Popup::AddText(text) => {
+                    let area = popup_area(frame.area(), 75);
+                    frame.render_widget(Clear, area); //this clears out the background
+                    frame.render_widget(&*text, area);
+                }
+                Popup::Rename(old,new) => {
+                    let area = popup_area(frame.area(), 75);
+                    frame.render_widget(Clear, area); //this clears out the background
+                    frame.render_widget(&*new, area);
+                }
+            }
+
         })?;
 
         if poll_input(&mut app)? {
@@ -260,14 +320,15 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
 
     let rows: Vec<Row> = app.comms.with_root(|root|{
         let mut rows = Vec::new();
-        for (idx,(k,v)) in root.issues.iter().enumerate() {
-
-            if Some(idx) == app.table_state.selected() {
-                app.selected_heading = Some(k.to_string());
-            }
-            rows.push((v.created.get(), v.heading.detach(), v.reporter.detach()));
+        for (k,v) in root.issues.iter() {
+            rows.push((v.created.get(), k.detach(), v.reporter.detach()));
         }
         rows.sort();
+        for (idx, item) in rows.iter().enumerate() {
+            if Some(idx) == app.table_state.selected() {
+                app.selected_heading = Some(item.1.to_string());
+            }
+        }
         app.row_count = rows.len();
         rows.into_iter().map(|(time,heading,count)|Row::new([
             time.to_string(), heading, count.to_string()
@@ -316,8 +377,6 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
         ])).collect()
     });
 
-    compile_error!("Add more metrics? Maybe add ratatui UI plugin-feature that shows update heads, message logs etc?");
-
     let main_status_layout = Layout::vertical([
         Length(3), //Keybinds
         Min(0), // List
@@ -358,7 +417,7 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
                         ratatui::prelude::Line::from(
                             vec![
                                 Span::styled("Heading:   ", Style::default().bold()),
-                                Span::styled(issue.heading, Style::default()),
+                                Span::styled(selected_row, Style::default()),
                             ]),
                     ]).block(issue_block),
                 time_heading_area);
@@ -386,7 +445,8 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
     frame.render_widget(
         Paragraph::new(Line::from(
 
-                ratatui::prelude::Span::styled("A - Add entry, DEL - Delete entry, T - Add text", Style::default()),
+            compile_error!("Consider if F2 rename is a good thing to show off. It doesn't really work, doing it this way, since we don't track causality. A real app should use surrogate keys.")
+                ratatui::prelude::Span::styled("A - Add entry, DEL - Delete entry, F2 - Rename entry, T - Add text, D - Diagnostics", Style::default()),
             )).block(keybinds_block),
         keybinds_area);
 
@@ -403,21 +463,6 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
     if app.selected_heading.is_some() {
         let text_table = app.text_table.clone().rows(text_rows);
         frame.render_stateful_widget(text_table.block(text_block), descriptions_label_area, &mut &mut app.text_table_state);
-    }
-
-
-    match &mut app.popup {
-        Popup::None => {}
-        Popup::AddHeading(text) => {
-            let area = popup_area(frame.area(), 75);
-            frame.render_widget(Clear, area); //this clears out the background
-            frame.render_widget(&*text, area);
-        }
-        Popup::AddText(text) => {
-            let area = popup_area(frame.area(), 75);
-            frame.render_widget(Clear, area); //this clears out the background
-            frame.render_widget(&*text, area);
-        }
     }
 
     Ok(())
@@ -439,6 +484,9 @@ fn popup_area(area: Rect, percent_x: u16) -> Rect {
 fn poll_input(app: &mut AppState) -> Result<bool> {
     if event::poll(Duration::from_millis(250)).context("event poll failed")? {
         let event = event::read().context("event read failed")?;
+        if app.diagnostics {
+            app.inspector.input(&event);
+        }
         match event {
             input if app.popup.is_some() => {
 
@@ -446,6 +494,7 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                 match &mut app.popup {
                     Popup::None => {}
                     Popup::AddHeading(w) |
+                    Popup::Rename(_,w) |
                     Popup::AddText(w) => {
 
                         match &input {
@@ -463,6 +512,11 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                                         let text: String = w.lines()[0].to_string();
                                         app.add_text(&text)?;
                                     }
+                                    Popup::Rename(old, new) => {
+                                        let old = old.to_string();
+                                        let text: String = new.lines()[0].to_string();
+                                        app.rename(old, text)?;
+                                    }
                                     Popup::None => {}
                                 }
                                 app.popup = Popup::None;
@@ -477,7 +531,14 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
             }
             Event::Key(key) => {
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
+                    KeyCode::Esc => {
+                        if app.diagnostics {
+                            app.diagnostics = false;
+                        } else {
+                            return Ok(true);
+                        }
+                    }
+                    KeyCode::Char('q') => {
                         return Ok(true);
                     }
                     KeyCode::Delete => {
@@ -485,6 +546,13 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                             let heading = heading.to_string();
                             app.delete_event(&heading)?;
                             return Ok(false);
+                        }
+                    }
+                    KeyCode::F(2) => {
+                        if let Some(heading) = &app.selected_heading {
+                            let mut text = TextArea::default();
+                            text.set_block(Block::new().borders(Borders::ALL).title("New heading"));
+                            app.popup = Popup::Rename(heading.to_string(), text);
                         }
                     }
                     KeyCode::Char('a') => {
@@ -496,6 +564,10 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                         let mut text = TextArea::default();
                         text.set_block(Block::new().borders(Borders::ALL).title("Enter text"));
                         app.popup = Popup::AddText(text);
+                    }
+                    KeyCode::Char('d') => {
+                        app.diagnostics = !app.diagnostics;
+                        app.popup = Popup::None;
                     }
                     KeyCode::Up => {
                         let next = app.table_state.selected().unwrap_or(0).saturating_sub(1);

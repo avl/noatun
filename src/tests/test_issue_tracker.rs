@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::{Result};
 use chrono::{DateTime, Utc};
 use datetime_literal::datetime;
+use insta::assert_debug_snapshot;
 use rand::prelude::SmallRng;
 use savefile_derive::Savefile;
 use tokio::time::Instant;
@@ -91,7 +92,7 @@ impl Message for IssueMessage {
 fn test_issue_tracker() {
     let mut db: Database<IssueMessage> =
         Database::create_new(
-            "issue_db",
+            "test/test_issue_db",
             OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
 
     let mut sess = db.begin_session_mut().unwrap();
@@ -113,6 +114,56 @@ fn test_issue_tracker() {
         reporter: "anders".to_string(),
         heading: "test1".to_string(),
     }).unwrap();
+}
+
+
+#[test]
+fn test_issue_tracker2() {
+    let mut db: Database<IssueMessage> =
+        Database::create_new(
+            "test/test_issue_db",
+            OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
+
+
+    let mut sess = db.begin_session_mut().unwrap();
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(1)).unwrap();
+
+    sess.append_nonlocal(IssueMessage::AddIssue {
+        reporter: "user1".to_string(),
+        heading: "heading2".to_string(),
+    }).unwrap();
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(61)).unwrap();
+    sess.append_nonlocal(IssueMessage::AppendText {
+        id: "heading2".to_string(),
+        reporter: "user1".to_string(),
+
+        text: "think".to_string(),
+    }).unwrap();
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(62)).unwrap();
+
+    sess.append_nonlocal(IssueMessage::AddIssue {
+        reporter: "user1".to_string(),
+        heading: "bfgd".to_string(),
+    }).unwrap();
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(63)).unwrap();
+
+    sess.append_nonlocal(IssueMessage::RemoveIssue {
+        id: "bfgd".to_string(),
+    }).unwrap();
+
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(64)).unwrap();
+    sess.append_nonlocal(IssueMessage::AddIssue {
+        reporter: "user1".to_string(),
+        heading: "4".to_string(),
+    }).unwrap();
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(240)).unwrap();
+    sess.append_nonlocal(IssueMessage::AddIssue {
+        reporter: "user1".to_string(),
+        heading: "5".to_string(),
+    }).unwrap();
+
+    println!("Messages: {:?}", sess.get_all_messages_vec());
+    assert_debug_snapshot!(sess.get_all_messages_vec());
 }
 
 
@@ -147,6 +198,7 @@ async fn create_app(
         periodic_message_interval: Duration::from_secs(5),
         initial_ephemeral_node_id: None,
         disable_retransmit: false,
+        enable_diagnostics: false,
     };
 
     if let Some(modify) = modify {

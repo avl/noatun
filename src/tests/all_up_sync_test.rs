@@ -2,7 +2,7 @@
 #[allow(unused)]
 use crate::colors::colored_int;
 use crate::communication::{
-    DatabaseCommunication, DatabaseCommunicationConfig, 
+    DatabaseCommunication, DatabaseCommunicationConfig,
 };
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
@@ -111,6 +111,7 @@ async fn create_app(
         periodic_message_interval: Duration::from_secs(5),
         initial_ephemeral_node_id: None,
         disable_retransmit: false,
+        enable_diagnostics: false,
     };
 
     if let Some(modify) = modify {

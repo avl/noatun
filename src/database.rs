@@ -69,6 +69,7 @@ pub struct DatabaseSettings {
     pub max_file_size: usize,
     pub cutoff_interval: CutOffDuration,
 }
+
 impl Default for DatabaseSettings {
     fn default() -> Self {
         DatabaseSettings {
@@ -374,9 +375,14 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         Ok(())
     }
 
+    pub fn set_mock_time_no_advance(&mut self, time: NoatunTime) -> Result<()> {
+        self.db.set_mock_time_no_advance(time)?;
+        Ok(())
+    }
+
     /// Returns true if the message still exists.
     /// If this returns false, the message has been deleted, and *MUST* not *BE* transmitted.
-    /// 
+    ///
     /// Note, this function thus does not fail if the message to mark as transmitted
     /// does not exist, it just returns false.
     pub fn mark_transmitted(&mut self, message_id: MessageId) -> Result<bool> {
@@ -836,6 +842,14 @@ impl<MSG: Message + 'static> Database<MSG> {
     fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
         self.time_override = Some(time);
         self.maybe_advance_cutoff()?;
+        Ok(())
+    }
+
+    /// Set the current time to the given value.
+    ///
+    /// This does not advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
+    fn set_mock_time_no_advance(&mut self, time: NoatunTime) -> Result<()> {
+        self.time_override = Some(time);
         Ok(())
     }
 

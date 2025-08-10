@@ -716,6 +716,18 @@ pub enum DistributorMessage {
 }
 
 impl DistributorMessage {
+    pub fn source(&self) -> Option<EphemeralNodeId> {
+        match self {
+            DistributorMessage::ReportHeads { source, .. } => {Some(*source)}
+            DistributorMessage::SyncAllQuery(_) => {None}
+            DistributorMessage::SyncAllRequest(_) => {None}
+            DistributorMessage::SyncAllAck(_) => {None}
+            DistributorMessage::RequestUpstream { source, .. } => {Some(*source)}
+            DistributorMessage::UpstreamResponse{ source, .. } => {Some(*source)}
+            DistributorMessage::SendMessageAndAllDescendants{ source, .. } => {Some(*source)}
+            DistributorMessage::Message { source, .. } => {Some(*source)}
+        }
+    }
     pub(crate) fn message_id(&self) -> Option<MessageId> {
         match self {
             DistributorMessage::Message { message: msg, .. } => Some(msg.id),
@@ -846,8 +858,8 @@ impl SyncAllState {
 #[derive(Debug)]
 pub struct DistributorStatus {
     nominal: bool,
-    most_recent_clockdrift: HashMap<Address, tokio::time::Instant>,
-    most_recent_unsynced: HashMap<Address, tokio::time::Instant>,
+    most_recent_clockdrift: HashMap<EphemeralNodeId, tokio::time::Instant>,
+    most_recent_unsynced: HashMap<EphemeralNodeId, tokio::time::Instant>,
     have_heard_peer: bool,
     last_gc: tokio::time::Instant,
 }
@@ -1075,7 +1087,7 @@ impl Distributor {
         input: impl Iterator<Item = DistributorMessage>,
         now: Instant,
     ) -> Result<Vec<DistributorMessage>> {
-        self.receive_message(database, input.map(|x| (Address::from("src"), x)), now)?;
+        self.receive_message(database, input.map(|x| (None,x.source().unwrap_or(EphemeralNodeId(0)), x)), now)?;
         let ret = self.outbuf.outbuf.drain(..).collect();
         self.outbuf = QueryableOutbuffer::new(self.periodic_message_interval, now);
         Ok(ret)
@@ -1090,15 +1102,16 @@ impl Distributor {
     }
 
     /// Note, loopback messages should be detected by caller
-    /// This method will interpret incoming node-ids identical to our own, as a node id
+    /// This method will interpret incoming node-ids identical to our own as a node id
     /// collision, not as a message loopback
     pub fn receive_message<MSG: Message>(
         &mut self,
         database: &mut Database<MSG>,
-        input: impl Iterator<Item = (Address, DistributorMessage)>,
+        input: impl Iterator<Item = (Option<Address>, EphemeralNodeId, DistributorMessage)>,
         now: tokio::time::Instant,
     ) -> Result<()> {
         let mut database = database.begin_session_mut()?;
+        database.maybe_advance_cutoff()?;
         let mut accumulated_heads: IndexMap<
             MessageId,
             Vec<(
@@ -1129,7 +1142,7 @@ impl Distributor {
             }
         };
 
-        for (src, item) in input {
+        for (src_addr, src, item) in input {
             self.neighborhood.record_message(&item);
 
             self.distributor_state.have_heard_peer = true;
@@ -1194,8 +1207,10 @@ impl Distributor {
                                 }
 
                                 debug!("Acceptability: Nominal");
+
                                 self.distributor_state.most_recent_unsynced.remove(&src);
                                 self.distributor_state.most_recent_clockdrift.remove(&src);
+
                                 self.neighborhood
                                     .fast_pather
                                     .write()
@@ -1209,9 +1224,11 @@ impl Distributor {
                             }
                             Acceptability::Unacceptable => {
                                 debug!("Acceptability: Unacceptable");
-                                self.distributor_state
-                                    .most_recent_unsynced
-                                    .insert(src, tokio::time::Instant::now().into());
+                                {
+                                    self.distributor_state
+                                        .most_recent_unsynced
+                                        .insert(src, tokio::time::Instant::now().into());
+                                }
 
                                 if self.sync_all_inprogress.idle() {
                                     self.sync_all_inprogress = SyncAllState::Starting;
@@ -1716,7 +1733,6 @@ impl Distributor {
         _now: Instant,
     ) -> Result<Vec<AccumulatedMessage>> {
         let mut released_list = Vec::new();
-        database.maybe_advance_cutoff()?;
 
         message_list.sort_by_key(|x| x.msg.id);
 

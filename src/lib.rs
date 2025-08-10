@@ -66,6 +66,9 @@ mod projection_store;
 #[cfg(feature = "debug_color")]
 mod term_colors;
 mod undo_store;
+pub mod diagnostics;
+
+pub mod ratatui_inspector;
 
 /// The noatun book, in rust code
 #[cfg(doctest)]
@@ -509,6 +512,12 @@ const ASSURE_SUPPORTED_USIZE: () = const {
     }
 };
 
+impl MessageId {
+    pub fn short(&self) -> String {
+        format!("{:08x}", self.data[3])
+    }
+}
+
 impl Display for MessageId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let time_ms = self.timestamp();
@@ -531,7 +540,7 @@ impl Display for MessageId {
         #[cfg(not(feature = "debug_color"))]
         write!(
             f,
-            "{:?}-{:x}-{:x}-{:x}",
+            "{:?}-{:04x}-{:08x}-{:08x}",
             time_str,
             (self.data[1] & 0xffff).wrapping_sub(0x4000) as i32,
             self.data[2],
