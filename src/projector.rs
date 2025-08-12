@@ -11,6 +11,7 @@ use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use std::pin::Pin;
 use tracing::{error, info, trace};
+use crate::database::MessageInfo;
 
 pub(crate) struct Projector<MSG: Message> {
     messages: OnDiskMessageStore<MSG>,
@@ -232,6 +233,26 @@ impl<MSG: Message + 'static> Projector<MSG> {
         &self,
     ) -> Result<impl Iterator<Item = MessageFrame<MSG>> + use<'_, MSG>> {
         self.messages.get_all_messages()
+    }
+
+    pub fn get_all_messages_meta<'a>(&'a self,
+                                 context: &'a DatabaseContextData
+    ) -> Result<impl Iterator<Item = MessageInfo<MSG>> + use<'a, MSG>> {
+        Ok(self.messages.get_all_messages_with_index()?.map(|(seq, msg)|{
+
+            let reads: Vec<SequenceNr> = context.incoming_read_dependencies(seq).iter(context).map(|x|**x).collect();
+
+            let writes: Vec<SequenceNr> = context.overwriter_of(seq).iter(context).map(|x|**x).collect();
+            let (live,flags) = context.get_live_values(seq);
+            MessageInfo {
+                seq,
+                live,
+                flags,
+                frame: msg,
+                reads,
+                writes,
+            }
+        }))
     }
     pub fn get_all_messages_with_children(
         &self,

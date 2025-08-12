@@ -350,6 +350,44 @@ mod tests {
         })
         .unwrap();
     }
+    #[test]
+    fn test_hashmap_miri_entry1() {
+        let mut db: Database<DummyTestMessage<NoatunHashMap<u32, NoatunCell<u32>>>> =
+            Database::create_in_memory(
+                10000,
+                DatabaseSettings {
+                    mock_time: Some(datetime!(2021-01-01 Z).into()),
+                    projection_time_limit: None,
+                    ..DatabaseSettings::default()
+                },
+            )
+                .unwrap();
+        let mut db = db.begin_session_mut().unwrap();
+        db.with_root_mut(|map| {
+            let mut map = unsafe { map.map_unchecked_mut(|x|&mut x.0) };
+            assert_eq!(map.len(), 0);
+
+            map.insert_internal(42, &42);
+            match map.as_mut().entry(42) {
+                NoatunHashMapEntry::Occupied(mut occ) => {
+                    assert_eq!(**occ.get(), 42);
+                    assert_eq!(**occ.get_mut(), 42);
+                    occ.insert(&43);
+                }
+                NoatunHashMapEntry::Vacant(_) => {}
+            }
+            let val = map.get(&42).unwrap();
+            assert_eq!(val.get(), 43);
+            match map.as_mut().entry(42) {
+                NoatunHashMapEntry::Occupied(mut occ) => {
+                    occ.remove();
+                }
+                NoatunHashMapEntry::Vacant(_) => {}
+            }
+            assert!(map.is_empty());
+        })
+            .unwrap();
+    }
 
     #[test]
     fn test_hashmap_miri0() {
@@ -391,10 +429,11 @@ mod tests {
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|mut map| {
-            map.0.insert_internal("hello", &42);
-            assert_eq!(**map.0.get("hello").unwrap(), 42);
-            assert_eq!(map.0.pop("hello"), Some(42));
-            assert!(map.0.get("hello").is_none());
+            let mut map = map.inner_mut();
+            map.insert_internal("hello", &42);
+            assert_eq!(**map.get("hello").unwrap(), 42);
+            assert_eq!(map.as_mut().pop("hello"), Some(42));
+            assert!(map.get("hello").is_none());
         })
         .unwrap();
     }

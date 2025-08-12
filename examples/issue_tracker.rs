@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::pin::Pin;
 use std::time::Duration;
 use anyhow::{Context, Result};
@@ -36,12 +37,14 @@ noatun_object!(
         pod created: NoatunTime,
         object reporter: NoatunString,
         object description: NoatunVec<DescriptionText>,
+        object aliases: NoatunVec<NoatunString>,
     }
 );
 
 noatun_object!(
     struct IssueDb {
         object issues: NoatunHashMap<NoatunString, Issue>,
+        object aliases: NoatunHashMap<NoatunString, NoatunString>,
     }
 );
 
@@ -60,8 +63,25 @@ enum IssueMessage {
         id: String,
     },
     RenameIssue {
+        old_id: String,
+        new_id: String,
+    },
+    ReassignIssue {
         id: String,
-        id_new: String,
+        new_reporter: String,
+    }
+}
+
+//TODO: Persist checksum and make sure we automatically reproject
+
+fn remap<'a>(root: &IssueDbPinProject, id: &String) -> String {
+    let mut ret = id.clone();
+    loop {
+        if let Some(new) = root.aliases.get(&ret) {
+            ret = new.to_string();
+        } else {
+            return ret;
+        }
     }
 }
 
@@ -73,6 +93,7 @@ impl Message for IssueMessage {
         let mut root = root.pin_project();
         match self {
             IssueMessage::AddIssue { reporter, heading } => {
+                let heading = remap(&root, heading);
                 let issue = root.issues.get_insert(heading.as_str());
                 let issue = issue.pin_project();
                 trace!("assigning created");
@@ -82,9 +103,29 @@ impl Message for IssueMessage {
 
             }
             IssueMessage::RemoveIssue { id } => {
-                root.issues.remove(id.as_str());
+
+                //TODO: Remove all occurrences of "compile_error"
+                
+                compile_error!("Check why repro1/<db> isn't pruned correctly.\
+Strategy:
+ * Add read-deps and overwrites-info to ratatui-ui
+ * Understand why pruning doesn't occur - any more than the bug in NoatunVec where it didn't actually clear the use counts?
+ * Consider if we should have UntrackedString as key in hashmaps
+ * Maybe make read-deps more first class, and more exposed to dev? Document clearly for al
+   ops if they cause read deps. Make it possible to manually add read-deps?
+
+
+
+                ")
+                let id = remap(&root, id).to_owned();
+                if let Some(removed) = root.issues.as_mut().pop(id.as_str()) {
+                    for alias in removed.aliases {
+                        root.aliases.as_mut().remove(alias.as_str());
+                    }
+                }
             }
             IssueMessage::AppendText { id, reporter, text } => {
+                let id = remap(&root, id);
                 if let Some(issue) = root.issues.get_mut_val(id.as_str()) {
                     let issue = issue.pin_project();
                     issue.description.push(DescriptionTextDetached {
@@ -94,16 +135,26 @@ impl Message for IssueMessage {
                     });
                 }
             }
-            IssueMessage::RenameIssue { id, id_new } => {
-                if !root.issues.as_mut().contains_key(id_new) {
+            IssueMessage::RenameIssue { old_id: id, new_id: id_new } => {
+                if !root.issues.as_mut().contains_key(id_new) && !root.aliases.as_mut().contains_key(id) {
                     match root.issues.as_mut().entry(id.to_string()) {
-                        NoatunHashMapEntry::Occupied(o) => {
-                            let prev = o.remove();
+                        NoatunHashMapEntry::Occupied(mut o) => {
+                            let mut prev = o.remove();
+                            prev.aliases.push(id.to_string());
                             root.issues.as_mut().insert(id_new.as_str(), &prev);
+                            root.aliases.as_mut().insert(id.as_str(), id_new);
                         }
                         NoatunHashMapEntry::Vacant(_) => {}
                     }
                 }
+            }
+            IssueMessage::ReassignIssue { id, new_reporter } => {
+                let id = remap(&root, id);
+                if let Some(issue) = root.issues.get_mut_val(id.as_str()) {
+                    let issue = issue.pin_project();
+                    issue.reporter.init_from_detached(new_reporter);
+                }
+
             }
         }
     }
@@ -137,7 +188,8 @@ enum Popup {
     None,
     AddHeading(TextArea<'static>),
     AddText(TextArea<'static>),
-    Rename(String, TextArea<'static>)
+    Reassign(TextArea<'static>),
+    Rename(TextArea<'static>)
 }
 
 impl Popup {
@@ -170,11 +222,23 @@ impl AppState {
             heading: heading.to_string(),
         })
     }
-    pub fn rename(&mut self, old: String, new: String) -> Result<()> {
-        self.comms.blocking_add_message(IssueMessage::RenameIssue {
-            id: old,
-            id_new: new,
-        })
+    pub fn reassign(&mut self, new_reporter: String) -> Result<()> {
+        if let Some(selected_heading) = &self.selected_heading {
+            self.comms.blocking_add_message(IssueMessage::ReassignIssue {
+                id: selected_heading.to_string(),
+                new_reporter
+            })?;
+        }
+        Ok(())
+    }
+    pub fn rename(&mut self ,new: String) -> Result<()> {
+        if let Some(selected_heading) = &self.selected_heading {
+            self.comms.blocking_add_message(IssueMessage::RenameIssue {
+                old_id: selected_heading.to_string(),
+                new_id: new,
+            })?;
+        }
+        Ok(())
     }
     pub fn add_text(&mut  self, text: &str) -> Result<()> {
         if let Some(selected_heading) = &self.selected_heading {
@@ -285,20 +349,13 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
 
             match &mut app.popup {
                 Popup::None => {}
-                Popup::AddHeading(text) => {
+                Popup::AddHeading(text)|
+                Popup::AddText(text)|
+                Popup::Reassign(text)|
+                Popup::Rename(text) => {
                     let area = popup_area(frame.area(), 75);
                     frame.render_widget(Clear, area); //this clears out the background
                     frame.render_widget(&*text, area);
-                }
-                Popup::AddText(text) => {
-                    let area = popup_area(frame.area(), 75);
-                    frame.render_widget(Clear, area); //this clears out the background
-                    frame.render_widget(&*text, area);
-                }
-                Popup::Rename(old,new) => {
-                    let area = popup_area(frame.area(), 75);
-                    frame.render_widget(Clear, area); //this clears out the background
-                    frame.render_widget(&*new, area);
                 }
             }
 
@@ -380,7 +437,7 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
     let main_status_layout = Layout::vertical([
         Length(3), //Keybinds
         Min(0), // List
-        Length((2+metrics_paragraph.line_count(frame.area().width-2) as u16).min(20)), //Status
+        Length((2+metrics_paragraph.line_count(frame.area().width.saturating_sub(2)) as u16).min(20)), //Status
     ]);
 
     let [keybinds_area, list_area, status_area] = main_status_layout.areas(frame.area());
@@ -444,9 +501,7 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
 
     frame.render_widget(
         Paragraph::new(Line::from(
-
-            compile_error!("Consider if F2 rename is a good thing to show off. It doesn't really work, doing it this way, since we don't track causality. A real app should use surrogate keys.")
-                ratatui::prelude::Span::styled("A - Add entry, DEL - Delete entry, F2 - Rename entry, T - Add text, D - Diagnostics", Style::default()),
+                ratatui::prelude::Span::styled("A - Add entry, DEL - Delete entry, F2 - Rename entry, R - Reassign, T - Add text, D - Diagnostics", Style::default()),
             )).block(keybinds_block),
         keybinds_area);
 
@@ -494,7 +549,8 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                 match &mut app.popup {
                     Popup::None => {}
                     Popup::AddHeading(w) |
-                    Popup::Rename(_,w) |
+                    Popup::Reassign(w) |
+                    Popup::Rename(w) |
                     Popup::AddText(w) => {
 
                         match &input {
@@ -512,10 +568,13 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                                         let text: String = w.lines()[0].to_string();
                                         app.add_text(&text)?;
                                     }
-                                    Popup::Rename(old, new) => {
-                                        let old = old.to_string();
+                                    Popup::Rename( new) => {
                                         let text: String = new.lines()[0].to_string();
-                                        app.rename(old, text)?;
+                                        app.rename(text)?;
+                                    }
+                                    Popup::Reassign( new) => {
+                                        let text: String = new.lines()[0].to_string();
+                                        app.reassign(text)?;
                                     }
                                     Popup::None => {}
                                 }
@@ -549,10 +608,10 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                         }
                     }
                     KeyCode::F(2) => {
-                        if let Some(heading) = &app.selected_heading {
+                        if app.selected_heading.is_some() {
                             let mut text = TextArea::default();
                             text.set_block(Block::new().borders(Borders::ALL).title("New heading"));
-                            app.popup = Popup::Rename(heading.to_string(), text);
+                            app.popup = Popup::Rename(text);
                         }
                     }
                     KeyCode::Char('a') => {
@@ -561,9 +620,18 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                         app.popup = Popup::AddHeading(text);
                     }
                     KeyCode::Char('t') => {
-                        let mut text = TextArea::default();
-                        text.set_block(Block::new().borders(Borders::ALL).title("Enter text"));
-                        app.popup = Popup::AddText(text);
+                        if app.selected_heading.is_some() {
+                            let mut text = TextArea::default();
+                            text.set_block(Block::new().borders(Borders::ALL).title("Enter text"));
+                            app.popup = Popup::AddText(text);
+                        }
+                    }
+                    KeyCode::Char('r') => {
+                        if app.selected_heading.is_some() {
+                            let mut text = TextArea::default();
+                            text.set_block(Block::new().borders(Borders::ALL).title("Enter text"));
+                            app.popup = Popup::Reassign(text);
+                        }
                     }
                     KeyCode::Char('d') => {
                         app.diagnostics = !app.diagnostics;

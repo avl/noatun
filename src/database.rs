@@ -98,6 +98,16 @@ impl<MSG: Message> Drop for DatabaseSessionMut<'_, MSG> {
     }
 }
 
+pub struct MessageInfo<MSG: Message> {
+    pub seq: SequenceNr,
+    // Live usages remaining
+    pub live: u32,
+    pub flags: &'static str,
+    pub frame: MessageFrame<MSG>,
+    pub reads: Vec<SequenceNr>,
+    pub writes: Vec<SequenceNr>
+}
+
 impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
@@ -157,6 +167,10 @@ impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
     /// Retrieve all messages in the system in a Vec
     pub fn get_all_messages_vec(&self) -> Result<Vec<MessageFrame<MSG>>> {
         Ok(self.db.get_all_messages()?.collect())
+    }
+    /// Retrieve all messages in the system in a Vec
+    pub fn get_all_messages_meta_vec(&self) -> Result<Vec<MessageInfo<MSG>>> {
+        Ok(self.db.get_all_messages_meta()?.collect())
     }
     pub(crate) fn get_all_messages_with_children(
         &self,
@@ -629,6 +643,11 @@ impl<MSG: Message + 'static> Database<MSG> {
     fn get_all_messages(&self) -> Result<impl Iterator<Item = MessageFrame<MSG>> + use<'_, MSG>> {
         self.message_store.get_all_messages()
     }
+    fn get_all_messages_meta(&self) -> Result<impl Iterator<Item = MessageInfo<MSG>> + use<'_, MSG>> {
+        self.message_store.get_all_messages_meta(&self.context)
+    }
+
+
     fn get_all_messages_with_children(&self) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
         self.message_store.get_all_messages_with_children()
     }

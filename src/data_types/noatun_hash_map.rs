@@ -1556,9 +1556,10 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// Remove and return the value for the given key.
     ///
     /// If the key is not present, None is returned.
-    pub fn pop(&mut self, key: &K::DetachedType) -> Option<V::DetachedOwnedType> {
+    pub fn pop(self: Pin<&mut Self>, key: &K::DetachedType) -> Option<V::DetachedOwnedType> {
         let mut retval = None;
-        self.remove_impl(key, |val| {
+        let tself = unsafe { self.get_unchecked_mut() };
+        tself.remove_impl(key, |val| {
             retval = Some(val.detach());
         });
         retval

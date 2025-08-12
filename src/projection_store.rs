@@ -505,17 +505,49 @@ impl DatabaseContextData {
 
         &mut keys.get_index_mut(observee.index(), self).incoming_read_dep
     }
+    
+    pub(crate) fn get_live_values(&self, seq: SequenceNr) -> (u32, &'static str/*flags*/) {
+        let uses = unsafe { self.get_uses() };
+        if uses.len() <= seq.index() {
+            return (0, "".into());
+        }
+        let mut info = unsafe { uses.get_mut(self, seq.index()) };
+
+        let flags = match (info.tainted(), info.wrote_tombstones(), info.wrote_non_opaques()) {
+            (false, false, false) => "",
+            (true,true,true) => "TSN",
+            (true, false, false) => "T",
+            (false, true, false) => "S",
+            (false, false, true) => "N",
+            (false,true,true) => "SN",
+            (true,false,true) => "TN",
+            (true,true,false) => "TS",
+        };
+        (info.get_use(), flags)
+    } 
 
     pub(crate) fn incoming_read_dependencies(
         &self,
         observee: SequenceNr,
     ) -> &NoatunVecRaw<NoatunUntrackedCell<SequenceNr>, DatabaseContextData> {
         let keys = self.get_deptrack_keys();
-        //let keys: &NoatunVecRaw<DepTrackEntry> = &self.get_aux_header().deptrack_keys;
-
+        if keys.len() <= observee.index() {
+            return &NoatunVecRaw::EMPTY;
+        }
         &keys.get_index(observee.index(), self).incoming_read_dep
     }
 
+    pub(crate) fn overwriter_of(
+        &self,
+        observee: SequenceNr,
+    ) -> &NoatunVecRaw<NoatunUntrackedCell<SequenceNr>, DatabaseContextData> {
+        let keys = self.get_deptrack_keys();
+        if keys.len() <= observee.index() {
+            return &NoatunVecRaw::EMPTY;
+        }
+        &keys.get_index(observee.index(), self).last_overwriter_of
+    }
+    
     pub(crate) fn outgoing_read_dependencies(
         &self,
         observer: SequenceNr,

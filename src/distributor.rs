@@ -19,6 +19,7 @@ use std::hash::Hash;
 use std::io::Cursor;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration};
+use metrics::{describe_gauge, gauge, Gauge, Unit};
 use tokio::time::Instant;
 use tracing::{debug, error, info, trace, warn};
 
@@ -144,6 +145,7 @@ impl Neighborhood {
                 info!("identical ephemeral node_id detected, changing our id");
                 *pather = MiniPather::new(our_node_id.raw_u16());
                 self.peers.clear();
+                self.metric_neighbor_count.set(0.0);
                 drop(pather);
                 return;
             }
@@ -163,6 +165,8 @@ impl Neighborhood {
                 }
                 retained
             });
+            self.metric_neighbor_count.set(self.peers.len() as f64);
+
             let mut pather = self.fast_pather.write().unwrap();
             for item in removed {
                 pather.remove_neighbor(item.raw_u16());
@@ -170,10 +174,12 @@ impl Neighborhood {
         }
     }
     pub fn get_insert_peer(&mut self, peer_id: EphemeralNodeId, now: Instant) -> &mut PeerInfo {
+        let mut len = self.peers.len();
         let t = self
             .peers
             .entry(peer_id)
-            .or_insert_with(|| PeerInfo::new(peer_id, now));
+            .or_insert_with(||  { len+=1;PeerInfo::new(peer_id, now)});
+        self.metric_neighbor_count.set(len as f64);
         t.last_seen = now;
         t
     }
@@ -265,16 +271,27 @@ pub struct Neighborhood {
     /// a counter that is increased when adding stuff here, and decreased whenever we
     /// receive a message in here without having requested it.
     pub(crate) inhibited_request_upstream: IndexMap<MessageId, (Instant, EphemeralNodeId)>,
+
+    /// The number of other peers detected in the network
+    metric_neighbor_count: Gauge
 }
 
 impl Neighborhood {
     pub fn new(now: Instant, pather: Arc<RwLock<MiniPather>>) -> Neighborhood {
+        let neighbor_count = gauge!("neighbor_count");
+        describe_gauge!(
+            "neighbor_count",
+            Unit::Count,
+            "Number of distinct neighbors detected"
+        );
+
         Self {
             peers: Default::default(),
             fast_pather: pather,
             last_gc: now,
             recent_messages_source: Default::default(),
             inhibited_request_upstream: Default::default(),
+            metric_neighbor_count: neighbor_count,
         }
     }
 

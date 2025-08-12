@@ -280,6 +280,7 @@ impl<T: FixedSizeObject, C: ContextGetter> Default for NoatunVecRaw<T, C> {
 }
 
 impl<T: FixedSizeObject> NoatunVecRaw<T, ThreadLocalContext> {
+
     // This only works with thread local context, since it calls destroy, that may
     // reach user overridden code, that will use NoatunContext thread local global directly.
     pub(crate) fn destroy_items(&mut self, ctx: &mut ThreadLocalContext) {
@@ -296,6 +297,13 @@ impl<T: FixedSizeObject> NoatunVecRaw<T, ThreadLocalContext> {
 }
 
 impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
+    pub(crate) const EMPTY: Self = NoatunVecRaw {
+        length: 0,
+        capacity: 0,
+        data: 0,
+        phantom_data: PhantomData,
+    };
+
     pub(crate) fn len(&self) -> usize {
         self.length
     }
@@ -948,7 +956,10 @@ where
     }
 
     fn destroy(self: Pin<&mut Self>) {
-        self.clear()
+        let tself = unsafe { self.get_unchecked_mut() };
+        tself.raw.destroy_items(&mut ThreadLocalContext);
+        NoatunContext.clear_registrar_ptr(&mut tself.length_registrar, false);
+        NoatunContext.clear_registrar_ptr(&mut tself.clear_registrar, true);
     }
 
     fn init_from_detached(mut self: Pin<&mut Self>, detached: &Self::DetachedType) {

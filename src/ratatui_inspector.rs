@@ -77,11 +77,16 @@ impl RatatuiInspector {
 
         let db_message_table = Table::new(rows.clone(), [
             Length(50),
-            Length(30),
-            Min(10),
+            Length(5),
+            Length(5),
+            Length(6),
+            Percentage(15),
+            Percentage(15),
+            Percentage(15),
+            Min(10)
         ])
             .block(Block::new().title("Message"))
-            .header(Row::new(vec!["Id", "Parents" ,"Message"]));
+            .header(Row::new(vec!["Id", "Seq2", "Live", "Flags", "Parents", "Reads", "Overwrites", "Message"]));
 
         let metrics_table = Table::new(rows.clone(), [
             Percentage(50),
@@ -122,6 +127,12 @@ impl RatatuiInspector {
 
         let [received_packets_area, sent_packets_area] = split_layout.areas(upper_area);
         let [received_messages_area, sent_messages_area] = split_layout.areas(mid_area);
+
+
+        let split_layout = Layout::horizontal([
+            Percentage(25),
+            Percentage(75),
+        ]);
         let [metrics_area, db_msg_area] = split_layout.areas(bottom_area);
 
 
@@ -197,7 +208,10 @@ impl RatatuiInspector {
             "cutoff".to_string(), cutoff.to_string()
         ]));
         metrics_rows.push(Row::new([
-            "heads".to_string(), heads.iter().join(", ")
+            "heads".to_string(), heads.iter().map(|x|x.short()).join(", ")
+        ]));
+        metrics_rows.push(Row::new([
+            "heads(count)".to_string(), heads.len().to_string()
         ]));
 
 
@@ -208,11 +222,18 @@ impl RatatuiInspector {
         }
 
         let mut db_rows = vec![];
-        for msg in comm.inner_database().begin_session().unwrap().get_all_messages_vec().unwrap() {
+        let all_msgs = comm.inner_database().begin_session().unwrap().get_all_messages_meta_vec().unwrap();
+        let max_rows = db_msg_area.height.saturating_sub(3) as usize;
+        for msg in &all_msgs[all_msgs.len().saturating_sub(max_rows)..] {
             db_rows.push(Row::new([
-                msg.header.id.to_string(),
-                offset(&msg.header.parents.iter().map(|x|x.short()).join(", ")),
-                offset(&format!("{:?}", msg.payload))
+                msg.frame.header.id.to_string(),
+                msg.seq.to_string(),
+                msg.live.to_string(),
+                msg.flags.to_string(),
+                offset(&msg.frame.header.parents.iter().map(|x|x.short()).join(", ")),
+                msg.reads.iter().join(","),
+                msg.writes.iter().join(","),
+                offset(&format!("{:?}", msg.frame.payload))
             ]));
         }
         frame.render_widget(

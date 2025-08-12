@@ -21,6 +21,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::offset_of;
 use tracing::{debug, info, trace, warn};
+use crate::database::MessageInfo;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
@@ -1166,6 +1167,7 @@ impl<M> OnDiskMessageStore<M> {
             parents,
         })
     }
+
     fn read_msg(
         entry: &IndexEntry,
         data_files: &[DataFileInfo; 2],
@@ -1401,7 +1403,23 @@ impl<M> OnDiskMessageStore<M> {
                 }
             }))
     }
-
+    pub fn get_all_messages_with_index(&self) -> Result<impl Iterator<Item = (SequenceNr, MessageFrame<M>)> + use<'_, M>>
+    where
+        M: Message,
+    {
+        let (_header, message_index) = self.header_and_index().context("opening index file")?;
+        let data_files = &self.data_files;
+        Ok(message_index
+            .iter().enumerate()
+            .filter(|(idx, x)| !x.file_offset.is_deleted())
+            .filter_map(|(idx, x)| match Self::read_msg(x, data_files, None) {
+                Ok(v) => Some((SequenceNr::from_index(idx), v)),
+                Err(err) => {
+                    warn!("failed to read message {}: {:?}", x.message, err);
+                    None
+                }
+            }))
+    }
     pub fn get_all_messages_with_children(&self) -> Result<Vec<(MessageFrame<M>, Vec<MessageId>)>>
     where
         M: Message,

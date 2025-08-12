@@ -173,7 +173,7 @@ impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
     type DetachedOwnedType = T;
 
     fn detach(&self) -> Self::DetachedOwnedType {
-        self.value
+        self.get()
     }
 
     fn destroy(self: Pin<&mut Self>) {

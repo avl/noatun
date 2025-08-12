@@ -92,7 +92,7 @@ impl Message for IssueMessage {
 fn test_issue_tracker() {
     let mut db: Database<IssueMessage> =
         Database::create_new(
-            "test/test_issue_db",
+            "test/test_issue_tracker_db",
             OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
 
     let mut sess = db.begin_session_mut().unwrap();
@@ -121,7 +121,7 @@ fn test_issue_tracker() {
 fn test_issue_tracker2() {
     let mut db: Database<IssueMessage> =
         Database::create_new(
-            "test/test_issue_db",
+            "test/test_issue_tracker2_db",
             OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
 
 

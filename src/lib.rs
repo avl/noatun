@@ -341,6 +341,8 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).update_registrar_ptr(seq, opaque) }
     }
+    //TODO: Make it possible to make default file-sizes less than 2MB
+    
     pub fn clear_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).clear_registrar_ptr(seq, opaque) }
@@ -537,15 +539,26 @@ impl Display for MessageId {
             )
         }
 
-        #[cfg(not(feature = "debug_color"))]
-        write!(
-            f,
-            "{:?}-{:04x}-{:08x}-{:08x}",
-            time_str,
-            (self.data[1] & 0xffff).wrapping_sub(0x4000) as i32,
-            self.data[2],
-            self.data[3]
-        )
+        if cfg!(all(test, not(feature = "debug_color"))) {
+            write!(
+                f,
+                "{:?}-{:x}-{:x}-{:x}",
+                time_str,
+                (self.data[1] & 0xffff).wrapping_sub(0x4000) as i32,
+                self.data[2],
+                self.data[3]
+            )
+        } else {
+            write!(
+                f,
+                "{:?}-{:04x}-{:08x}-{:08x}",
+                time_str,
+                (self.data[1] & 0xffff).wrapping_sub(0x4000) as i32,
+                self.data[2],
+                self.data[3]
+            )
+        }
+
     }
 }
 
