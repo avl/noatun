@@ -3113,7 +3113,7 @@ mod tests {
         let test_recorder = SimpleMetricsRecorder::default();
         let _guard = test_recorder.register_local();
         let target = Target::CreateNewOrOverwrite("test/add_and_delete_messages5.bin".into());
-        let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 0, 10000).unwrap();
+        let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 0, 200000).unwrap();
 
         let mut head_tracker = UpdateHeadTracker::new(&mut StandardDisk, &target).unwrap();
         const COUNT: usize = 6;
@@ -3213,7 +3213,7 @@ mod tests {
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into()),
             0,
-            10000,
+            2000000,
         )
         .unwrap();
 
