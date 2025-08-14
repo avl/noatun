@@ -239,7 +239,7 @@ const COUNT: u64 = 2000;
 async fn all_up_issue_tracker_all() {
     setup_tracing();
     for seed in 0..COUNT {
-        println!("-----------Seed: {}-------------", seed);
+        println!("-----------Seed: {seed}-------------");
         all_up_issue_iteration(seed).await;
     }
 }
@@ -248,7 +248,7 @@ async fn all_up_issue_tracker_8() {
     setup_tracing();
     {
         let seed = 8;
-        println!("-----------Seed: {}-------------", seed);
+        println!("-----------Seed: {seed}-------------");
         all_up_issue_iteration(seed).await;
     }
 }
@@ -304,7 +304,7 @@ async fn all_up_issue_iteration(seed: u64) {
     let root1 = app1.with_root(|root| root.detach());
     let root2 = app2.with_root(|root| root.detach());
 
-    println!("End state: {:?}", root1);
+    println!("End state: {root1:?}");
     assert_eq!(root1, root2);
 
     //assert_snapshot!(driver.messages_snapshot());

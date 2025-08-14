@@ -525,8 +525,8 @@ impl Display for MessageId {
         let time = chrono::DateTime::from_timestamp_millis(time_ms.as_ms() as i64).unwrap();
 
         let time_str = time.to_rfc3339_opts(SecondsFormat::Millis, true);
+        #[cfg(feature = "debug_color")]
         {
-            #[cfg(feature = "debug_color")]
             write!(
                 f,
                 "{:?}-{}-{}-{}",
@@ -537,24 +537,27 @@ impl Display for MessageId {
             )
         }
 
-        if cfg!(all(test, not(feature = "debug_color"))) {
-            write!(
-                f,
-                "{:?}-{:x}-{:x}-{:x}",
-                time_str,
-                (self.data[1] & 0xffff).wrapping_sub(0x4000) as i32,
-                self.data[2],
-                self.data[3]
-            )
-        } else {
-            write!(
-                f,
-                "{:?}-{:04x}-{:08x}-{:08x}",
-                time_str,
-                (self.data[1] & 0xffff).wrapping_sub(0x4000) as i32,
-                self.data[2],
-                self.data[3]
-            )
+        #[cfg(not(feature = "debug_color"))]
+        {
+            if cfg!(all(test)) {
+                write!(
+                    f,
+                    "{:?}-{:x}-{:x}-{:x}",
+                    time_str,
+                    (self.data[1] & 0xffff).wrapping_sub(0x4000) as i32,
+                    self.data[2],
+                    self.data[3]
+                )
+            } else {
+                write!(
+                    f,
+                    "{:?}-{:04x}-{:08x}-{:08x}",
+                    time_str,
+                    (self.data[1] & 0xffff).wrapping_sub(0x4000) as i32,
+                    self.data[2],
+                    self.data[3]
+                )
+            }
         }
     }
 }

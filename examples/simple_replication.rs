@@ -35,7 +35,7 @@ impl Message for TodoMessage {
     type Serializer = SavefileMessageSerializer<TodoMessage>;
 
     fn apply(&self, id: MessageId, root: Pin<&mut Self::Root>) {
-        let mut root = root.pin_project();
+        let root = root.pin_project();
         match self {
             TodoMessage::AddText(text) => {
                 root.items.insert(id, text.as_str());

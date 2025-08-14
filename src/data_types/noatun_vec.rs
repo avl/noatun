@@ -845,6 +845,11 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
             index: 0,
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Get the length of the vector.
     ///
     /// This is not allowed from within [`Message::apply`] (because this is an opaque data-type).

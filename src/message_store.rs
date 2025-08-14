@@ -2858,6 +2858,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/add_and_recover_messages.bin".into()),
+            0,
             10000,
         )
         .unwrap();
@@ -2903,6 +2904,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/add_and_read_messages1.bin".into()),
+            0,
             5_000_000_000,
         )
         .unwrap();
@@ -2936,6 +2938,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/add_and_read_messages2.bin".into()),
+            0,
             5_000_000_000,
         )
         .unwrap();
@@ -2995,6 +2998,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/add_and_read_messages_twice3.bin".into()),
+            0,
             10000,
         )
         .unwrap();
@@ -3051,7 +3055,7 @@ mod tests {
         let test_recorder = SimpleMetricsRecorder::default();
         let _guard = test_recorder.register_local();
         let target = Target::CreateNewOrOverwrite("test/add_and_delete_messages4.bin".into());
-        let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 10000).unwrap();
+        let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 0, 10000).unwrap();
 
         let mut head_tracker = UpdateHeadTracker::new(&mut StandardDisk, &target).unwrap();
         const COUNT: usize = 6;
@@ -3109,7 +3113,7 @@ mod tests {
         let test_recorder = SimpleMetricsRecorder::default();
         let _guard = test_recorder.register_local();
         let target = Target::CreateNewOrOverwrite("test/add_and_delete_messages5.bin".into());
-        let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 10000).unwrap();
+        let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 0, 10000).unwrap();
 
         let mut head_tracker = UpdateHeadTracker::new(&mut StandardDisk, &target).unwrap();
         const COUNT: usize = 6;
@@ -3166,7 +3170,7 @@ mod tests {
     fn test_compact() {
         let target = Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into());
         let mut store =
-            OnDiskMessageStore::new(&mut InMemoryDisk::default(), &target, 100_000_000).unwrap();
+            OnDiskMessageStore::new(&mut InMemoryDisk::default(), &target, 0, 100_000_000).unwrap();
 
         const COUNT: usize = 1_000;
         let msgs: Vec<_> = (0..COUNT)
@@ -3208,6 +3212,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut StandardDisk,
             &Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into()),
+            0,
             10000,
         )
         .unwrap();
@@ -3252,6 +3257,7 @@ mod tests {
         let mut store = OnDiskMessageStore::new(
             &mut InMemoryDisk::default(),
             &Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into()),
+            0,
             10000,
         )
         .unwrap();
@@ -3357,7 +3363,7 @@ mod tests {
 
         let target = Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into());
         let mut store =
-            OnDiskMessageStore::new(&mut InMemoryDisk::default(), &target, 10000).unwrap();
+            OnDiskMessageStore::new(&mut InMemoryDisk::default(), &target, 0, 10000).unwrap();
 
         const COUNT: u32 = 20;
 

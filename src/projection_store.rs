@@ -511,7 +511,7 @@ impl DatabaseContextData {
     pub(crate) fn get_live_values(&self, seq: SequenceNr) -> (u32, &'static str /*flags*/) {
         let uses = unsafe { self.get_uses() };
         if uses.len() <= seq.index() {
-            return (0, "".into());
+            return (0, "");
         }
         let info = unsafe { uses.get_mut(self, seq.index()) };
 
@@ -1560,9 +1560,6 @@ impl DatabaseContextData {
                 } else if !cur.wrote_non_opaques() && (!cur.wrote_tombstones() || seq < cutoff) {
                     dprintln!("@{} {:?} {} mark_delete because !tombstones and seq(!tombstones({}) or {}) < cutoff({})", crate::cur_node(), crate::test_elapsed(), seq, cur.wrote_tombstones(), seq, cutoff);
                     true
-                } else if last_overwriter < cutoff {
-                    dprintln!("@{} {:?} {} mark_delete because !tombstones and seq(!tombstones({}) or {}) < cutoff({})", crate::cur_node(), crate::test_elapsed(), seq, cur.wrote_tombstones(), seq, cutoff);
-                    true
                 } else if !messages.may_have_been_transmitted(seq)? && !cur.wrote_tombstones() {
                     dprintln!(
                         "@{} {:?} {} mark_delete because !transmitted && !tombstone",
@@ -1738,9 +1735,14 @@ mod tests {
     #[test]
     fn basic_test_deptrack1() {
         let mut disk = InMemoryDisk::default();
-        let mut tracker =
-            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 20000, [0; 16])
-                .unwrap();
+        let mut tracker = DatabaseContextData::new(
+            &mut disk,
+            &Target::CreateNew("ctx".into()),
+            0,
+            20000,
+            [0; 16],
+        )
+        .unwrap();
 
         tracker.record_dependency(SequenceNr::from_index(1), SequenceNr::from_index(2));
 
@@ -1762,9 +1764,14 @@ mod tests {
     #[test]
     fn basic_test_deptrack_many() {
         let mut disk = InMemoryDisk::default();
-        let mut tracker =
-            DatabaseContextData::new(&mut disk, &Target::CreateNew("ctx".into()), 30000, [0; 16])
-                .unwrap();
+        let mut tracker = DatabaseContextData::new(
+            &mut disk,
+            &Target::CreateNew("ctx".into()),
+            0,
+            30000,
+            [0; 16],
+        )
+        .unwrap();
 
         let t = Instant::now();
         for i in 0..100_usize {

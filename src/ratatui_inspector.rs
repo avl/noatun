@@ -26,6 +26,12 @@ pub struct RatatuiInspector {
     x_offset: usize,
 }
 
+impl Default for RatatuiInspector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RatatuiInspector {
     pub fn input(&mut self, event: &Event) {
         match &event {
@@ -149,31 +155,23 @@ impl RatatuiInspector {
         let split_layout = Layout::horizontal([Percentage(25), Percentage(75)]);
         let [metrics_area, db_msg_area] = split_layout.areas(bottom_area);
 
-        let received_packet_block = Block::new()
-            .borders(Borders::ALL)
-            .title(format!("Packets Received"));
+        let received_packet_block = Block::new().borders(Borders::ALL).title("Packets Received");
 
-        let sent_packet_block = Block::new()
-            .borders(Borders::ALL)
-            .title(format!("Packets Sent"));
+        let sent_packet_block = Block::new().borders(Borders::ALL).title("Packets Sent");
 
-        let root_obj_block = Block::new()
-            .borders(Borders::ALL)
-            .title(format!("Root obj"));
+        let root_obj_block = Block::new().borders(Borders::ALL).title("Root obj");
 
         let received_messages_block = Block::new()
             .borders(Borders::ALL)
-            .title(format!("Messages Received"));
+            .title("Messages Received");
 
-        let sent_messages_block = Block::new()
-            .borders(Borders::ALL)
-            .title(format!("Messages sent"));
+        let sent_messages_block = Block::new().borders(Borders::ALL).title("Messages sent");
 
-        let metrics_block = Block::new().borders(Borders::ALL).title(format!("Metrics"));
+        let metrics_block = Block::new().borders(Borders::ALL).title("Metrics");
 
         let db_msg_block = Block::new()
             .borders(Borders::ALL)
-            .title(format!("Database messages"));
+            .title("Database messages");
 
         let mut received_packet_rows = vec![];
         for packet in data.received_packets.iter() {
@@ -200,7 +198,7 @@ impl RatatuiInspector {
             let chars: Vec<char> = x.chars().collect();
             let cur_max_x_offset = x_offset.min(chars.len().saturating_sub(1));
             max_x_offset = cur_max_x_offset.max(max_x_offset);
-            return chars[cur_max_x_offset..].iter().collect();
+            chars[cur_max_x_offset..].iter().collect()
         };
 
         let mut received_message_rows = vec![];

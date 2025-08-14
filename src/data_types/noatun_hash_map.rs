@@ -518,155 +518,6 @@ pub mod meta_finder {
     }
 }
 
-#[cfg(test)]
-mod meta_tests {
-    use super::meta_finder::get_any_empty;
-    use super::HASH_META_GROUP_SIZE;
-    use super::{meta_finder, BucketNr, Meta, MetaGroup, ProbeRunResult};
-
-    #[test]
-    fn meta_alignment() {
-        assert_eq!(HASH_META_GROUP_SIZE, align_of::<MetaGroup>());
-    }
-    #[test]
-    fn meta_check_empty() {
-        let haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
-        assert!(get_any_empty(&haystack).is_none());
-    }
-    #[test]
-    fn meta_check_empty2() {
-        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
-        haystack.0[13] = Meta::EMPTY;
-        assert_eq!(get_any_empty(&haystack), Some(13));
-    }
-    #[test]
-    fn meta_get_finds_medium() {
-        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
-        haystack.0[0] = Meta::new(142u8);
-        haystack.0[13] = Meta::new(142u8);
-        let needle = Meta::new(142u8);
-        let mut found = Vec::new();
-        meta_finder::meta_get_group_find(&haystack, HASH_META_GROUP_SIZE, needle, |pos| {
-            found.push(pos);
-            false
-        });
-        assert_eq!(found, vec![0, 13]);
-    }
-    #[test]
-    fn meta_get_finds_small() {
-        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
-        haystack.0[0] = Meta::new(142u8);
-        haystack.0[13] = Meta::new(142u8);
-        haystack.0[14] = Meta::new(142u8);
-        let needle = Meta::new(142u8);
-        let mut found = Vec::new();
-        meta_finder::meta_get_group_find(&haystack, 14, needle, |pos| {
-            found.push(pos);
-            false
-        });
-        assert_eq!(found, vec![0, 13]);
-    }
-    #[test]
-    fn meta_insert_medium() {
-        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
-        haystack.0[0] = Meta::new(142u8);
-        haystack.0[1] = Meta::DELETED;
-        haystack.0[13] = Meta::new(142u8);
-        haystack.0[31] = Meta::new(142u8);
-        let needle = Meta::new(142u8);
-        let mut found = Vec::new();
-        let mut first_deleted = None;
-
-        let result = meta_finder::meta_insert_group_find(
-            BucketNr(32),
-            &mut first_deleted,
-            &haystack,
-            31,
-            needle,
-            |pos| {
-                found.push(pos);
-                false
-            },
-        );
-        assert_eq!(result, None);
-        assert_eq!(first_deleted, Some(BucketNr(33)));
-        assert_eq!(found, vec![0, 13]);
-    }
-
-    #[test]
-    fn meta_insert2() {
-        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
-        haystack.0[2] = Meta::DELETED;
-        haystack.0[13] = Meta::new(142u8);
-        haystack.0[14] = Meta::new(142u8);
-        let needle = Meta::new(142u8);
-        let mut found = Vec::new();
-        let mut first_deleted = None;
-
-        let result = meta_finder::meta_insert_group_find(
-            BucketNr(32),
-            &mut first_deleted,
-            &haystack,
-            HASH_META_GROUP_SIZE,
-            needle,
-            |pos| {
-                found.push(pos);
-                true
-            },
-        );
-        assert_eq!(
-            result,
-            Some(ProbeRunResult::FoundPopulated(BucketNr(13 + 32), needle))
-        );
-        assert_eq!(first_deleted, Some(BucketNr(34)));
-        assert_eq!(found, vec![13]);
-    }
-    #[test]
-    fn meta_insert3() {
-        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
-        haystack.0[2] = Meta::DELETED;
-        haystack.0[13] = Meta::EMPTY;
-        haystack.0[14] = Meta::new(142u8);
-        let needle = Meta::new(142u8);
-        let mut found = Vec::new();
-        let mut first_deleted = None;
-
-        let result = meta_finder::meta_insert_group_find(
-            BucketNr(32),
-            &mut first_deleted,
-            &haystack,
-            32,
-            needle,
-            |pos| {
-                found.push(pos);
-                true
-            },
-        );
-        assert_eq!(
-            result,
-            Some(ProbeRunResult::FoundUnoccupied(BucketNr(13 + 32), needle))
-        );
-        assert_eq!(first_deleted, Some(BucketNr(34)));
-        assert_eq!(found, vec![]);
-    }
-
-    #[test]
-    fn meta_get_finds_empty() {
-        let mut haystack = MetaGroup([Meta::new(129u8); HASH_META_GROUP_SIZE]);
-        haystack.0[0] = Meta::new(142u8);
-        haystack.0[17] = Meta::new(142u8);
-        haystack.0[18] = Meta::EMPTY;
-        haystack.0[19] = Meta::new(142u8);
-        let needle = Meta::new(142u8);
-        let mut found = Vec::new();
-        meta_finder::meta_get_group_find(&haystack, 32, needle, |pos| {
-            found.push(pos);
-            false
-        });
-        assert_eq!(found, vec![0, 17]);
-    }
-}
-
 impl Meta {
     const DELETED: Meta = Meta(1);
     const EMPTY: Meta = Meta(0);
@@ -1979,5 +1830,154 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
         Self::hash_schema(hasher);
+    }
+}
+
+#[cfg(test)]
+mod meta_tests {
+    use super::meta_finder::get_any_empty;
+    use super::HASH_META_GROUP_SIZE;
+    use super::{meta_finder, BucketNr, Meta, MetaGroup, ProbeRunResult};
+
+    #[test]
+    fn meta_alignment() {
+        assert_eq!(HASH_META_GROUP_SIZE, align_of::<MetaGroup>());
+    }
+    #[test]
+    fn meta_check_empty() {
+        let haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
+        assert!(get_any_empty(&haystack).is_none());
+    }
+    #[test]
+    fn meta_check_empty2() {
+        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
+        haystack.0[13] = Meta::EMPTY;
+        assert_eq!(get_any_empty(&haystack), Some(13));
+    }
+    #[test]
+    fn meta_get_finds_medium() {
+        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
+        haystack.0[0] = Meta::new(142u8);
+        haystack.0[13] = Meta::new(142u8);
+        let needle = Meta::new(142u8);
+        let mut found = Vec::new();
+        meta_finder::meta_get_group_find(&haystack, HASH_META_GROUP_SIZE, needle, |pos| {
+            found.push(pos);
+            false
+        });
+        assert_eq!(found, vec![0, 13]);
+    }
+    #[test]
+    fn meta_get_finds_small() {
+        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
+        haystack.0[0] = Meta::new(142u8);
+        haystack.0[13] = Meta::new(142u8);
+        haystack.0[14] = Meta::new(142u8);
+        let needle = Meta::new(142u8);
+        let mut found = Vec::new();
+        meta_finder::meta_get_group_find(&haystack, 14, needle, |pos| {
+            found.push(pos);
+            false
+        });
+        assert_eq!(found, vec![0, 13]);
+    }
+    #[test]
+    fn meta_insert_medium() {
+        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
+        haystack.0[0] = Meta::new(142u8);
+        haystack.0[1] = Meta::DELETED;
+        haystack.0[13] = Meta::new(142u8);
+        haystack.0[31] = Meta::new(142u8);
+        let needle = Meta::new(142u8);
+        let mut found = Vec::new();
+        let mut first_deleted = None;
+
+        let result = meta_finder::meta_insert_group_find(
+            BucketNr(32),
+            &mut first_deleted,
+            &haystack,
+            31,
+            needle,
+            |pos| {
+                found.push(pos);
+                false
+            },
+        );
+        assert_eq!(result, None);
+        assert_eq!(first_deleted, Some(BucketNr(33)));
+        assert_eq!(found, vec![0, 13]);
+    }
+
+    #[test]
+    fn meta_insert2() {
+        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
+        haystack.0[2] = Meta::DELETED;
+        haystack.0[13] = Meta::new(142u8);
+        haystack.0[14] = Meta::new(142u8);
+        let needle = Meta::new(142u8);
+        let mut found = Vec::new();
+        let mut first_deleted = None;
+
+        let result = meta_finder::meta_insert_group_find(
+            BucketNr(32),
+            &mut first_deleted,
+            &haystack,
+            HASH_META_GROUP_SIZE,
+            needle,
+            |pos| {
+                found.push(pos);
+                true
+            },
+        );
+        assert_eq!(
+            result,
+            Some(ProbeRunResult::FoundPopulated(BucketNr(13 + 32), needle))
+        );
+        assert_eq!(first_deleted, Some(BucketNr(34)));
+        assert_eq!(found, vec![13]);
+    }
+    #[test]
+    fn meta_insert3() {
+        let mut haystack = MetaGroup([Meta(129u8); HASH_META_GROUP_SIZE]);
+        haystack.0[2] = Meta::DELETED;
+        haystack.0[13] = Meta::EMPTY;
+        haystack.0[14] = Meta::new(142u8);
+        let needle = Meta::new(142u8);
+        let mut found = Vec::new();
+        let mut first_deleted = None;
+
+        let result = meta_finder::meta_insert_group_find(
+            BucketNr(32),
+            &mut first_deleted,
+            &haystack,
+            32,
+            needle,
+            |pos| {
+                found.push(pos);
+                true
+            },
+        );
+        assert_eq!(
+            result,
+            Some(ProbeRunResult::FoundUnoccupied(BucketNr(13 + 32), needle))
+        );
+        assert_eq!(first_deleted, Some(BucketNr(34)));
+        assert_eq!(found, vec![]);
+    }
+
+    #[test]
+    fn meta_get_finds_empty() {
+        let mut haystack = MetaGroup([Meta::new(129u8); HASH_META_GROUP_SIZE]);
+        haystack.0[0] = Meta::new(142u8);
+        haystack.0[17] = Meta::new(142u8);
+        haystack.0[18] = Meta::EMPTY;
+        haystack.0[19] = Meta::new(142u8);
+        let needle = Meta::new(142u8);
+        let mut found = Vec::new();
+        meta_finder::meta_get_group_find(&haystack, 32, needle, |pos| {
+            found.push(pos);
+            false
+        });
+        assert_eq!(found, vec![0, 17]);
     }
 }

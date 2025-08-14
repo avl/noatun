@@ -69,38 +69,32 @@ fn test_distributor() {
     let mut dist1 = Distributor::new(
         Duration::from_secs(5),
         ArcShift::new(EphemeralNodeId::new(1)),
-        Instant::now().into(),
+        Instant::now(),
         None,
     );
     let mut dist2 = Distributor::new(
         Duration::from_secs(5),
         ArcShift::new(EphemeralNodeId::new(2)),
-        Instant::now().into(),
+        Instant::now(),
         None,
     );
 
-    dist1.neighborhood = Neighborhood::new(
-        Instant::now().into(),
-        Arc::new(RwLock::new(MiniPather::new(1))),
-    );
-    dist2.neighborhood = Neighborhood::new(
-        Instant::now().into(),
-        Arc::new(RwLock::new(MiniPather::new(2))),
-    );
+    dist1.neighborhood =
+        Neighborhood::new(Instant::now(), Arc::new(RwLock::new(MiniPather::new(1))));
+    dist2.neighborhood =
+        Neighborhood::new(Instant::now(), Arc::new(RwLock::new(MiniPather::new(2))));
     dist1
         .neighborhood
-        .get_insert_peer(EphemeralNodeId::new(2), Instant::now().into());
+        .get_insert_peer(EphemeralNodeId::new(2), Instant::now());
 
     let sess1 = app1.begin_session().unwrap();
-    let mut msg1 = dist1
-        .get_periodic_message(&sess1, Instant::now().into())
-        .unwrap();
+    let mut msg1 = dist1.get_periodic_message(&sess1, Instant::now()).unwrap();
     assert_eq!(msg1.len(), 1, "no resync is in progress");
     let msg1 = msg1.pop().unwrap();
 
     println!("dist1 sent: {msg1:?}");
     let mut result = dist2
-        .receive_message2(&mut app2, once(msg1), Instant::now().into())
+        .receive_message2(&mut app2, once(msg1), Instant::now())
         .unwrap();
 
     println!("dist2 sent: {result:?}");
@@ -109,32 +103,20 @@ fn test_distributor() {
     assert_eq!(result.len(), 1);
 
     let mut result = dist1
-        .receive_message2(
-            &mut app1,
-            once(result.pop().unwrap()),
-            Instant::now().into(),
-        )
+        .receive_message2(&mut app1, once(result.pop().unwrap()), Instant::now())
         .unwrap();
     println!("dist1 sent: {result:?}");
     insta::assert_debug_snapshot!(result);
     assert_eq!(result.len(), 1);
 
     let mut result = dist2
-        .receive_message2(
-            &mut app2,
-            once(result.pop().unwrap()),
-            Instant::now().into(),
-        )
+        .receive_message2(&mut app2, once(result.pop().unwrap()), Instant::now())
         .unwrap();
     println!("dist2 sent: {result:?}");
     insta::assert_debug_snapshot!(result);
 
     let mut result = dist1
-        .receive_message2(
-            &mut app1,
-            once(result.pop().unwrap()),
-            Instant::now().into(),
-        )
+        .receive_message2(&mut app1, once(result.pop().unwrap()), Instant::now())
         .unwrap();
     println!("dist1 sent: {result:?}");
     assert!(matches!(
@@ -147,11 +129,7 @@ fn test_distributor() {
     assert_eq!(result.len(), 1);
 
     let _result = dist2
-        .receive_message2(
-            &mut app2,
-            once(result.pop().unwrap()),
-            Instant::now().into(),
-        )
+        .receive_message2(&mut app2, once(result.pop().unwrap()), Instant::now())
         .unwrap();
     let sess2 = app2.begin_session().unwrap();
     println!("App2 all msgs: {:?}", sess2.get_all_message_ids().unwrap());

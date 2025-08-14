@@ -823,7 +823,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         let mut diagnostics = diagnostics.lock().unwrap();
                         diagnostics.sent_packets.push_back(PacketRow {
                             time: Instant::now(),
-                            packet: format!("{:?}", packet),
+                            packet: format!("{packet:?}"),
                             size: context.cursend.len(),
                         });
                         if diagnostics.sent_packets.len() > diagnostics.packet_limit {
@@ -865,7 +865,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         let mut diagnostics = diagnostics.lock().unwrap();
                         diagnostics.sent_packets.push_back(PacketRow {
                             time: Instant::now(),
-                            packet: format!("{:?}", packet),
+                            packet: format!("{packet:?}"),
                             size: context.cursend.len(),
                         });
                         if diagnostics.sent_packets.len() > diagnostics.packet_limit {
@@ -968,7 +968,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                     let mut diagnostics = diagnostics.lock().unwrap();
                     diagnostics.received_packets.push_back(PacketRow {
                         time: Instant::now(),
-                        packet: format!("{:?}", packet),
+                        packet: format!("{packet:?}"),
                         size: self.recvbuf.len(),
                     });
                     if diagnostics.received_packets.len() > diagnostics.packet_limit {
@@ -993,7 +993,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                             }
                         };
 
-                        match track.process(entity, src_addr.map(|x|Address::from(x)), src_node, messages_received_new_buffer, &mut self.outgoing_retransmit_requests, &mut self.retransmit_responsibility_query, new_track).await {
+                        match track.process(entity, src_addr.map(Address::from), src_node, messages_received_new_buffer, &mut self.outgoing_retransmit_requests, &mut self.retransmit_responsibility_query, new_track).await {
                             Ok(()) => {
                                 Ok(false)
                             }
@@ -1344,7 +1344,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
 
             select!(
                 biased;
-                _ = sender.pump(&mut context, &mut messages_received, &mut message_to_transmit, &mut node_id_collision, self.diagnostics.as_ref().map(|x|&**x)) => {
+                _ = sender.pump(&mut context, &mut messages_received, &mut message_to_transmit, &mut node_id_collision, self.diagnostics.as_deref()) => {
 
                 }
                 /*res = sendtask => {
@@ -1359,7 +1359,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                     track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
                     let database = self.database.lock().unwrap();
                     let session = database.begin_session()?;
-                    let msgs = self.distributor.get_periodic_message(&session, Instant::now().into())?;
+                    let msgs = self.distributor.get_periodic_message(&session, Instant::now())?;
                     trace!("Time for periodic messages: {:?}", msgs);
                     self.distributor.outbuf.extend(msgs);
                     self.next_periodic += self.report_head_interval;
@@ -1726,7 +1726,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             distributor: Distributor::new(
                 config.periodic_message_interval,
                 our_node_id,
-                Instant::now().into(),
+                Instant::now(),
                 Some(mini_pather),
             ),
             node: node.clone(),

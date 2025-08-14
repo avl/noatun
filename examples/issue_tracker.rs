@@ -79,8 +79,8 @@ enum IssueMessage {
     },
 }
 
-fn remap<'a>(root: &IssueDbPinProject, id: &String) -> String {
-    let mut ret = id.clone();
+fn remap(root: &IssueDbPinProject, id: &str) -> String {
+    let mut ret = id.to_string();
     loop {
         if let Some(new) = root.aliases.get(&ret) {
             ret = new.to_string();
@@ -387,7 +387,7 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
     ];
     for (key, val) in app.recorder.metrics_items() {
         debug_spans.push(ratatui::prelude::Span::styled(
-            format!(", {}: ", key),
+            format!(", {key}: "),
             Style::default(),
         ));
         debug_spans.push(ratatui::prelude::Span::styled(val, Style::default().bold()));
@@ -459,13 +459,13 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
         }
     }
 
-    let issue_block = Block::new().borders(Borders::ALL).title(format!("Issues"));
+    let issue_block = Block::new().borders(Borders::ALL).title("Issues");
 
-    let text_block = Block::new().borders(Borders::ALL).title(format!("Texts"));
+    let text_block = Block::new().borders(Borders::ALL).title("Texts");
 
-    let status_block = Block::new().borders(Borders::ALL).title(format!("Status"));
+    let status_block = Block::new().borders(Borders::ALL).title("Status");
 
-    let keybinds_block = Block::new().borders(Borders::ALL).title(format!("Keys"));
+    let keybinds_block = Block::new().borders(Borders::ALL).title("Keys");
 
     frame.render_widget(
         Paragraph::new(Line::from(
@@ -476,18 +476,14 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
     frame.render_widget(metrics_paragraph.block(status_block), status_area);
 
     let table = app.table.clone().rows(rows);
-    frame.render_stateful_widget(
-        table.block(issue_block),
-        list_area,
-        &mut &mut app.table_state,
-    );
+    frame.render_stateful_widget(table.block(issue_block), list_area, &mut app.table_state);
 
     if app.selected_heading.is_some() {
         let text_table = app.text_table.clone().rows(text_rows);
         frame.render_stateful_widget(
             text_table.block(text_block),
             descriptions_label_area,
-            &mut &mut app.text_table_state,
+            &mut app.text_table_state,
         );
     }
 

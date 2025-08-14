@@ -995,7 +995,7 @@ impl Distributor {
                 most_recent_clockdrift: Default::default(),
                 most_recent_unsynced: Default::default(),
                 have_heard_peer: false,
-                last_gc: now.into(),
+                last_gc: now,
             },
             periodic_message_interval,
             neighborhood: Neighborhood::new(
@@ -1051,7 +1051,7 @@ impl Distributor {
 
         self.outbuf.gc_if_necessary(now);
 
-        self.distributor_state.gc_if_necessary(now.into());
+        self.distributor_state.gc_if_necessary(now);
 
         let mut heads = database
             .get_update_heads()
@@ -1254,7 +1254,7 @@ impl Distributor {
                                 {
                                     self.distributor_state
                                         .most_recent_unsynced
-                                        .insert(src, tokio::time::Instant::now().into());
+                                        .insert(src, tokio::time::Instant::now());
                                 }
 
                                 if self.sync_all_inprogress.idle() {

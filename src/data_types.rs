@@ -9,7 +9,11 @@ use std::ops::Deref;
 use std::pin::Pin;
 
 pub use noatun_cell::{NoatunCell, NoatunCellArrayExt, OpaqueNoatunCell};
-pub use noatun_hash_map::{NoatunHashMap, NoatunHashMapEntry, NoatunHashMapIterator, NoatunKey};
+pub use noatun_hash_map::meta_finder::get_any_empty;
+pub use noatun_hash_map::{
+    run_get_probe_sequence, BucketProbeSequence, Meta, MetaGroup, MetaGroupNr, NoatunHashMap,
+    NoatunHashMapEntry, NoatunHashMapIterator, NoatunKey,
+};
 pub use noatun_option::NoatunOption;
 pub use noatun_string::NoatunString;
 pub use noatun_vec::{NoatunVec, NoatunVecIterator, NoatunVecIteratorMut, OpaqueNoatunVec};
@@ -373,7 +377,7 @@ mod tests {
             let val = map.get(&42).unwrap();
             assert_eq!(val.get(), 43);
             match map.as_mut().entry(42) {
-                NoatunHashMapEntry::Occupied(mut occ) => {
+                NoatunHashMapEntry::Occupied(occ) => {
                     occ.remove();
                 }
                 NoatunHashMapEntry::Vacant(_) => {}
@@ -422,7 +426,7 @@ mod tests {
             )
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
-        db.with_root_mut(|mut map| {
+        db.with_root_mut(|map| {
             let mut map = map.inner_mut();
             map.insert_internal("hello", &42);
             assert_eq!(**map.get("hello").unwrap(), 42);
@@ -467,7 +471,7 @@ mod tests {
             let mut map = map.inner_mut();
             map.insert_internal("hello", &42);
 
-            let mut hm = std::collections::HashMap::new();
+            let mut hm = indexmap::IndexMap::new();
             hm.insert("world".to_string(), 43);
             map.as_mut().init_from_detached(&hm);
 
@@ -723,7 +727,7 @@ mod tests {
         db.with_root_mut(|map| {
             let mut noatun_box = map.inner_mut();
 
-            let mut hm = std::collections::HashMap::new();
+            let mut hm = indexmap::IndexMap::new();
             hm.insert(1, 1);
 
             noatun_box.as_mut().init_from_detached(&hm);
