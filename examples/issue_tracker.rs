@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+
 use std::pin::Pin;
 use std::time::Duration;
 use anyhow::{Context, Result};
@@ -33,15 +33,16 @@ noatun_object!(
 );
 
 noatun_object!(
+
     struct Issue {
         pod created: NoatunTime,
         object reporter: NoatunString,
         object description: NoatunVec<DescriptionText>,
-        object aliases: NoatunVec<NoatunString>,
     }
 );
 
 noatun_object!(
+
     struct IssueDb {
         object issues: NoatunHashMap<NoatunString, Issue>,
         object aliases: NoatunHashMap<NoatunString, NoatunString>,
@@ -71,8 +72,6 @@ enum IssueMessage {
         new_reporter: String,
     }
 }
-
-//TODO: Persist checksum and make sure we automatically reproject
 
 fn remap<'a>(root: &IssueDbPinProject, id: &String) -> String {
     let mut ret = id.clone();
@@ -104,25 +103,14 @@ impl Message for IssueMessage {
             }
             IssueMessage::RemoveIssue { id } => {
 
-                //TODO: Remove all occurrences of "compile_error"
-                
-                compile_error!("Check why repro1/<db> isn't pruned correctly.\
-Strategy:
- * Add read-deps and overwrites-info to ratatui-ui
- * Understand why pruning doesn't occur - any more than the bug in NoatunVec where it didn't actually clear the use counts?
- * Consider if we should have UntrackedString as key in hashmaps
- * Maybe make read-deps more first class, and more exposed to dev? Document clearly for al
-   ops if they cause read deps. Make it possible to manually add read-deps?
+                //TODO: Document clearly for al ops if they cause read deps. Make it possible to manually add read-deps? deny(missing_docs)!
+                //TODO: Make windows in ratatui scrollable
 
-
-
-                ")
                 let id = remap(&root, id).to_owned();
-                if let Some(removed) = root.issues.as_mut().pop(id.as_str()) {
-                    for alias in removed.aliases {
-                        root.aliases.as_mut().remove(alias.as_str());
-                    }
-                }
+
+                root.issues.as_mut().remove(id.as_str());
+                root.aliases.as_mut().retain(|_k,v|**v != id);
+
             }
             IssueMessage::AppendText { id, reporter, text } => {
                 let id = remap(&root, id);
@@ -138,11 +126,9 @@ Strategy:
             IssueMessage::RenameIssue { old_id: id, new_id: id_new } => {
                 if !root.issues.as_mut().contains_key(id_new) && !root.aliases.as_mut().contains_key(id) {
                     match root.issues.as_mut().entry(id.to_string()) {
-                        NoatunHashMapEntry::Occupied(mut o) => {
-                            let mut prev = o.remove();
-                            prev.aliases.push(id.to_string());
+                        NoatunHashMapEntry::Occupied(o) => {
+                            let prev = o.remove();
                             root.issues.as_mut().insert(id_new.as_str(), &prev);
-                            root.aliases.as_mut().insert(id.as_str(), id_new);
                         }
                         NoatunHashMapEntry::Vacant(_) => {}
                     }
@@ -175,7 +161,6 @@ fn main() -> Result<()> {
         &FormatConfig::default()
             .with_file(true),
     )?;
-
 
     let terminal = ratatui::init();
     let app_result = run(terminal).context("app loop failed");
@@ -266,7 +251,7 @@ fn start_communication() -> Result<DatabaseCommunication<IssueMessage>> {
                 ..DatabaseSettings::default()
             })?;
 
-    let mut distributed_db = DatabaseCommunication::new(
+    let distributed_db = DatabaseCommunication::new(
         db,
         DatabaseCommunicationConfig {
             enable_diagnostics: true,
@@ -327,7 +312,7 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
         table,
         selected_heading: None,
         table_state,
-        row_count: 0, //TODO: Do we need this field?
+        row_count: 0,
         user,
         comms,
         popup: Popup::None,
@@ -394,7 +379,6 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
 
     let message_count = app.comms.count_messages();
 
-    //TODO: Document the `blocking` methods (and other methods) on comms
     let sync_status = app.comms.get_status_blocking().map(|x|
         x.to_string()
     ).unwrap_or_else(|_|"Failed".to_string());
@@ -597,7 +581,7 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                             return Ok(true);
                         }
                     }
-                    KeyCode::Char('q') => {
+                    KeyCode::Char('q')|KeyCode::Char('Q') => {
                         return Ok(true);
                     }
                     KeyCode::Delete => {
@@ -614,28 +598,35 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                             app.popup = Popup::Rename(text);
                         }
                     }
-                    KeyCode::Char('a') => {
+                    KeyCode::Char('a')|KeyCode::Char('A') => {
                         let mut text = TextArea::default();
                         text.set_block(Block::new().borders(Borders::ALL).title("Enter heading"));
                         app.popup = Popup::AddHeading(text);
                     }
-                    KeyCode::Char('t') => {
+                    KeyCode::Char('t')|KeyCode::Char('T') => {
                         if app.selected_heading.is_some() {
                             let mut text = TextArea::default();
                             text.set_block(Block::new().borders(Borders::ALL).title("Enter text"));
                             app.popup = Popup::AddText(text);
                         }
                     }
-                    KeyCode::Char('r') => {
+                    KeyCode::Char('r')|KeyCode::Char('R') => {
                         if app.selected_heading.is_some() {
                             let mut text = TextArea::default();
                             text.set_block(Block::new().borders(Borders::ALL).title("Enter text"));
                             app.popup = Popup::Reassign(text);
                         }
                     }
-                    KeyCode::Char('d') => {
+                    KeyCode::Char('d')|KeyCode::Char('D') => {
                         app.diagnostics = !app.diagnostics;
                         app.popup = Popup::None;
+                    }
+                    KeyCode::Char('v')|KeyCode::Char('V') => {
+                        app.comms.inner_database().begin_session_mut()?.maybe_advance_cutoff()?;
+                    }
+                    KeyCode::Char('p')|KeyCode::Char('P') => {
+                        app.comms.inner_database().begin_session_mut()?.compact_index()?;
+                        app.comms.inner_database().begin_session_mut()?.reproject()?;
                     }
                     KeyCode::Up => {
                         let next = app.table_state.selected().unwrap_or(0).saturating_sub(1);

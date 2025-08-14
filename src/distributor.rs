@@ -1159,7 +1159,7 @@ impl Distributor {
             }
         };
 
-        for (src_addr, src, item) in input {
+        for (_src_addr, src, item) in input {
             self.neighborhood.record_message(&item);
 
             self.distributor_state.have_heard_peer = true;

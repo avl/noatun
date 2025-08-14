@@ -12,6 +12,7 @@ use std::fmt::{Debug, Formatter};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::pin::Pin;
+use metrics::{counter, describe_counter, Unit};
 use tracing::{error, info, trace};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,6 +69,13 @@ pub struct DatabaseSettings {
     /// is usually only a few gigabytes.
     pub max_file_size: usize,
     pub cutoff_interval: CutOffDuration,
+
+    /// The size allocated to database size on disks for an empty database.
+    ///
+    /// The database files will always consume this much space, at least, but may grow.
+    /// Increasing this value may increase initial performance, since the files don't
+    /// have to be resized as many times.
+    pub initial_file_size: usize,
 }
 
 impl Default for DatabaseSettings {
@@ -78,6 +86,7 @@ impl Default for DatabaseSettings {
             auto_prune: true,
             max_file_size: 1_000_000_000,
             cutoff_interval: CutOffDuration::from_minutes(15),
+            initial_file_size: 4096,
         }
     }
 }
@@ -378,6 +387,9 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     /// of [`crate::Message::apply`].
     pub fn reproject(&mut self) -> Result<()> {
         self.db.reproject()
+    }
+    pub fn compact_index(&mut self) -> Result<()> {
+        self.db.compact_index()
     }
 
     /// Set the current time to the given value.
@@ -728,7 +740,10 @@ impl<MSG: Message + 'static> Database<MSG> {
 
         self.do_apply_missing()
     }
-
+    fn compact_index(&mut self) -> Result<()> {
+        self.message_store.compact_index()?;
+        Ok(())
+    }
     fn do_apply_missing(&mut self) -> Result<Option<SequenceNr>> {
         let root_ptr = self.context.get_root_ptr::<<MSG::Root as Object>::Ptr>();
 
@@ -1058,12 +1073,13 @@ impl<MSG: Message + 'static> Database<MSG> {
         let mut ctx = DatabaseContextData::new(
             &mut disk,
             &target,
+            settings.initial_file_size,
             max_size,
             calculate_schema_hash::<MSG::Root>(),
         )
         .context("creating database in memory")?;
         let mut message_store =
-            Projector::new(&mut disk, &target, max_size, settings.cutoff_interval)?;
+            Projector::new(&mut disk, &target, settings.initial_file_size, max_size, settings.cutoff_interval)?;
 
         Self::recover_impl(&mut ctx, &mut message_store, &settings)?;
         ctx.mark_hot_clean();
@@ -1088,16 +1104,39 @@ impl<MSG: Message + 'static> Database<MSG> {
         let mut ctx = DatabaseContextData::new(
             &mut disk,
             &target,
+            settings.initial_file_size,
             settings.max_file_size,
             calculate_schema_hash::<MSG::Root>(),
         )
         .context("opening database")?;
 
-        let is_dirty = ctx.is_dirty() || ctx.is_wrong_version(calculate_schema_hash::<MSG::Root>());
+        let main_db_dirty = counter!("main_db_dirty");
+        describe_counter!(
+            "main_db_dirty",
+            Unit::Count,
+            "Main DB was dirty, and had to be rebuilt at start"
+        );
+        let main_db_schema_change = counter!("main_db_schema_change");
+        describe_counter!(
+            "main_db_schema_change",
+            Unit::Count,
+            "Main DB schema changed"
+        );
+
+        let ctx_dirty = ctx.is_dirty();
+        let wrong_version = ctx.is_wrong_version(calculate_schema_hash::<MSG::Root>());
+        if ctx_dirty {
+            main_db_dirty.increment(1);
+        }
+        if wrong_version {
+            main_db_schema_change.increment(1);
+        }
+        let is_dirty = ctx_dirty || wrong_version;
 
         let mut message_store = Projector::new(
             &mut disk,
             &target,
+            settings.initial_file_size,
             settings.max_file_size,
             settings.cutoff_interval,
         )?;

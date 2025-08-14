@@ -1,5 +1,5 @@
 use std::borrow::Borrow;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
@@ -1950,8 +1950,8 @@ impl NoatunKey for MessageId {
 
 impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V> {
     type Ptr = ThinPtr;
-    type DetachedType = HashMap<K::DetachedOwnedType, V::DetachedOwnedType>;
-    type DetachedOwnedType = HashMap<K::DetachedOwnedType, V::DetachedOwnedType>;
+    type DetachedType = IndexMap<K::DetachedOwnedType, V::DetachedOwnedType>;
+    type DetachedOwnedType = IndexMap<K::DetachedOwnedType, V::DetachedOwnedType>;
 
     fn detach(&self) -> Self::DetachedOwnedType {
         self.iter()

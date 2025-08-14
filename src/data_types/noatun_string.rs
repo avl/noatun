@@ -13,10 +13,6 @@ use crate::data_types::NoatunKey;
 pub struct NoatunString {
     start: ThinPtr,
     length: usize,
-    //TODO: Should we have an opaquestring type?
-    // What about strings used as keys in HashMaps, do we want every hash map access
-    // to cause an observation? Even worse, what about hash collisions - do they cause
-    // false observations?
     registrar: SequenceNr,
     padding: u32,
 }
@@ -157,12 +153,149 @@ impl NoatunKey for NoatunString {
     }
 
     fn init_from_detached<'a>(self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        let tself = unsafe { self.get_unchecked_mut() };
-        tself.assign_untracked(detached);
+        self.assign(detached);
     }
 
     fn destroy(&mut self) {
         NoatunContext.clear_registrar_ptr(&mut self.registrar, false);
     }
 }
+
+
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct OpaqueNoatunString {
+    start: ThinPtr,
+    length: usize,
+}
+
+unsafe impl NoatunStorable for OpaqueNoatunString {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::OpaqueNoatunString/1")
+    }
+}
+
+impl Debug for OpaqueNoatunString {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get())
+    }
+}
+
+impl Hash for OpaqueNoatunString {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let s: &str = self.as_ref();
+        // We can safely defer to the std hash method here, since
+        // `Hash` is only used for per-process hashes. Long-lived hashes
+        // use NoatunHash trait instead.
+        s.hash(state);
+    }
+}
+
+impl Eq for OpaqueNoatunString {}
+impl PartialEq for OpaqueNoatunString {
+    fn eq(&self, other: &Self) -> bool {
+        let s: &str = self;
+        let o: &str = other;
+        s.eq(o)
+    }
+}
+
+impl Object for OpaqueNoatunString {
+    type Ptr = ThinPtr;
+    type DetachedType = str;
+    type DetachedOwnedType = String;
+
+    fn detach(&self) -> Self::DetachedOwnedType {
+        self.get().to_string()
+    }
+
+    fn destroy(self: Pin<&mut Self>) {
+    }
+
+    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        self.assign(detached);
+    }
+
+    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+        let mut temp: Pin<&mut Self> = NoatunContext.allocate();
+        temp.as_mut().assign(detached);
+        temp
+    }
+
+    fn hash_object_schema(hasher: &mut SchemaHasher) {
+        <Self as NoatunStorable>::hash_schema(hasher);
+    }
+}
+
+impl Deref for OpaqueNoatunString {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.get()
+    }
+}
+
+impl OpaqueNoatunString {
+    pub fn get(&self) -> &str {
+        if self.length == 0 {
+            return "";
+        }
+        let start_ptr = NoatunContext.start_ptr().wrapping_add(self.start.0);
+        unsafe {
+            let bytes = slice::from_raw_parts(start_ptr, self.length);
+            std::str::from_utf8_unchecked(bytes)
+        }
+    }
+    /// Replace the string with the given value.
+    ///
+    /// This is not a tracked write, since OpaqueNoatunString is always opaque/untracked.
+    pub fn assign(self: Pin<&mut Self>, value: &str) {
+        let tself = unsafe { self.get_unchecked_mut() };
+        if tself.get().starts_with(value) {
+            if tself.length != value.len() {
+                NoatunContext.write_internal(value.len(), &mut tself.length);
+            }
+            return;
+        }
+
+        let raw = NoatunContext.allocate_raw(value.len(), 1);
+        let target = unsafe { slice::from_raw_parts_mut(raw, value.len()) };
+        target.copy_from_slice(value.as_bytes());
+        let raw_index = NoatunContext.index_of_ptr(raw);
+        NoatunContext.write_internal(raw_index, &mut tself.start);
+        NoatunContext.write_internal(value.len(), &mut tself.length);
+    }
+}
+impl NoatunKey for OpaqueNoatunString {
+    type DetachedType = str;
+    type DetachedOwnedType = String;
+
+    fn hash<H>(tself: &Self::DetachedType, state: &mut H)
+    where
+        H: Hasher,
+    {
+        state.write_usize(tself.len());
+        state.write(tself.as_bytes());
+    }
+
+    fn detach_key(&self) -> String {
+        (*self).to_string()
+    }
+    fn detach_key_ref(&self) -> &Self::DetachedType {
+        self
+    }
+
+    fn eq(a: &Self::DetachedType, b: &Self::DetachedType) -> bool {
+        *a == *b
+    }
+
+    fn init_from_detached<'a>(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+        self.assign(detached);
+    }
+
+    fn destroy(&mut self) {
+    }
+}
+
 

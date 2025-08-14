@@ -906,28 +906,6 @@ async fn all_up_three_node_resync() {
         .unwrap();
     driver.set_loss(0.0);
 
-    /*
-        compile_error!("
-
-    Document the following behavior:
-
-    * When do we inhibit sending retransmit requests on the packet level (i.e, the low-level retransmit)
-
-    * When do we inhibit sending the various retransmit-requests on the Message-layer
-     - Response to RequestUpstream
-     - Response to SendMessageAndAllDescendants
-
-    * Calmly observe the written documentation. What can be made simpler? Do we even need the
-    heuristic, couldn't  we just delay a random amount based on the number of neighbors, combined
-    with inhibiting sending stuff we've just seen sent anyway?
-
-    * Add tests for EphemeralNodeId collisions (figure out how to cause them, probably
-    by overriding default EphemeralNodeId in config)
-
-    * Create perf benchmarks, compare with other tools (which?). Maybe "Sled"?
-
-    */
-
     for _ in 0..35 {
         tokio::time::sleep(Duration::from_millis(1000)).await;
         app1.set_mock_time(NoatunTime::from_datetime(start_time + start.elapsed()))

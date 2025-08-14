@@ -341,7 +341,6 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).update_registrar_ptr(seq, opaque) }
     }
-    //TODO: Make it possible to make default file-sizes less than 2MB
     
     pub fn clear_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
@@ -1586,6 +1585,7 @@ macro_rules! noatun_object {
             $crate::paste!(
                 #[doc ="pin_project helper for"]
                 #[doc = stringify!($n)]
+                #[derive(Debug)]
                 pub struct [<$n PinProject>]<'a> {
                     $(
                         $(#[doc = $field_doc])*

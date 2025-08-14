@@ -51,7 +51,7 @@ mod registrar_info {
         }
     }
     impl RegistrarInfo {
-        pub fn tainted(&self) -> bool {
+        pub fn overwriter_tainted(&self) -> bool {
             self.uses & 0x8000_0000 != 0
         }
         pub fn wrote_non_opaques(&self) -> bool {
@@ -63,12 +63,20 @@ mod registrar_info {
         pub fn get_use(&self) -> u32 {
             self.uses & 0x1FFF_FFFF
         }
-        pub fn increase_use(&mut self, context: &mut DatabaseContextData) {
+        pub fn increase_use(&mut self, context: &mut DatabaseContextData, wrote_non_opaques: bool) {
             if self.get_use() >= 0x1FFF_FFFF {
                 return;
             }
+            let mut raw_uses = self.uses;
+            if wrote_non_opaques {
+                debug!(
+                    "mark wrote non-opaque (raw use={}, ptr = {:x?})",
+                    self.uses, &self.uses as *const u32
+                );
+                raw_uses |= 0x4000_0000;
+            }
             //TODO(future): We could have a special "increment 1" noatun primitive.
-            context.write_storable(self.uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) });
+            context.write_storable(raw_uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
         pub fn set_wrote_tombstone(&mut self, context: &mut DatabaseContextData) {
             let mut raw_uses = self.uses;
@@ -81,8 +89,8 @@ mod registrar_info {
         pub fn decrease_use(
             &mut self,
             context: &mut DatabaseContextData,
-            tainted: bool,
-            wrote_non_opaques: bool,
+            overwriter_tainted: bool,
+            //wrote_non_opaques: bool,
         ) {
             let mut raw_uses = self.uses;
             let cur_uses = self.get_use();
@@ -96,20 +104,14 @@ mod registrar_info {
                 return;
             }
             raw_uses -= 1;
-            if tainted {
+            if overwriter_tainted {
                 debug!(
-                    "mark tainted (raw use={}, ptr = {:x?})",
+                    "mark overwriter tainted (raw use={}, ptr = {:x?})",
                     self.uses, &self.uses as *const u32
                 );
                 raw_uses |= 0x8000_0000;
             }
-            if wrote_non_opaques {
-                debug!(
-                    "mark wrote non-opaque (raw use={}, ptr = {:x?})",
-                    self.uses, &self.uses as *const u32
-                );
-                raw_uses |= 0x4000_0000;
-            }
+
             // TODO(future): We could have a special "decrement 1" noatun primitive.
 
             context.write_storable(raw_uses, unsafe { Pin::new_unchecked(&mut self.uses) });
@@ -511,17 +513,17 @@ impl DatabaseContextData {
         if uses.len() <= seq.index() {
             return (0, "".into());
         }
-        let mut info = unsafe { uses.get_mut(self, seq.index()) };
+        let info = unsafe { uses.get_mut(self, seq.index()) };
 
-        let flags = match (info.tainted(), info.wrote_tombstones(), info.wrote_non_opaques()) {
-            (false, false, false) => "",
-            (true,true,true) => "TSN",
-            (true, false, false) => "T",
-            (false, true, false) => "S",
-            (false, false, true) => "N",
-            (false,true,true) => "SN",
-            (true,false,true) => "TN",
-            (true,true,false) => "TS",
+        let flags = match (info.overwriter_tainted(), info.wrote_tombstones(), info.wrote_non_opaques()) {
+            (false,false,false) => "",
+            (true, true, true) => "TSN",
+            (true, false,false) => "T",
+            (false,true, false) => "S",
+            (false,false,true) => "N",
+            (false,true, true) => "SN",
+            (true, false,true) => "TN",
+            (true, true, false) => "TS",
         };
         (info.get_use(), flags)
     } 
@@ -768,11 +770,12 @@ impl DatabaseContextData {
     pub(crate) fn new<S: Disk>(
         s: &mut S,
         name: &Target,
+        min_size: usize,
         max_size: usize,
         schema_hash: [u8; 16],
     ) -> Result<Self> {
         let (mut main_db_file, _existed) = s
-            .open_file(name, "maindb", 0, max_size)
+            .open_file(name, "maindb", min_size, max_size)
             .context("opening main store file")?;
 
         let mut is_new = false;
@@ -800,7 +803,7 @@ impl DatabaseContextData {
 
         let mut t = Self {
             main_db_mmap: main_db_file,
-            undo_log: UndoLog::new(s, name, max_size)?,
+            undo_log: UndoLog::new(s, name, min_size, max_size)?,
             //unused_messages: Vec::default(),
             is_mutable: false,
             is_message_apply: false,
@@ -1367,7 +1370,6 @@ impl DatabaseContextData {
                 registrar_point_value,
                 actor,
                 actor_tainted,
-                actor_wrote_non_opaque,
             );
         }
         if is_clear {
@@ -1377,7 +1379,9 @@ impl DatabaseContextData {
             // So we never need to actually write to memory in this case.
             return;
         }
-        self.rt_increase_use(actor);
+        //TODO(future): We don't need to actually increase use for every write, we could collect
+        //all writes and do a single write at the end of message apply!
+        self.rt_increase_use(actor, actor_wrote_non_opaque);
 
         unsafe { self.write_storable_ptr(actor, registrar_point) }
     }
@@ -1540,6 +1544,7 @@ impl DatabaseContextData {
                 // The message has neither read nor written any data.
                 true
             } else {
+                // cur = the candidate we might wish to delete
                 let cur = uses.get(self, seq.index());
 
                 let cutoff = messages.cutoff_index();
@@ -1553,6 +1558,9 @@ impl DatabaseContextData {
                     );
                     true
                 } else if !cur.wrote_non_opaques() && (!cur.wrote_tombstones() || seq < cutoff) {
+                    dprintln!("@{} {:?} {} mark_delete because !tombstones and seq(!tombstones({}) or {}) < cutoff({})", crate::cur_node(), crate::test_elapsed(), seq, cur.wrote_tombstones(), seq, cutoff);
+                    true
+                } else if last_overwriter < cutoff {
                     dprintln!("@{} {:?} {} mark_delete because !tombstones and seq(!tombstones({}) or {}) < cutoff({})", crate::cur_node(), crate::test_elapsed(), seq, cur.wrote_tombstones(), seq, cutoff);
                     true
                 } else if !messages.may_have_been_transmitted(seq)? && !cur.wrote_tombstones() {
@@ -1651,18 +1659,18 @@ impl DatabaseContextData {
         Ok(())
     }
 
-    pub(crate) fn rt_increase_use(&mut self, registrar: SequenceNr) {
+    pub(crate) fn rt_increase_use(&mut self, registrar: SequenceNr, wrote_non_opaque: bool) {
         let uses = unsafe { self.get_uses() };
         if uses.len() <= registrar.index() {
             uses.grow(self, registrar.index() + 1);
         }
         let mut info = unsafe { uses.get_mut(self, registrar.index()) };
-        info.increase_use(self);
+        info.increase_use(self, wrote_non_opaque);
         trace!(
             "increased use of {:?} to {} (tainted:{}, cur: {})",
             registrar,
             info.get_use(),
-            info.tainted(),
+            info.overwriter_tainted(),
             self.next_seqnr()
         );
     }
@@ -1672,7 +1680,7 @@ impl DatabaseContextData {
         registrar: SequenceNr,
         overwriter: SequenceNr,
         overwriter_tainted: bool,
-        wrote_non_opaque: bool,
+        //wrote_non_opaque: bool,
     ) {
         let uses = unsafe { self.get_uses() };
         let mut cur = unsafe { uses.get_mut(self, registrar.index()) };
@@ -1687,15 +1695,14 @@ impl DatabaseContextData {
         unsafe {
             cur.as_mut().get_unchecked_mut().decrease_use(
                 self,
-                overwriter_tainted,
-                wrote_non_opaque,
+                overwriter_tainted
             )
         };
         trace!(
             "decreased use of {:?} is {} (taint:{}) (because overwriter: {:?}(tainted:{}))",
             registrar,
             cur.get_use(),
-            cur.tainted(),
+            cur.overwriter_tainted(),
             overwriter,
             overwriter_tainted
         );
@@ -1705,7 +1712,7 @@ impl DatabaseContextData {
                 "Adding {:?} as unused (overwriter.tainted: {}, registrar tainted: {}, cur tombstone: {})",
                 registrar,
                 overwriter_tainted,
-                cur.tainted(),
+                cur.overwriter_tainted(),
                 cur.wrote_tombstones()
             );
             self.record_overwrite(registrar, overwriter);

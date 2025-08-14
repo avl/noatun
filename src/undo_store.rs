@@ -80,8 +80,8 @@ pub(crate) unsafe fn magic_initialize_ptr<T>(data_ptr: *mut T) {
 }
 
 impl UndoLog {
-    pub fn new<D: Disk>(disk: &mut D, target: &Target, max_size: usize) -> Result<UndoLog> {
-        let (file, _existed) = disk.open_file(target, "undo", 0, max_size)?;
+    pub fn new<D: Disk>(disk: &mut D, target: &Target, min_size: usize, max_size: usize) -> Result<UndoLog> {
+        let (file, _existed) = disk.open_file(target, "undo", min_size, max_size)?;
 
         Ok(UndoLog { store_mmap: file })
     }

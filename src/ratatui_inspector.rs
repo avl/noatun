@@ -1,20 +1,20 @@
 #![cfg(feature="ratatui")]
 
-use std::collections::VecDeque;
-use std::fmt::Display;
-use std::sync::{Arc, Mutex};
+
+use std::fmt::{Debug};
+
 use itertools::Itertools;
 use ratatui::layout::Constraint::{Length, Min, Percentage};
 use ratatui::layout::Layout;
-use ratatui::prelude::{Backend, Style};
-use ratatui::{Frame, Terminal};
+use ratatui::{Frame};
+
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent};
-use ratatui::widgets::{Block, Borders, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
 use tokio::time::Instant;
 use crate::communication::DatabaseCommunication;
-use crate::diagnostics::DiagnosticsData;
-use crate::distributor::DistributorMessage;
-use crate::{Message, NoatunTime};
+
+
+use crate::{Message, Object};
 use crate::simple_metrics::SimpleMetricsRecorder;
 
 
@@ -108,7 +108,23 @@ impl RatatuiInspector {
             x_offset: 0,
         }
     }
-    pub fn draw<MSG:Message+Send>(&mut self, frame: &mut Frame, recorder: &SimpleMetricsRecorder, comm: &DatabaseCommunication<MSG>) {
+
+    /// Draw the diagnostics ui
+    ///
+    /// Note, the root object must implement Debug. You can derive this like so:
+    ///
+    /// ```
+    /// use noatun::noatun_object;
+    ///
+    /// noatun_object!(
+    ///     #[derive(Debug)]
+    ///     struct IssueDb {
+    ///         // fields here
+    ///     }
+    /// );
+    /// ```
+    ///
+    pub fn draw<MSG:Message+Send>(&mut self, frame: &mut Frame, recorder: &SimpleMetricsRecorder, comm: &DatabaseCommunication<MSG>) where <MSG::Root as Object>::DetachedOwnedType: Debug {
         let data = comm.inspector_data();
         let data = data.as_ref().expect("diagnostics are enabled, inspector data should be present");
 
@@ -124,8 +140,13 @@ impl RatatuiInspector {
             Percentage(50),
             Percentage(50),
         ]);
+        let split_layout3 = Layout::horizontal([
+            Percentage(33),
+            Percentage(33),
+            Percentage(34),
+        ]);
 
-        let [received_packets_area, sent_packets_area] = split_layout.areas(upper_area);
+        let [received_packets_area, sent_packets_area, root_obj_area] = split_layout3.areas(upper_area);
         let [received_messages_area, sent_messages_area] = split_layout.areas(mid_area);
 
 
@@ -143,6 +164,10 @@ impl RatatuiInspector {
         let sent_packet_block = Block::new()
             .borders(Borders::ALL)
             .title(format!("Packets Sent"));
+
+        let root_obj_block = Block::new()
+            .borders(Borders::ALL)
+            .title(format!("Root obj"));
 
         let received_messages_block = Block::new()
             .borders(Borders::ALL)
@@ -242,6 +267,11 @@ impl RatatuiInspector {
         frame.render_widget(
             self.sent_packet_table.clone().rows(sent_packet_rows).block(sent_packet_block),
             sent_packets_area);
+
+        let root_obj_str = comm.with_root(|root|format!("{:#?}", root.detach()));
+        frame.render_widget(
+            Paragraph::new(root_obj_str).block(root_obj_block),
+            root_obj_area);
 
         frame.render_widget(
             self.received_message_table.clone().rows(received_message_rows).block(received_messages_block),

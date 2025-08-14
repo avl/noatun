@@ -21,7 +21,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::offset_of;
 use tracing::{debug, info, trace, warn};
-use crate::database::MessageInfo;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
@@ -1411,7 +1410,7 @@ impl<M> OnDiskMessageStore<M> {
         let data_files = &self.data_files;
         Ok(message_index
             .iter().enumerate()
-            .filter(|(idx, x)| !x.file_offset.is_deleted())
+            .filter(|(_idx, x)| !x.file_offset.is_deleted())
             .filter_map(|(idx, x)| match Self::read_msg(x, data_files, None) {
                 Ok(v) => Some((SequenceNr::from_index(idx), v)),
                 Err(err) => {
@@ -2586,6 +2585,7 @@ impl<M> OnDiskMessageStore<M> {
     pub fn new<D: Disk>(
         d: &mut D,
         target: &Target,
+        min_file_size: usize,
         max_file_size: usize,
     ) -> Result<OnDiskMessageStore<M>> {
         const {
@@ -2601,7 +2601,7 @@ impl<M> OnDiskMessageStore<M> {
         let data_files: [Result<DataFileInfo>; 2] = [0, 1].map(|file_number| {
             let file_name = format!("data{file_number}");
             let (data_file, existed) = d
-                .open_file(target, &file_name, 0, max_file_size)
+                .open_file(target, &file_name, min_file_size, max_file_size)
                 .context("Opening data-file")?;
 
             db_existed = existed;
@@ -2626,7 +2626,7 @@ impl<M> OnDiskMessageStore<M> {
             .unwrap_or_else(|_| unreachable!());
 
         let (mut index_file, _existed) = d
-            .open_file(target, "index", size_of::<StoreHeader>(), max_file_size)
+            .open_file(target, "index", size_of::<StoreHeader>().max(min_file_size), max_file_size)
             .context("Opening index-file")?;
         index_file
             .try_lock_exclusive()

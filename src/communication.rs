@@ -822,7 +822,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                             packet: format!("{:?}", packet),
                             size: context.cursend.len(),
                         });
-                        if diagnostics.sent_packets.len() > 10 {
+                        if diagnostics.sent_packets.len() > diagnostics.packet_limit {
                             diagnostics.sent_packets.pop_front();
                         }
                     }
@@ -869,7 +869,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                             packet: format!("{:?}", packet),
                             size: context.cursend.len(),
                         });
-                        if diagnostics.sent_packets.len() > 10 {
+                        if diagnostics.sent_packets.len() > diagnostics.packet_limit {
                             diagnostics.sent_packets.pop_front();
                         }
                     }
@@ -931,8 +931,12 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                 Ok(false)
             }
             msg = receive => {
-                //TODO: Should we perhaps not `expect` here?
-                let (size, src_addr) = msg.expect("network should not fail");
+
+                let Ok((size, src_addr)) = msg else {
+                    warn!("network receive failed, sleeping 1 second");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    return Ok(false);
+                };
                 self.raw_packets_received.increment(1);
 
                 assert_eq!(size, self.recvbuf.len());
@@ -968,7 +972,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         packet: format!("{:?}", packet),
                         size: self.recvbuf.len(),
                     });
-                    if diagnostics.received_packets.len() > 10 {
+                    if diagnostics.received_packets.len() > diagnostics.packet_limit {
                         diagnostics.received_packets.pop_front();
                     }
 
@@ -1179,13 +1183,13 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                     diagnostics.received_messages.push_back(
                         MessageRow {
                             time: Instant::now(),
-                            //TODO: Better format here
+                            //TODO(future): Better format here
                             message: msg.2.debug_format::<MSG>()?,
                             from: msg.1,
                             src_addr: msg.0
                         }
                     );
-                    if diagnostics.received_messages.len() > 10 {
+                    if diagnostics.received_messages.len() > diagnostics.packet_limit {
                         diagnostics.received_messages.pop_front();
                     }
                 }
@@ -1214,12 +1218,12 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
             let mut data = data.lock().unwrap();
             data.sent_messages.push_back(MessageRow {
                 time: Instant::now(),
-                //TODO: Add "ratatui_format" method, with ratatui coloring!
+                //TODO(future): Add "ratatui_format" method, with ratatui coloring!
                 message: msg.debug_format::<MSG>()?,
                 from: *self.distributor.ephemeral_node_id.get(),
                 src_addr: None,
             });
-            if data.sent_messages.len() > 10 {
+            if data.sent_messages.len() > data.packet_limit {
                 data.sent_messages.pop_front();
             }
 
@@ -1459,6 +1463,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         }
     }
 
+    /// Get the synchronization status of this instance.
+    ///
+    /// This method must not be called from within a tokio runtime. Tokio tasks
+    /// should instead call [`Self::get_status`].
     pub fn get_status_blocking(&self) -> Result<Status> {
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
         let status = self.cmd_tx.blocking_send(Cmd::GetStatus(oneshot_tx));
@@ -1554,13 +1562,24 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         response_rx.await??;
         Ok(())
     }
+
+    /// Add the given message at the given time.
+    ///
+    /// This method must not be called from within a tokio runtime.
+    /// Tokio tasks must use [`Self::add_message_at`] instead.
     pub fn blocking_add_message_at(&self, time: NoatunTime, msg: MSG) -> Result<()> {
         self.blocking_add_message_at_opt(Some(time), msg)
     }
+    /// Add the given message to the database.
+    ///
+    /// This method must not be called from within a tokio runtime.
+    /// Tokio tasks must use [`Self::add_message`] instead.
     pub fn blocking_add_message(&self, msg: MSG) -> Result<()> {
         self.blocking_add_message_at_opt(None, msg)
     }
-    /// Must *not* be called from within a tokio runtime.
+    /// Add the given message to the database.
+    ///
+    /// This method must not be called from within a tokio runtime.
     pub fn blocking_add_message_at_opt(&self, time: Option<NoatunTime>, msg: MSG) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         match self
@@ -1578,11 +1597,18 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         response_rx.blocking_recv()??;
         Ok(())
     }
+
+    /// Get access to the root object of this database.
+    ///
+    /// The object is made available as the parameter to the supplied closure.
     pub fn with_root<R>(&self, f: impl FnOnce(&MSG::Root) -> R) -> R {
         let db = self.database.lock().unwrap();
         db.with_root(f)
     }
 
+    /// Return the number of messages in the database.
+    ///
+    /// This is an inexpensive operation.
     pub fn count_messages(&self) -> usize {
         self.database.lock().unwrap().count_messages()
     }

@@ -143,7 +143,7 @@ impl Disk for InMemoryDisk {
 
 impl FileBackend for InMemoryGrowableFileMapping {
     fn page_size(&self) -> usize {
-        2 * 1024 * 1024
+        4096
     }
 
     fn sync_all(&self) -> Result<()> {

@@ -67,7 +67,7 @@ mod unix {
     impl FileMapping {
         pub fn page_size() -> usize {
             (*PAGE_SIZE.get_or_init(|| unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) as usize }))
-                .max(2usize * 1024 * 1024)
+                .max(4096)
         }
         pub(crate) fn committed_size(&self) -> usize {
             self.committed_size

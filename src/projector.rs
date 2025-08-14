@@ -263,11 +263,12 @@ impl<MSG: Message + 'static> Projector<MSG> {
     pub(crate) fn new<D: Disk>(
         s: &mut D,
         target: &Target,
+        min_size: usize,
         max_size: usize,
         cutoff_interval: CutOffDuration,
     ) -> Result<Projector<MSG>> {
         Ok(Projector {
-            messages: OnDiskMessageStore::new(s, target, max_size)?,
+            messages: OnDiskMessageStore::new(s, target, min_size, max_size)?,
             head_tracker: UpdateHeadTracker::new(s, target)?,
             cut_off_config: CutOffConfig::new(cutoff_interval)?,
             abort_on_panic: false,
@@ -365,6 +366,10 @@ impl<MSG: Message + 'static> Projector<MSG> {
     ) -> Result<()> {
         context.rewind(point);
         Ok(())
+    }
+    
+    pub fn compact_index(&mut self) -> Result<()> {
+        self.messages.compact_index()
     }
 
     pub(crate) fn set_abort_on_panic(&mut self) {
