@@ -1,4 +1,4 @@
-use crate::data_types::{NoatunKey};
+use crate::data_types::NoatunKey;
 use std::hash::Hasher;
 use std::pin::Pin;
 
@@ -13,8 +13,7 @@ macro_rules! noatun_hash_primitive {
             {
                 state.$tm(*tself);
             }
-            fn destroy(&mut self) {
-            }
+            fn destroy(&mut self) {}
             fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
                 let tself = unsafe { self.get_unchecked_mut() };
                 *tself = *detached;
@@ -44,4 +43,3 @@ noatun_hash_primitive!(i16, write_i16);
 noatun_hash_primitive!(i32, write_i32);
 noatun_hash_primitive!(i64, write_i64);
 noatun_hash_primitive!(i128, write_i128);
-

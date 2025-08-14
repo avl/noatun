@@ -128,12 +128,15 @@ impl SimpleMetricsRecorder {
         let mut ret = Vec::new();
         let guard = self.inner.lock().unwrap();
         for (key, val) in guard.counters.iter() {
-            ret.push((key.name().to_string(), val.load(Ordering::Relaxed).to_string()));
+            ret.push((
+                key.name().to_string(),
+                val.load(Ordering::Relaxed).to_string(),
+            ));
         }
         for (key, val) in guard.gauges.iter() {
-
-            ret.push((key.name().to_string(),
-                      f64::from_bits(val.load(Ordering::Relaxed)).to_string()
+            ret.push((
+                key.name().to_string(),
+                f64::from_bits(val.load(Ordering::Relaxed)).to_string(),
             ));
         }
 

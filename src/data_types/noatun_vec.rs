@@ -1,3 +1,10 @@
+use crate::data_types::context::{ContextGetter, ThreadLocalContext};
+use crate::projection_store::DatabaseContextData;
+use crate::sequence_nr::SequenceNr;
+use crate::{
+    get_context_mut_ptr, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer,
+    SchemaHasher, ThinPtr,
+};
 use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
@@ -5,10 +12,6 @@ use std::ops::{Index, Range};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
-use crate::{get_context_mut_ptr, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer, SchemaHasher, ThinPtr};
-use crate::data_types::context::{ContextGetter, ThreadLocalContext};
-use crate::projection_store::DatabaseContextData;
-use crate::sequence_nr::SequenceNr;
 
 /// Like NoatunVec, but for crate internal use. Does not track
 /// accesses. (Does not track dependencies between messages).
@@ -250,7 +253,6 @@ unsafe impl NoatunStorable for DatabaseVecLengthCapData {
     }
 }
 
-
 //TODO(future): Merge with RawDatabaseVec?
 /// Untracked vec, for internal use
 #[repr(C)]
@@ -280,7 +282,6 @@ impl<T: FixedSizeObject, C: ContextGetter> Default for NoatunVecRaw<T, C> {
 }
 
 impl<T: FixedSizeObject> NoatunVecRaw<T, ThreadLocalContext> {
-
     // This only works with thread local context, since it calls destroy, that may
     // reach user overridden code, that will use NoatunContext thread local global directly.
     pub(crate) fn destroy_items(&mut self, ctx: &mut ThreadLocalContext) {
@@ -978,4 +979,3 @@ where
         <Self as NoatunStorable>::hash_schema(hasher);
     }
 }
-

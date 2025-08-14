@@ -1,5 +1,5 @@
-use savefile_derive::Savefile;
 use crate::{NoatunStorable, SchemaHasher};
+use savefile_derive::Savefile;
 
 #[derive(Copy, Clone, Debug, Savefile)]
 #[repr(C)]

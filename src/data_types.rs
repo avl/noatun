@@ -1,30 +1,26 @@
 use crate::{
-    get_context_mut_ptr, get_context_ptr, DatabaseContextData,
-    NoatunContext, NoatunStorable, Object, Pointer, SchemaHasher, ThinPtr,
+    get_context_mut_ptr, get_context_ptr, DatabaseContextData, NoatunContext, NoatunStorable,
+    Object, Pointer, SchemaHasher, ThinPtr,
 };
 
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::ops::{Deref};
+use std::ops::Deref;
 use std::pin::Pin;
 
-pub use noatun_string::NoatunString;
-pub use noatun_option::NoatunOption;
-pub use noatun_cell::{NoatunCell, OpaqueNoatunCell, NoatunCellArrayExt};
-pub use noatun_vec::{NoatunVec, OpaqueNoatunVec, NoatunVecIterator, NoatunVecIteratorMut};
-pub(crate) use noatun_vec::{RawDatabaseVec, NoatunVecRaw};
+pub use noatun_cell::{NoatunCell, NoatunCellArrayExt, OpaqueNoatunCell};
 pub use noatun_hash_map::{NoatunHashMap, NoatunHashMapEntry, NoatunHashMapIterator, NoatunKey};
+pub use noatun_option::NoatunOption;
+pub use noatun_string::NoatunString;
+pub use noatun_vec::{NoatunVec, NoatunVecIterator, NoatunVecIteratorMut, OpaqueNoatunVec};
+pub(crate) use noatun_vec::{NoatunVecRaw, RawDatabaseVec};
 
-
-
-mod noatun_hash_impls;
-mod noatun_string;
-mod noatun_option;
 mod noatun_cell;
-mod noatun_vec;
+mod noatun_hash_impls;
 mod noatun_hash_map;
-
-
+mod noatun_option;
+mod noatun_string;
+mod noatun_vec;
 
 #[repr(transparent)]
 pub(crate) struct NoatunUntrackedCell<T: NoatunStorable>(pub(crate) T);
@@ -115,7 +111,6 @@ impl ContextGetter for DatabaseContextData {
         self
     }
 }
-
 
 #[repr(transparent)]
 pub struct NoatunBox<T: Object + ?Sized> {
@@ -260,7 +255,6 @@ impl<T: Object + ?Sized> NoatunBox<T> {
     }*/
 }
 
-
 #[allow(non_local_definitions)]
 #[cfg(test)]
 mod tests {
@@ -308,7 +302,7 @@ mod tests {
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
-            let mut map = unsafe { map.map_unchecked_mut(|x|&mut x.0) };
+            let mut map = unsafe { map.map_unchecked_mut(|x| &mut x.0) };
             assert_eq!(map.len(), 0);
 
             map.as_mut().entry(42).or_insert(&420);
@@ -361,10 +355,10 @@ mod tests {
                     ..DatabaseSettings::default()
                 },
             )
-                .unwrap();
+            .unwrap();
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
-            let mut map = unsafe { map.map_unchecked_mut(|x|&mut x.0) };
+            let mut map = unsafe { map.map_unchecked_mut(|x| &mut x.0) };
             assert_eq!(map.len(), 0);
 
             map.insert_internal(42, &42);
@@ -386,7 +380,7 @@ mod tests {
             }
             assert!(map.is_empty());
         })
-            .unwrap();
+        .unwrap();
     }
 
     #[test]
@@ -403,7 +397,7 @@ mod tests {
             .unwrap();
         let mut db = db.begin_session_mut().unwrap();
         db.with_root_mut(|map| {
-            let mut map = unsafe { map.map_unchecked_mut(|x|&mut x.0) };
+            let mut map = unsafe { map.map_unchecked_mut(|x| &mut x.0) };
             assert_eq!(map.len(), 0);
 
             map.insert_internal(42, &42);

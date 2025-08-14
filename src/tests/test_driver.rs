@@ -1,14 +1,17 @@
-use rand::Rng;
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use crate::colors::colored_int;
+use crate::communication::{
+    CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket, DebugEvent,
+    DebugEventMsg,
+};
+use crate::tests::all_up_sync_test::MY_THREAD_RNG;
 use arcshift::ArcShift;
 use bytes::BufMut;
 use rand::distributions::uniform::SampleUniform;
+use rand::Rng;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::Instant;
-use crate::colors::colored_int;
-use crate::communication::{CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket, DebugEvent, DebugEventMsg};
-use crate::tests::all_up_sync_test::MY_THREAD_RNG;
 
 #[derive(Clone, Default)]
 pub(crate) struct Partitionings {
@@ -16,9 +19,7 @@ pub(crate) struct Partitionings {
 }
 #[derive(Clone)]
 pub(crate) struct TestDriverInner {
-    unallocated_rx: Arc<Mutex::<Vec<Option::<
-        Receiver<(u8, Vec::<u8>)>
-    >>>>,
+    unallocated_rx: Arc<Mutex<Vec<Option<Receiver<(u8, Vec<u8>)>>>>>,
     senders: Vec<Sender<(u8 /*src*/, Vec<u8>)>>,
     sender_count: usize,
     raw_messages: Arc<
@@ -39,7 +40,7 @@ impl TestDriverInner {
         let mut senders = vec![];
         let mut receivers = vec![];
         for _ in 0..size {
-            let (tx,rx) = tokio::sync::mpsc::channel(100);
+            let (tx, rx) = tokio::sync::mpsc::channel(100);
             senders.push(tx);
             receivers.push(Some(rx));
         }
@@ -52,7 +53,6 @@ impl TestDriverInner {
         }
     }
 }
-
 
 pub(crate) struct TestDriver {
     pub(crate) driver_start: Instant,
@@ -151,7 +151,7 @@ impl TestDriver {
                 msg.len(),
                 data
             )
-                .unwrap();
+            .unwrap();
         }
 
         ret
@@ -218,7 +218,7 @@ impl TestDriver {
                 colored_int(node),
                 ev.msg
             )
-                .unwrap();
+            .unwrap();
         }
         ret = ret.replace("2020-01-01T00:", "*");
 
@@ -275,7 +275,9 @@ impl CommunicationSendSocket<u8> for TestDriverSender {
         let mut delivered_to = vec![];
         let partitionings = self.2.get();
         for (dst_node, item) in driver_inner.senders.iter().enumerate() {
-            let partitioned = partitionings.partitionings.contains(&(self.0, dst_node as u8));
+            let partitioned = partitionings
+                .partitionings
+                .contains(&(self.0, dst_node as u8));
             if driver_inner.loss <= random(0.0..1.0) && !partitioned {
                 item.send((self.0 /*src*/, data.clone()))
                     .await
@@ -306,8 +308,7 @@ impl CommunicationDriver for TestDriver {
     ) -> anyhow::Result<(Self::Sender, Self::Receiver)> {
         //let (tx, rx) = tokio::sync::mpsc::channel(100);
 
-
-        let mut rx  = None;
+        let mut rx = None;
         let mut own_id = None;
         self.senders.rcu(|prev| {
             let mut senders = prev.clone();
@@ -319,14 +320,11 @@ impl CommunicationDriver for TestDriver {
             } else {
                 let (tx, temp_rx) = tokio::sync::mpsc::channel(100);
                 rx = Some(temp_rx);
-                senders
-                    .senders
-                    .push(tx.clone());
+                senders.senders.push(tx.clone());
             }
             own_id = Some(senders.sender_count);
             senders.sender_count += 1;
             drop(unallocated);
-
 
             senders
         });
@@ -342,4 +340,3 @@ impl CommunicationDriver for TestDriver {
         Ok(s.parse()?)
     }
 }
-

@@ -1,9 +1,8 @@
 #![allow(clippy::needless_range_loop)]
+use super::test_driver::*;
 #[allow(unused)]
 use crate::colors::colored_int;
-use crate::communication::{
-    DatabaseCommunication, DatabaseCommunicationConfig,
-};
+use crate::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
 use crate::distributor::Status;
@@ -29,7 +28,6 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::Instant;
 use tracing::info;
-use super::test_driver::*;
 
 thread_local! {
     pub static MY_THREAD_RNG: RefCell<Option<SmallRng>> = const { RefCell::new(None) };
@@ -161,7 +159,6 @@ async fn all_up_simple_sync_test() {
 
     assert_snapshot!(driver.messages_snapshot());
 }
-
 
 #[test]
 fn old_local_messages_without_effect_are_removed0() {
@@ -523,8 +520,11 @@ async fn all_up_special_seed() {
     }
 }
 
-pub async fn assert_equal<T:Message+Send+PartialEq>(app1: &mut DatabaseCommunication<T>, app2: &mut DatabaseCommunication<T>, seed: u64) {
-
+pub async fn assert_equal<T: Message + Send + PartialEq>(
+    app1: &mut DatabaseCommunication<T>,
+    app2: &mut DatabaseCommunication<T>,
+    seed: u64,
+) {
     let msgs1 = app1
         .inner_database()
         .begin_session()
@@ -564,7 +564,6 @@ pub async fn assert_equal<T:Message+Send+PartialEq>(app1: &mut DatabaseCommunica
     }
     assert_eq!(msgs1.len(), msgs2.len());
     assert_eq!(msgs1, msgs2, "Failed for seed {seed}");
-
 }
 
 async fn all_up_general_update_sync_test_impl(

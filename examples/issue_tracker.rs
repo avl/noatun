@@ -1,28 +1,34 @@
-
-use std::pin::Pin;
-use std::time::Duration;
 use anyhow::{Context, Result};
-use flexi_logger::{FileSpec, LogSpecification};
 use flexi_logger::trc::FormatConfig;
 use flexi_logger::writers::FileLogWriter;
+use flexi_logger::{FileSpec, LogSpecification};
+use std::pin::Pin;
+use std::time::Duration;
 
-use ratatui::{ crossterm::event::{self, Event, KeyCode}, widgets::Paragraph, DefaultTerminal, Frame};
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Constraint::Percentage;
 use ratatui::layout::{Flex, Layout};
-use ratatui::prelude::Constraint::{Length,  Min};
+use ratatui::prelude::Constraint::{Length, Min};
 use ratatui::prelude::{Constraint, Line, Rect, Style, Stylize};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Clear, Row, Table, TableState, Wrap};
+use ratatui::{
+    crossterm::event::{self, Event, KeyCode},
+    widgets::Paragraph,
+    DefaultTerminal, Frame,
+};
 use savefile_derive::Savefile;
 use tracing::trace;
 
-use tui_textarea::TextArea;
-use noatun::data_types::{NoatunHashMap, NoatunHashMapEntry, NoatunString, NoatunVec};
-use noatun::{noatun_object, CutOffDuration, Database, DatabaseSettings, Message, MessageId, NoatunTime, Object, OpenMode, SavefileMessageSerializer};
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
+use noatun::data_types::{NoatunHashMap, NoatunHashMapEntry, NoatunString, NoatunVec};
 use noatun::ratatui_inspector::RatatuiInspector;
 use noatun::simple_metrics::SimpleMetricsRecorder;
+use noatun::{
+    noatun_object, CutOffDuration, Database, DatabaseSettings, Message, MessageId, NoatunTime,
+    Object, OpenMode, SavefileMessageSerializer,
+};
+use tui_textarea::TextArea;
 
 noatun_object!(
     struct DescriptionText {
@@ -70,7 +76,7 @@ enum IssueMessage {
     ReassignIssue {
         id: String,
         new_reporter: String,
-    }
+    },
 }
 
 fn remap<'a>(root: &IssueDbPinProject, id: &String) -> String {
@@ -99,18 +105,15 @@ impl Message for IssueMessage {
                 issue.created.set(message_id.timestamp());
                 trace!("assigning reporter");
                 issue.reporter.assign(reporter);
-
             }
             IssueMessage::RemoveIssue { id } => {
-
                 //TODO: Document clearly for al ops if they cause read deps. Make it possible to manually add read-deps? deny(missing_docs)!
                 //TODO: Make windows in ratatui scrollable
 
                 let id = remap(&root, id).to_owned();
 
                 root.issues.as_mut().remove(id.as_str());
-                root.aliases.as_mut().retain(|_k,v|**v != id);
-
+                root.aliases.as_mut().retain(|_k, v| **v != id);
             }
             IssueMessage::AppendText { id, reporter, text } => {
                 let id = remap(&root, id);
@@ -123,8 +126,13 @@ impl Message for IssueMessage {
                     });
                 }
             }
-            IssueMessage::RenameIssue { old_id: id, new_id: id_new } => {
-                if !root.issues.as_mut().contains_key(id_new) && !root.aliases.as_mut().contains_key(id) {
+            IssueMessage::RenameIssue {
+                old_id: id,
+                new_id: id_new,
+            } => {
+                if !root.issues.as_mut().contains_key(id_new)
+                    && !root.aliases.as_mut().contains_key(id)
+                {
                     match root.issues.as_mut().entry(id.to_string()) {
                         NoatunHashMapEntry::Occupied(o) => {
                             let prev = o.remove();
@@ -140,12 +148,10 @@ impl Message for IssueMessage {
                     let issue = issue.pin_project();
                     issue.reporter.init_from_detached(new_reporter);
                 }
-
             }
         }
     }
 }
-
 
 /// This is a bare minimum example. There are many approaches to running an application loop, so
 /// this is not meant to be prescriptive. It is only meant to demonstrate the basic setup and
@@ -158,8 +164,7 @@ fn main() -> Result<()> {
         LogSpecification::env().unwrap(),
         None,
         FileLogWriter::builder(FileSpec::default().suppress_timestamp()),
-        &FormatConfig::default()
-            .with_file(true),
+        &FormatConfig::default().with_file(true),
     )?;
 
     let terminal = ratatui::init();
@@ -168,13 +173,12 @@ fn main() -> Result<()> {
     app_result
 }
 
-
 enum Popup {
     None,
     AddHeading(TextArea<'static>),
     AddText(TextArea<'static>),
     Reassign(TextArea<'static>),
-    Rename(TextArea<'static>)
+    Rename(TextArea<'static>),
 }
 
 impl Popup {
@@ -197,11 +201,10 @@ struct AppState {
     diagnostics: bool,
     recorder: SimpleMetricsRecorder,
     inspector: RatatuiInspector,
-
 }
 
 impl AppState {
-    pub fn create_event(&mut  self, heading: &str) -> Result<()> {
+    pub fn create_event(&mut self, heading: &str) -> Result<()> {
         self.comms.blocking_add_message(IssueMessage::AddIssue {
             reporter: self.user.clone(),
             heading: heading.to_string(),
@@ -209,14 +212,15 @@ impl AppState {
     }
     pub fn reassign(&mut self, new_reporter: String) -> Result<()> {
         if let Some(selected_heading) = &self.selected_heading {
-            self.comms.blocking_add_message(IssueMessage::ReassignIssue {
-                id: selected_heading.to_string(),
-                new_reporter
-            })?;
+            self.comms
+                .blocking_add_message(IssueMessage::ReassignIssue {
+                    id: selected_heading.to_string(),
+                    new_reporter,
+                })?;
         }
         Ok(())
     }
-    pub fn rename(&mut self ,new: String) -> Result<()> {
+    pub fn rename(&mut self, new: String) -> Result<()> {
         if let Some(selected_heading) = &self.selected_heading {
             self.comms.blocking_add_message(IssueMessage::RenameIssue {
                 old_id: selected_heading.to_string(),
@@ -225,7 +229,7 @@ impl AppState {
         }
         Ok(())
     }
-    pub fn add_text(&mut  self, text: &str) -> Result<()> {
+    pub fn add_text(&mut self, text: &str) -> Result<()> {
         if let Some(selected_heading) = &self.selected_heading {
             self.comms.blocking_add_message(IssueMessage::AppendText {
                 reporter: self.user.clone(),
@@ -243,13 +247,14 @@ impl AppState {
 }
 
 fn start_communication() -> Result<DatabaseCommunication<IssueMessage>> {
-    let db: Database<IssueMessage> =
-        Database::create_new(
-            "issue_db",
-            OpenMode::OpenCreate, DatabaseSettings {
-                cutoff_interval: CutOffDuration::from_minutes(2),
-                ..DatabaseSettings::default()
-            })?;
+    let db: Database<IssueMessage> = Database::create_new(
+        "issue_db",
+        OpenMode::OpenCreate,
+        DatabaseSettings {
+            cutoff_interval: CutOffDuration::from_minutes(2),
+            ..DatabaseSettings::default()
+        },
+    )?;
 
     let distributed_db = DatabaseCommunication::new(
         db,
@@ -272,22 +277,15 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
 
     let comms = start_communication()?;
 
-
-
     let user = std::env::var("USER").unwrap_or("default-user".to_string());
     // Note: TableState should be stored in your application state (not constructed in your render
     // method) so that the selected row is preserved across renders
     let table_state = TableState::default();
     let text_table_state = TableState::default();
 
+    let widths = [Length(25), Min(10), Length(15)];
 
-    let widths = [
-        Length(25),
-        Min(10),
-        Length(15),
-    ];
-
-    let rows: [Row;0] = [];
+    let rows: [Row; 0] = [];
     let table = Table::new(rows.clone(), widths)
         .block(Block::new().title("Table"))
         .header(Row::new(vec!["Time", "Heading", "Reporter"]))
@@ -321,29 +319,25 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
         inspector: RatatuiInspector::new(),
     };
 
-
     loop {
-
-        terminal.draw(|frame|{
+        terminal.draw(|frame| {
             if app.diagnostics {
                 app.inspector.draw(frame, &app.recorder, &app.comms);
             } else {
                 draw(frame, &mut app).expect("rendering should not fail");
             }
 
-
             match &mut app.popup {
                 Popup::None => {}
-                Popup::AddHeading(text)|
-                Popup::AddText(text)|
-                Popup::Reassign(text)|
-                Popup::Rename(text) => {
+                Popup::AddHeading(text)
+                | Popup::AddText(text)
+                | Popup::Reassign(text)
+                | Popup::Rename(text) => {
                     let area = popup_area(frame.area(), 75);
                     frame.render_widget(Clear, area); //this clears out the background
                     frame.render_widget(&*text, area);
                 }
             }
-
         })?;
 
         if poll_input(&mut app)? {
@@ -356,13 +350,11 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
 /// Render the application. This is where you would draw the application UI. This example draws a
 /// greeting.
 fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
-
-
     app.selected_heading = None;
 
-    let rows: Vec<Row> = app.comms.with_root(|root|{
+    let rows: Vec<Row> = app.comms.with_root(|root| {
         let mut rows = Vec::new();
-        for (k,v) in root.issues.iter() {
+        for (k, v) in root.issues.iter() {
             rows.push((v.created.get(), k.detach(), v.reporter.detach()));
         }
         rows.sort();
@@ -372,16 +364,18 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
             }
         }
         app.row_count = rows.len();
-        rows.into_iter().map(|(time,heading,count)|Row::new([
-            time.to_string(), heading, count.to_string()
-        ])).collect()
+        rows.into_iter()
+            .map(|(time, heading, count)| Row::new([time.to_string(), heading, count.to_string()]))
+            .collect()
     });
 
     let message_count = app.comms.count_messages();
 
-    let sync_status = app.comms.get_status_blocking().map(|x|
-        x.to_string()
-    ).unwrap_or_else(|_|"Failed".to_string());
+    let sync_status = app
+        .comms
+        .get_status_blocking()
+        .map(|x| x.to_string())
+        .unwrap_or_else(|_| "Failed".to_string());
 
     let mut debug_spans = vec![
         ratatui::prelude::Span::styled("User: ", Style::default()),
@@ -392,50 +386,51 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
         ratatui::prelude::Span::styled(sync_status.to_string(), Style::default().bold()),
     ];
     for (key, val) in app.recorder.metrics_items() {
-        debug_spans.push(ratatui::prelude::Span::styled(format!(", {}: ", key), Style::default()));
+        debug_spans.push(ratatui::prelude::Span::styled(
+            format!(", {}: ", key),
+            Style::default(),
+        ));
         debug_spans.push(ratatui::prelude::Span::styled(val, Style::default().bold()));
     }
 
-    let metrics_paragraph = Paragraph::new(Line::from(
-        debug_spans)).wrap(Wrap {
-        trim: true
-    });
+    let metrics_paragraph = Paragraph::new(Line::from(debug_spans)).wrap(Wrap { trim: true });
 
-
-
-    let text_rows: Vec<Row> = app.comms.with_root(|root|{
+    let text_rows: Vec<Row> = app.comms.with_root(|root| {
         let mut rows = Vec::new();
         if let Some(selected_heading) = &app.selected_heading {
             if let Some(item) = root.issues.get(selected_heading) {
                 for text in item.description.iter() {
-                    rows.push((text.time.to_string(), text.added_by.to_string(), text.text.detach()));
+                    rows.push((
+                        text.time.to_string(),
+                        text.added_by.to_string(),
+                        text.text.detach(),
+                    ));
                 }
             }
         }
         rows.sort();
-        rows.into_iter().map(|(time,heading,count)|Row::new([
-            time.to_string(), heading, count.to_string()
-        ])).collect()
+        rows.into_iter()
+            .map(|(time, heading, count)| Row::new([time.to_string(), heading, count.to_string()]))
+            .collect()
     });
 
     let main_status_layout = Layout::vertical([
         Length(3), //Keybinds
-        Min(0), // List
-        Length((2+metrics_paragraph.line_count(frame.area().width.saturating_sub(2)) as u16).min(20)), //Status
+        Min(0),    // List
+        Length(
+            (2 + metrics_paragraph.line_count(frame.area().width.saturating_sub(2)) as u16).min(20),
+        ), //Status
     ]);
 
     let [keybinds_area, list_area, status_area] = main_status_layout.areas(frame.area());
 
-    let list_details_layout = Layout::horizontal([
-        Percentage(50),
-        Percentage(50),
-    ]);
+    let list_details_layout = Layout::horizontal([Percentage(50), Percentage(50)]);
 
     let [list_area, details_area] = list_details_layout.areas(list_area);
 
     let details_layout = Layout::vertical([
         Length(4), // Time/Heading
-        Min(4), // Texts
+        Min(4),    // Texts
     ]);
 
     let [time_heading_area, descriptions_label_area] = details_layout.areas(details_area);
@@ -443,45 +438,34 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
     if let Some(selected_row) = &app.selected_heading {
         let issue_block = Block::new().borders(Borders::ALL).title("Issue");
 
-        if let Some(issue) = app.comms.with_root(|root| {
-            root.issues.get(selected_row).map(|x|x.detach())
-        }) {
-
+        if let Some(issue) = app
+            .comms
+            .with_root(|root| root.issues.get(selected_row).map(|x| x.detach()))
+        {
             frame.render_widget(
-                Paragraph::new(
-                    vec![
-                        ratatui::prelude::Line::from(
-                            vec![
-                                Span::styled("Timestamp: ", Style::default().bold()),
-                                Span::styled(issue.created.to_string(), Style::default()),
-                            ]),
-                        ratatui::prelude::Line::from(
-                            vec![
-                                Span::styled("Heading:   ", Style::default().bold()),
-                                Span::styled(selected_row, Style::default()),
-                            ]),
-                    ]).block(issue_block),
-                time_heading_area);
-
+                Paragraph::new(vec![
+                    ratatui::prelude::Line::from(vec![
+                        Span::styled("Timestamp: ", Style::default().bold()),
+                        Span::styled(issue.created.to_string(), Style::default()),
+                    ]),
+                    ratatui::prelude::Line::from(vec![
+                        Span::styled("Heading:   ", Style::default().bold()),
+                        Span::styled(selected_row, Style::default()),
+                    ]),
+                ])
+                .block(issue_block),
+                time_heading_area,
+            );
         }
     }
 
-    let issue_block = Block::new()
-        .borders(Borders::ALL)
-        .title(format!("Issues"));
+    let issue_block = Block::new().borders(Borders::ALL).title(format!("Issues"));
 
-    let text_block = Block::new()
-        .borders(Borders::ALL)
-        .title(format!("Texts"));
+    let text_block = Block::new().borders(Borders::ALL).title(format!("Texts"));
 
-    let status_block = Block::new()
-        .borders(Borders::ALL)
-        .title(format!("Status"));
+    let status_block = Block::new().borders(Borders::ALL).title(format!("Status"));
 
-    let keybinds_block = Block::new()
-        .borders(Borders::ALL)
-        .title(format!("Keys"));
-
+    let keybinds_block = Block::new().borders(Borders::ALL).title(format!("Keys"));
 
     frame.render_widget(
         Paragraph::new(Line::from(
@@ -489,19 +473,22 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
             )).block(keybinds_block),
         keybinds_area);
 
-
-    frame.render_widget(
-        metrics_paragraph.block(status_block),
-        status_area);
-
-
+    frame.render_widget(metrics_paragraph.block(status_block), status_area);
 
     let table = app.table.clone().rows(rows);
-    frame.render_stateful_widget(table.block(issue_block), list_area, &mut &mut app.table_state);
+    frame.render_stateful_widget(
+        table.block(issue_block),
+        list_area,
+        &mut &mut app.table_state,
+    );
 
     if app.selected_heading.is_some() {
         let text_table = app.text_table.clone().rows(text_rows);
-        frame.render_stateful_widget(text_table.block(text_block), descriptions_label_area, &mut &mut app.text_table_state);
+        frame.render_stateful_widget(
+            text_table.block(text_block),
+            descriptions_label_area,
+            &mut &mut app.text_table_state,
+        );
     }
 
     Ok(())
@@ -527,51 +514,51 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
             app.inspector.input(&event);
         }
         match event {
-            input if app.popup.is_some() => {
-
-
-                match &mut app.popup {
-                    Popup::None => {}
-                    Popup::AddHeading(w) |
-                    Popup::Reassign(w) |
-                    Popup::Rename(w) |
-                    Popup::AddText(w) => {
-
-                        match &input {
-                            Event::Key(KeyEvent{code: KeyCode::Esc,..}) => {
-                                app.popup = Popup::None;
-                                return Ok(false);
-                            }
-                            Event::Key(KeyEvent{code: KeyCode::Enter,..}) => {
-                                match &mut app.popup {
-                                    Popup::AddHeading(w) => {
-                                        let heading: String = w.lines()[0].to_string();
-                                        app.create_event(&heading)?;
-                                    }
-                                    Popup::AddText(w) => {
-                                        let text: String = w.lines()[0].to_string();
-                                        app.add_text(&text)?;
-                                    }
-                                    Popup::Rename( new) => {
-                                        let text: String = new.lines()[0].to_string();
-                                        app.rename(text)?;
-                                    }
-                                    Popup::Reassign( new) => {
-                                        let text: String = new.lines()[0].to_string();
-                                        app.reassign(text)?;
-                                    }
-                                    Popup::None => {}
-                                }
-                                app.popup = Popup::None;
-                                return Ok(false);
-                            }
-                            _ => {}
+            input if app.popup.is_some() => match &mut app.popup {
+                Popup::None => {}
+                Popup::AddHeading(w)
+                | Popup::Reassign(w)
+                | Popup::Rename(w)
+                | Popup::AddText(w) => {
+                    match &input {
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Esc, ..
+                        }) => {
+                            app.popup = Popup::None;
+                            return Ok(false);
                         }
-
-                        w.input(input);
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Enter,
+                            ..
+                        }) => {
+                            match &mut app.popup {
+                                Popup::AddHeading(w) => {
+                                    let heading: String = w.lines()[0].to_string();
+                                    app.create_event(&heading)?;
+                                }
+                                Popup::AddText(w) => {
+                                    let text: String = w.lines()[0].to_string();
+                                    app.add_text(&text)?;
+                                }
+                                Popup::Rename(new) => {
+                                    let text: String = new.lines()[0].to_string();
+                                    app.rename(text)?;
+                                }
+                                Popup::Reassign(new) => {
+                                    let text: String = new.lines()[0].to_string();
+                                    app.reassign(text)?;
+                                }
+                                Popup::None => {}
+                            }
+                            app.popup = Popup::None;
+                            return Ok(false);
+                        }
+                        _ => {}
                     }
+
+                    w.input(input);
                 }
-            }
+            },
             Event::Key(key) => {
                 match key.code {
                     KeyCode::Esc => {
@@ -581,7 +568,7 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                             return Ok(true);
                         }
                     }
-                    KeyCode::Char('q')|KeyCode::Char('Q') => {
+                    KeyCode::Char('q') | KeyCode::Char('Q') => {
                         return Ok(true);
                     }
                     KeyCode::Delete => {
@@ -598,35 +585,44 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                             app.popup = Popup::Rename(text);
                         }
                     }
-                    KeyCode::Char('a')|KeyCode::Char('A') => {
+                    KeyCode::Char('a') | KeyCode::Char('A') => {
                         let mut text = TextArea::default();
                         text.set_block(Block::new().borders(Borders::ALL).title("Enter heading"));
                         app.popup = Popup::AddHeading(text);
                     }
-                    KeyCode::Char('t')|KeyCode::Char('T') => {
+                    KeyCode::Char('t') | KeyCode::Char('T') => {
                         if app.selected_heading.is_some() {
                             let mut text = TextArea::default();
                             text.set_block(Block::new().borders(Borders::ALL).title("Enter text"));
                             app.popup = Popup::AddText(text);
                         }
                     }
-                    KeyCode::Char('r')|KeyCode::Char('R') => {
+                    KeyCode::Char('r') | KeyCode::Char('R') => {
                         if app.selected_heading.is_some() {
                             let mut text = TextArea::default();
                             text.set_block(Block::new().borders(Borders::ALL).title("Enter text"));
                             app.popup = Popup::Reassign(text);
                         }
                     }
-                    KeyCode::Char('d')|KeyCode::Char('D') => {
+                    KeyCode::Char('d') | KeyCode::Char('D') => {
                         app.diagnostics = !app.diagnostics;
                         app.popup = Popup::None;
                     }
-                    KeyCode::Char('v')|KeyCode::Char('V') => {
-                        app.comms.inner_database().begin_session_mut()?.maybe_advance_cutoff()?;
+                    KeyCode::Char('v') | KeyCode::Char('V') => {
+                        app.comms
+                            .inner_database()
+                            .begin_session_mut()?
+                            .maybe_advance_cutoff()?;
                     }
-                    KeyCode::Char('p')|KeyCode::Char('P') => {
-                        app.comms.inner_database().begin_session_mut()?.compact_index()?;
-                        app.comms.inner_database().begin_session_mut()?.reproject()?;
+                    KeyCode::Char('p') | KeyCode::Char('P') => {
+                        app.comms
+                            .inner_database()
+                            .begin_session_mut()?
+                            .compact_index()?;
+                        app.comms
+                            .inner_database()
+                            .begin_session_mut()?
+                            .reproject()?;
                     }
                     KeyCode::Up => {
                         let next = app.table_state.selected().unwrap_or(0).saturating_sub(1);
@@ -634,7 +630,7 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                         app.table_state.select(Some(next));
                     }
                     KeyCode::Down => {
-                        let next = app.table_state.selected().unwrap_or(0)+1;
+                        let next = app.table_state.selected().unwrap_or(0) + 1;
                         let next = next.clamp(0, app.row_count.saturating_sub(1));
                         app.table_state.select(Some(next));
                     }
@@ -647,4 +643,3 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
     }
     Ok(false)
 }
-

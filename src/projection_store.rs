@@ -507,26 +507,30 @@ impl DatabaseContextData {
 
         &mut keys.get_index_mut(observee.index(), self).incoming_read_dep
     }
-    
-    pub(crate) fn get_live_values(&self, seq: SequenceNr) -> (u32, &'static str/*flags*/) {
+
+    pub(crate) fn get_live_values(&self, seq: SequenceNr) -> (u32, &'static str /*flags*/) {
         let uses = unsafe { self.get_uses() };
         if uses.len() <= seq.index() {
             return (0, "".into());
         }
         let info = unsafe { uses.get_mut(self, seq.index()) };
 
-        let flags = match (info.overwriter_tainted(), info.wrote_tombstones(), info.wrote_non_opaques()) {
-            (false,false,false) => "",
+        let flags = match (
+            info.overwriter_tainted(),
+            info.wrote_tombstones(),
+            info.wrote_non_opaques(),
+        ) {
+            (false, false, false) => "",
             (true, true, true) => "TSN",
-            (true, false,false) => "T",
-            (false,true, false) => "S",
-            (false,false,true) => "N",
-            (false,true, true) => "SN",
-            (true, false,true) => "TN",
+            (true, false, false) => "T",
+            (false, true, false) => "S",
+            (false, false, true) => "N",
+            (false, true, true) => "SN",
+            (true, false, true) => "TN",
             (true, true, false) => "TS",
         };
         (info.get_use(), flags)
-    } 
+    }
 
     pub(crate) fn incoming_read_dependencies(
         &self,
@@ -549,7 +553,7 @@ impl DatabaseContextData {
         }
         &keys.get_index(observee.index(), self).last_overwriter_of
     }
-    
+
     pub(crate) fn outgoing_read_dependencies(
         &self,
         observer: SequenceNr,
@@ -957,17 +961,17 @@ impl DatabaseContextData {
             }
         }
     }
-    pub fn zero_storable<T:NoatunStorable>(&mut self, storable: Pin<&mut T>) {
+    pub fn zero_storable<T: NoatunStorable>(&mut self, storable: Pin<&mut T>) {
         let thin = self.index_of_ptr(storable.deref() as *const _);
         let fat = FatPtr::from_thin_size(thin, size_of::<T>());
         self.zero(fat);
     }
-    pub fn zero_internal<T:NoatunStorable>(&mut self, storable: &mut T) {
+    pub fn zero_internal<T: NoatunStorable>(&mut self, storable: &mut T) {
         let thin = self.index_of_ptr(storable as *mut _);
         let fat = FatPtr::from_thin_size(thin, size_of::<T>());
         self.zero(fat);
     }
-    pub fn zero_object<T:Object+?Sized>(&mut self, storable: Pin<&mut T>) {
+    pub fn zero_object<T: Object + ?Sized>(&mut self, storable: Pin<&mut T>) {
         let thin = self.index_of(storable.deref()).start();
         let fat = FatPtr::from_idx_count(thin, size_of_val(&*storable));
         self.zero(fat);
@@ -989,7 +993,7 @@ impl DatabaseContextData {
             dest.fill(0);
         }
     }
-    
+
     pub fn copy_bytes(&mut self, source: FatPtr, dest_index: ThinPtr) {
         unsafe {
             self.undo_log.record(UndoLogEntry::RestorePod {
@@ -1366,11 +1370,7 @@ impl DatabaseContextData {
 
         let is_valid = registrar_point_value.is_valid();
         if is_valid {
-            self.rt_decrease_use(
-                registrar_point_value,
-                actor,
-                actor_tainted,
-            );
+            self.rt_decrease_use(registrar_point_value, actor, actor_tainted);
         }
         if is_clear {
             // Clear registrar point should only happen in "destroy", and destroyed memory
@@ -1686,17 +1686,15 @@ impl DatabaseContextData {
         let mut cur = unsafe { uses.get_mut(self, registrar.index()) };
         let cur_use = cur.get_use();
         if cur_use == 0 {
-
             //panic!("Corrupt use count for sequence nr {registrar:?}, use = {cur_use}");
             println!("Corrupt use count for sequence nr {registrar:?}, use = {cur_use}");
             std::process::abort();
         }
 
         unsafe {
-            cur.as_mut().get_unchecked_mut().decrease_use(
-                self,
-                overwriter_tainted
-            )
+            cur.as_mut()
+                .get_unchecked_mut()
+                .decrease_use(self, overwriter_tainted)
         };
         trace!(
             "decreased use of {:?} is {} (taint:{}) (because overwriter: {:?}(tainted:{}))",

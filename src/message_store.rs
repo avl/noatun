@@ -1402,14 +1402,17 @@ impl<M> OnDiskMessageStore<M> {
                 }
             }))
     }
-    pub fn get_all_messages_with_index(&self) -> Result<impl Iterator<Item = (SequenceNr, MessageFrame<M>)> + use<'_, M>>
+    pub fn get_all_messages_with_index(
+        &self,
+    ) -> Result<impl Iterator<Item = (SequenceNr, MessageFrame<M>)> + use<'_, M>>
     where
         M: Message,
     {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
         let data_files = &self.data_files;
         Ok(message_index
-            .iter().enumerate()
+            .iter()
+            .enumerate()
             .filter(|(_idx, x)| !x.file_offset.is_deleted())
             .filter_map(|(idx, x)| match Self::read_msg(x, data_files, None) {
                 Ok(v) => Some((SequenceNr::from_index(idx), v)),
@@ -2626,7 +2629,12 @@ impl<M> OnDiskMessageStore<M> {
             .unwrap_or_else(|_| unreachable!());
 
         let (mut index_file, _existed) = d
-            .open_file(target, "index", size_of::<StoreHeader>().max(min_file_size), max_file_size)
+            .open_file(
+                target,
+                "index",
+                size_of::<StoreHeader>().max(min_file_size),
+                max_file_size,
+            )
             .context("Opening index-file")?;
         index_file
             .try_lock_exclusive()

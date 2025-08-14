@@ -1,5 +1,12 @@
-use std::borrow::Borrow;
+use crate::data_types::noatun_hash_map::meta_finder::get_any_empty;
+use crate::sequence_nr::SequenceNr;
+use crate::xxh3_vendored::NoatunHasher;
+use crate::{
+    get_context_ptr, FixedSizeObject, MessageId, NoatunContext, NoatunStorable, Object,
+    SchemaHasher, ThinPtr,
+};
 use indexmap::IndexMap;
+use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
@@ -9,10 +16,6 @@ use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
 use tracing::trace;
-use crate::{get_context_ptr, FixedSizeObject, MessageId, NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr};
-use crate::data_types::noatun_hash_map::meta_finder::get_any_empty;
-use crate::sequence_nr::SequenceNr;
-use crate::xxh3_vendored::NoatunHasher;
 
 const HASH_META_GROUP_SIZE: usize = 32;
 
@@ -98,7 +101,7 @@ unsafe impl<K: NoatunStorable, V: FixedSizeObject> NoatunStorable for NoatunHash
 }
 
 impl<K: NoatunStorable + NoatunKey + PartialEq + Debug, V: FixedSizeObject + Debug> Debug
-for NoatunHashMap<K, V>
+    for NoatunHashMap<K, V>
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_map().entries(self.iter()).finish()
@@ -517,8 +520,8 @@ pub mod meta_finder {
 
 #[cfg(test)]
 mod meta_tests {
-    use super::HASH_META_GROUP_SIZE;
     use super::meta_finder::get_any_empty;
+    use super::HASH_META_GROUP_SIZE;
     use super::{meta_finder, BucketNr, Meta, MetaGroup, ProbeRunResult};
 
     #[test]
@@ -726,7 +729,7 @@ struct DatabaseHashOwningIterator<'a, K: NoatunStorable + NoatunKey + PartialEq,
     next_position: usize,
 }
 impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Iterator
-for NoatunHashMapIterator<'a, K, V>
+    for NoatunHashMapIterator<'a, K, V>
 {
     type Item = (&'a K, &'a V);
 
@@ -747,7 +750,7 @@ for NoatunHashMapIterator<'a, K, V>
 }
 
 impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Iterator
-for DatabaseHashOwningIterator<'_, K, V>
+    for DatabaseHashOwningIterator<'_, K, V>
 {
     type Item = (K, V);
 
@@ -775,12 +778,12 @@ struct HashAccessContext<'a, K: NoatunStorable + NoatunKey + PartialEq, V: Fixed
 }
 
 impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Copy
-for HashAccessContext<'_, K, V>
+    for HashAccessContext<'_, K, V>
 {
 }
 
 impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Clone
-for HashAccessContext<'_, K, V>
+    for HashAccessContext<'_, K, V>
 {
     fn clone(&self) -> Self {
         *self
@@ -1005,17 +1008,17 @@ where
     fn unify(self) -> NoatunHashMapEntryInternal<'a, K, V> {
         match self {
             NoatunHashMapEntry::Occupied(OccupiedEntry {
-                                             context,
-                                             probe_result,
-                                             key,
-                                             length,
-                                         })
+                context,
+                probe_result,
+                key,
+                length,
+            })
             | NoatunHashMapEntry::Vacant(VacantEntry {
-                                             context,
-                                             probe_result,
-                                             key,
-                                             length,
-                                         }) => NoatunHashMapEntryInternal {
+                context,
+                probe_result,
+                key,
+                length,
+            }) => NoatunHashMapEntryInternal {
                 context,
                 probe_result,
                 key,
@@ -1322,12 +1325,10 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             if meta.populated() {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
                 let kv = unsafe { context.buckets[i].assume_init_mut() };
-                let val =
-                    unsafe { Pin::new_unchecked(&mut kv.v) };
+                let val = unsafe { Pin::new_unchecked(&mut kv.v) };
                 val.destroy();
                 kv.key.destroy();
                 NoatunContext.zero_internal(kv);
-
             } else if *meta != Meta::EMPTY {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
             }
@@ -1612,7 +1613,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             val.destroy();
             kv.key.destroy();
         };
-
 
         match get_meta_mut_and_emptyable(context.metas, bucket_nr) {
             MetaMutAndEmpty::NoEmpty(meta) => {
@@ -1923,12 +1923,11 @@ impl NoatunKey for MessageId {
     where
         H: Hasher,
     {
-        let data:[u64;2] = unsafe { std::mem::transmute(tself.data) };
-        state.write_u64(data[0]^data[1])
+        let data: [u64; 2] = unsafe { std::mem::transmute(tself.data) };
+        state.write_u64(data[0] ^ data[1])
     }
 
-    fn destroy(&mut self) {
-    }
+    fn destroy(&mut self) {}
 
     fn detach_key_ref(&self) -> &Self::DetachedType {
         self
@@ -1982,4 +1981,3 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
         Self::hash_schema(hasher);
     }
 }
-

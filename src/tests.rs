@@ -1,6 +1,6 @@
 #![allow(non_local_definitions)]
-use crate::data_types::NoatunVec;
 use super::*;
+use crate::data_types::NoatunVec;
 use crate::data_types::{NoatunCellArrayExt, NoatunString};
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
@@ -32,13 +32,11 @@ mod test_subsumption_nonlocal;
 mod test_subsumption_nonlocal_opaque;
 mod tests_using_noatun_object_macro;
 
-mod test_subsumption_map_advanced;
 mod test_issue_tracker;
+mod test_subsumption_map_advanced;
 mod test_types_rewind;
 
 pub(crate) mod test_driver;
-
-
 
 /*
 impl<Root: FixedSizeObject + DummyTestMessageApply> Application for DummyTestApp<Root> {

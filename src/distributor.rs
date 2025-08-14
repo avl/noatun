@@ -11,6 +11,7 @@ use arcshift::ArcShift;
 use arrayvec::ArrayString;
 use indexmap::map::Entry;
 use indexmap::{IndexMap, IndexSet};
+use metrics::{describe_gauge, gauge, Gauge, Unit};
 use rand::random;
 use savefile_derive::Savefile;
 use std::collections::{HashMap, VecDeque};
@@ -18,8 +19,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::io::Cursor;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration};
-use metrics::{describe_gauge, gauge, Gauge, Unit};
+use std::time::Duration;
 use tokio::time::Instant;
 use tracing::{debug, error, info, trace, warn};
 
@@ -175,10 +175,10 @@ impl Neighborhood {
     }
     pub fn get_insert_peer(&mut self, peer_id: EphemeralNodeId, now: Instant) -> &mut PeerInfo {
         let mut len = self.peers.len();
-        let t = self
-            .peers
-            .entry(peer_id)
-            .or_insert_with(||  { len+=1;PeerInfo::new(peer_id, now)});
+        let t = self.peers.entry(peer_id).or_insert_with(|| {
+            len += 1;
+            PeerInfo::new(peer_id, now)
+        });
         self.metric_neighbor_count.set(len as f64);
         t.last_seen = now;
         t
@@ -273,7 +273,7 @@ pub struct Neighborhood {
     pub(crate) inhibited_request_upstream: IndexMap<MessageId, (Instant, EphemeralNodeId)>,
 
     /// The number of other peers detected in the network
-    metric_neighbor_count: Gauge
+    metric_neighbor_count: Gauge,
 }
 
 impl Neighborhood {
@@ -735,14 +735,14 @@ pub enum DistributorMessage {
 impl DistributorMessage {
     pub fn source(&self) -> Option<EphemeralNodeId> {
         match self {
-            DistributorMessage::ReportHeads { source, .. } => {Some(*source)}
-            DistributorMessage::SyncAllQuery(_) => {None}
-            DistributorMessage::SyncAllRequest(_) => {None}
-            DistributorMessage::SyncAllAck(_) => {None}
-            DistributorMessage::RequestUpstream { source, .. } => {Some(*source)}
-            DistributorMessage::UpstreamResponse{ source, .. } => {Some(*source)}
-            DistributorMessage::SendMessageAndAllDescendants{ source, .. } => {Some(*source)}
-            DistributorMessage::Message { source, .. } => {Some(*source)}
+            DistributorMessage::ReportHeads { source, .. } => Some(*source),
+            DistributorMessage::SyncAllQuery(_) => None,
+            DistributorMessage::SyncAllRequest(_) => None,
+            DistributorMessage::SyncAllAck(_) => None,
+            DistributorMessage::RequestUpstream { source, .. } => Some(*source),
+            DistributorMessage::UpstreamResponse { source, .. } => Some(*source),
+            DistributorMessage::SendMessageAndAllDescendants { source, .. } => Some(*source),
+            DistributorMessage::Message { source, .. } => Some(*source),
         }
     }
     pub(crate) fn message_id(&self) -> Option<MessageId> {
@@ -885,12 +885,10 @@ impl DistributorStatus {
     fn gc_if_necessary(&mut self, now: tokio::time::Instant) {
         if now.saturating_duration_since(self.last_gc).as_millis() > 60000 {
             self.last_gc = now;
-            self.most_recent_unsynced.retain(|_k,v|{
-                now.saturating_duration_since(*v).as_millis() < 60000
-            });
-            self.most_recent_clockdrift.retain(|_k,v|{
-                now.saturating_duration_since(*v).as_millis() < 60000
-            });
+            self.most_recent_unsynced
+                .retain(|_k, v| now.saturating_duration_since(*v).as_millis() < 60000);
+            self.most_recent_clockdrift
+                .retain(|_k, v| now.saturating_duration_since(*v).as_millis() < 60000);
         }
     }
 }
@@ -914,7 +912,6 @@ pub struct Distributor {
     pub outbuf: QueryableOutbuffer,
     #[doc(hidden)]
     pub neighborhood: Neighborhood,
-
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -929,11 +926,21 @@ pub enum Status {
 impl Display for Status {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Status::Nominal => {write!(f, "Nominal")}
-            Status::BadClocksDetected => {write!(f, "BadClocksDetected")}
-            Status::OutOfSync => {write!(f, "OutOfSync")}
-            Status::NoPeers => {write!(f, "NoPeers")}
-            Status::Synchronizing => {write!(f, "Synchronizing")}
+            Status::Nominal => {
+                write!(f, "Nominal")
+            }
+            Status::BadClocksDetected => {
+                write!(f, "BadClocksDetected")
+            }
+            Status::OutOfSync => {
+                write!(f, "OutOfSync")
+            }
+            Status::NoPeers => {
+                write!(f, "NoPeers")
+            }
+            Status::Synchronizing => {
+                write!(f, "Synchronizing")
+            }
         }
     }
 }
@@ -970,7 +977,6 @@ impl AccumulatedMessage {
 }
 
 impl Distributor {
-
     pub fn periodic_message_interval(&self) -> Duration {
         self.periodic_message_interval
     }
@@ -1104,7 +1110,11 @@ impl Distributor {
         input: impl Iterator<Item = DistributorMessage>,
         now: Instant,
     ) -> Result<Vec<DistributorMessage>> {
-        self.receive_message(database, input.map(|x| (None,x.source().unwrap_or(EphemeralNodeId(0)), x)), now)?;
+        self.receive_message(
+            database,
+            input.map(|x| (None, x.source().unwrap_or(EphemeralNodeId(0)), x)),
+            now,
+        )?;
         let ret = self.outbuf.outbuf.drain(..).collect();
         self.outbuf = QueryableOutbuffer::new(self.periodic_message_interval, now);
         Ok(ret)

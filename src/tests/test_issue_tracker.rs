@@ -1,19 +1,22 @@
-use rand::{Rng, SeedableRng};
-use std::pin::Pin;
-use std::time::Duration;
-use anyhow::{Result};
+use crate::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
+use crate::data_types::{NoatunHashMap, NoatunString, OpaqueNoatunVec};
+use crate::tests::all_up_sync_test::MY_THREAD_RNG;
+use crate::tests::setup_tracing;
+use crate::tests::test_driver::TestDriver;
+use crate::{
+    set_test_epoch, Database, DatabaseSettings, Message, MessageId, NoatunTime, Object, OpenMode,
+    SavefileMessageSerializer,
+};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use datetime_literal::datetime;
 use insta::assert_debug_snapshot;
 use rand::prelude::SmallRng;
+use rand::{Rng, SeedableRng};
 use savefile_derive::Savefile;
+use std::pin::Pin;
+use std::time::Duration;
 use tokio::time::Instant;
-use crate::data_types::{NoatunHashMap, NoatunString, OpaqueNoatunVec};
-use crate::{set_test_epoch, Database, DatabaseSettings, Message, MessageId, NoatunTime, Object, OpenMode, SavefileMessageSerializer};
-use crate::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
-use crate::tests::all_up_sync_test::{MY_THREAD_RNG};
-use crate::tests::setup_tracing;
-use crate::tests::test_driver::TestDriver;
 
 noatun_object!(
     #[derive(PartialEq)]
@@ -54,7 +57,7 @@ enum IssueMessage {
     },
     RemoveIssue {
         id: String,
-    }
+    },
 }
 
 impl Message for IssueMessage {
@@ -90,82 +93,98 @@ impl Message for IssueMessage {
 
 #[test]
 fn test_issue_tracker() {
-    let mut db: Database<IssueMessage> =
-        Database::create_new(
-            "test/test_issue_tracker_db",
-            OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
+    let mut db: Database<IssueMessage> = Database::create_new(
+        "test/test_issue_tracker_db",
+        OpenMode::Overwrite,
+        DatabaseSettings::default(),
+    )
+    .unwrap();
 
     let mut sess = db.begin_session_mut().unwrap();
 
     sess.append_nonlocal(IssueMessage::AddIssue {
         reporter: "anders".to_string(),
         heading: "test1".to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     std::thread::sleep(Duration::from_millis(10));
 
     sess.append_nonlocal(IssueMessage::RemoveIssue {
         id: "test1".to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     std::thread::sleep(Duration::from_millis(10));
 
     sess.append_nonlocal(IssueMessage::AddIssue {
         reporter: "anders".to_string(),
         heading: "test1".to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 }
-
 
 #[test]
 fn test_issue_tracker2() {
-    let mut db: Database<IssueMessage> =
-        Database::create_new(
-            "test/test_issue_tracker2_db",
-            OpenMode::Overwrite, DatabaseSettings::default()).unwrap();
-
+    let mut db: Database<IssueMessage> = Database::create_new(
+        "test/test_issue_tracker2_db",
+        OpenMode::Overwrite,
+        DatabaseSettings::default(),
+    )
+    .unwrap();
 
     let mut sess = db.begin_session_mut().unwrap();
-    sess.set_mock_time_no_advance(NoatunTime::debug_time(1)).unwrap();
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(1))
+        .unwrap();
 
     sess.append_nonlocal(IssueMessage::AddIssue {
         reporter: "user1".to_string(),
         heading: "heading2".to_string(),
-    }).unwrap();
-    sess.set_mock_time_no_advance(NoatunTime::debug_time(61)).unwrap();
+    })
+    .unwrap();
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(61))
+        .unwrap();
     sess.append_nonlocal(IssueMessage::AppendText {
         id: "heading2".to_string(),
         reporter: "user1".to_string(),
 
         text: "think".to_string(),
-    }).unwrap();
-    sess.set_mock_time_no_advance(NoatunTime::debug_time(62)).unwrap();
+    })
+    .unwrap();
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(62))
+        .unwrap();
 
     sess.append_nonlocal(IssueMessage::AddIssue {
         reporter: "user1".to_string(),
         heading: "bfgd".to_string(),
-    }).unwrap();
-    sess.set_mock_time_no_advance(NoatunTime::debug_time(63)).unwrap();
+    })
+    .unwrap();
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(63))
+        .unwrap();
 
     sess.append_nonlocal(IssueMessage::RemoveIssue {
         id: "bfgd".to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
-    sess.set_mock_time_no_advance(NoatunTime::debug_time(64)).unwrap();
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(64))
+        .unwrap();
     sess.append_nonlocal(IssueMessage::AddIssue {
         reporter: "user1".to_string(),
         heading: "4".to_string(),
-    }).unwrap();
-    sess.set_mock_time_no_advance(NoatunTime::debug_time(240)).unwrap();
+    })
+    .unwrap();
+    sess.set_mock_time_no_advance(NoatunTime::debug_time(240))
+        .unwrap();
     sess.append_nonlocal(IssueMessage::AddIssue {
         reporter: "user1".to_string(),
         heading: "5".to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     println!("Messages: {:?}", sess.get_all_messages_vec());
     assert_debug_snapshot!(sess.get_all_messages_vec());
 }
-
 
 const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
 
@@ -181,7 +200,7 @@ async fn create_app(
             ..DatabaseSettings::default()
         },
     )
-        .unwrap();
+    .unwrap();
 
     let log = driver.debug_events.clone();
     let mut config = DatabaseCommunicationConfig {
@@ -212,10 +231,9 @@ async fn create_app(
 }
 
 #[cfg(debug_assertions)]
-const COUNT:u64 = 100;
+const COUNT: u64 = 100;
 #[cfg(not(debug_assertions))]
-const COUNT:u64 = 2000;
-
+const COUNT: u64 = 2000;
 
 #[tokio::test(start_paused = true)]
 async fn all_up_issue_tracker_all() {
@@ -254,37 +272,29 @@ async fn all_up_issue_iteration(seed: u64) {
     };
 
     for _ in 0..20 {
-        let msg = MY_THREAD_RNG.with(|rng|{
+        let msg = MY_THREAD_RNG.with(|rng| {
             let mut rng = rng.borrow_mut();
             let rng = rng.as_mut().unwrap();
             match rng.gen_range(0..=2) {
-                0 => {
-                    IssueMessage::AddIssue {
-                        reporter: format!("user{}", rng.gen_range(0..4u32)),
-                        heading: format!("head{}", rng.gen_range(0..4u32)),
-                    }
-                }
-                1 => {
-                    IssueMessage::AppendText {
-                        id: format!("head{}", rng.gen_range(0..4u32)),
-                        reporter: format!("user{}", rng.gen_range(0..4u32)),
-                        text: format!("text{}", rng.gen::<u128>()),
-                    }
-                }
-                2 => {
-                    IssueMessage::RemoveIssue {
-                        id: format!("head{}", rng.gen_range(0..4u32)),
-                    }
-                }
-                _ => unreachable!()
+                0 => IssueMessage::AddIssue {
+                    reporter: format!("user{}", rng.gen_range(0..4u32)),
+                    heading: format!("head{}", rng.gen_range(0..4u32)),
+                },
+                1 => IssueMessage::AppendText {
+                    id: format!("head{}", rng.gen_range(0..4u32)),
+                    reporter: format!("user{}", rng.gen_range(0..4u32)),
+                    text: format!("text{}", rng.gen::<u128>()),
+                },
+                2 => IssueMessage::RemoveIssue {
+                    id: format!("head{}", rng.gen_range(0..4u32)),
+                },
+                _ => unreachable!(),
             }
         });
         app1.add_message(msg).await.unwrap();
     }
 
-
     advance_time(&mut app1, 50000).await;
-
 
     println!("{}", driver.raw_frames_snapshot());
     println!("{}", driver.messages_snapshot());

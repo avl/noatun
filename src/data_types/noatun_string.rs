@@ -1,12 +1,12 @@
+use crate::data_types::NoatunKey;
+use crate::sequence_nr::SequenceNr;
+use crate::{NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr};
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
-use crate::sequence_nr::SequenceNr;
-use crate::{NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr};
-use crate::data_types::NoatunKey;
 
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -161,8 +161,6 @@ impl NoatunKey for NoatunString {
     }
 }
 
-
-
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct OpaqueNoatunString {
@@ -210,8 +208,7 @@ impl Object for OpaqueNoatunString {
         self.get().to_string()
     }
 
-    fn destroy(self: Pin<&mut Self>) {
-    }
+    fn destroy(self: Pin<&mut Self>) {}
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
         self.assign(detached);
@@ -294,8 +291,5 @@ impl NoatunKey for OpaqueNoatunString {
         self.assign(detached);
     }
 
-    fn destroy(&mut self) {
-    }
+    fn destroy(&mut self) {}
 }
-
-

@@ -8,11 +8,11 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use metrics::{counter, describe_counter, Unit};
 use std::fmt::{Debug, Formatter};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::pin::Pin;
-use metrics::{counter, describe_counter, Unit};
 use tracing::{error, info, trace};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -114,7 +114,7 @@ pub struct MessageInfo<MSG: Message> {
     pub flags: &'static str,
     pub frame: MessageFrame<MSG>,
     pub reads: Vec<SequenceNr>,
-    pub writes: Vec<SequenceNr>
+    pub writes: Vec<SequenceNr>,
 }
 
 impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
@@ -655,10 +655,11 @@ impl<MSG: Message + 'static> Database<MSG> {
     fn get_all_messages(&self) -> Result<impl Iterator<Item = MessageFrame<MSG>> + use<'_, MSG>> {
         self.message_store.get_all_messages()
     }
-    fn get_all_messages_meta(&self) -> Result<impl Iterator<Item = MessageInfo<MSG>> + use<'_, MSG>> {
+    fn get_all_messages_meta(
+        &self,
+    ) -> Result<impl Iterator<Item = MessageInfo<MSG>> + use<'_, MSG>> {
         self.message_store.get_all_messages_meta(&self.context)
     }
-
 
     fn get_all_messages_with_children(&self) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
         self.message_store.get_all_messages_with_children()
@@ -974,7 +975,7 @@ impl<MSG: Message + 'static> Database<MSG> {
         &mut self,
         time: Option<NoatunTime>,
         message: MSG,
-        local: bool
+        local: bool,
     ) -> Result<MessageHeader> {
         let cutoff_time = self.message_store.current_cutoff_time()?;
         let t = self.create_message_frame_impl(time, message, cutoff_time)?;
@@ -1078,8 +1079,13 @@ impl<MSG: Message + 'static> Database<MSG> {
             calculate_schema_hash::<MSG::Root>(),
         )
         .context("creating database in memory")?;
-        let mut message_store =
-            Projector::new(&mut disk, &target, settings.initial_file_size, max_size, settings.cutoff_interval)?;
+        let mut message_store = Projector::new(
+            &mut disk,
+            &target,
+            settings.initial_file_size,
+            max_size,
+            settings.cutoff_interval,
+        )?;
 
         Self::recover_impl(&mut ctx, &mut message_store, &settings)?;
         ctx.mark_hot_clean();

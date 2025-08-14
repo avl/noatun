@@ -1,10 +1,10 @@
+use crate::sequence_nr::SequenceNr;
+use crate::{NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr, CONTEXT};
 use std::fmt::{Debug, Formatter};
 use std::ops::{AddAssign, Deref, SubAssign};
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use tracing::trace;
-use crate::{NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr, CONTEXT};
-use crate::sequence_nr::SequenceNr;
 
 /// A wrapper around a regular plain old data type. T must implement
 /// `NoatunStorable`, which basically means it must be a Copy type that does
@@ -225,4 +225,3 @@ impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
         Self::hash_schema(hasher);
     }
 }
-

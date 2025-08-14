@@ -59,6 +59,7 @@ use tokio::time::Instant;
 
 use tracing::error;
 
+pub mod diagnostics;
 mod disk_abstraction;
 mod message_store;
 mod mini_pather;
@@ -66,7 +67,6 @@ mod projection_store;
 #[cfg(feature = "debug_color")]
 mod term_colors;
 mod undo_store;
-pub mod diagnostics;
 
 pub mod ratatui_inspector;
 
@@ -115,7 +115,6 @@ pub(crate) mod platform_specific;
 mod boot_checksum;
 pub(crate) mod disk_access;
 mod sha2_helper;
-
 
 pub mod simple_metrics;
 mod xxh3_vendored;
@@ -341,7 +340,7 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).update_registrar_ptr(seq, opaque) }
     }
-    
+
     pub fn clear_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).clear_registrar_ptr(seq, opaque) }
@@ -378,16 +377,16 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).zero(dst) }
     }
-    pub fn zero_storable<T:NoatunStorable>(&self, dst: Pin<&mut T>) {
+    pub fn zero_storable<T: NoatunStorable>(&self, dst: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).zero_storable(dst) }
     }
-    pub fn zero_internal<T:NoatunStorable>(&self, dst: &mut T) {
+    pub fn zero_internal<T: NoatunStorable>(&self, dst: &mut T) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).zero_internal(dst) }
     }
 
-    pub fn zero_object<T:Object+?Sized>(&self, dst: Pin<&mut T>) {
+    pub fn zero_object<T: Object + ?Sized>(&self, dst: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).zero_object(dst) }
     }
@@ -495,7 +494,7 @@ pub struct MessageId {
 
 impl Hash for MessageId {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let data1:[u64;2] = unsafe { std::mem::transmute(self.data) };
+        let data1: [u64; 2] = unsafe { std::mem::transmute(self.data) };
         state.write_u64(data1[0]);
         state.write_u64(data1[1]);
     }
@@ -557,7 +556,6 @@ impl Display for MessageId {
                 self.data[3]
             )
         }
-
     }
 }
 
@@ -1354,7 +1352,6 @@ pub trait Object {
     /// method has finished. For collections that can reuse memory, the memory
     /// will be cleared at the latest before any such reuse.
     fn destroy(self: Pin<&mut Self>);
-
 
     /// Initialize all the fields in 'self' from the given 'detached' type.
     /// The detached type is a regular rust pod struct, with no requirements
