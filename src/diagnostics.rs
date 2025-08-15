@@ -33,7 +33,7 @@ impl Default for DiagnosticsData {
             received_packets: Default::default(),
             sent_messages: Default::default(),
             received_messages: Default::default(),
-            packet_limit: 20,
+            packet_limit: 100,
         }
     }
 }

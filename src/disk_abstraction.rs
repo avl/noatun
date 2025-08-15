@@ -16,6 +16,9 @@ pub(crate) trait Disk {
         file: &str,
         min_size: usize,
         max_size: usize,
+        //metrics:
+        name: &str,
+        description: &str,
     ) -> Result<(FileAccessor, bool /*file existed*/)>;
 }
 /*pub trait DiskFile: Seek + Write + Read {
@@ -118,6 +121,8 @@ impl Disk for InMemoryDisk {
         _file: &str,
         _min_size: usize,
         max_size: usize,
+        name: &str,
+        description: &str,
     ) -> anyhow::Result<(FileAccessor, bool)> {
         let create = target.create();
         let data = if !create {
@@ -137,7 +142,7 @@ impl Disk for InMemoryDisk {
 
         let mapping = InMemoryGrowableFileMapping { backing: data };
 
-        Ok((FileAccessor::from_mapping(mapping), false))
+        Ok((FileAccessor::from_mapping(mapping, name, description), false))
     }
 }
 
@@ -196,8 +201,10 @@ impl Disk for StandardDisk {
         file: &str,
         min_size: usize,
         max_size: usize,
+        name: &str,
+        description: &str,
     ) -> Result<(FileAccessor, bool)> {
-        let mapping = FileAccessor::new(target, file, min_size, max_size)?;
+        let mapping = FileAccessor::new(target, file, min_size, max_size, name, description)?;
         Ok(mapping)
     }
 }

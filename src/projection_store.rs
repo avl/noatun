@@ -779,7 +779,7 @@ impl DatabaseContextData {
         schema_hash: [u8; 16],
     ) -> Result<Self> {
         let (mut main_db_file, _existed) = s
-            .open_file(name, "maindb", min_size, max_size)
+            .open_file(name, "maindb", min_size, max_size, "main_db", "Main materialized view")
             .context("opening main store file")?;
 
         let mut is_new = false;

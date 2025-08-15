@@ -108,7 +108,6 @@ impl Message for IssueMessage {
             }
             IssueMessage::RemoveIssue { id } => {
                 //TODO: Document clearly for al ops if they cause read deps. Make it possible to manually add read-deps? deny(missing_docs)!
-                //TODO: Make windows in ratatui scrollable
 
                 let id = remap(&root, id).to_owned();
 
@@ -385,13 +384,6 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
         ratatui::prelude::Span::styled(", Sync status: ", Style::default()),
         ratatui::prelude::Span::styled(sync_status.to_string(), Style::default().bold()),
     ];
-    for (key, val) in app.recorder.metrics_items() {
-        debug_spans.push(ratatui::prelude::Span::styled(
-            format!(", {key}: "),
-            Style::default(),
-        ));
-        debug_spans.push(ratatui::prelude::Span::styled(val, Style::default().bold()));
-    }
 
     let metrics_paragraph = Paragraph::new(Line::from(debug_spans)).wrap(Wrap { trim: true });
 
@@ -498,35 +490,29 @@ fn popup_area(area: Rect, percent_x: u16) -> Rect {
     area
 }
 
-/// Check if the user has pressed 'q'. This is where you would handle events. This example just
-/// checks if the user has pressed 'q' and returns true if they have. It does not handle any other
-/// events. There is a 250ms timeout on the event poll to ensure that the terminal is rendered at
-/// least once every 250ms. This allows you to do other work in the application loop, such as
-/// updating the application state, without blocking the event loop for too long.
+/// Return true if time to exit
 fn poll_input(app: &mut AppState) -> Result<bool> {
     if event::poll(Duration::from_millis(250)).context("event poll failed")? {
         let event = event::read().context("event read failed")?;
-        if app.diagnostics {
-            app.inspector.input(&event);
-        }
-        match event {
-            input if app.popup.is_some() => match &mut app.popup {
+
+        if app.popup.is_some() {
+            match &mut app.popup {
                 Popup::None => {}
                 Popup::AddHeading(w)
                 | Popup::Reassign(w)
                 | Popup::Rename(w)
                 | Popup::AddText(w) => {
-                    match &input {
+                    match &event {
                         Event::Key(KeyEvent {
-                            code: KeyCode::Esc, ..
-                        }) => {
+                                       code: KeyCode::Esc, ..
+                                   }) => {
                             app.popup = Popup::None;
                             return Ok(false);
                         }
                         Event::Key(KeyEvent {
-                            code: KeyCode::Enter,
-                            ..
-                        }) => {
+                                       code: KeyCode::Enter,
+                                       ..
+                                   }) => {
                             match &mut app.popup {
                                 Popup::AddHeading(w) => {
                                     let heading: String = w.lines()[0].to_string();
@@ -552,9 +538,60 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                         _ => {}
                     }
 
-                    w.input(input);
+                    w.input(event);
+                    return Ok(false);
                 }
-            },
+            }
+        }
+
+        #[allow(clippy::single_match)]
+        match &event {
+            Event::Key(key) => {
+                match &key.code {
+                    KeyCode::Esc if app.diagnostics=> {
+                        app.diagnostics = false;
+                        return Ok(false);
+                    }
+                    KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        return Ok(true);
+                    }
+                    KeyCode::Char('d') | KeyCode::Char('D') => {
+                        app.diagnostics = !app.diagnostics;
+                        app.popup = Popup::None;
+                        return Ok(false);
+                    }
+                    KeyCode::Char('v') | KeyCode::Char('V') => {
+                        app.comms
+                            .inner_database()
+                            .begin_session_mut()?
+                            .maybe_advance_cutoff()?;
+                        return Ok(false);
+                    }
+                    KeyCode::Char('p') | KeyCode::Char('P') => {
+                        app.comms
+                            .inner_database()
+                            .begin_session_mut()?
+                            .compact_index()?;
+                        app.comms
+                            .inner_database()
+                            .begin_session_mut()?
+                            .reproject()?;
+                        return Ok(false);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+
+        #[allow(clippy::collapsible_if)]
+        if app.diagnostics {
+            _ = app.inspector.input(&event);
+            return Ok(false);
+        }
+
+        #[allow(clippy::single_match)]
+        match event {
             Event::Key(key) => {
                 match key.code {
                     KeyCode::Esc => {
@@ -563,9 +600,6 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                         } else {
                             return Ok(true);
                         }
-                    }
-                    KeyCode::Char('q') | KeyCode::Char('Q') => {
-                        return Ok(true);
                     }
                     KeyCode::Delete => {
                         if let Some(heading) = &app.selected_heading {
@@ -599,26 +633,6 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                             text.set_block(Block::new().borders(Borders::ALL).title("Enter text"));
                             app.popup = Popup::Reassign(text);
                         }
-                    }
-                    KeyCode::Char('d') | KeyCode::Char('D') => {
-                        app.diagnostics = !app.diagnostics;
-                        app.popup = Popup::None;
-                    }
-                    KeyCode::Char('v') | KeyCode::Char('V') => {
-                        app.comms
-                            .inner_database()
-                            .begin_session_mut()?
-                            .maybe_advance_cutoff()?;
-                    }
-                    KeyCode::Char('p') | KeyCode::Char('P') => {
-                        app.comms
-                            .inner_database()
-                            .begin_session_mut()?
-                            .compact_index()?;
-                        app.comms
-                            .inner_database()
-                            .begin_session_mut()?
-                            .reproject()?;
                     }
                     KeyCode::Up => {
                         let next = app.table_state.selected().unwrap_or(0).saturating_sub(1);

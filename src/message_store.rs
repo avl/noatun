@@ -2604,7 +2604,7 @@ impl<M> OnDiskMessageStore<M> {
         let data_files: [Result<DataFileInfo>; 2] = [0, 1].map(|file_number| {
             let file_name = format!("data{file_number}");
             let (data_file, existed) = d
-                .open_file(target, &file_name, min_file_size, max_file_size)
+                .open_file(target, &file_name, min_file_size, max_file_size, &format!("store{file_number}"), &format!("Message data store #{file_number}"))
                 .context("Opening data-file")?;
 
             db_existed = existed;
@@ -2634,6 +2634,8 @@ impl<M> OnDiskMessageStore<M> {
                 "index",
                 size_of::<StoreHeader>().max(min_file_size),
                 max_file_size,
+                "index_file",
+                "primary message index"
             )
             .context("Opening index-file")?;
         index_file

@@ -9,7 +9,9 @@ use ratatui::Frame;
 
 use crate::communication::DatabaseCommunication;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent};
-use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
+use ratatui::prelude::{Color, Stylize};
+use ratatui::style::Style;
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
 use tokio::time::Instant;
 
 use crate::simple_metrics::SimpleMetricsRecorder;
@@ -22,8 +24,11 @@ pub struct RatatuiInspector {
     sent_message_table: Table<'static>,
     db_message_table: Table<'static>,
     metrics_table: Table<'static>,
+    highlight: usize,
+    zoom: bool,
     start: Instant,
     x_offset: usize,
+    table_state: [TableState;7],
 }
 
 impl Default for RatatuiInspector {
@@ -32,43 +37,85 @@ impl Default for RatatuiInspector {
     }
 }
 
-impl RatatuiInspector {
-    pub fn input(&mut self, event: &Event) {
-        match &event {
-            Event::Key(KeyEvent {
-                code: KeyCode::Left,
-                ..
-            }) => {
-                self.x_offset = self.x_offset.saturating_sub(5);
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Right,
-                ..
-            }) => {
-                self.x_offset = self.x_offset.saturating_add(5);
-            }
-            _ => {}
+trait BlockExt : Sized {
+    fn highlight(self, our_index: usize, active_highlight: usize) -> Self;
+
+}
+
+impl<'a> BlockExt for Block<'a> {
+    fn highlight(self, our_index: usize, active_highlight: usize) -> Block<'a> {
+
+        if our_index == active_highlight {
+            self.border_style(Style::default().bg(Color::White).fg(Color::Black))
+        } else {
+            self
         }
+    }
+}
+
+impl RatatuiInspector {
+    /// Returns true if input key was caught
+    pub fn input(&mut self, event: &Event) -> bool {
+        match &event {
+            Event::Key(KeyEvent{code, ..}) => {
+                match code {
+                    KeyCode::Esc if self.zoom => {
+                        self.zoom = false;
+                    }
+                    KeyCode::Left => {
+                        self.x_offset = self.x_offset.saturating_sub(5);
+                    }
+
+                    KeyCode::Right=> {
+                        self.x_offset = self.x_offset.saturating_add(5);
+                    }
+                    KeyCode::Enter|KeyCode::Char(' ') => {
+                        self.zoom = !self.zoom;
+                    }
+                    KeyCode::Tab => {
+                        self.highlight += 1;
+                        self.highlight%=7;
+                    }
+                    KeyCode::BackTab => {
+                        self.highlight += 7 - 1;
+                        self.highlight%=7;
+                    }
+                    KeyCode::Up => {
+                        let next = self.table_state[self.highlight].selected().unwrap_or(0).saturating_sub(1);
+                        self.table_state[self.highlight].select(Some(next));
+                    }
+                    KeyCode::Down => {
+                        let next = self.table_state[self.highlight].selected().map(|x|x+1).unwrap_or(0);
+                        self.table_state[self.highlight].select(Some(next));
+                    }
+                    _ => {return false}
+                }
+            }
+            _ => {
+                return false
+            }
+        }
+        true
     }
     pub fn new() -> Self {
         let rows: [Row; 0] = [];
 
         let received_packet_table = Table::new(rows.clone(), [Length(25), Min(10), Length(15)])
             .block(Block::new().title("Received Packets"))
-            .header(Row::new(vec!["Time", "Type", "Size"]));
+            .header(Row::new(vec!["Time", "Type", "Size"])).row_highlight_style(Style::new().reversed());
 
         let sent_packet_table = Table::new(rows.clone(), [Length(25), Min(10), Length(15)])
             .block(Block::new().title("Sent Packets"))
-            .header(Row::new(vec!["Time", "Type", "Size"]));
+            .header(Row::new(vec!["Time", "Type", "Size"])).row_highlight_style(Style::new().reversed());
 
         let received_message_table =
             Table::new(rows.clone(), [Length(25), Min(10), Length(8), Length(15)])
                 .block(Block::new().title("Received Messages"))
-                .header(Row::new(vec!["Time", "Message", "From", "Src addr"]));
+                .header(Row::new(vec!["Time", "Message", "From", "Src addr"])).row_highlight_style(Style::new().reversed());
 
         let sent_message_table = Table::new(rows.clone(), [Length(25), Min(10)])
             .block(Block::new().title("Sent Messages"))
-            .header(Row::new(vec!["Time", "Message"]));
+            .header(Row::new(vec!["Time", "Message"])).row_highlight_style(Style::new().reversed());
 
         let db_message_table = Table::new(
             rows.clone(),
@@ -86,18 +133,19 @@ impl RatatuiInspector {
         .block(Block::new().title("Message"))
         .header(Row::new(vec![
             "Id",
-            "Seq2",
+            "Seq",
             "Live",
             "Flags",
             "Parents",
             "Reads",
             "Overwrites",
             "Message",
-        ]));
+        ]))
+            .row_highlight_style(Style::new().reversed());
 
         let metrics_table = Table::new(rows.clone(), [Percentage(50), Percentage(50)])
             .block(Block::new().title("Metrics/info"))
-            .header(Row::new(vec!["Key", "Value"]));
+            .header(Row::new(vec!["Key", "Value"])).row_highlight_style(Style::new().reversed());
 
         RatatuiInspector {
             received_packet_table,
@@ -108,8 +156,11 @@ impl RatatuiInspector {
 
             metrics_table,
 
+            highlight: 0,
+            zoom: false,
             start: Instant::now(),
             x_offset: 0,
+            table_state: [();7].map(|_|Default::default()),
         }
     }
 
@@ -143,7 +194,12 @@ impl RatatuiInspector {
 
         let main_layout = Layout::vertical([Percentage(33), Percentage(33), Percentage(33)]);
 
-        let [upper_area, mid_area, bottom_area] = main_layout.areas(frame.area());
+        let frame_area = frame.area();
+
+        let zoom = self.zoom;
+        let zoomed = move |area| if zoom {frame_area} else {area};
+
+        let [upper_area, mid_area, bottom_area] = main_layout.areas(frame_area);
 
         let split_layout = Layout::horizontal([Percentage(50), Percentage(50)]);
         let split_layout3 = Layout::horizontal([Percentage(33), Percentage(33), Percentage(34)]);
@@ -155,41 +211,24 @@ impl RatatuiInspector {
         let split_layout = Layout::horizontal([Percentage(25), Percentage(75)]);
         let [metrics_area, db_msg_area] = split_layout.areas(bottom_area);
 
-        let received_packet_block = Block::new().borders(Borders::ALL).title("Packets Received");
+        let received_packet_block = Block::new().borders(Borders::ALL).title("Packets Received").highlight(0, self.highlight);
 
-        let sent_packet_block = Block::new().borders(Borders::ALL).title("Packets Sent");
+        let sent_packet_block = Block::new().borders(Borders::ALL).title("Packets Sent").highlight(1, self.highlight);
 
-        let root_obj_block = Block::new().borders(Borders::ALL).title("Root obj");
+        let root_obj_block = Block::new().borders(Borders::ALL).title("Root obj").highlight(2, self.highlight);
 
         let received_messages_block = Block::new()
             .borders(Borders::ALL)
-            .title("Messages Received");
+            .title("Messages Received").highlight(3, self.highlight);
 
-        let sent_messages_block = Block::new().borders(Borders::ALL).title("Messages sent");
+        let sent_messages_block = Block::new().borders(Borders::ALL).title("Messages sent").highlight(4, self.highlight);
 
-        let metrics_block = Block::new().borders(Borders::ALL).title("Metrics");
+        let metrics_block = Block::new().borders(Borders::ALL).title("Metrics").highlight(5, self.highlight);
 
         let db_msg_block = Block::new()
             .borders(Borders::ALL)
-            .title("Database messages");
-
-        let mut received_packet_rows = vec![];
-        for packet in data.received_packets.iter() {
-            received_packet_rows.push(Row::new([
-                format!("{:?}", packet.time.saturating_duration_since(self.start)),
-                packet.packet.to_string(),
-                packet.size.to_string(),
-            ]));
-        }
-
-        let mut sent_packet_rows = vec![];
-        for packet in data.sent_packets.iter() {
-            sent_packet_rows.push(Row::new([
-                format!("{:?}", packet.time.saturating_duration_since(self.start)),
-                packet.packet.to_string(),
-                packet.size.to_string(),
-            ]));
-        }
+            .title("Database messages").highlight(6, self.highlight)
+            .title_bottom("Flags: T = Overwriter tainted, S = Tombstone, N = Wrote non-opaque");
 
         let mut max_x_offset = 0;
 
@@ -200,6 +239,26 @@ impl RatatuiInspector {
             max_x_offset = cur_max_x_offset.max(max_x_offset);
             chars[cur_max_x_offset..].iter().collect()
         };
+
+        let mut received_packet_rows = vec![];
+        for packet in data.received_packets.iter() {
+            received_packet_rows.push(Row::new([
+                format!("{:?}", packet.time.saturating_duration_since(self.start)),
+                offset(&packet.packet),
+                packet.size.to_string(),
+            ]));
+        }
+
+        let mut sent_packet_rows = vec![];
+        for packet in data.sent_packets.iter() {
+            sent_packet_rows.push(Row::new([
+                format!("{:?}", packet.time.saturating_duration_since(self.start)),
+                offset(&packet.packet),
+                packet.size.to_string(),
+            ]));
+        }
+
+
 
         let mut received_message_rows = vec![];
         for message in data.received_messages.iter() {
@@ -245,8 +304,8 @@ impl RatatuiInspector {
             .unwrap()
             .get_all_messages_meta_vec()
             .unwrap();
-        let max_rows = db_msg_area.height.saturating_sub(3) as usize;
-        for msg in &all_msgs[all_msgs.len().saturating_sub(max_rows)..] {
+
+        for msg in &all_msgs {
             db_rows.push(Row::new([
                 msg.frame.header.id.to_string(),
                 msg.seq.to_string(),
@@ -265,56 +324,80 @@ impl RatatuiInspector {
                 offset(&format!("{:?}", msg.frame.payload)),
             ]));
         }
-        frame.render_widget(
-            self.received_packet_table
-                .clone()
-                .rows(received_packet_rows)
-                .block(received_packet_block),
-            received_packets_area,
-        );
-        frame.render_widget(
-            self.sent_packet_table
-                .clone()
-                .rows(sent_packet_rows)
-                .block(sent_packet_block),
-            sent_packets_area,
-        );
 
-        let root_obj_str = comm.with_root(|root| format!("{:#?}", root.detach()));
-        frame.render_widget(
-            Paragraph::new(root_obj_str).block(root_obj_block),
-            root_obj_area,
-        );
+        if !self.zoom || self.highlight == 0 {
+            frame.render_stateful_widget(
+                self.received_packet_table
+                    .clone()
+                    .rows(received_packet_rows)
+                    .block(received_packet_block),
+                zoomed(received_packets_area),
+                &mut self.table_state[0]
+            );
+        }
+        if !self.zoom || self.highlight == 1 {
+            frame.render_stateful_widget(
+                self.sent_packet_table
+                    .clone()
+                    .rows(sent_packet_rows)
+                    .block(sent_packet_block),
+                zoomed(sent_packets_area),
+                &mut self.table_state[1]
+            );
+        }
 
-        frame.render_widget(
-            self.received_message_table
-                .clone()
-                .rows(received_message_rows)
-                .block(received_messages_block),
-            received_messages_area,
-        );
-        frame.render_widget(
-            self.sent_message_table
-                .clone()
-                .rows(sent_message_rows)
-                .block(sent_messages_block),
-            sent_messages_area,
-        );
+        if !self.zoom || self.highlight == 2 {
+            let root_obj_str = comm.with_root(|root| format!("{:#?}", root.detach()));
 
-        frame.render_widget(
-            self.metrics_table
-                .clone()
-                .rows(metrics_rows)
-                .block(metrics_block),
-            metrics_area,
-        );
 
-        frame.render_widget(
-            self.db_message_table
-                .clone()
-                .rows(db_rows)
-                .block(db_msg_block),
-            db_msg_area,
-        );
+            frame.render_widget(
+                Paragraph::new(root_obj_str).block(root_obj_block),
+                zoomed(root_obj_area)
+            );
+
+        }
+
+        if !self.zoom || self.highlight == 3 {
+            frame.render_stateful_widget(
+                self.received_message_table
+                    .clone()
+                    .rows(received_message_rows)
+                    .block(received_messages_block),
+                zoomed(received_messages_area),
+                &mut self.table_state[3]
+            );
+        }
+        if !self.zoom || self.highlight == 4 {
+            frame.render_stateful_widget(
+                self.sent_message_table
+                    .clone()
+                    .rows(sent_message_rows)
+                    .block(sent_messages_block),
+                zoomed(sent_messages_area),
+                &mut self.table_state[4]
+            );
+        }
+
+        if !self.zoom || self.highlight == 5 {
+            frame.render_stateful_widget(
+                self.metrics_table
+                    .clone()
+                    .rows(metrics_rows)
+                    .block(metrics_block),
+                zoomed(metrics_area),
+                &mut self.table_state[5]
+            );
+        }
+
+        if !self.zoom || self.highlight == 6 {
+            frame.render_stateful_widget(
+                self.db_message_table
+                    .clone()
+                    .rows(db_rows)
+                    .block(db_msg_block),
+                zoomed(db_msg_area),
+                &mut self.table_state[6]
+            );
+        }
     }
 }

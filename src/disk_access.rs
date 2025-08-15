@@ -7,6 +7,7 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::slice;
+use metrics::{describe_gauge, gauge, Gauge, Unit};
 
 pub trait FileBackend {
     fn page_size(&self) -> usize;
@@ -38,6 +39,7 @@ pub(crate) struct FileAccessor {
     /// of the header. To get the payload/client byte count, subtract HEADER_SIZE
     committed_size: usize,
     seek_pos: usize,
+    committed_size_gauge: Gauge
 }
 unsafe impl Send for FileAccessor {}
 unsafe impl Sync for FileAccessor {}
@@ -204,6 +206,15 @@ impl Read for FileAccessor {
 }
 
 impl FileAccessor {
+    fn make_gauge(name: &str, description: &str) -> Gauge {
+        let committed_size_gauge = gauge!(name.to_string());
+        describe_gauge!(
+            name.to_string(),
+            Unit::Bytes,
+            description.to_string(),
+        );
+        committed_size_gauge
+    }
     pub fn write_uninit(&mut self, buf: &[MaybeUninit<u8>]) -> Result<()> {
         if self.seek_pos + buf.len() > self.used_space() {
             self.grow(self.seek_pos + buf.len())
@@ -379,14 +390,19 @@ impl FileAccessor {
         unsafe { slice::from_raw_parts_mut(self.ptr.wrapping_add(Self::HEADER_SIZE), used) }
     }
 
-    pub(crate) fn from_mapping(mut mapping: impl FileBackend + Send + 'static) -> Self {
+    pub(crate) fn from_mapping(mut mapping: impl FileBackend + Send + 'static, name: &str, descr: &str) -> Self {
         let initial_len = Self::HEADER_SIZE;
         mapping.grow_committed_mapping(initial_len).unwrap();
+
+        let committed_size_gauge  = FileAccessor::make_gauge(name, descr);
+        committed_size_gauge.set(mapping.len() as f64);
+
         Self {
             ptr: mapping.ptr(),
             committed_size: mapping.len(),
             mapping: Box::new(mapping),
             seek_pos: 0,
+            committed_size_gauge,
         }
     }
 
@@ -395,6 +411,8 @@ impl FileAccessor {
         file: &str,
         initial_size: usize,
         max_size: usize,
+        name: &str,
+        description: &str,
     ) -> Result<(Self, bool)> {
         if max_size == 0 {
             bail!("max_size must not be 0");
@@ -449,12 +467,15 @@ impl FileAccessor {
             &filename,
         )
         .with_context(|| format!("failed to memory map file {filename}"))?;
+        let committed_size_gauge = FileAccessor::make_gauge(name, description);
+        committed_size_gauge.set(mapping.committed_size() as f64);
 
         let temp = FileAccessor {
             committed_size: mapping.committed_size(),
             ptr: mapping.ptr(),
             mapping: Box::new(mapping),
             seek_pos: 0,
+            committed_size_gauge
         };
         let claimed_used_size = temp.used_space();
         let new_used_size = claimed_used_size.min(len.saturating_sub(Self::HEADER_SIZE));
@@ -566,6 +587,7 @@ impl FileAccessor {
                 .min(max_size);
             self.mapping.grow_committed_mapping(new_file_size)?;
             self.committed_size = new_file_size;
+            self.committed_size_gauge.set(new_file_size as f64);
         }
         self.set_used_space(new_size);
         Ok(())
@@ -603,6 +625,7 @@ impl FileAccessor {
             (new_size + Self::HEADER_SIZE).next_multiple_of(self.mapping.page_size());
         if new_alloc_size < self.committed_size {
             self.mapping.shrink_committed_mapping(new_alloc_size)?;
+            self.committed_size_gauge.set(new_alloc_size as f64);
             self.committed_size = new_alloc_size;
         }
         self.set_used_space(new_size);

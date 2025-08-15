@@ -174,6 +174,8 @@ fn test_mmap_big() {
         "mmap",
         0,
         1024 * 1024 * 1024,
+        "test_mmap_big",
+        "test-description"
     );
     //use std::io::Read;
     //let _ =  std::io::stdin().read(&mut [0u8]).unwrap();
@@ -186,6 +188,8 @@ fn test_mmap_helper() {
         "mmap",
         0,
         16 * 1024 * 1024,
+        "test_mmap1",
+        "test-description"
     )
     .unwrap()
     .0;
