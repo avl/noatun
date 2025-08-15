@@ -76,6 +76,9 @@ pub struct DatabaseSettings {
     /// Increasing this value may increase initial performance, since the files don't
     /// have to be resized as many times.
     pub initial_file_size: usize,
+
+    /// If set to true, data-files will be automatically compacted
+    pub auto_compact_enabled: bool,
 }
 
 impl Default for DatabaseSettings {
@@ -87,6 +90,8 @@ impl Default for DatabaseSettings {
             max_file_size: 1_000_000_000,
             cutoff_interval: CutOffDuration::from_minutes(15),
             initial_file_size: 4096,
+            //TODO: Why do tests fail when this is enabled?
+            auto_compact_enabled: false,
         }
     }
 }
@@ -426,7 +431,8 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.append_nonlocal(message)
     }
 
-    pub(crate) fn compact(&mut self) -> Result<()> {
+    //TODO: Force compact Noatun's data files.
+    pub fn compact(&mut self) -> Result<()> {
         self.db.compact()
     }
 
@@ -1085,6 +1091,7 @@ impl<MSG: Message + 'static> Database<MSG> {
             settings.initial_file_size,
             max_size,
             settings.cutoff_interval,
+            settings.auto_compact_enabled,
         )?;
 
         Self::recover_impl(&mut ctx, &mut message_store, &settings)?;
@@ -1145,6 +1152,7 @@ impl<MSG: Message + 'static> Database<MSG> {
             settings.initial_file_size,
             settings.max_file_size,
             settings.cutoff_interval,
+            settings.auto_compact_enabled,
         )?;
         let load_status;
 

@@ -21,33 +21,9 @@ pub(crate) trait Disk {
         description: &str,
     ) -> Result<(FileAccessor, bool /*file existed*/)>;
 }
-/*pub trait DiskFile: Seek + Write + Read {
-    fn set_len(&mut self, len: u64) -> Result<()>;
-
-    /// Write all zeroes to the entire file, without changing its size
-    fn clear(&mut self) -> Result<()>;
-    fn mmap(&mut self) -> Result<DiskMmapHandle>;
-    fn remap(&mut self, mmap: &mut DiskMmapHandle, new_size: u64) -> Result<()>;
-    fn sync_all(&mut self) -> Result<()>;
-    fn try_lock_exclusive(&mut self) -> Result<()>;
-    fn len(&self) -> Result<usize>;
-}*/
-
-pub trait GrowableFileMapping {}
 
 pub struct StandardDisk;
 
-/*struct InMemoryFile {
-    data: *mut u8,
-    data_size: usize,
-    position: usize,
-    locked: bool,
-    mmaped: bool,
-}
-
-#[derive(Clone)]
-pub struct InMemoryFileRef(Rc<RefCell<InMemoryFile>>);
-*/
 
 struct InMemoryGrowableFileMappingData {
     data: *mut u8,
@@ -91,14 +67,7 @@ impl InMemoryGrowableFileMapping {
         self.backing.used_len
     }
 
-    fn flush_range(&self, _offset: usize, _len: usize) -> Result<()> {
-        Ok(())
-    }
-
-    fn flush_all(&self) -> Result<()> {
-        Ok(())
-    }
-
+    
     fn truncate(&mut self, len: usize) -> Result<()> {
         let backing = &mut self.backing;
         if backing.used_len > len {

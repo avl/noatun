@@ -261,9 +261,6 @@ impl FileHeaderEntry {
         self.sha2 = [0u8; 16];
     }
 
-    pub fn total_size_except_hash(&self) -> usize {
-        self.total_size() - HASH_SIZE
-    }
     pub fn total_size(&self) -> usize {
         (size_of::<FileHeaderEntry>()
             + (self.num_parents.num_allocated as usize + self.num_children.num_allocated as usize)
@@ -437,6 +434,14 @@ struct DataFileEntry {
     compaction_pointer: u64,
 }
 
+impl DataFileEntry {
+    pub fn fragmentation(&self) -> u32 {
+        let data_hole_bytes = self.nominal_size.saturating_sub(self.bytes_used);
+        let perc_fragmentation = data_hole_bytes.saturating_mul(100)/self.nominal_size.max(1);
+        perc_fragmentation as u32
+    }
+}
+
 unsafe impl NoatunStorable for DataFileEntry {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::DataFileEntry/1")
@@ -487,6 +492,7 @@ pub(crate) struct OnDiskMessageStore<M> {
     phantom: PhantomData<M>,
     loaded_existing: bool,
     filesystem_sync_disabled: bool,
+    auto_compact_enabled: bool,
     cutoff_index: usize,
 
     index_compaction: Counter,
@@ -494,6 +500,7 @@ pub(crate) struct OnDiskMessageStore<M> {
     index_holes: Gauge,
     messages_written: Counter,
     message_bytes_written: Counter,
+    data_fragmentation_gauges: [Gauge;2],
     // MessageId's that aren't parents to any other message
     //update_heads: FileAccessor,
 }
@@ -1480,7 +1487,11 @@ impl<M> OnDiskMessageStore<M> {
             header.prev_cutoff.report_delete(entry.message);
 
             let id = entry.message;
-            header.data_files[file.index()].bytes_used -= entry.file_total_size;
+            let datafile = &mut header.data_files[file.index()];
+            datafile.bytes_used -= entry.file_total_size;
+
+            let perc_fragmentation = datafile.fragmentation();
+
 
             debug_assert!(delete_index.index() < header.entries as usize);
 
@@ -1502,6 +1513,12 @@ impl<M> OnDiskMessageStore<M> {
                 self.add_remove_parents_and_children(*child, &[], Some(id), &[], None)?;
             }
             self.update_index_metrics()?;
+
+            self.data_fragmentation_gauges[file.index()].set(perc_fragmentation as f64);
+            if self.auto_compact_enabled && perc_fragmentation > 25 {
+                self.do_compact(|_,_| true).context("compacting data files")?;
+            }
+
             Ok(true)
         } else {
             warn!("Message was already deleted");
@@ -2339,8 +2356,10 @@ impl<M> OnDiskMessageStore<M> {
 
                     let full_msg_size = total_size;
 
-                    index_header.data_files[self.active_file.index()].bytes_used += full_msg_size;
-                    index_header.data_files[self.active_file.index()].nominal_size += full_msg_size;
+                    let data_file_header = &mut index_header.data_files[self.active_file.index()];
+                    data_file_header.bytes_used += full_msg_size;
+                    data_file_header.nominal_size += full_msg_size;
+                    self.data_fragmentation_gauges[self.active_file.index()].set(data_file_header.fragmentation());
 
                     cur_input_message = messages.next();
                 }
@@ -2477,6 +2496,7 @@ impl<M> OnDiskMessageStore<M> {
         self.compact_to_target(25)
     }
 
+    /// Active file is second (dst)
     fn get_src_dst<T>(entries: &mut [T; 2], active: U1) -> (&mut T, &mut T) {
         let data_files = entries.split_at_mut(1);
         let (active_data_file, passive_data_file) = if active.index() == 0 {
@@ -2503,6 +2523,15 @@ impl<M> OnDiskMessageStore<M> {
 
         Ok(())
     }
+    fn update_compaction_stats(&mut self) -> Result<()> {
+        let (header, _index) = Self::header_and_index_mut(&mut self.index_mmap)?;
+        let (file1, file0) = Self::get_src_dst(&mut header.data_files, U1::ZERO);
+
+        self.data_fragmentation_gauges[0].set(file0.fragmentation() as f64);
+        self.data_fragmentation_gauges[1].set(file1.fragmentation() as f64);
+        Ok(())
+
+    }
     /// Returns true if 'active' has been swapped
     fn do_compact_impl(
         &mut self,
@@ -2511,11 +2540,11 @@ impl<M> OnDiskMessageStore<M> {
         let (header, index) = Self::header_and_index_mut(&mut self.index_mmap)?;
 
         let active_file = self.active_file;
-        let (src_file_info, dst_file_info) = Self::get_src_dst(&mut self.data_files, active_file);
-        let (src_file_entry, dst_file_entry) =
-            Self::get_src_dst(&mut header.data_files, active_file);
+        let (src_file_info, dst_file_info) =     Self::get_src_dst(&mut self.data_files, active_file);
+        let (src_file_entry, dst_file_entry) = Self::get_src_dst(&mut header.data_files, active_file);
 
         //let initial_compacted_bytes = src_file_entry.compaction_pointer;
+        let mut have_compacted = false;
         loop {
             let src_wasted = src_file_entry.nominal_size - src_file_entry.bytes_used;
             let dst_wasted = dst_file_entry.nominal_size - dst_file_entry.bytes_used;
@@ -2543,12 +2572,21 @@ impl<M> OnDiskMessageStore<M> {
                     && need_compact(src_wasted + dst_wasted, src_tot + dst_tot)
                 {
                     self.active_file.swap();
+                    if have_compacted {
+                        self.update_compaction_stats()?;
+                    }
                     return Ok(true);
+                }
+                if have_compacted {
+                    self.update_compaction_stats()?;
                 }
                 return Ok(false);
             }
 
             if !need_compact(src_wasted + dst_wasted, src_tot + dst_tot) {
+                if have_compacted {
+                    self.update_compaction_stats()?;
+                }
                 return Ok(false);
             }
 
@@ -2582,6 +2620,7 @@ impl<M> OnDiskMessageStore<M> {
                 .copy_to(full_size as usize, &mut dst_file_info.file)?;
             dst_file_entry.bytes_used += full_size;
             dst_file_entry.nominal_size += full_size;
+            have_compacted = true;
         }
     }
 
@@ -2590,6 +2629,7 @@ impl<M> OnDiskMessageStore<M> {
         target: &Target,
         min_file_size: usize,
         max_file_size: usize,
+        auto_compact: bool,
     ) -> Result<OnDiskMessageStore<M>> {
         const {
             if size_of::<usize>() < size_of::<u32>() {
@@ -2649,9 +2689,8 @@ impl<M> OnDiskMessageStore<M> {
             .data_files
             .iter()
             .enumerate()
-            .min_by_key(|(_index, data_file)| {
-                (100 * ((data_file.nominal_size - data_file.bytes_used) as u128))
-                    / (data_file.nominal_size.max(1) as u128)
+            .min_by_key(|(index, data_file)| {
+                data_file.fragmentation()
             })
             .unwrap()
             .0;
@@ -2694,7 +2733,22 @@ impl<M> OnDiskMessageStore<M> {
             "Total number of payload bytes written to database"
         );
 
-        let this = Self {
+        let frag0 = gauge!("data_frag0");
+        describe_gauge!(
+            "data_frag0",
+            Unit::Percent,
+            "Fragmentation of data file 0, in percent"
+        );
+        let frag1 = gauge!("data_frag1");
+        describe_gauge!(
+            "data_frag1",
+            Unit::Percent,
+            "Fragmentation of data file 1, in percent"
+        );
+
+        let data_fragmentation = [frag0, frag1];
+
+        let mut this = Self {
             target: target.clone(),
             index_mmap: index_file,
             data_files,
@@ -2703,15 +2757,18 @@ impl<M> OnDiskMessageStore<M> {
             loaded_existing: db_existed,
             //update_heads,
             filesystem_sync_disabled: false,
+            auto_compact_enabled: auto_compact,
             cutoff_index,
             index_compaction,
             index_size,
             index_holes,
             messages_written,
             message_bytes_written,
+            data_fragmentation_gauges: data_fragmentation
         };
 
         this.update_index_metrics()?;
+        this.update_compaction_stats()?;
 
         Ok(this)
     }
@@ -2862,6 +2919,7 @@ mod tests {
             &Target::CreateNewOrOverwrite("test/add_and_recover_messages.bin".into()),
             0,
             10000,
+            false
         )
         .unwrap();
 
@@ -2908,6 +2966,7 @@ mod tests {
             &Target::CreateNewOrOverwrite("test/add_and_read_messages1.bin".into()),
             0,
             5_000_000_000,
+            false
         )
         .unwrap();
 
@@ -2942,6 +3001,7 @@ mod tests {
             &Target::CreateNewOrOverwrite("test/add_and_read_messages2.bin".into()),
             0,
             5_000_000_000,
+            false
         )
         .unwrap();
 
@@ -3002,6 +3062,7 @@ mod tests {
             &Target::CreateNewOrOverwrite("test/add_and_read_messages_twice3.bin".into()),
             0,
             10000,
+            false
         )
         .unwrap();
 
@@ -3057,7 +3118,7 @@ mod tests {
         let test_recorder = SimpleMetricsRecorder::default();
         let _guard = test_recorder.register_local();
         let target = Target::CreateNewOrOverwrite("test/add_and_delete_messages4.bin".into());
-        let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 0, 10000).unwrap();
+        let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 0, 10000, false).unwrap();
 
         let mut head_tracker = UpdateHeadTracker::new(&mut StandardDisk, &target).unwrap();
         const COUNT: usize = 6;
@@ -3115,7 +3176,7 @@ mod tests {
         let test_recorder = SimpleMetricsRecorder::default();
         let _guard = test_recorder.register_local();
         let target = Target::CreateNewOrOverwrite("test/add_and_delete_messages5.bin".into());
-        let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 0, 200000).unwrap();
+        let mut store = OnDiskMessageStore::new(&mut StandardDisk, &target, 0, 200000, false).unwrap();
 
         let mut head_tracker = UpdateHeadTracker::new(&mut StandardDisk, &target).unwrap();
         const COUNT: usize = 6;
@@ -3172,7 +3233,7 @@ mod tests {
     fn test_compact() {
         let target = Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into());
         let mut store =
-            OnDiskMessageStore::new(&mut InMemoryDisk::default(), &target, 0, 100_000_000).unwrap();
+            OnDiskMessageStore::new(&mut InMemoryDisk::default(), &target, 0, 100_000_000, false).unwrap();
 
         const COUNT: usize = 1_000;
         let msgs: Vec<_> = (0..COUNT)
@@ -3216,6 +3277,7 @@ mod tests {
             &Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into()),
             0,
             2000000,
+            false
         )
         .unwrap();
 
@@ -3261,6 +3323,7 @@ mod tests {
             &Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into()),
             0,
             10000,
+            false
         )
         .unwrap();
 
@@ -3365,7 +3428,7 @@ mod tests {
 
         let target = Target::CreateNewOrOverwrite("test/test_create_disk_store.bin".into());
         let mut store =
-            OnDiskMessageStore::new(&mut InMemoryDisk::default(), &target, 0, 10000).unwrap();
+            OnDiskMessageStore::new(&mut InMemoryDisk::default(), &target, 0, 10000, false).unwrap();
 
         const COUNT: u32 = 20;
 

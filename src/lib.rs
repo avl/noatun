@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![allow(clippy::unnecessary_lazy_evaluations)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]
@@ -104,10 +103,6 @@ mod update_head_tracker;
 
 mod private {
     pub trait Sealed {}
-}
-
-struct MessageComponent<const ID: u32, T> {
-    value: Option<T>,
 }
 
 pub(crate) mod platform_specific;
@@ -360,6 +355,7 @@ impl NoatunContext {
     }
 
     // Just used by single test. Consider removing?
+    #[cfg(test)]
     pub(crate) unsafe fn rewind(self, new_time: SequenceNr) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).rewind(new_time) }
@@ -506,7 +502,7 @@ unsafe impl NoatunStorable for MessageId {
     }
 }
 
-const ASSURE_SUPPORTED_USIZE: () = const {
+const _ASSURE_SUPPORTED_USIZE: () = const {
     if size_of::<usize>() != 8 {
         panic!("noatun currently only supports 64 bit platforms with 64 bit usize");
     }
@@ -630,10 +626,6 @@ impl MessageId {
     }
     pub fn zero() -> MessageId {
         MessageId { data: [0, 0, 0, 0] }
-    }
-
-    pub(crate) fn raw(&self) -> [u32; 4] {
-        self.data
     }
 
     /// Next larger MessageId.
@@ -1695,29 +1687,6 @@ macro_rules! noatun_object {
 
 }
 
-/// Get bytes of object that may contain padding bytes
-pub(crate) fn bytes_of_uninit<T: NoatunStorable>(t: &T) -> &[MaybeUninit<u8>] {
-    let ptr = t as *const _ as *const MaybeUninit<u8>;
-    // SAFETY:
-    // Pointer is known to point to valid object. There may be padding bytes
-    // that are unknown, but that's okay sinze we create a [MaybeUninit<u8>]
-    unsafe { slice::from_raw_parts(ptr, size_of::<T>()) }
-}
-
-/// Get bytes of object that may be uninitialized.
-pub(crate) fn bytes_of_maybe_uninit<T: NoatunStorable>(t: &MaybeUninit<T>) -> &[MaybeUninit<u8>] {
-    let ptr = t as *const _ as *const MaybeUninit<u8>;
-    // SAFETY:
-    // Pointer is known to point to valid object. There may be padding bytes
-    // that are unknown, but that's okay sinze we create a [MaybeUninit<u8>]
-    unsafe { slice::from_raw_parts(ptr, size_of::<T>()) }
-}
-pub(crate) fn uninit_slice(slice: &[u8]) -> &[MaybeUninit<u8>] {
-    // SAFETY:
-    // MaybeUninit[u8] has exact same layout as u8
-    unsafe { std::mem::transmute::<&[u8], &[MaybeUninit<u8>]>(slice) }
-}
-
 pub trait FixedSizeObject: Object<Ptr = ThinPtr> + NoatunStorable + Sized + 'static
 where
     <Self as Object>::DetachedOwnedType: Sized,
@@ -1907,13 +1876,6 @@ where
     }
 }
 
-#[derive(Clone, Copy)]
-enum MultiInstanceThreadBlocker {
-    Idle,
-    InstanceActive,
-    Disabled,
-}
-
 #[derive(Clone)]
 pub enum Target {
     OpenExisting(PathBuf),
@@ -1996,20 +1958,6 @@ impl Drop for ContextGuardMut {
     }
 }
 
-noatun_object!(
-        struct Kalle {
-            pod hej:u32,
-            pod tva:u32,
-            object da: NoatunCell<u32>
-        }
-);
-noatun_object!(
-    struct Nalle {
-        pod hej:u32,
-        pod tva:u32,
-        object da: NoatunCell<u32>
-    }
-);
 
 fn msg_serialize<T: savefile::Serialize + savefile::Packed>(
     obj: &T,

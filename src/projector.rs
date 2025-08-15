@@ -277,9 +277,10 @@ impl<MSG: Message + 'static> Projector<MSG> {
         min_size: usize,
         max_size: usize,
         cutoff_interval: CutOffDuration,
+        auto_compact: bool,
     ) -> Result<Projector<MSG>> {
         Ok(Projector {
-            messages: OnDiskMessageStore::new(s, target, min_size, max_size)?,
+            messages: OnDiskMessageStore::new(s, target, min_size, max_size, auto_compact)?,
             head_tracker: UpdateHeadTracker::new(s, target)?,
             cut_off_config: CutOffConfig::new(cutoff_interval)?,
             abort_on_panic: false,
