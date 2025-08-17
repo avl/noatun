@@ -1,3 +1,5 @@
+#![doc = include_str!("../docs/book.md")]
+
 #![allow(clippy::unnecessary_lazy_evaluations)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]
@@ -7,8 +9,9 @@
 // produces this warning.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(clippy::type_complexity)]
-// Yeah, this is not ideal. This should be fixed.
+//TODO: Yeah, this is not ideal. This should be fixed.
 #![allow(clippy::missing_safety_doc)]
+#![deny(missing_docs)]
 #![allow(clippy::let_and_return)]
 #![allow(clippy::collapsible_else_if)]
 #![allow(clippy::too_many_arguments)]
@@ -63,6 +66,7 @@ mod projection_store;
 #[cfg(feature = "debug_color")]
 mod term_colors;
 mod undo_store;
+
 
 pub mod ratatui_inspector;
 
@@ -126,12 +130,6 @@ pub mod noatun_instant {
 }
 
 
-/// The noatun book, in rust code
-#[cfg(doctest)]
-mod book {
-    #[doc = include_str!("../book/book.md")]
-    const BOOK: () = ();
-}
 
 #[cfg(feature = "debug_color")]
 use term_colors as colors;
@@ -145,6 +143,7 @@ use dummy_term_colors as colors;
 #[cfg(feature = "debug_color")]
 use crate::colors::{colored_hex_int, colored_hex_sint};
 use crate::cutoff::CutOffTime;
+use crate::database::DatabaseSession;
 
 #[cfg(feature = "tokio")]
 pub mod communication;
@@ -185,14 +184,23 @@ macro_rules! dprintln {
     ($($x:tt)*) => {{}};
 }
 
+/// Hasher for hashing noatun database schemas.
+///
+/// Every type that is to be used in the noatun materialized view must support
+/// creating a unique hash representing its own exact memory layout. This mechanism is used to
+/// automatically rebuild the materialized view any time the materialized types are changed.
 pub struct SchemaHasher(Sha256);
 
 impl SchemaHasher {
+    /// Hash the given string
     pub fn write_str(&mut self, s: &str) {
+        self.0.update([0u8]);
         self.0.update(s.len().to_le_bytes());
         self.0.update(s.as_bytes());
     }
+    /// Hash the given usize.
     pub fn write_usize(&mut self, n: usize) {
+        self.0.update([1u8]);
         self.0.update(n.to_le_bytes());
     }
 }
@@ -239,15 +247,24 @@ impl Write for SchemaHasher {
     note = "Manually implementing this trait is not recommended, but can be possible. See trait docs."
 )]
 pub unsafe trait NoatunStorable: Sized + 'static {
+    /// Return an instance of T that has a memory-representation of all zeroes.
+    ///
+    /// An all-zero instance must be valid for every NoatunStorable instance
     fn zeroed<T: NoatunStorable>() -> T {
         unsafe { MaybeUninit::<T>::zeroed().assume_init() }
     }
+
+    /// Shallow copy source to self, unconditionally overwriting self.
     fn copy_from(&mut self, source: &Self) {
         unsafe {
             let temp = (source as *const Self).read();
             (self as *mut Self).write(temp);
         }
     }
+
+    /// Initialize 'dest' from source.
+    ///
+    /// This is done using a simple memory copy.
     fn initialize(dest: &mut MaybeUninit<Self>, source: &Self) {
         unsafe {
             let temp = (source as *const Self).read();
@@ -309,6 +326,10 @@ mod noatun_storable_impls {
 }
 
 thread_local! {
+    /// The current context for the running thread.
+    ///
+    /// This is always set when user code runs in [`Message::apply`],
+    /// [`DatabaseSession::with_root`] or similar methods.
     pub static CONTEXT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
 }
 

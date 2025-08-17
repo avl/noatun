@@ -1,3 +1,4 @@
+//! This module contains the main user-facing database type: [`Database`]. 
 use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;

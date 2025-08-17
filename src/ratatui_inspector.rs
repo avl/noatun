@@ -1,8 +1,14 @@
+//! With the optional feature "ratatui", noatun has built-in support for showing
+//! diagnostics information using the "ratatui" terminal UI library.
+//!
+//! Construct an instance of [`RatatuiInspector`] to use this feature.
 #![cfg(feature = "ratatui")]
 
 use std::fmt::Debug;
-
+use std::time::Duration;
+use anyhow::Context;
 use itertools::Itertools;
+use ratatui::crossterm::event;
 use ratatui::layout::Constraint::{Length, Min, Percentage};
 use ratatui::layout::Layout;
 use ratatui::Frame;
@@ -17,6 +23,7 @@ use crate::noatun_instant::Instant;
 use crate::simple_metrics::SimpleMetricsRecorder;
 use crate::{Message, Object};
 
+/// State used for rendering diagnostics information
 pub struct RatatuiInspector {
     received_packet_table: Table<'static>,
     sent_packet_table: Table<'static>,
@@ -53,7 +60,36 @@ impl<'a> BlockExt for Block<'a> {
     }
 }
 
+/// Run
+pub fn run_inspector<MSG: Message + Send>(
+    recorder: Option<&SimpleMetricsRecorder>,
+    comm: &DatabaseCommunication<MSG>,
+) -> anyhow::Result<()> where
+    <MSG::Root as Object>::DetachedOwnedType: Debug {
+    let mut inspector = RatatuiInspector::new();
+    let mut terminal = ratatui::init();
+
+    loop {
+        if event::poll(Duration::from_millis(250)).context("event poll failed")? {
+            let event = event::read().context("event read failed")?;
+            if !inspector.input(&event) {
+                if let Event::Key(KeyEvent { code: KeyCode::Esc|KeyCode::Char('q')|KeyCode::Char('Q'), .. }) = event {
+                    ratatui::restore();
+                    return Ok(());
+                }
+            }
+        }
+        terminal.draw(|frame| {
+            inspector.draw(frame, recorder, comm);
+        })?;
+    }
+}
+
 impl RatatuiInspector {
+
+    /// Supply information to the inspector. Use this from a ratatui main-loop in a pre-existing
+    /// ratatui app.
+    ///
     /// Returns true if input key was caught
     pub fn input(&mut self, event: &Event) -> bool {
         match &event {
@@ -97,6 +133,8 @@ impl RatatuiInspector {
         }
         true
     }
+
+    /// Create a new ratatui inspector
     pub fn new() -> Self {
         let rows: [Row; 0] = [];
 
@@ -161,36 +199,27 @@ impl RatatuiInspector {
             start: Instant::now(),
             x_offset: 0,
             table_state: [();7].map(|_|Default::default()),
+
         }
     }
 
-    /// Draw the diagnostics ui
+
+    /// Draw the diagnostics ui.
     ///
-    /// Note, the root object must implement Debug. You can derive this like so:
-    ///
-    /// ```
-    /// use noatun::noatun_object;
-    ///
-    /// noatun_object!(
-    ///     #[derive(Debug)]
-    ///     struct IssueDb {
-    ///         // fields here
-    ///     }
-    /// );
-    /// ```
-    ///
+    /// This method is useful if you already have a ratatui app and want to show
+    /// the inspector ui from within this app.
     pub fn draw<MSG: Message + Send>(
         &mut self,
         frame: &mut Frame,
-        recorder: &SimpleMetricsRecorder,
+        recorder: Option<&SimpleMetricsRecorder>,
         comm: &DatabaseCommunication<MSG>,
     ) where
         <MSG::Root as Object>::DetachedOwnedType: Debug,
     {
-        let data = comm.inspector_data();
+        let data = comm.diagnostics_data();
         let data = data
             .as_ref()
-            .expect("diagnostics are enabled, inspector data should be present");
+            .expect("Diagnostics must be enabled in order to use ratatui inspector. Set DatabaseCommunicationConfig::enable_diagnostics to true.");
 
         let main_layout = Layout::vertical([Percentage(33), Percentage(33), Percentage(33)]);
 
@@ -293,8 +322,10 @@ impl RatatuiInspector {
             heads.len().to_string(),
         ]));
 
-        for (key, val) in recorder.metrics_items() {
-            metrics_rows.push(Row::new([key, val]));
+        if let Some(recorder) = recorder {
+            for (key, val) in recorder.metrics_items() {
+                metrics_rows.push(Row::new([key, val]));
+            }
         }
 
         let mut db_rows = vec![];

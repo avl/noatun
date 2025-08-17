@@ -1,3 +1,25 @@
+//! Datatypes for use in the noatun materialized view.
+//! Normal rust types cannot be used in a noatun view, since they do not have a guaranteed
+//! stable memory layout. Noatun persists materialized views to facilitate quick startup
+//! after reboot. This means that every type used in a noatun materialized view
+//! must have a stable memory layout. This is something not guaranteed by most standard
+//! library types.
+//!
+//! # Foundational types:
+//!
+//!  * [`NoatunCell`] and [`OpaqueNoatunCell`] - used for storing primitives in noatun (like u32,
+//!    i64, etc).
+//!  * [`NoatunString`] and [`OpaqueNoatunString`] - used to store strings.
+//!  * [`NoatunHashMap`] - Recommended collection type.
+//!
+//! # Other types:
+//!
+//!  * [`NoatunVec`] and [`OpaqueNoatunVec`] - similar to stdlib's Vec. Note, avoid
+//!    [`NoatunVec`] when possible, since every push causes a read-dependency on every
+//!    prior mutator, since the index of a pushed event depends on all prior mutations.
+//!  * [`NoatunOption`] - similar to [`std::option::Option`]
+//!  * [`NoatunBox`] - similar to [`std::boxed::Box`]
+//!
 use crate::{
     get_context_mut_ptr, get_context_ptr, DatabaseContextData, NoatunContext, NoatunStorable,
     Object, Pointer, SchemaHasher, ThinPtr,

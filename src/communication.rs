@@ -1,7 +1,16 @@
+//! Tokio-based communication mechanism for synchronizing a noatun database with peers.
+//!
+//! To use this, first open/create a database using [`Database::create_new`].
+//!
+//! Then, create a communication instance using [`DatabaseCommunication::new`].
+//!
+//! Finally, add messages using [`DatabaseCommunication::add_message`] (or similar methods),
+//! and inspect the database using [`DatabaseCommunication::with_root`].
+//!
+//! See example `simple_replication`.
 use crate::distributor::{
     Address, Distributor, DistributorMessage, EphemeralNodeId, SerializedMessage, Status,
 };
-
 use crate::colors::rgb;
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 use crate::communication::udp::TokioUdpDriver;
@@ -16,7 +25,6 @@ use savefile::{
     Serialize, Serializer, WithSchema, WithSchemaContext,
 };
 use savefile_derive::Savefile;
-
 use crate::diagnostics::DiagnosticsData;
 use crate::diagnostics::{MessageRow, PacketRow};
 use crate::mini_pather::MiniPather;
@@ -1422,7 +1430,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         }
     }
 
-    pub fn inspector_data(&self) -> Option<DiagnosticsData> {
+    pub fn diagnostics_data(&self) -> Option<DiagnosticsData> {
         Some(self.diagnostics.as_ref()?.lock().unwrap().clone())
     }
 
