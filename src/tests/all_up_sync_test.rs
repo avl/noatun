@@ -26,7 +26,7 @@ use std::ops::Add;
 use std::ops::Sub;
 use std::pin::Pin;
 use std::time::Duration;
-use tokio::time::Instant;
+use crate::noatun_instant::Instant;
 use tracing::info;
 
 thread_local! {
@@ -321,7 +321,7 @@ async fn all_up_gradual_update_sync_test() {
     driver.set_loss(0.5);
     let mut correct_count = 0;
     let mut correct_sum = 0;
-    let start_time = tokio::time::Instant::now();
+    let start_time = Instant::now();
     for _i in 0..10 {
         //println!("I = {}", i);
         //println!("Msgs1: {:#?}", app1.get_all_messages_vec().unwrap());
@@ -581,7 +581,7 @@ async fn all_up_general_update_sync_test_impl(
     let mut app2 = create_app(&mut driver, None).await;
 
     let noatun_start_time: NoatunTime = START_TIME.into();
-    let start_instant = tokio::time::Instant::now();
+    let start_instant = Instant::now();
     let mut total_count = 0;
     let mut total_added = 0;
 

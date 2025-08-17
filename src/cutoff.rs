@@ -81,9 +81,6 @@ impl CutoffHash {
     }
 }
 
-pub struct CutOffInterval(u32);
-
-impl CutOffInterval {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CutOffDuration(/*minutes*/ u32);

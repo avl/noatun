@@ -376,7 +376,7 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
         .map(|x| x.to_string())
         .unwrap_or_else(|_| "Failed".to_string());
 
-    let mut debug_spans = vec![
+    let debug_spans = vec![
         ratatui::prelude::Span::styled("User: ", Style::default()),
         ratatui::prelude::Span::styled(app.user.to_string(), Style::default().bold()),
         ratatui::prelude::Span::styled(", Message count: ", Style::default()),

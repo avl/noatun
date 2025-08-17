@@ -1,3 +1,4 @@
+#![allow(unused)]
 pub fn lightblue(s: &str) -> &str {
     s
 }

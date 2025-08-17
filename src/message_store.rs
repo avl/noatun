@@ -15,7 +15,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use itertools::Itertools;
 use metrics::{counter, describe_counter, describe_gauge, gauge, Counter, Gauge, Unit};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
@@ -340,9 +340,12 @@ impl U1 {
 }
 
 impl FileOffset {
+    #[cfg(test)]
     fn bits(self) -> u64 {
         self.0
     }
+
+    #[cfg(test)]
     fn from_bits(bits: u64) -> FileOffset {
         Self(bits)
     }
@@ -354,6 +357,8 @@ impl FileOffset {
     fn set_deleted(&mut self) {
         self.0 = u64::MAX;
     }
+
+    #[cfg(test)]
     pub(crate) fn deleted() -> Self {
         Self(u64::MAX)
     }
@@ -371,9 +376,6 @@ impl FileOffset {
                 self.0 >> 1,
             )
         })
-    }
-    fn file(self) -> Option<U1> {
-        (self.0 != u64::MAX).then(|| if self.0 & 1 == 1 { U1::ONE } else { U1::ZERO })
     }
 }
 
@@ -398,9 +400,6 @@ unsafe impl NoatunStorable for IndexEntry {
         hasher.write_str("noatun::IndexEntry/1")
     }
 }
-
-const DEFAULT_MAX_COUNT: usize = 1024;
-const DEFAULT_MAX_SIZE_BYTES: usize = DEFAULT_MAX_COUNT * std::mem::size_of::<IndexEntry>();
 
 impl PartialEq for IndexEntry {
     fn eq(&self, other: &Self) -> bool {
@@ -428,6 +427,14 @@ struct DataFileEntry {
     /// If this becomes small, compaction may be in order
     /// This figure includes the file header (and any padding we might want to add later).
     /// This means that an unfragmented file has `bytes_used` == `nominal_size`
+    ///
+    /// NOTE! When the compaction pointer is moved, 'bytes_used' is subtracted from. This
+    /// increases fragmentation, meaning the rest of the file is likely to be compacted.
+    /// However, during recovery, items before the compaction pointer are also recovered.
+    /// Note that if the file has been corrupted at runtime, it's conceivable that the
+    /// index could reference entries before the compaction pointer. In this case, bytes_used
+    /// would become negative at deletion of such an entry. Saturating subtraction is used
+    /// for this error case, with a benign result.
     bytes_used: u64,
 
     /// All file data before this offset has been moved
@@ -454,9 +461,6 @@ struct DataFileInfo {
     file_number: U1,
 }
 
-const STATUS_OK: u32 = 1;
-/// Not ok
-const STATUS_NOK: u32 = 0;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -485,7 +489,6 @@ unsafe impl NoatunStorable for StoreHeader {
 }
 
 pub(crate) struct OnDiskMessageStore<M> {
-    target: Target,
     index_mmap: FileAccessor,
     data_files: [DataFileInfo; 2],
     active_file: U1,
@@ -501,8 +504,6 @@ pub(crate) struct OnDiskMessageStore<M> {
     messages_written: Counter,
     message_bytes_written: Counter,
     data_fragmentation_gauges: [Gauge;2],
-    // MessageId's that aren't parents to any other message
-    //update_heads: FileAccessor,
 }
 
 struct MessageWriteReport {
@@ -552,20 +553,6 @@ impl<M> OnDiskMessageStore<M> {
         }
 
         index
-    }
-
-    pub(crate) fn debug_check_duplicates(&self) {
-        let mut seen = HashSet::new();
-        let (_header, index) = self.header_and_index().unwrap();
-        for entry in index {
-            if entry.is_deleted() {
-                continue;
-            }
-            if !seen.insert(entry.message) {
-                println!("All messages: {index:#?}");
-                panic!("Duplicate message entry seen: {:?}", entry.message);
-            }
-        }
     }
 
     #[cfg(any(debug_assertions, feature = "debug"))]
@@ -1067,6 +1054,7 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
     /// Get all messages with id start or greater
+    #[cfg(test)]
     fn query_greater(&self, start: MessageId) -> Result<impl Iterator<Item = &IndexEntry>> {
         let (_header, message_index) = self.header_and_index().context("opening index file")?;
 
@@ -1075,14 +1063,6 @@ impl<M> OnDiskMessageStore<M> {
         Ok(message_index[index..]
             .iter()
             .filter(|x| !x.file_offset.is_deleted()))
-    }
-
-    /// Smallest unused index.
-    ///
-    /// The next index that will be used when a new message is added to the db
-    pub fn next_index(&self) -> Result<usize> {
-        let (header, _message_index) = self.header_and_index().context("opening index file")?;
-        Ok(header.entries as usize)
     }
 
     /// Get all messages with index `index` or greater. Note, the index series has holes,
@@ -1109,18 +1089,6 @@ impl<M> OnDiskMessageStore<M> {
                     None
                 }
             }))
-    }
-
-    /// Return the position where a message with the given ID could be inserted, or None if the message already exists.
-    pub fn get_insert_point(&self, msg: MessageId) -> Result<Option<usize>> {
-        let (_header, message_index) = self.header_and_index().context("opening index file")?;
-
-        if let Err(index) = message_index.binary_search_by_key(&msg, |x| x.message) {
-            Ok(Some(index))
-        } else {
-            // Already exists
-            Ok(None)
-        }
     }
 
     /// This conservatively returns 'true' for deleted SequenceNrs
@@ -1329,33 +1297,6 @@ impl<M> OnDiskMessageStore<M> {
         }
     }
 
-    pub fn get_message_id_from_seq(&self, seq: SequenceNr) -> Result<MessageId> {
-        if seq.is_invalid() {
-            return Err(anyhow!("Invalid SequenceNr"));
-        }
-        let (_header, message_index) = self.header_and_index().context("opening index file")?;
-        Ok(message_index
-            .get(seq.index())
-            .ok_or_else(|| anyhow!("SequenceNr out of bounds"))?
-            .message)
-    }
-
-    /// Return the index of the given message, if it exists, otherwise None.
-    /// If the call itself fails, returns Err.
-    pub fn get_index_of(&mut self, id: MessageId) -> Result<Option<usize>> {
-        let (_header, message_index) = self.header_and_index().context("opening index file")?;
-
-        match message_index.binary_search_by_key(&id, |x| x.message) {
-            Ok(index) => {
-                if message_index[index].file_offset.is_deleted() {
-                    Ok(None)
-                } else {
-                    Ok(Some(index))
-                }
-            }
-            Err(_index) => Ok(None),
-        }
-    }
 
     /// Return message with the given id.
     /// If no such message exist, return the index of the next message with a larger id.
@@ -1488,7 +1429,8 @@ impl<M> OnDiskMessageStore<M> {
 
             let id = entry.message;
             let datafile = &mut header.data_files[file.index()];
-            datafile.bytes_used -= entry.file_total_size;
+
+            datafile.bytes_used = datafile.bytes_used.saturating_sub(entry.file_total_size);
 
             let perc_fragmentation = datafile.fragmentation();
 
@@ -1516,7 +1458,7 @@ impl<M> OnDiskMessageStore<M> {
 
             self.data_fragmentation_gauges[file.index()].set(perc_fragmentation as f64);
             if self.auto_compact_enabled && perc_fragmentation > 25 {
-                self.do_compact(|_,_| true).context("compacting data files")?;
+                self.do_compact_data(|_,_| true).context("compacting data files")?;
             }
 
             Ok(true)
@@ -1550,28 +1492,6 @@ impl<M> OnDiskMessageStore<M> {
         header.prev_cutoff = new_prev_cutoff;
         header.cutoff = new_cutoff;
         Ok(())
-    }
-
-    /// Return the given message, or None if it does not exist.
-    /// If the call itself fails, returns Err.
-    pub fn read_message_by_index(&mut self, index: usize) -> Result<Option<MessageFrame<M>>>
-    where
-        M: Message,
-    {
-        let (_header, message_index) =
-            Self::header_and_index_mut(&mut self.index_mmap).context("Reading index file")?;
-
-        let data_files = &mut self.data_files;
-        match message_index.get(index) {
-            Some(entry) => {
-                if entry.file_offset.is_deleted() {
-                    return Ok(None);
-                }
-                let msg = Self::read_msg(entry, data_files, None)?;
-                Ok(Some(msg))
-            }
-            None => Err(anyhow!("Invalid message index")),
-        }
     }
 
     pub fn loaded_existing_db(&self) -> bool {
@@ -1729,12 +1649,6 @@ impl<M> OnDiskMessageStore<M> {
         }
 
         Ok(earliest)
-    }
-
-    /// Make sure the given number of slots are available.
-    fn provide_index_map_for(&mut self, count: usize) -> Result<()> {
-        Self::provide_index_map(&mut self.index_mmap, count)?;
-        Ok(())
     }
 
     // If remaining_child_assignments is None, don't rewrite parents by adding new children to them
@@ -2482,7 +2396,7 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message,
     {
-        self.do_compact(|wasted_space, total_space| {
+        self.do_compact_data(|wasted_space, total_space| {
             let frag_perc = (100 * wasted_space) / total_space;
             frag_perc > tolerated_fragmentation_percent as u64
         })
@@ -2512,13 +2426,13 @@ impl<M> OnDiskMessageStore<M> {
         (src_file_entry, dst_file_entry)
     }
 
-    fn do_compact(
+    fn do_compact_data(
         &mut self,
         mut need_compact: impl FnMut(/*wasted bytes:*/ u64, /*total bytes: */ u64) -> bool,
     ) -> Result<()> {
-        let completed_one_compaction = self.do_compact_impl(&mut need_compact)?;
+        let completed_one_compaction = self.do_compact_data_impl(&mut need_compact)?;
         if completed_one_compaction {
-            self.do_compact_impl(need_compact)?;
+            self.do_compact_data_impl(need_compact)?;
         }
 
         Ok(())
@@ -2533,17 +2447,19 @@ impl<M> OnDiskMessageStore<M> {
 
     }
     /// Returns true if 'active' has been swapped
-    fn do_compact_impl(
+    fn do_compact_data_impl(
         &mut self,
         mut need_compact: impl FnMut(/*wasted bytes:*/ u64, /*total bytes:*/ u64) -> bool,
     ) -> Result<bool> {
         let (header, index) = Self::header_and_index_mut(&mut self.index_mmap)?;
 
         let active_file = self.active_file;
+
+        //dst is 'active'
         let (src_file_info, dst_file_info) =     Self::get_src_dst(&mut self.data_files, active_file);
         let (src_file_entry, dst_file_entry) = Self::get_src_dst(&mut header.data_files, active_file);
 
-        //let initial_compacted_bytes = src_file_entry.compaction_pointer;
+
         let mut have_compacted = false;
         loop {
             let src_wasted = src_file_entry.nominal_size - src_file_entry.bytes_used;
@@ -2618,7 +2534,9 @@ impl<M> OnDiskMessageStore<M> {
             src_file_info
                 .file
                 .copy_to(full_size as usize, &mut dst_file_info.file)?;
-            dst_file_entry.bytes_used += full_size;
+            src_file_entry.compaction_pointer += full_size;
+            src_file_entry.bytes_used = src_file_entry.bytes_used.saturating_sub(full_size);
+            dst_file_entry. bytes_used += full_size;
             dst_file_entry.nominal_size += full_size;
             have_compacted = true;
         }
@@ -2689,7 +2607,7 @@ impl<M> OnDiskMessageStore<M> {
             .data_files
             .iter()
             .enumerate()
-            .min_by_key(|(index, data_file)| {
+            .min_by_key(|(_index, data_file)| {
                 data_file.fragmentation()
             })
             .unwrap()
@@ -2749,7 +2667,6 @@ impl<M> OnDiskMessageStore<M> {
         let data_fragmentation = [frag0, frag1];
 
         let mut this = Self {
-            target: target.clone(),
             index_mmap: index_file,
             data_files,
             active_file: U1::from_index(active),
@@ -2782,7 +2699,8 @@ impl<M> OnDiskMessageStore<M> {
     /// Each message in the store has a SequenceNr. Messages can be accessed very quickly
     /// by their SequenceNr. This method returns the number of sequence numbers in the store.
     /// This will be one larger than the highest existing sequence number.
-    pub fn index_count(&self) -> Result<usize> {
+    #[cfg(test)]
+    fn index_count(&self) -> Result<usize> {
         Ok(self.header()?.entries as usize)
     }
 

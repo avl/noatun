@@ -5,7 +5,7 @@ use std::fmt::{Debug, Formatter};
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
+
 use std::slice;
 use metrics::{describe_gauge, gauge, Gauge, Unit};
 
@@ -68,18 +68,6 @@ impl ReadonlyFileAccessor<'_> {
         unsafe { slice::from_raw_parts(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE), used) }
     }
 
-    pub fn access_pod<R: NoatunStorable>(&self, offset: usize) -> Result<&R> {
-        if self.seek_pos + size_of::<R>() > self.size {
-            bail!("requested number of bytes not available in file");
-        }
-        let raw = unsafe {
-            slice::from_raw_parts(
-                self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset),
-                size_of::<R>(),
-            )
-        };
-        Ok(from_bytes(raw))
-    }
     pub fn with_bytes<R>(&mut self, bytes: usize, mut f: impl FnMut(&[u8]) -> R) -> Result<R> {
         if self.seek_pos + bytes > self.size {
             bail!("requested number of bytes not available in file");
@@ -89,19 +77,7 @@ impl ReadonlyFileAccessor<'_> {
         self.seek_pos += bytes;
         Ok(ret)
     }
-    pub fn with_bytes_at<R>(
-        &mut self,
-        offset: usize,
-        bytes: usize,
-        mut f: impl FnMut(&[u8]) -> R,
-    ) -> Result<R> {
-        if offset + bytes > self.size {
-            bail!("requested number of bytes not available in file");
-        }
-        let data = &self.map()[offset..offset + bytes];
-        let ret = f(data);
-        Ok(ret)
-    }
+
 }
 impl Seek for ReadonlyFileAccessor<'_> {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
@@ -215,24 +191,6 @@ impl FileAccessor {
         );
         committed_size_gauge
     }
-    pub fn write_uninit(&mut self, buf: &[MaybeUninit<u8>]) -> Result<()> {
-        if self.seek_pos + buf.len() > self.used_space() {
-            self.grow(self.seek_pos + buf.len())
-                .map_err(std::io::Error::other)?;
-        }
-
-        let dest = unsafe {
-            slice::from_raw_parts_mut(
-                self.ptr
-                    .wrapping_add(Self::HEADER_SIZE)
-                    .wrapping_add(self.seek_pos) as *mut MaybeUninit<u8>,
-                buf.len(),
-            )
-        };
-        dest.copy_from_slice(buf);
-        self.seek_pos += buf.len();
-        Ok(())
-    }
 }
 impl Write for FileAccessor {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -340,28 +298,13 @@ impl FileAccessor {
         self.set_used_space(self.committed_size.saturating_sub(Self::HEADER_SIZE));
     }
 
-    #[inline(always)]
-    pub(crate) fn free_space(&self) -> usize {
-        self.committed_size - Self::HEADER_SIZE - self.used_space()
-    }
-
-    pub(crate) fn on_disk_size(&self) -> usize {
-        self.committed_size
-    }
 
     pub(crate) fn map_const_ptr(&self) -> *const u8 {
         self.ptr.wrapping_add(Self::HEADER_SIZE)
     }
-    pub(crate) fn map_const_ptr_uninit(&self) -> *const MaybeUninit<u8> {
-        (self.ptr as *const MaybeUninit<u8>).wrapping_add(Self::HEADER_SIZE)
-    }
     #[inline]
     pub(crate) fn map_mut_ptr(&self) -> *mut u8 {
         self.ptr.wrapping_add(Self::HEADER_SIZE)
-    }
-    #[inline]
-    pub(crate) fn map_mut_ptr_uninit(&self) -> *mut MaybeUninit<u8> {
-        (self.ptr as *mut MaybeUninit<u8>).wrapping_add(Self::HEADER_SIZE)
     }
 
     pub(crate) fn map_all_raw(&self) -> &[u8] {

@@ -1,5 +1,6 @@
 use colored::{ColoredString, Colorize};
 
+#[allow(unused)]
 pub fn lightblue(s: &str) -> ColoredString {
     s.truecolor(158, 190, 255)
 }
@@ -18,6 +19,7 @@ pub fn lightbluegreen(s: &str) -> ColoredString {
 pub fn red(s: &str) -> ColoredString {
     s.truecolor(0xff, 0x51, 0x50)
 }
+#[allow(unused)]
 pub fn brightred(s: &str) -> ColoredString {
     s.truecolor(0xff, 0x90, 0x60)
 }
@@ -66,6 +68,7 @@ pub fn colored_hex_sint(i: i32) -> ColoredString {
 pub fn colored_int(i: u32) -> ColoredString {
     colored_int_impl(i as i64, i, false)
 }
+#[allow(unused)]
 pub fn colored_sint(i: i32) -> ColoredString {
     colored_int_impl(i as i64, i as u32, false)
 }

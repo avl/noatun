@@ -145,18 +145,6 @@ impl MetaGroupNr {
     }
 }
 
-impl BucketNr {
-    fn from_u64(x: u64, cap: usize) -> (BucketNr, Meta) {
-        (
-            BucketNr((x as usize) % cap),
-            Meta(((x as usize) / cap) as u8 | 128),
-        )
-    }
-    fn advance(&mut self, capacity: usize) {
-        self.0 += 1;
-        self.0 %= capacity;
-    }
-}
 impl Add<usize> for BucketNr {
     type Output = BucketNr;
 
@@ -169,7 +157,6 @@ impl Add<usize> for BucketNr {
 pub struct BucketProbeSequence {
     cur_group: usize,
     group_capacity: usize,
-    groups_visited: usize,
     group_step: usize,
 }
 
@@ -178,7 +165,6 @@ impl BucketProbeSequence {
         BucketProbeSequence {
             cur_group: start_group.0,
             group_capacity: total_group_count,
-            groups_visited: start_group.0,
             group_step: 1,
         }
     }
@@ -221,12 +207,6 @@ unsafe impl NoatunStorable for Meta {
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct MetaGroup(pub [Meta; HASH_META_GROUP_SIZE]);
-
-enum ProbeResult {
-    Found,
-    NotFound,
-    Full,
-}
 
 /// Returns when end of probe sequence was reached, or when closure returns true.
 #[doc(hidden)]
@@ -535,38 +515,6 @@ impl Meta {
         Meta(x)
     }
 }
-
-struct WithConcat<I, V>(Option<I>, Option<V>);
-impl<I: Iterator> WithConcat<I, I::Item> {
-    fn new(iter: I, val: I::Item) -> Self {
-        WithConcat(Some(iter), Some(val))
-    }
-}
-impl<I: Iterator> Iterator for WithConcat<I, I::Item> {
-    type Item = I::Item;
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let mut left_len = self.0.as_ref().map(|x| x.size_hint().0).unwrap_or(0);
-        if let Some(_right) = &self.1 {
-            left_len += 1;
-        }
-        (left_len, Some(left_len))
-    }
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(i1) = self.0.as_mut() {
-            let next = i1.next();
-            if next.is_some() {
-                return next;
-            }
-            self.0 = None;
-        }
-        if let Some(i2) = self.1.take() {
-            return Some(i2);
-        }
-        None
-    }
-}
-impl<I: Iterator> ExactSizeIterator for WithConcat<I, I::Item> {}
 
 pub struct NoatunHashMapIterator<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject>
 {
@@ -1401,6 +1349,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     }
 
     /// Return true if a value was removed
+    #[cfg(test)]
     pub(crate) fn remove_internal(&mut self, key: &K::DetachedType) -> bool {
         self.remove_impl(key, |_| {})
     }
@@ -1551,7 +1500,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         self.insert_internal_impl(key, |_new, target| V::init_from_detached(target, val))
     }
 
-    pub fn entry(self: Pin<&mut Self>, key: K::DetachedOwnedType) -> NoatunHashMapEntry<K, V>
+    pub fn entry(self: Pin<&mut Self>, key: K::DetachedOwnedType) -> NoatunHashMapEntry<'_, K, V>
     where
         K::DetachedOwnedType: Sized,
     {
@@ -1573,8 +1522,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         assert!(!matches!(probe_result, ProbeRunResult::HashFull));
         NoatunHashMapEntry::make_enum(probe_result, context, key, length)
     }
-
-    fn nothing(_k: &V) {}
 
     fn insert_at_bucket<'a>(
         new: bool,

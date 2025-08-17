@@ -90,8 +90,8 @@ impl Default for DatabaseSettings {
             max_file_size: 1_000_000_000,
             cutoff_interval: CutOffDuration::from_minutes(15),
             initial_file_size: 4096,
-            //TODO: Why do tests fail when this is enabled?
-            auto_compact_enabled: false,
+            //TODO: Check why ipv4/ipv6 tests sometimes fail.
+            auto_compact_enabled: true,
         }
     }
 }
@@ -133,7 +133,7 @@ impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
         }
     }
 
-    pub(crate) fn get_upstream_of(
+    pub fn get_upstream_of(
         &self,
         message_id: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
     ) -> Result<impl Iterator<Item = (MessageHeader, /*query count*/ usize)> + '_> {
@@ -144,11 +144,11 @@ impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
         self.db.load_message(message_id)
     }
 
-    pub(crate) fn get_update_heads(&self) -> &[MessageId] {
+    pub fn get_update_heads(&self) -> &[MessageId] {
         self.db.get_update_heads()
     }
 
-    pub(crate) fn get_messages_at_or_after(
+    pub fn get_messages_at_or_after(
         &self,
         message: MessageId,
         count: usize,
@@ -156,19 +156,16 @@ impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
         self.db.get_messages_at_or_after(message, count)
     }
 
-    pub(crate) fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
-        self.db.is_acceptable_cutoff_hash(hash)
-    }
-    pub(crate) fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
+    pub fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
         self.db.current_cutoff_state()
     }
-    pub(crate) fn current_cutoff_time(&self) -> Result<NoatunTime> {
+    pub fn current_cutoff_time(&self) -> Result<NoatunTime> {
         self.db.current_cutoff_time()
     }
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
         self.db.get_all_message_ids()
     }
-    pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
+    pub fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.db.get_message_children(msg)
     }
 
@@ -186,7 +183,7 @@ impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
     pub fn get_all_messages_meta_vec(&self) -> Result<Vec<MessageInfo<MSG>>> {
         Ok(self.db.get_all_messages_meta()?.collect())
     }
-    pub(crate) fn get_all_messages_with_children(
+    pub fn get_all_messages_with_children(
         &self,
     ) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
         self.db.get_all_messages_with_children()
@@ -258,11 +255,11 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.load_message(message_id)
     }
 
-    pub(crate) fn get_update_heads(&self) -> &[MessageId] {
+    pub fn get_update_heads(&self) -> &[MessageId] {
         self.db.get_update_heads()
     }
 
-    pub(crate) fn get_messages_at_or_after(
+    pub fn get_messages_at_or_after(
         &self,
         message: MessageId,
         count: usize,
@@ -273,10 +270,11 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     pub(crate) fn is_acceptable_cutoff_hash(&self, hash: CutOffHashPos) -> Result<Acceptability> {
         self.db.is_acceptable_cutoff_hash(hash)
     }
+    #[cfg(test)]
     pub(crate) fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
         self.db.current_cutoff_state()
     }
-    pub(crate) fn current_cutoff_time(&self) -> Result<NoatunTime> {
+    pub fn current_cutoff_time(&self) -> Result<NoatunTime> {
         self.db.current_cutoff_time()
     }
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
@@ -293,7 +291,7 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     pub fn get_all_messages_vec(&self) -> Result<Vec<MessageFrame<MSG>>> {
         Ok(self.db.get_all_messages()?.collect())
     }
-    pub(crate) fn get_all_messages_with_children(
+    pub fn get_all_messages_with_children(
         &self,
     ) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
         self.db.get_all_messages_with_children()
@@ -431,7 +429,6 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.append_nonlocal(message)
     }
 
-    //TODO: Force compact Noatun's data files.
     pub fn compact(&mut self) -> Result<()> {
         self.db.compact()
     }
@@ -555,7 +552,7 @@ impl<MSG: Message + 'static> Database<MSG> {
 
     /// Recover database if in corrupted state.
     /// This method is very fast in the case where the database is not corrupted.
-    fn recover(&mut self) -> Result<()> {
+    pub fn recover(&mut self) -> Result<()> {
         if self.context.is_dirty() {
             self.do_recovery()?;
             self.mark_clean();

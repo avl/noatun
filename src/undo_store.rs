@@ -45,7 +45,6 @@ pub enum HowToProceed {
     DontPopAndStop,
     /// Pop the current element from the undo log, and proceed
     PopAndContinue,
-    Error,
 }
 
 /// Magically initialize all padding bytes of T to some concrete, but unspecified value.
@@ -91,10 +90,6 @@ impl UndoLog {
         Ok(UndoLog { store_mmap: file })
     }
 
-    fn access<R>(&self, f: impl FnOnce(&FileAccessor) -> R) -> R {
-        let bytes = &self.store_mmap;
-        f(bytes)
-    }
     fn access_mut<R>(&mut self, f: impl FnOnce(&mut FileAccessor) -> R) -> R {
         let bytes = &mut self.store_mmap;
         f(bytes)
@@ -103,14 +98,10 @@ impl UndoLog {
     /// Calls the callback with the most recent entry in the undo-log, repeatedly.
     /// If no entry, return false. If closure returns 'Error', return false.
     /// Otherwise return true;
-    pub fn rewind(&mut self, mut cb: impl FnMut(UndoLogEntry) -> HowToProceed) -> bool {
+    pub(crate) fn rewind(&mut self, mut cb: impl FnMut(UndoLogEntry) -> HowToProceed) -> bool {
         self.access_mut(|mmap| {
             while let Some((new_len, item)) = Self::parse1(mmap.map_mut()) {
                 match cb(item) {
-                    HowToProceed::Error => {
-                        panic!("HowToProceed::Error");
-                        //return false;
-                    }
                     HowToProceed::DontPopAndStop => {
                         return true;
                     }

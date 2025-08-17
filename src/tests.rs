@@ -143,20 +143,20 @@ impl<Root: FixedSizeObject + DummyTestMessageApply> Message for DummyTestMessage
 pub fn setup_tracing() {
     set_test_epoch(Instant::now());
 
-    pub struct TracingTimer(tokio::time::Instant);
+    pub struct TracingTimer(Instant);
 
     impl tracing_subscriber::fmt::time::FormatTime for TracingTimer {
         fn format_time(
             &self,
             w: &mut tracing_subscriber::fmt::format::Writer<'_>,
         ) -> core::fmt::Result {
-            let t = tokio::time::Instant::now();
+            let t = Instant::now();
             write!(w, "{:>10?}", (t - self.0))
         }
     }
 
     let stdout_log = tracing_subscriber::fmt::layer()
-        .with_timer(TracingTimer(tokio::time::Instant::now()))
+        .with_timer(TracingTimer(Instant::now()))
         .with_ansi(true)
         .pretty()
         .with_filter(tracing_subscriber::EnvFilter::from_default_env());
@@ -224,24 +224,6 @@ fn test_mmap_helper() {
     assert_eq!(mmap.read_u8().unwrap(), 42);
 }
 
-pub struct DummyMessage<T> {
-    phantom_data: std::marker::PhantomData<T>,
-}
-impl<T> Debug for DummyMessage<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DummyMessage")
-    }
-}
-
-impl<T: Object + NoatunStorable + 'static> Message for DummyMessage<T> {
-    type Root = T;
-    type Serializer = DummyMessageSerializer;
-
-    fn apply(&self, _time: MessageId, _root: Pin<&mut Self::Root>) {
-        unimplemented!()
-    }
-}
-
 #[repr(C)]
 struct CounterObject {
     counter: NoatunCell<u32>,
@@ -283,33 +265,6 @@ impl Object for CounterObject {
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::CounterObject/1");
-    }
-}
-
-impl CounterObject {
-    fn set_counter(mut self: Pin<&mut Self>, value1: u32, value2: u32) {
-        unsafe {
-            self.as_mut()
-                .map_unchecked_mut(|x| &mut x.counter)
-                .set(value1);
-            self.as_mut()
-                .map_unchecked_mut(|x| &mut x.counter2)
-                .set(value2);
-        }
-    }
-}
-
-#[derive(Debug)]
-struct IncrementMessage {
-    increment_by: u32,
-}
-
-impl Message for IncrementMessage {
-    type Root = CounterObject;
-    type Serializer = DummyMessageSerializer;
-
-    fn apply(&self, _time: MessageId, _root: Pin<&mut Self::Root>) {
-        unimplemented!()
     }
 }
 
@@ -991,20 +946,23 @@ fn test_vec_undo() {
 
 #[test]
 fn test_object_macro() {
-    noatun_object!(
-        struct Kalle {
-            pod hej:u32,
-            pod tva:u32,
-            object da: NoatunVec<NoatunCell<u32>>
-        }
-    );
-    noatun_object!(
-        struct Nalle {
-            pod hej:u32,
-            pod tva:u32,
-            object da: NoatunVec<NoatunCell<u32>>
-        }
-    );
+    #[allow(unused)]
+    {
+        noatun_object!(
+            struct Kalle {
+                pod hej:u32,
+                pod tva:u32,
+                object da: NoatunVec<NoatunCell<u32>>
+            }
+        );
+        noatun_object!(
+            struct Nalle {
+                pod hej:u32,
+                pod tva:u32,
+                object da: NoatunVec<NoatunCell<u32>>
+            }
+        );
+    }
 }
 
 #[allow(clippy::assertions_on_constants)]

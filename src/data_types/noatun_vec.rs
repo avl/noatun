@@ -81,9 +81,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
     pub fn len(&self) -> usize {
         self.length
     }
-    pub fn is_empty(&self) -> bool {
-        self.length == 0
-    }
+
     pub(crate) fn grow(&mut self, ctx: &mut DatabaseContextData, new_length: usize) {
         if new_length <= self.length {
             return;
@@ -96,56 +94,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
     }
 }
 impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
-    pub fn retain(&mut self, ctx: &mut DatabaseContextData, mut f: impl FnMut(&mut T) -> bool) {
-        let mut read_offset = 0;
-        let mut write_offset = 0;
-        let mut new_len = self.length;
 
-        while read_offset < self.length {
-            let read_ptr = ThinPtr(self.data + read_offset * size_of::<T>());
-            let val: Pin<&mut T> = unsafe { ctx.access_storable_mut(read_ptr) };
-            let retain = f(unsafe { val.get_unchecked_mut() });
-            if !retain {
-                new_len -= 1;
-                read_offset += 1;
-            } else {
-                if read_offset != write_offset {
-                    let write_ptr = ThinPtr(self.data + write_offset * size_of::<T>());
-                    NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>());
-                }
-                read_offset += 1;
-                write_offset += 1;
-            }
-        }
-        NoatunContext.write_ptr(new_len, addr_of_mut!(self.length));
-    }
-
-    pub(crate) fn get_slice(&self, context: &DatabaseContextData, range: Range<usize>) -> &[T] {
-        let offset = self.data + range.start * size_of::<T>();
-        let len = range.end - range.start;
-
-        unsafe { context.access_slice_at(offset, len) }
-    }
-    #[allow(clippy::mut_from_ref)]
-    pub(crate) fn get_full_slice_mut(&self, context: &DatabaseContextData) -> &mut [T] {
-        let offset = self.data;
-        unsafe { context.access_slice_at_mut(offset, self.length) }
-    }
-    pub(crate) fn get_full_slice(&self, context: &DatabaseContextData) -> &[T] {
-        let offset = self.data;
-        unsafe { context.access_slice_at(offset, self.length) }
-    }
-    #[allow(clippy::mut_from_ref)]
-    pub(crate) fn get_slice_mut(
-        &self,
-        context: &DatabaseContextData,
-        range: Range<usize>,
-    ) -> &mut [T] {
-        let offset = self.data + range.start * size_of::<T>();
-        let len = range.end - range.start;
-
-        unsafe { context.access_slice_at_mut(offset, len) }
-    }
     pub(crate) fn get(&self, ctx: &DatabaseContextData, index: usize) -> &T {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
@@ -162,39 +111,11 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
         let t = unsafe { ctx.access_storable_mut(ThinPtr(offset)) };
         t
     }
-    pub(crate) fn swap_remove(&mut self, ctx: &mut DatabaseContextData, index: usize) {
-        assert!(index < self.length);
-        if index + 1 == self.length {
-            ctx.write_storable(index, unsafe { Pin::new_unchecked(&mut self.length) });
-        } else {
-            let last_index = self.length - 1;
-            ctx.write_storable(last_index, unsafe { Pin::new_unchecked(&mut self.length) });
-
-            let src_offset = self.data + last_index * size_of::<T>();
-            let src_obj = ThinPtr(src_offset);
-
-            let dst_offset = self.data + index * size_of::<T>();
-            let dst_obj = ThinPtr(dst_offset);
-
-            ctx.copy_bytes_len(src_obj, dst_obj, size_of::<T>());
-        }
-    }
     pub(crate) fn write_untracked(&mut self, ctx: &mut DatabaseContextData, index: usize, val: T) {
         let offset = self.data + index * size_of::<T>();
         unsafe {
             ctx.write_storable(val, ctx.access_storable_mut(ThinPtr(offset)));
         };
-    }
-    pub(crate) fn pop(&mut self, ctx: &mut DatabaseContextData) -> Option<T>
-    where
-        T: Clone,
-    {
-        if self.length == 0 {
-            return None;
-        }
-        let ret = self.get(ctx, self.length - 1).clone();
-        ctx.write_storable(self.length - 1, Pin::new(&mut self.length));
-        Some(ret)
     }
     pub(crate) fn push_untracked(&mut self, ctx: &mut DatabaseContextData, t: T) -> ThinPtr
     where
@@ -309,12 +230,6 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         self.length
     }
 
-    pub(crate) fn to_vec(&self, ctx: &C) -> Vec<T>
-    where
-        T: Clone,
-    {
-        self.iter(ctx).cloned().collect()
-    }
 
     pub(crate) fn iter<'a>(&'a self, c: &'a C) -> NoatunVecIterator<'a, T, C> {
         NoatunVecIterator {
@@ -373,15 +288,6 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         let offset = self.data + index * size_of::<T>();
         let t = unsafe { ctx.access_thin_mut::<T>(ThinPtr(offset)) };
         Some(t)
-    }
-
-    pub(crate) fn write(&mut self, index: usize, val: T, ctx: &mut C) {
-        let offset = self.data + index * size_of::<T>();
-        unsafe {
-            let ctx = ctx.get_context_mut();
-            let dest = ctx.access_thin_mut::<T>(ThinPtr(offset));
-            ctx.write_storable(val, Pin::new_unchecked(dest));
-        };
     }
 
     /// Doesn't zero memory.
@@ -672,12 +578,6 @@ where
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.get_index_mut_pin(index, &mut ThreadLocalContext)
     }
-    fn get_mut_internal(&mut self, index: usize) -> Pin<&mut T> {
-        self.raw.get_index_mut_pin(index, &mut ThreadLocalContext)
-    }
-    /*pub(crate) fn write(&mut self, index: usize, val: T) {
-        self.raw.write(index, val)
-    }*/
 
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };

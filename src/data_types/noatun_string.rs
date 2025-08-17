@@ -115,19 +115,6 @@ impl NoatunString {
         NoatunContext.write_internal(value.len(), &mut tself.length);
         NoatunContext.update_registrar_ptr(addr_of_mut!(tself.registrar), false);
     }
-    pub(crate) fn assign_untracked(&mut self, value: &str) {
-        if self.get().starts_with(value) {
-            self.length = value.len();
-            return;
-        }
-
-        let raw = NoatunContext.allocate_raw(value.len(), 1);
-        let target = unsafe { slice::from_raw_parts_mut(raw, value.len()) };
-        target.copy_from_slice(value.as_bytes());
-        let raw_index = NoatunContext.index_of_ptr(raw);
-        self.start = raw_index;
-        self.length = value.len();
-    }
 }
 impl NoatunKey for NoatunString {
     type DetachedType = str;

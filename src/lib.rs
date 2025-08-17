@@ -17,6 +17,7 @@
 #![allow(clippy::derivable_impls)]
 //#![allow(clippy::manual_is_multiple_of)]
 
+use crate::noatun_instant::Instant;
 pub use crate::data_types::{NoatunCell, OpaqueNoatunCell};
 use crate::private::Sealed;
 use crate::sequence_nr::SequenceNr;
@@ -51,10 +52,6 @@ use std::pin::Pin;
 use std::ptr::null_mut;
 use std::slice;
 use std::time::Duration;
-#[cfg(not(feature = "tokio"))]
-use std::time::Instant;
-#[cfg(feature = "tokio")]
-use tokio::time::Instant;
 
 use tracing::error;
 
@@ -68,6 +65,66 @@ mod term_colors;
 mod undo_store;
 
 pub mod ratatui_inspector;
+
+/// Module use to abstract 'Instant'. If the tokio feature is activated,
+/// it resolves to 'tokio::time::Instant', otherwise std::time::Instant.
+pub mod noatun_instant {
+    use std::fmt::{Debug, Formatter};
+    use std::ops::{Add, AddAssign, Sub};
+    use std::time::Duration;
+
+    #[cfg(feature = "tokio")]
+    type Inner = tokio::time::Instant;
+    #[cfg(not(feature = "tokio"))]
+    type Inner = std::time::Instant;
+
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct Instant(Inner);
+
+    impl Debug for Instant {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+
+    impl Instant {
+        pub fn now() -> Self {
+            Self(Inner::now())
+        }
+        pub fn saturating_duration_since(&self, other: Instant) -> Duration {
+            self.0.saturating_duration_since(other.0)
+        }
+        pub fn elapsed(&self) -> Duration {
+            self.0.elapsed()
+        }
+        #[cfg(feature = "tokio")]
+        pub fn tokio_instant(&self) -> Inner {
+            self.0
+        }
+    }
+    impl AddAssign<Duration> for Instant {
+        fn add_assign(&mut self, rhs: Duration) {
+            self.0 += rhs;
+        }
+    }
+    impl Add<Duration> for Instant {
+        type Output = Instant;
+
+        fn add(self, rhs: Duration) -> Self::Output {
+            Self(self.0 + rhs)
+        }
+    }
+
+    impl Sub<Instant> for Instant {
+        type Output = Duration;
+
+        fn sub(self, rhs: Instant) -> Self::Output {
+            self.0 - rhs.0
+        }
+    }
+
+}
+
 
 /// The noatun book, in rust code
 #[cfg(doctest)]
@@ -382,10 +439,6 @@ impl NoatunContext {
         unsafe { (*context_ptr).zero_internal(dst) }
     }
 
-    pub fn zero_object<T: Object + ?Sized>(&self, dst: Pin<&mut T>) {
-        let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).zero_object(dst) }
-    }
     pub fn copy_sized(&self, src: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy_bytes_len(src, dest_index, size_bytes) }
@@ -1454,6 +1507,7 @@ macro_rules! noatun_object {
     ( getter pod $name:ident $typ: ty  ) => {
         #[doc = "Get the value for field"]
         #[doc = stringify!($name)]
+        #[allow(unused)]
         pub fn $name(&self) -> $typ {
             self.$name.get()
         }
@@ -1462,6 +1516,7 @@ macro_rules! noatun_object {
         $crate::paste!(
             #[doc = "Set a new value for field"]
             #[doc = stringify!($name)]
+            #[allow(unused)]
             pub fn [<set_ $name>](self: ::std::pin::Pin<&mut Self>, val: $typ) {
                 unsafe { ::std::pin::Pin::new_unchecked(&mut self.get_unchecked_mut().$name).set(val); }
             }
@@ -1491,6 +1546,7 @@ macro_rules! noatun_object {
         $crate::paste!(
             #[doc = "Set a new value for field"]
             #[doc = stringify!($name)]
+            #[allow(unused)]
             pub fn [<set_ $name>](self: ::std::pin::Pin<&mut Self>, val: $typ) {
                 unsafe { ::std::pin::Pin::new_unchecked(&mut self.get_unchecked_mut().$name).set(val); }
             }
@@ -1517,6 +1573,7 @@ macro_rules! noatun_object {
     ( getter object $name:ident $typ: ty  ) => {
         #[doc ="Get the value of field"]
         #[doc=stringify!($name)]
+        #[allow(unused)]
         pub fn $name(&self) -> &$typ {
             &self.$name
         }
@@ -1525,6 +1582,7 @@ macro_rules! noatun_object {
         $crate::paste!(
             #[doc ="Set the value of field"]
             #[doc=stringify!($name)]
+            #[allow(unused)]
             pub fn [<$name _mut>](self: ::std::pin::Pin<&mut Self>) -> ::std::pin::Pin<&mut $typ> {
                 let tself = unsafe { self.get_unchecked_mut() };
                 unsafe { ::std::pin::Pin::new_unchecked(&mut tself.$name) }
@@ -1556,7 +1614,8 @@ macro_rules! noatun_object {
                 phantom: ::std::marker::PhantomPinned,
                 $(
                     $(#[doc = $field_doc])*
-                    $name : noatun_object!(declare_field $kind $typ)
+                    #[allow(unused)]
+                    pub $name : noatun_object!(declare_field $kind $typ)
                 ),*
             }
             unsafe impl $crate::NoatunStorable for $n {
@@ -1581,7 +1640,8 @@ macro_rules! noatun_object {
                 pub struct [<$n PinProject>]<'a> {
                     $(
                         $(#[doc = $field_doc])*
-                        $name: ::std::pin::Pin<&'a mut noatun_object!(declare_field $kind $typ)>
+                        #[allow(unused)]
+                        pub $name: ::std::pin::Pin<&'a mut noatun_object!(declare_field $kind $typ)>
                     ),*
                 }
             );
@@ -1592,6 +1652,7 @@ macro_rules! noatun_object {
                 #[doc = "Initialize an instance of"]
                 #[doc = stringify!($n)]
                 #[doc = "with an explicit value for each field"]
+                #[allow(unused)]
                 pub fn init(
                     &mut self,
                     $( $name: noatun_object!(new_declare_param $kind $typ) ),*
@@ -1609,6 +1670,7 @@ macro_rules! noatun_object {
                 $crate::paste! {
                     #[doc ="Give pinned access to each field in"]
                     #[doc=stringify!($n)]
+                    #[allow(unused)]
                     pub fn pin_project(self: ::std::pin::Pin<&mut Self>) -> [<$n PinProject>]<'_> {
                         unsafe {
                             let $n {
@@ -1636,6 +1698,7 @@ macro_rules! noatun_object {
                 {
                     $(
                         $(#[doc = $field_doc])*
+                        #[allow(unused)]
                         $name : $crate::noatun_object!(declare_detached_field $kind $typ)
                     ),*
                 }

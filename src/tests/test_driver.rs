@@ -11,7 +11,7 @@ use rand::Rng;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::time::Instant;
+use crate::noatun_instant::Instant;
 
 #[derive(Clone, Default)]
 pub(crate) struct Partitionings {
@@ -144,7 +144,7 @@ impl TestDriver {
             writeln!(
                 &mut ret,
                 "{:>10?}: {}    {}{} {} B {:?}",
-                t.duration_since(self.driver_start),
+                t.saturating_duration_since(self.driver_start),
                 colored_int((*src).into()),
                 dst.iter().map(|x| colored_int((*x).into())).join(","),
                 padding,
@@ -196,11 +196,11 @@ impl TestDriver {
         for (index, ev) in evs.iter().enumerate() {
             use std::fmt::Write;
             let node: u32 = ev.node.parse().unwrap();
-            let elapsed = ev.time.duration_since(self.driver_start);
+            let elapsed = ev.time.saturating_duration_since(self.driver_start);
             let lost = match &ev.msg {
                 DebugEventMsg::Send(_) => {
                     if let Some(receive_index) = receive_of[index] {
-                        format!("{:?}", evs[receive_index].time.duration_since(ev.time))
+                        format!("{:?}", evs[receive_index].time.saturating_duration_since(ev.time))
                     } else {
                         "*".to_string()
                     }

@@ -2,8 +2,6 @@ use crate::data_types::{NoatunString, NoatunVec};
 use crate::database::{DatabaseSettings, LoadingStatus, OpenMode};
 use crate::{Database, Message, Object};
 use crate::{MessageId, SavefileMessageSerializer};
-use chrono::{DateTime, Utc};
-use datetime_literal::datetime;
 use savefile_derive::Savefile;
 use std::fmt::Debug;
 use std::pin::Pin;
@@ -82,7 +80,6 @@ impl Message for KeyValMessage2 {
     }
 }
 
-const START_TIME: DateTime<Utc> = datetime!(2020-01-01 Z);
 
 #[test]
 fn test_nominal_load_without_recovery() {

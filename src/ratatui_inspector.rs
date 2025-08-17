@@ -12,7 +12,7 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent};
 use ratatui::prelude::{Color, Stylize};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
-use tokio::time::Instant;
+use crate::noatun_instant::Instant;
 
 use crate::simple_metrics::SimpleMetricsRecorder;
 use crate::{Message, Object};

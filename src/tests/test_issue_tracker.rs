@@ -16,7 +16,7 @@ use rand::{Rng, SeedableRng};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 use std::time::Duration;
-use tokio::time::Instant;
+use crate::noatun_instant::Instant;
 
 noatun_object!(
     #[derive(PartialEq)]

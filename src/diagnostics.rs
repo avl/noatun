@@ -1,6 +1,6 @@
 use crate::distributor::{Address, EphemeralNodeId};
 use std::collections::VecDeque;
-use tokio::time::Instant;
+use crate::noatun_instant::Instant;
 
 #[derive(Clone)]
 pub struct PacketRow {

@@ -20,7 +20,7 @@ use std::hash::Hash;
 use std::io::Cursor;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::time::Instant;
+use crate::noatun_instant::Instant;
 use tracing::{debug, error, info, trace, warn};
 
 #[derive(Debug)]
@@ -41,15 +41,6 @@ pub(crate) struct RecentMessages {
     pub(crate) recent_messages: IndexMap<MessageId, MessageSourceInfo>,
 }
 impl RecentMessages {
-    pub(crate) fn get_node_for(&mut self, message_id: &MessageId) -> Option<EphemeralNodeId> {
-        self.recent_messages
-            .get_mut(message_id)
-            .map(|x| x.original_source)
-    }
-
-    pub(crate) fn get(&mut self, message_id: &MessageId) -> Option<&mut MessageSourceInfo> {
-        self.recent_messages.get_mut(message_id)
-    }
     /// actual_transmission is to be set to true if message was transmitted in full, not just
     /// mentioned. This is used to help us understand if a node has a message because of a
     /// retransmission. I.e, if actual_transmission=false, this event itself can't be such a
@@ -113,19 +104,14 @@ impl UpToSpeedStatus {
 
 #[derive(Debug)]
 pub struct PeerInfo {
-    /// The node id of this peer
-    ///
-    /// The peer may change nodeid, but we just consider that as a new peer appearing
-    pub(crate) peer: EphemeralNodeId,
     /// How up-to-date we are with respect to this neighbor
     up_to_speed: UpToSpeedStatus,
 
     pub(crate) last_seen: Instant,
 }
 impl PeerInfo {
-    pub fn new(peer: EphemeralNodeId, now: Instant) -> PeerInfo {
+    pub fn new(now: Instant) -> PeerInfo {
         PeerInfo {
-            peer,
             up_to_speed: Default::default(),
             last_seen: now,
         }
@@ -177,7 +163,7 @@ impl Neighborhood {
         let mut len = self.peers.len();
         let t = self.peers.entry(peer_id).or_insert_with(|| {
             len += 1;
-            PeerInfo::new(peer_id, now)
+            PeerInfo::new(now)
         });
         self.metric_neighbor_count.set(len as f64);
         t.last_seen = now;
@@ -194,18 +180,6 @@ impl Neighborhood {
         t.sort_unstable();
         t
     }
-}
-
-#[derive(Debug)]
-pub(crate) struct QuarantinedMessage {
-    /// The message we're talking about
-    message_id: MessageId,
-    /// Where we got the reference to the message
-    immediate_source: EphemeralNodeId,
-    /// An original origin we might be able to ask to get the message relayed from
-    origin: EphemeralNodeId,
-    /// The first time we noticed we lacked this message
-    first_need: Instant,
 }
 
 /// Data structure to detect duplicate requests.
@@ -312,7 +286,7 @@ impl Neighborhood {
             for msg in message_ids {
                 match self.inhibited_request_upstream.entry(*msg) {
                     Entry::Occupied(o) => {
-                        let periods = ((now.duration_since(o.get().0).as_millis() as u64)
+                        let periods = ((now.saturating_duration_since(o.get().0).as_millis() as u64)
                             / (periodic_interval.as_millis().max(1) as u64))
                             as usize;
                         if periods > ordinal {
@@ -377,13 +351,6 @@ impl Neighborhood {
     }
 }
 
-#[derive(Debug)]
-struct OriginForwardingData {
-    forwarder: EphemeralNodeId,
-    last_heard: Instant,
-}
-
-const MAX_RECENT_SENT_KEPT: usize = 1000;
 //TODO(future): Consider merging this with NeighborHood?
 #[derive(Debug)]
 pub struct QueryableOutbuffer {
@@ -400,7 +367,7 @@ pub struct QueryableOutbuffer {
 
 impl QueryableOutbuffer {
     pub(crate) fn gc_if_necessary(&mut self, now: Instant) {
-        if now.duration_since(self.gc_timer) > 2 * self.periodic_message_interval {
+        if now.saturating_duration_since(self.gc_timer) > 2 * self.periodic_message_interval {
             self.gc_timer = now;
             let mut ok = 0;
             let mut size_so_far = 0;
@@ -436,7 +403,7 @@ impl QueryableOutbuffer {
         self.outbuf.push_back(msg);
     }
 
-    pub(crate) fn extend<I: IntoIterator<Item = DistributorMessage>>(&mut self, items: I) {
+    pub fn extend<I: IntoIterator<Item = DistributorMessage>>(&mut self, items: I) {
         self.outbuf.extend(items);
     }
 }
@@ -458,21 +425,9 @@ impl QueryableOutbuffer {
         }
     }
 
-    fn request_upstream_blocked(&mut self, id: MessageId, now: Instant) -> bool {
-        self.recently_sent_upstream_responses_for
-            .is_duplicate(id, now)
-    }
-
     fn upstream_response_blocked(&mut self, id: MessageId, now: Instant) -> bool {
         self.recently_sent_upstream_responses_for
             .is_duplicate(id, now)
-    }
-    fn message_already_sent(&mut self, id: MessageId, now: Instant) -> bool {
-        self.recently_sent_message_ids.is_duplicate(id, now)
-    }
-
-    fn len(&self) -> usize {
-        self.outbuf.len()
     }
 
     fn request_upstream(
@@ -648,6 +603,7 @@ impl Debug for EphemeralNodeId {
     }
 }
 
+#[cfg(test)]
 pub(crate) static NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER: std::sync::atomic::AtomicU16 =
     std::sync::atomic::AtomicU16::new(0);
 
@@ -745,12 +701,6 @@ impl DistributorMessage {
             DistributorMessage::Message { source, .. } => Some(*source),
         }
     }
-    pub(crate) fn message_id(&self) -> Option<MessageId> {
-        match self {
-            DistributorMessage::Message { message: msg, .. } => Some(msg.id),
-            _ => None,
-        }
-    }
     pub fn debug_format<M: Message>(&self) -> Result<String> {
         Ok(match self {
             DistributorMessage::ReportHeads {
@@ -839,14 +789,6 @@ impl DistributorMessage {
     }
 }
 
-struct MergedDistributorMessages {
-    report_heads: IndexSet<MessageId>,
-    requests: IndexMap<MessageId, /*count*/ usize>,
-    responses: IndexSet<MessageSubGraphNode>,
-    send_msg_and_descendants: IndexSet<MessageId>,
-    actual_messages: Vec<SerializedMessage>,
-}
-
 #[derive(Debug)]
 enum SyncAllState {
     NotActive,
@@ -875,14 +817,14 @@ impl SyncAllState {
 #[derive(Debug)]
 pub struct DistributorStatus {
     nominal: bool,
-    most_recent_clockdrift: HashMap<EphemeralNodeId, tokio::time::Instant>,
-    most_recent_unsynced: HashMap<EphemeralNodeId, tokio::time::Instant>,
+    most_recent_clockdrift: HashMap<EphemeralNodeId, Instant>,
+    most_recent_unsynced: HashMap<EphemeralNodeId, Instant>,
     have_heard_peer: bool,
-    last_gc: tokio::time::Instant,
+    last_gc: Instant,
 }
 
 impl DistributorStatus {
-    fn gc_if_necessary(&mut self, now: tokio::time::Instant) {
+    fn gc_if_necessary(&mut self, now: Instant) {
         if now.saturating_duration_since(self.last_gc).as_millis() > 60000 {
             self.last_gc = now;
             self.most_recent_unsynced
@@ -1015,7 +957,7 @@ impl Distributor {
     ///
     /// If clock drift has been observed with the last 60 seconds, it will be reported
     /// by this method.
-    pub(crate) fn get_status(&self, now: tokio::time::Instant) -> Status {
+    pub fn get_status(&self, now: Instant) -> Status {
         for drift in self.distributor_state.most_recent_clockdrift.values() {
             if now.saturating_duration_since(*drift).as_millis() < 60000 {
                 return Status::BadClocksDetected;
@@ -1104,6 +1046,7 @@ impl Distributor {
     }
 
     // Legacy, for some old tests
+    #[cfg(test)]
     pub(crate) fn receive_message2<MSG: Message>(
         &mut self,
         database: &mut Database<MSG>,
@@ -1135,7 +1078,7 @@ impl Distributor {
         &mut self,
         database: &mut Database<MSG>,
         input: impl Iterator<Item = (Option<Address>, EphemeralNodeId, DistributorMessage)>,
-        now: tokio::time::Instant,
+        now: Instant,
     ) -> Result<()> {
         let mut database = database.begin_session_mut()?;
         database.maybe_advance_cutoff()?;
@@ -1254,7 +1197,7 @@ impl Distributor {
                                 {
                                     self.distributor_state
                                         .most_recent_unsynced
-                                        .insert(src, tokio::time::Instant::now());
+                                        .insert(src, Instant::now());
                                 }
 
                                 if self.sync_all_inprogress.idle() {
@@ -1283,7 +1226,7 @@ impl Distributor {
                                 info!("Acceptability: Clockdrift");
                                 self.distributor_state
                                     .most_recent_clockdrift
-                                    .insert(src, tokio::time::Instant::now());
+                                    .insert(src, Instant::now());
                                 break;
                             }
                         }

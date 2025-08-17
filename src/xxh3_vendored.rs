@@ -30,6 +30,7 @@ DEALINGS IN THE SOFTWARE.
 #![allow(clippy::len_zero)]
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::identity_op)]
+#![allow(unused)]
 
 use crate::xxh3_vendored::xxh3::Xxh3Default;
 use std::hash::Hasher;

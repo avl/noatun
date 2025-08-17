@@ -15,7 +15,7 @@ pub use noatun_hash_map::{
     NoatunHashMapEntry, NoatunHashMapIterator, NoatunKey,
 };
 pub use noatun_option::NoatunOption;
-pub use noatun_string::NoatunString;
+pub use noatun_string::{OpaqueNoatunString, NoatunString};
 pub use noatun_vec::{NoatunVec, NoatunVecIterator, NoatunVecIteratorMut, OpaqueNoatunVec};
 pub(crate) use noatun_vec::{NoatunVecRaw, RawDatabaseVec};
 

@@ -9,7 +9,7 @@ use std::iter::once;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::Duration;
-use tokio::time::Instant;
+use crate::noatun_instant::Instant;
 
 fn create_app<'a>(
     msgs: impl IntoIterator<
@@ -53,11 +53,6 @@ fn create_app<'a>(
     //println!("Messages present: {:?}", db.get_all_message_ids());
     drop(sess);
     db
-}
-
-#[derive(Debug)]
-struct SyncReport {
-    num_messages: usize,
 }
 
 #[test]

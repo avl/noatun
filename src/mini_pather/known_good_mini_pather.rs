@@ -1,3 +1,4 @@
+#![cfg(test)]
 use indexmap::{IndexMap, IndexSet};
 
 #[derive(Debug)]
@@ -18,12 +19,7 @@ impl MiniPather {
         self.nodes
             .insert(node, hears_neighbors.into_iter().collect());
     }
-
-    pub fn report_own_neighbors(&mut self, hears_neighbors: impl IntoIterator<Item = u16>) {
-        self.nodes
-            .insert(self.whoami, hears_neighbors.into_iter().collect());
-    }
-
+    
     pub fn who_can_hear(&self, node: u16) -> Vec<u16> {
         let mut ret = vec![];
         for (other_node, other_hears) in &self.nodes {

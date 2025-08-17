@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
 use std::mem::{offset_of, transmute_copy, MaybeUninit};
-use std::ops::{Deref, Range};
+use std::ops::{Range};
 use std::slice;
 
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
@@ -184,8 +184,6 @@ mod registrar_info {
         }
     }
 }
-
-const DEFAULT_SIZE: usize = 10000;
 
 // The state was clean in memory, and then a complete sync occurred.
 const MAIN_DB_STATUS_FULLY_CLEAN: u8 = 1;
@@ -368,36 +366,6 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
     Some(size_rounded_up)
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub(crate) struct DepTrackLinkedListEntry {
-    pub next: ThinPtr,
-    pub seq: SequenceNr,
-    pub padding: u32,
-}
-unsafe impl NoatunStorable for DepTrackLinkedListEntry {
-    fn hash_schema(hasher: &mut SchemaHasher) {
-        hasher.write_str("noatun::DepTrackLinkedListEntry/1")
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub(crate) struct ReverseDepTrackLinkedListEntry {
-    /// MSB = true if this entry (with sequence number = `seq`) can
-    /// be deleted early.
-    /// Bits 0..62 = ThinPtr (index into backing disk storage) of `seq`
-    pub next_and_flag: u64,
-    pub seq: SequenceNr,
-    pub last_overwriter: SequenceNr,
-}
-
-unsafe impl NoatunStorable for ReverseDepTrackLinkedListEntry {
-    fn hash_schema(hasher: &mut SchemaHasher) {
-        hasher.write_str("noatun::ReverseDepTrackLinkedListEntry/1")
-    }
-}
-
 impl DatabaseContextData {
     pub fn sync_all(&mut self) -> Result<()> {
         self.main_db_mmap.sync_all()?;
@@ -409,9 +377,6 @@ impl DatabaseContextData {
     pub fn set_tainted(&mut self) {
         info!("mark self tainted2");
         self.tainted = true;
-    }
-    fn wrote_tombstone(&self) -> bool {
-        self.wrote_tombstone
     }
     pub fn set_wrote_tombstone(&mut self) {
         self.wrote_tombstone = true;
@@ -603,13 +568,7 @@ impl DatabaseContextData {
     fn pointer(&self) -> usize {
         self.main_db_mmap.used_space()
     }
-    #[inline(always)]
-    fn set_pointer(&self, new_value: usize) {
-        self.main_db_mmap.set_used_space(new_value);
-        /*let header: &mut MainDbHeader =
-            unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
-        header.set_pointer = new_value as u64;*/
-    }
+
     #[inline(always)]
     fn raw_set_next_seqnr(&self, new_value: SequenceNr) {
         let header: &mut MainDbHeader =
@@ -962,20 +921,23 @@ impl DatabaseContextData {
         }
     }
     pub fn zero_storable<T: NoatunStorable>(&mut self, storable: Pin<&mut T>) {
-        let thin = self.index_of_ptr(storable.deref() as *const _);
-        let fat = FatPtr::from_thin_size(thin, size_of::<T>());
-        self.zero(fat);
+        unsafe { self.zero_internal(storable.get_unchecked_mut()) }
     }
     pub fn zero_internal<T: NoatunStorable>(&mut self, storable: &mut T) {
         let thin = self.index_of_ptr(storable as *mut _);
         let fat = FatPtr::from_thin_size(thin, size_of::<T>());
-        self.zero(fat);
+        self.zero_impl(fat, storable);
     }
-    pub fn zero_object<T: Object + ?Sized>(&mut self, storable: Pin<&mut T>) {
-        let thin = self.index_of(storable.deref()).start();
-        let fat = FatPtr::from_idx_count(thin, size_of_val(&*storable));
-        self.zero(fat);
+
+    fn zero_impl<T: NoatunStorable>(&mut self, dst: FatPtr, dataref: &mut T) {
+        self.undo_log.record(UndoLogEntry::RestorePod {
+            start: dst.start,
+            data: bytes_of_mut(dataref),
+        });
+
+        *dataref = T::zeroed();
     }
+
     pub fn zero(&mut self, dst: FatPtr) {
         unsafe {
             //dbg!(&source, &dest_index);
@@ -1038,10 +1000,6 @@ impl DatabaseContextData {
     pub fn allocate_obj<T: Object>(&mut self) -> Pin<&mut T> {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { Pin::new_unchecked(&mut *(bytes as *mut T)) }
-    }
-    pub(crate) fn allocate_internal<'a, T: NoatunStorable>(&mut self) -> &'a mut T {
-        let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
-        unsafe { &mut *(bytes as *mut T) }
     }
     pub fn allocate_raw(&mut self, size: usize, align: usize) -> *mut u8 {
         if align > 256 {

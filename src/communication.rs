@@ -35,7 +35,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::time::error::Elapsed;
-use tokio::time::Instant;
+use crate::noatun_instant::Instant;
 use tokio::{select, spawn};
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -218,10 +218,6 @@ struct ReceiveTrack {
     last_success: Instant,
 }
 
-enum ReceiveResult {
-    Nominal,
-    RestartTrack,
-}
 
 impl ReceiveTrack {
     /// How long are packets kept in the retransmit window.
@@ -503,12 +499,6 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     outgoing_retransmit_requests: IndexMap<EphemeralNodeId, RetransmitInfo>,
     receive_track: IndexMap<(EphemeralNodeId, Option<Socket::Endpoint>), ReceiveTrack>,
     quit_rx: tokio::sync::oneshot::Receiver<()>,
-    /// Sent to net
-    //message_rx: Receiver<Vec<u8>>,
-    /// Received from net
-    //message_tx: Sender<(Address /*src*/, Vec<u8>)>,
-    last_send: Instant,
-    last_send_size: usize,
     recvbuf: Vec<u8>,
     max_payload_per_packet: usize,
     next_send_seq: u64,
@@ -543,7 +533,7 @@ impl BwLimiter {
     fn new(bytes_per_second: u64) -> Self {
         Self {
             bytes_per_second,
-            last_update: tokio::time::Instant::now(),
+            last_update: Instant::now(),
             debt: 0,
         }
     }
@@ -555,14 +545,9 @@ impl BwLimiter {
             tokio::time::sleep(tokio::time::Duration::from_secs_f32(time_to_pay_seconds)).await;
         }
     }
-    fn is_debt_free(&self) -> bool {
-        let payment =
-            (self.last_update.elapsed().as_secs_f32() * self.bytes_per_second as f32) as u64;
-        payment >= self.debt
-    }
     fn incur_debt(&mut self, new_debt: u64) {
-        let now = tokio::time::Instant::now();
-        let elapsed = now.duration_since(self.last_update);
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.last_update);
         let payment = (elapsed.as_secs_f32() * self.bytes_per_second as f32) as u64;
         self.debt = self.debt.saturating_sub(payment) + new_debt;
         self.last_update = now;
@@ -574,6 +559,7 @@ pub struct ExecutionContext<T> {
     /// We assume any real packet will be at least 1 byte
     cursend: Vec<u8>,
     cursend_is_retransmit: bool,
+    #[allow(unused)] //useful for debugging
     send_local_addr: Option<T>,
     next_retransmit: Instant,
     next_retransmit_active: bool,
@@ -643,10 +629,6 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             outgoing_retransmit_requests: Default::default(),
             receive_track: Default::default(),
             limiter: BwLimiter::new(bandwidth_bytes_per_second),
-            //message_rx,
-            //message_tx,
-            last_send: Instant::now(),
-            last_send_size: 0,
             recvbuf: Vec::with_capacity(mtu),
             max_payload_per_packet,
             next_send_seq: 0,
@@ -788,7 +770,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         let now = Instant::now();
         if self.gc_time < now {
             self.receive_track
-                .retain(|_k, v| now.duration_since(v.last_success).as_secs() < 300);
+                .retain(|_k, v| now.saturating_duration_since(v.last_success).as_secs() < 300);
             self.gc_time = now + Duration::from_secs(60);
         }
 
@@ -847,7 +829,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                     if let Some(wait) = first_val.wait_until {
                         trace!(
                             "Scheduling raw retransmit in {:?}",
-                            wait.duration_since(Instant::now())
+                            wait.saturating_duration_since(Instant::now())
                         );
                         context.next_retransmit = wait;
                         context.next_retransmit_active = true;
@@ -1011,7 +993,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                     }
                 }
             }
-            _ = tokio::time::sleep_until(context.next_retransmit), if context.next_retransmit_active => {
+            _ = tokio::time::sleep_until(context.next_retransmit.tokio_instant()), if context.next_retransmit_active => {
                 context.next_retransmit_active = false;
                 Ok(false)
             }
@@ -1064,15 +1046,6 @@ enum Cmd<MSG: Message> {
     GetEphemeralNodeId(oneshot::Sender<EphemeralNodeId>),
 }
 
-struct FillInFrequency {
-    who: Address,
-}
-
-struct SeenBy {
-    who: Address,
-    when: Instant,
-}
-
 struct DatabaseCommunicationLoop<MSG: Message + Send>
 where
     Self: Send,
@@ -1087,7 +1060,7 @@ where
 
     /// When the first item was put into the buffer
     buffer_life_start: Instant,
-    next_periodic: tokio::time::Instant,
+    next_periodic: Instant,
     buffered_incoming_messages: Vec<(
         Option<Address>, /*src*/
         EphemeralNodeId,
@@ -1178,7 +1151,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
         self.buffered_incoming_messages.push((src_addr, src, msg));
         Ok(())
     }
-    fn process_messages(&mut self, now: tokio::time::Instant) -> Result<()> {
+    fn process_messages(&mut self, now: Instant) -> Result<()> {
         if self.buffered_incoming_messages.is_empty() {
             return Ok(());
         }
@@ -1293,7 +1266,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                         info!("Sleeping 10ms, waiting for buffer to fill");
                         let sleep_target = buffer_timer_instant
                             .get_or_insert_with(|| Instant::now() + Duration::from_millis(10));
-                        tokio::time::sleep_until(*sleep_target).await;
+                        tokio::time::sleep_until(sleep_target.tokio_instant()).await;
                     }
                 } else {
                     std::future::pending().await
@@ -1355,7 +1328,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                     buffer_timer_instant = None;
                     self.process_messages(Instant::now())?;
                 }
-                _periodic = tokio::time::sleep_until(self.next_periodic) => {
+                _periodic = tokio::time::sleep_until(self.next_periodic.tokio_instant()) => {
                     track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
                     let database = self.database.lock().unwrap();
                     let session = database.begin_session()?;
@@ -1735,7 +1708,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             //receiver_rx,
             cmd_rx,
             buffer_life_start: Instant::now(),
-            next_periodic: tokio::time::Instant::now(),
+            next_periodic: Instant::now(),
             buffered_incoming_messages: vec![],
             nextsend: vec![],
             debug_event_logger: config.debug_logger,
@@ -1830,7 +1803,7 @@ mod tests {
         let mloop1 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
             "127.0.0.1:0",
-            "224.45.0.1:7777",
+            "224.230.0.1:7777",
             10000,
             quit_rx1,
             200,
@@ -1850,7 +1823,7 @@ mod tests {
         let mloop2 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
             "127.0.0.1:0",
-            "224.45.0.1:7777",
+            "224.230.0.1:7777",
             10000,
             quit_rx2,
             200,
@@ -1883,7 +1856,6 @@ mod tests {
             let mut expect: HashSet<Vec<u8>> = payloads().into_iter().collect();
             let mut ctx = mloop1.create_context()?;
             let mut received = Vec::new();
-            tokio::time::sleep(Duration::from_millis(100)).await;
             while mloop1
                 .run(&mut ctx, &mut received, &mut to_send, &mut false, None)
                 .await?
@@ -1904,7 +1876,6 @@ mod tests {
             let mut expect: HashSet<Vec<u8>> = payloads().into_iter().collect();
             let mut ctx = mloop2.create_context()?;
             let mut received = Vec::new();
-            tokio::time::sleep(Duration::from_millis(100)).await;
             while mloop2
                 .run(&mut ctx, &mut received, &mut to_send, &mut false, None)
                 .await?
