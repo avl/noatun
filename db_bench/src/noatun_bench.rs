@@ -44,7 +44,7 @@ impl Message for Task {
                 
                 project.boxes.insert(
                     id.0,
-                    &StorageBoxDetached {
+                    &StorageBoxExternal {
                         id: id.0,
                         articles: Default::default(),
                         parent: None.into(),

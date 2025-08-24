@@ -82,23 +82,23 @@ impl<T: NoatunStorable> Deref for NoatunUntrackedCell<T> {
 
 impl<T: NoatunStorable + Copy> Object for NoatunUntrackedCell<T> {
     type Ptr = ThinPtr;
-    type DetachedType = T;
-    type DetachedOwnedType = T;
+    type ExternalType = T;
+    type ExternalOwnedType = T;
 
-    fn detach(&self) -> Self::DetachedOwnedType {
+    fn export(&self) -> Self::ExternalOwnedType {
         self.0
     }
 
     fn destroy(self: Pin<&mut Self>) {}
 
-    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
         unsafe {
             let value = self.get_unchecked_mut();
-            *value = NoatunUntrackedCell(*detached);
+            *value = NoatunUntrackedCell(*external);
         }
     }
 
-    unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(_external: &Self::ExternalType) -> Pin<&'a mut Self> {
         unimplemented!("NoatunUntrackedCell does not support heap allocation")
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
@@ -164,20 +164,20 @@ where
     T::Ptr: NoatunStorable,
 {
     type Ptr = ThinPtr;
-    type DetachedType = T::DetachedType;
-    type DetachedOwnedType = T::DetachedOwnedType;
+    type ExternalType = T::ExternalType;
+    type ExternalOwnedType = T::ExternalOwnedType;
 
-    fn detach(&self) -> Self::DetachedOwnedType {
-        self.get_inner().detach()
+    fn export(&self) -> Self::ExternalOwnedType {
+        self.get_inner().export()
     }
 
     fn destroy(self: Pin<&mut Self>) {
         Self::get_inner_mut(self).destroy();
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
         unsafe {
-            let target = T::allocate_from_detached(detached);
+            let target = T::allocate_from(external);
             let new_index = NoatunContext.index_of(&*target);
             NoatunContext.write(
                 new_index,
@@ -186,9 +186,9 @@ where
         }
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
         let mut pod: Pin<&mut Self> = NoatunContext.allocate_obj();
-        pod.as_mut().init_from_detached(detached);
+        pod.as_mut().init_from(external);
         pod
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
@@ -233,9 +233,9 @@ impl<T: Object + ?Sized> NoatunBox<T> {
         }
     }
 
-    pub fn assign(self: Pin<&mut Self>, value: &T::DetachedType) {
+    pub fn assign(self: Pin<&mut Self>, value: &T::ExternalType) {
         let tself = unsafe { self.get_unchecked_mut() };
-        let target = unsafe { T::allocate_from_detached(value) };
+        let target = unsafe { T::allocate_from(value) };
         let index = NoatunContext.index_of(&*target);
         NoatunContext.write_internal(index, &mut tself.object_index);
     }
@@ -458,7 +458,7 @@ mod tests {
         .unwrap();
     }
     #[test]
-    fn test_hashmap_miri_detach() {
+    fn test_hashmap_miri_export() {
         let mut db: Database<DummyTestMessage<NoatunHashMap<NoatunString, NoatunCell<u32>>>> =
             Database::create_in_memory(
                 10000,
@@ -472,7 +472,7 @@ mod tests {
         db.with_root_mut(|mut map| {
             map.0.insert_internal("hello", &42);
 
-            let reg_map: Vec<_> = map.0.detach().into_iter().collect();
+            let reg_map: Vec<_> = map.0.export().into_iter().collect();
             assert_eq!(&[("hello".to_string(), 42)], &*reg_map);
         })
         .unwrap();
@@ -495,9 +495,9 @@ mod tests {
 
             let mut hm = indexmap::IndexMap::new();
             hm.insert("world".to_string(), 43);
-            map.as_mut().init_from_detached(&hm);
+            map.as_mut().init_from(&hm);
 
-            let mut reg_map: Vec<_> = map.detach().into_iter().collect();
+            let mut reg_map: Vec<_> = map.export().into_iter().collect();
             reg_map.sort();
             assert_eq!(
                 &[("hello".to_string(), 42), ("world".to_string(), 43)],
@@ -507,7 +507,7 @@ mod tests {
         .unwrap();
     }
     #[test]
-    fn test_hashmap_miri_detach2() {
+    fn test_hashmap_miri_export2() {
         let mut db: Database<DummyTestMessage<NoatunHashMap<NoatunString, NoatunString>>> =
             Database::create_in_memory(
                 10000,
@@ -521,10 +521,10 @@ mod tests {
         db.with_root_mut(|mut map| {
             map.0.insert_internal("hello", "world");
 
-            let reg_map: Vec<_> = map.0.detach().into_iter().collect();
+            let reg_map: Vec<_> = map.0.export().into_iter().collect();
             assert_eq!(&[("hello".to_string(), "world".to_string())], &*reg_map);
             map.as_mut().inner_pin().remove("hello");
-            let reg_map: Vec<_> = map.0.detach().into_iter().collect();
+            let reg_map: Vec<_> = map.0.export().into_iter().collect();
             assert!(reg_map.is_empty());
         })
         .unwrap();
@@ -752,7 +752,7 @@ mod tests {
             let mut hm = indexmap::IndexMap::new();
             hm.insert(1, 1);
 
-            noatun_box.as_mut().init_from_detached(&hm);
+            noatun_box.as_mut().init_from(&hm);
 
             let items: Vec<_> = noatun_box.iter().map(|x| (*x.0, x.1.get())).collect();
             assert_eq!(items, [(1, 1)]);

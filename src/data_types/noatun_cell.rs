@@ -161,10 +161,10 @@ impl<T: NoatunStorable + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut NoatunCe
 
 impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
     type Ptr = ThinPtr;
-    type DetachedType = T;
-    type DetachedOwnedType = T;
+    type ExternalType = T;
+    type ExternalOwnedType = T;
 
-    fn detach(&self) -> Self::DetachedOwnedType {
+    fn export(&self) -> Self::ExternalOwnedType {
         self.get()
     }
 
@@ -174,13 +174,13 @@ impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
         unsafe { NoatunContext.clear_tracker_ptr(&mut tself.tracker, false) };
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        self.set(*detached);
+    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+        self.set(*external);
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
         let mut ret: Pin<&mut Self> = NoatunContext.allocate();
-        ret.as_mut().init_from_detached(detached);
+        ret.as_mut().init_from(external);
         ret
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
@@ -190,10 +190,10 @@ impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
 
 impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
     type Ptr = ThinPtr;
-    type DetachedType = T;
-    type DetachedOwnedType = T;
+    type ExternalType = T;
+    type ExternalOwnedType = T;
 
-    fn detach(&self) -> Self::DetachedOwnedType {
+    fn export(&self) -> Self::ExternalOwnedType {
         NoatunContext.assert_opaque_access_allowed("OpaqueNoatunCell", "NoatunCell");
         self.value
     }
@@ -204,13 +204,13 @@ impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
         unsafe { NoatunContext.clear_tracker_ptr(&mut tself.tracker, true) };
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        self.set(*detached);
+    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+        self.set(*external);
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
         let mut ret: Pin<&mut Self> = NoatunContext.allocate();
-        ret.as_mut().init_from_detached(detached);
+        ret.as_mut().init_from(external);
         ret
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {

@@ -65,7 +65,7 @@ pub fn run_inspector<MSG: Message + Send>(
     recorder: Option<&SimpleMetricsRecorder>,
     comm: &DatabaseCommunication<MSG>,
 ) -> anyhow::Result<()> where
-    <MSG::Root as Object>::DetachedOwnedType: Debug {
+    <MSG::Root as Object>::ExternalOwnedType: Debug {
     let mut inspector = RatatuiInspector::new();
     let mut terminal = ratatui::init();
 
@@ -214,7 +214,7 @@ impl RatatuiInspector {
         recorder: Option<&SimpleMetricsRecorder>,
         comm: &DatabaseCommunication<MSG>,
     ) where
-        <MSG::Root as Object>::DetachedOwnedType: Debug,
+        <MSG::Root as Object>::ExternalOwnedType: Debug,
     {
         let data = comm.diagnostics_data();
         let data = data
@@ -378,7 +378,7 @@ impl RatatuiInspector {
         }
 
         if !self.zoom || self.highlight == 2 {
-            let root_obj_str = comm.with_root(|root| format!("{:#?}", root.detach()));
+            let root_obj_str = comm.with_root(|root| format!("{:#?}", root.export()));
 
 
             frame.render_widget(

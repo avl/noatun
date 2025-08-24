@@ -50,10 +50,10 @@ impl PartialEq for NoatunString {
 
 impl Object for NoatunString {
     type Ptr = ThinPtr;
-    type DetachedType = str;
-    type DetachedOwnedType = String;
+    type ExternalType = str;
+    type ExternalOwnedType = String;
 
-    fn detach(&self) -> Self::DetachedOwnedType {
+    fn export(&self) -> Self::ExternalOwnedType {
         self.get().to_string()
     }
 
@@ -64,13 +64,13 @@ impl Object for NoatunString {
         }
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        self.assign(detached);
+    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+        self.assign(external);
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
         let mut temp: Pin<&mut Self> = NoatunContext.allocate();
-        temp.as_mut().assign(detached);
+        temp.as_mut().assign(external);
         temp
     }
 
@@ -119,10 +119,10 @@ impl NoatunString {
     }
 }
 impl NoatunKey for NoatunString {
-    type DetachedType = str;
-    type DetachedOwnedType = String;
+    type ExternalType = str;
+    type ExternalOwnedType = String;
 
-    fn hash<H>(tself: &Self::DetachedType, state: &mut H)
+    fn hash<H>(tself: &Self::ExternalType, state: &mut H)
     where
         H: Hasher,
     {
@@ -130,19 +130,19 @@ impl NoatunKey for NoatunString {
         state.write(tself.as_bytes());
     }
 
-    fn detach_key(&self) -> String {
+    fn export_key(&self) -> String {
         (*self).to_string()
     }
-    fn detach_key_ref(&self) -> &Self::DetachedType {
+    fn export_key_ref(&self) -> &Self::ExternalType {
         self
     }
 
-    fn eq(a: &Self::DetachedType, b: &Self::DetachedType) -> bool {
+    fn eq(a: &Self::ExternalType, b: &Self::ExternalType) -> bool {
         *a == *b
     }
 
-    fn init_from_detached<'a>(self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        self.assign(detached);
+    fn init_from<'a>(self: Pin<&mut Self>, external: &Self::ExternalType) {
+        self.assign(external);
     }
 
     fn destroy(&mut self) {
@@ -192,22 +192,22 @@ impl PartialEq for OpaqueNoatunString {
 
 impl Object for OpaqueNoatunString {
     type Ptr = ThinPtr;
-    type DetachedType = str;
-    type DetachedOwnedType = String;
+    type ExternalType = str;
+    type ExternalOwnedType = String;
 
-    fn detach(&self) -> Self::DetachedOwnedType {
+    fn export(&self) -> Self::ExternalOwnedType {
         self.get().to_string()
     }
 
     fn destroy(self: Pin<&mut Self>) {}
 
-    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        self.assign(detached);
+    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+        self.assign(external);
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
         let mut temp: Pin<&mut Self> = NoatunContext.allocate();
-        temp.as_mut().assign(detached);
+        temp.as_mut().assign(external);
         temp
     }
 
@@ -256,10 +256,10 @@ impl OpaqueNoatunString {
     }
 }
 impl NoatunKey for OpaqueNoatunString {
-    type DetachedType = str;
-    type DetachedOwnedType = String;
+    type ExternalType = str;
+    type ExternalOwnedType = String;
 
-    fn hash<H>(tself: &Self::DetachedType, state: &mut H)
+    fn hash<H>(tself: &Self::ExternalType, state: &mut H)
     where
         H: Hasher,
     {
@@ -267,19 +267,19 @@ impl NoatunKey for OpaqueNoatunString {
         state.write(tself.as_bytes());
     }
 
-    fn detach_key(&self) -> String {
+    fn export_key(&self) -> String {
         (*self).to_string()
     }
-    fn detach_key_ref(&self) -> &Self::DetachedType {
+    fn export_key_ref(&self) -> &Self::ExternalType {
         self
     }
 
-    fn eq(a: &Self::DetachedType, b: &Self::DetachedType) -> bool {
+    fn eq(a: &Self::ExternalType, b: &Self::ExternalType) -> bool {
         *a == *b
     }
 
-    fn init_from_detached<'a>(self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        self.assign(detached);
+    fn init_from<'a>(self: Pin<&mut Self>, external: &Self::ExternalType) {
+        self.assign(external);
     }
 
     fn destroy(&mut self) {}

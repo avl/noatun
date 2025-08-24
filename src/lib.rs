@@ -11,7 +11,7 @@
 #![allow(clippy::type_complexity)]
 //TODO: Yeah, this is not ideal. This should be fixed.
 #![allow(clippy::missing_safety_doc)]
-#![deny(missing_docs)]
+//#![deny(missing_docs)]
 #![allow(clippy::let_and_return)]
 #![allow(clippy::collapsible_else_if)]
 #![allow(clippy::too_many_arguments)]
@@ -24,7 +24,7 @@
 use crate::noatun_instant::Instant;
 pub use crate::data_types::{NoatunCell, OpaqueNoatunCell};
 use crate::private::Sealed;
-use crate::sequence_nr::{SequenceNr, Tracker};
+use crate::sequence_nr::{Tracker};
 use crate::undo_store::magic_initialize_ptr;
 use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -403,10 +403,6 @@ fn get_context_ptr() -> *const DatabaseContextData {
     context_ptr
 }
 
-/// This represents a type that has no detached representation.
-/// Instances of this type cannot be created.
-pub enum Undetachable {}
-
 impl NoatunContext {
     /// Verify that reading from opaque messages is currently allowed.
     ///
@@ -471,7 +467,7 @@ impl NoatunContext {
 
     // Just used by single test. Consider removing?
     #[cfg(test)]
-    pub(crate) unsafe fn rewind(self, new_time: SequenceNr) {
+    pub(crate) unsafe fn rewind(self, new_time: crate::sequence_nr::SequenceNr) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).rewind(new_time) }
     }
@@ -479,7 +475,7 @@ impl NoatunContext {
 
 
     #[cfg(test)]
-    pub(crate) fn set_next_seqnr(self, seqnr: SequenceNr) {
+    pub(crate) fn set_next_seqnr(self, seqnr: crate::sequence_nr::SequenceNr) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).set_next_seqnr(seqnr) }
     }
@@ -988,6 +984,13 @@ impl MessageId {
     }
 }
 
+/// Wall clock time
+///
+/// Internally, NoatunTime is the number of milliseconds elapsed since 1970-01-01 00:00:00 UTC.
+/// In other words, this is a unix timestamp with millisecond precision.
+///
+/// Nominally NoatunTime is 48 bits, which makes the maximum value be sometime after the year
+/// 10000.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Savefile)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(C)]
@@ -1002,20 +1005,20 @@ unsafe impl NoatunStorable for NoatunTime {
 impl Add<Duration> for NoatunTime {
     type Output = NoatunTime;
     fn add(self, rhs: Duration) -> Self::Output {
-        NoatunTime(self.0 + rhs.as_millis() as u64)
+        NoatunTime(self.0 + rhs.as_millis() as u64).truncated()
     }
 }
 impl Sub<Duration> for NoatunTime {
     type Output = NoatunTime;
     fn sub(self, rhs: Duration) -> Self::Output {
-        NoatunTime(self.0.saturating_sub(rhs.as_millis() as u64))
+        NoatunTime(self.0.saturating_sub(rhs.as_millis() as u64)).truncated()
     }
 }
 
 impl Add<NoatunTime> for Duration {
     type Output = NoatunTime;
     fn add(self, rhs: NoatunTime) -> Self::Output {
-        NoatunTime(rhs.0 + self.as_millis() as u64)
+        NoatunTime(rhs.0 + self.as_millis() as u64).truncated()
     }
 }
 
@@ -1037,7 +1040,7 @@ impl From<DateTime<Utc>> for NoatunTime {
         if ms < 0 {
             NoatunTime(0)
         } else {
-            NoatunTime(ms as u64)
+            NoatunTime(ms as u64).truncated()
         }
     }
 }
@@ -1068,7 +1071,7 @@ impl Add for NoatunTime {
     type Output = NoatunTime;
 
     fn add(self, rhs: Self) -> Self::Output {
-        NoatunTime(self.0 + rhs.0)
+        NoatunTime(self.0 + rhs.0).truncated()
     }
 }
 
@@ -1076,37 +1079,58 @@ impl Sub for NoatunTime {
     type Output = NoatunTime;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        NoatunTime(self.0 - rhs.0)
+        NoatunTime(self.0 - rhs.0).truncated()
     }
 }
 
 impl NoatunTime {
+    /// Returns the number of milliseconds between 'self' and an earlier 'other'.
+    ///
+    /// If 'other' is later than 'self', 0 is returned.
     pub fn elapsed_ms_since(self, other: NoatunTime) -> u64 {
         let ms = self.0.saturating_sub(other.0);
         ms
     }
 
+    #[doc(hidden)]
     pub fn debug_time(minutes: u64) -> NoatunTime {
         let noatun = NoatunTime::from(datetime!(2020-01-01 T 00:00:00 Z));
-        noatun + Duration::from_secs(minutes * 60)
+        (noatun + Duration::from_secs(minutes * 60)).truncated()
     }
 
+    /// Find the next value that is a multiple of 'other', greater or equal to 'self'.
     pub fn next_multiple_of(self, other: NoatunTime) -> Option<NoatunTime> {
-        Some(NoatunTime(self.0.checked_next_multiple_of(other.0)?))
+        Some(NoatunTime(self.0.checked_next_multiple_of(other.0)?).validate()?)
     }
+
+    /// Find the previous value that is a multiple of 'other', smaller or equal to 'self'.
     pub fn prev_multiple_of(self, other: NoatunTime) -> Option<NoatunTime> {
         Some(NoatunTime(
             self.0.checked_next_multiple_of(other.0)? - other.0,
         ))
     }
+
+    /// Return the smallest possible increment of 'self'.
+    ///
+    /// This returns a value that is 1 ms later than 'self', except for the special case
+    /// where 'self' == `NoatunTime::MAX`, in which case it returns `NoatunTime::MAX`.
     pub fn successor(&self) -> NoatunTime {
-        NoatunTime(self.0 + 1)
+        NoatunTime(self.0 + 1).truncated()
     }
+    /// Return the smallest possible decrement of 'self'.
+    ///
+    /// This returns a value that is 1 ms earlier than 'self', except for the special case
+    /// where 'self' == `NoatunTime::EPOCH`, in which case it returns `NoatunTime::EPOCH`.
     pub fn saturating_predecessor(&self) -> NoatunTime {
         NoatunTime(self.0.saturating_sub(1))
     }
-    pub const ZERO: NoatunTime = NoatunTime(0);
-    pub const MAX: NoatunTime = NoatunTime(u64::MAX);
+
+
+
+    /// Returns a NoatunTime equal to 1970-01-01 00:00:00 UTC
+    pub const EPOCH: NoatunTime = NoatunTime(0);
+    /// The largest possible NoatunTime: 10889-08-02 05:31:50.655 UTC.
+    pub const MAX: NoatunTime = NoatunTime((1<<48)-1);
 
     /// Returns the current time.
     ///
@@ -1117,25 +1141,72 @@ impl NoatunTime {
         Self(millis as u64)
     }
 
+    /// Return this time expressed as the number of milliseconds since 1970-01-01 00:00:00 UTC.
     #[must_use]
     pub fn as_ms(self) -> u64 {
         self.0
     }
+
+
+    /// Add the given number of milliseconds, returning a later time.
+    ///
+    /// If ms is 0, 'self' is returned unchanged.
     #[must_use]
     pub fn add_ms(self, ms: u64) -> NoatunTime {
-        NoatunTime(self.0.saturating_add(ms))
+        NoatunTime(self.0.saturating_add(ms)).truncated()
     }
+
+    /// Subtract the given number of milliseconds, returning an earlier time.
+    ///
+    /// If ms is 0, 'self' is returned unchanged.
     pub fn sub_ms(self, ms: u64) -> NoatunTime {
-        NoatunTime(self.0.saturating_sub(ms))
+        NoatunTime(self.0.saturating_sub(ms)).truncated()
     }
+
+    /// Convert 'self' to [`DateTime<Utc>`]
     pub fn to_datetime(&self) -> DateTime<Utc> {
-        if self.0 > i64::MAX as u64 {
-            panic!("Noatun time out of range for DateTime<Utc>");
-        }
         DateTime::<Utc>::from_timestamp_millis(self.0 as i64).unwrap()
     }
+
+    const fn validate(self) -> Option<NoatunTime> {
+        if self.0 > NoatunTime::MAX.0 {
+            return None;
+        }
+        Some(self)
+    }
+    const fn truncated(self) -> NoatunTime {
+        if self.0 > NoatunTime::MAX.0 {
+            return NoatunTime::MAX;
+        }
+        self
+    }
+    /// Convert from [`DateTime<Utc>`] to NoatunTime.
+    ///
+    /// In the unlikely event that 't' is too large for NoatunTime (year >10000),
+    /// this will truncate the value.
+    ///
+    /// The reason for not making this fallible is that the failure is extremely unlikely
+    /// to occur in practice, and making this fallible is frequently inconvenient.
+    ///
+    /// For a fallible version, see: [`Self::try_from_datetime`].
     pub const fn from_datetime(t: DateTime<Utc>) -> NoatunTime {
-        NoatunTime(t.timestamp_millis() as u64)
+        let ts = t.timestamp_millis();
+        if ts < 0 {
+            return NoatunTime::EPOCH;
+        }
+        NoatunTime(ts as u64).truncated()
+    }
+
+    /// Fallible version of [`Self::from_datetime`].
+    ///
+    /// If the input time is before [`Self::EPOCH`] or after [`Self::MAX`], this returns
+    /// None.
+    pub const fn try_from_datetime(t: DateTime<Utc>) -> Option<NoatunTime> {
+        let ts = t.timestamp_millis();
+        if ts < 0 {
+            return None;
+        }
+        Some(NoatunTime(ts as u64).truncated())
     }
 }
 
@@ -1207,11 +1278,14 @@ pub trait Message: Debug + Sized + 'static {
     }
 }
 
+/// Extension trait to provide serialization for Message impls
 pub trait MessageExt: Message {
+    /// Serialize 'self' to the given writer
     fn serialize<W: Write>(&self, writer: W) -> Result<()> {
         Self::Serializer::serialize(self, writer)
     }
 
+    /// Deserialize a 'Self' from the buffer
     fn deserialize(buf: &[u8]) -> Result<Self>
     where
         Self: Sized,
@@ -1222,15 +1296,28 @@ pub trait MessageExt: Message {
 
 impl<T> MessageExt for T where T: Message {}
 
+/// A Noatun-message has a header with the id, and the list of parents.
+/// See [`Self::MessageFrame`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageHeader {
+    /// The identifier of this message.
+    ///
+    /// The identifier is fixed for the entire life cycle of the message.
     pub id: MessageId,
+    /// The set of parents. As parents are pruned, the set of parents is pruned as well.
+    /// Pruning is always done in a way that will not affect the materialized view end result.
     pub parents: Vec<MessageId>,
 }
 
+/// A MessageFrame is the fundamental building block of a Noatun database.
+///
+/// The MessageFrame contains the user-supplied Message type, as well as the message's
+/// globally unique identifier and its list of parents.
 #[derive(Debug)]
 pub struct MessageFrame<M: Message> {
+    /// Header of message. Contains identity and parents.
     pub header: MessageHeader,
+    /// Actual message payload. User defined type.
     pub payload: M,
 }
 
@@ -1244,12 +1331,14 @@ where
 }
 
 impl<M: Message> MessageFrame<M> {
+    /// Create a new MessageFrame instance from its constituent parts
     pub fn new(id: MessageId, parents: Vec<MessageId>, payload: M) -> Self {
         Self {
             header: MessageHeader { id, parents },
             payload,
         }
     }
+    /// The MessageId of this message frame
     pub fn id(&self) -> MessageId {
         self.header.id
     }
@@ -1286,16 +1375,16 @@ unsafe impl NoatunStorable for DummyUnitObject {
 
 impl Object for DummyUnitObject {
     type Ptr = ThinPtr;
-    type DetachedType = ();
-    type DetachedOwnedType = ();
+    type ExternalType = ();
+    type ExternalOwnedType = ();
 
-    fn detach(&self) -> Self::DetachedType {}
+    fn export(&self) -> Self::ExternalType {}
 
     fn destroy(self: Pin<&mut Self>) {}
 
-    fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {}
+    fn init_from(self: Pin<&mut Self>, _detached: &Self::ExternalType) {}
 
-    unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(_detached: &Self::ExternalType) -> Pin<&'a mut Self> {
         unsafe { Pin::new_unchecked(&mut *std::ptr::dangling_mut::<DummyUnitObject>()) }
     }
 
@@ -1304,8 +1393,20 @@ impl Object for DummyUnitObject {
     }
 }
 
+/// A pointer into the materialized view store.
 pub enum GenPtr {
+    /// A thin pointer.
+    ///
+    /// Internally, this is just a 64bit offset into the materialized view file.
+    ///
+    /// Thin pointers are used to reference objects of a fixed size, such as integer primitives
+    /// or regular structs.
     Thin(ThinPtr),
+    /// A fat pointer
+    ///
+    /// A fat pointer is different from a thin pointer in that it also has a size.
+    /// Standard rust fat pointers can contain a vtable, but Noatun fat pointers are always
+    /// just offset + size.
     Fat(FatPtr),
 }
 
@@ -1349,25 +1450,44 @@ impl From<GenPtr> for SerializableGenPtr {
     }
 }
 
+/// Type abstracting any type of pointer into the materialized view
 pub trait Pointer: NoatunStorable + Sealed + Copy + Debug + 'static {
+    /// The offset of the first byte of the pointee
     fn start(self) -> usize;
+    /// Create a pointer to the given object.
+    ///
+    /// `buffer_start` is the address in memory where the materialized view
+    /// memory mapping starts.
     fn create<T: ?Sized>(addr: &T, buffer_start: *const u8) -> Self;
+    /// Return a type-erased noatun pointer
     fn as_generic(&self) -> GenPtr;
+    /// Return true if the pointer is null
     fn is_null(&self) -> bool;
 
+    /// Return a reference to the pointee
     unsafe fn access<'a, T: ?Sized>(&self) -> &'a T;
+    /// Return a mutable reference to the pointee
     unsafe fn access_mut<'a, T: ?Sized>(&self) -> Pin<&'a mut T>;
 
+    /// Return a reference to the pointee, given an explicit context
     unsafe fn access_ctx<'a, T: ?Sized>(&self, context: &DatabaseContextData) -> &'a T;
+    /// Return a mutable reference to the pointee, given an explicit context
     unsafe fn access_ctx_mut<'a, T: ?Sized>(&self, context: &mut DatabaseContextData) -> &'a mut T;
 }
 
+/// Convert from a slice of bytes to a T.
+///
+/// This is safe, since all NoatunStorable instances must be valid for any bit pattern.
 pub fn from_bytes<T: NoatunStorable>(s: &[u8]) -> &T {
     assert_eq!(s.len(), size_of::<T>());
     assert!((s.as_ptr() as *mut T).is_aligned());
 
     unsafe { &*s.as_ptr().cast::<T>() }
 }
+
+/// Convert from a slice of bytes to a T.
+///
+/// This is safe, since all NoatunStorable instances must be valid for any bit pattern.
 pub fn from_bytes_mut<T: NoatunStorable>(s: &mut [u8]) -> &mut T {
     assert_eq!(s.len(), size_of::<T>());
     assert!((s.as_mut_ptr() as *mut T).is_aligned());
@@ -1381,6 +1501,11 @@ pub fn from_bytes_mut<T: NoatunStorable>(s: &mut [u8]) -> &mut T {
     }
 }
 
+/// Cast between two different storable objects
+///
+/// This will panic at compile-time if 'I' and 'O' do not have the same size.
+///
+/// This is safe, since all bit patterns of NoatunStorable types are valid.
 pub fn cast_storable<I: NoatunStorable, O: NoatunStorable>(i: I) -> O {
     const {
         if size_of::<I>() != size_of::<O>() {
@@ -1390,6 +1515,7 @@ pub fn cast_storable<I: NoatunStorable, O: NoatunStorable>(i: I) -> O {
     unsafe { transmute_copy::<I, O>(&i) }
 }
 
+/// Cast a reference to a NoatunStorable into a slice of bytes
 pub fn bytes_of<T: NoatunStorable>(t: &T) -> &[u8] {
     // # Safety
     // FixedSizeObject instances can always be viewed as a set of by tes
@@ -1397,6 +1523,8 @@ pub fn bytes_of<T: NoatunStorable>(t: &T) -> &[u8] {
     // Just copying uninitialized values is ok, and that's all we'll end up doing.
     unsafe { slice::from_raw_parts(t as *const _ as *const u8, size_of::<T>()) }
 }
+
+/// Cast a reference to a NoatunStorable into a slice of bytes
 pub fn bytes_of_mut<T: NoatunStorable>(t: &mut T) -> &mut [u8] {
     // # Safety
     // NoatunStorable instances can always be viewed as a set of by tes
@@ -1404,14 +1532,13 @@ pub fn bytes_of_mut<T: NoatunStorable>(t: &mut T) -> &mut [u8] {
     // Just copying uninitialized values is ok, and that's all we'll end up doing.
     unsafe { slice::from_raw_parts_mut(t as *mut _ as *mut u8, size_of::<T>()) }
 }
-pub fn bytes_of_mut_uninit<T: NoatunStorable>(t: &mut MaybeUninit<T>) -> &mut [u8] {
-    unsafe { magic_initialize_ptr(t as *mut MaybeUninit<T>) };
-    // # Safety
-    // NoatunStorable instances can always be viewed as a set of by tes
-    // That set of bytes can have uninitialized values, so we can't use the values.
-    // Just copying uninitialized values is ok, and that's all we'll end up doing.
-    unsafe { slice::from_raw_parts_mut(t as *mut _ as *mut u8, size_of::<T>()) }
-}
+
+/// Cast from a slice of I to a slice of O.
+///
+/// A compile time panic occurs if the alignment of O is not smaller or equal to that of I.
+///
+/// If the size of the input slice is not a multiple of the size of O, this
+/// method panics at runtime.
 pub fn cast_slice_mut<I: NoatunStorable, O: NoatunStorable>(s: &mut [I]) -> &mut [O] {
     const {
         assert!(align_of::<O>() <= align_of::<I>());
@@ -1421,6 +1548,14 @@ pub fn cast_slice_mut<I: NoatunStorable, O: NoatunStorable>(s: &mut [I]) -> &mut
     assert_eq!(tot_size_i, size_of::<O>() * count_o);
     unsafe { slice::from_raw_parts_mut(s.as_mut_ptr() as *mut O, count_o) }
 }
+
+
+/// Cast from a slice of I to a slice of O.
+///
+/// A compile time panic occurs if the alignment of O is not smaller or equal to that of I.
+///
+/// If the size of the input slice is not a multiple of the size of O, this
+/// method panics at runtime.
 pub fn cast_slice<I: NoatunStorable, O: NoatunStorable>(s: &[I]) -> &[O] {
     const {
         assert!(align_of::<O>() <= align_of::<I>());
@@ -1449,7 +1584,14 @@ pub fn dyn_cast_slice_mut<I: NoatunStorable, O: NoatunStorable>(s: &mut [I]) -> 
     unsafe { slice::from_raw_parts_mut(s.as_mut_ptr() as *mut O, count_o) }
 }
 
+
+/// Read a value of type T from the bytes of 'data'.
+///
+/// 'data' must be the size of T.
 pub fn read_unaligned<T>(data: &[u8]) -> T {
+    if data.len() != size_of::<T>() {
+        panic!("Slice is not the correct size");
+    }
     let raw = data as *const [u8] as *const T;
     unsafe { raw.read_unaligned() }
 }
@@ -1479,7 +1621,7 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
 /// Therefore, any type that implements Object must make sure that safe
 /// code cannot obtain an owned instance of Self:
 ///   * No Default-impl!
-///   * No new() impl (though DetachedType can of course have new())
+///   * No new() impl (though ExternalType can of course have new())
 ///
 /// NOTE!
 /// This trait represents an object that can be stored on its own as a first class
@@ -1502,16 +1644,18 @@ pub trait Object {
     /// This is meant to be either ThinPtr for sized objects, or
     /// FatPtr for dynamically sized objects. Other types are unlikely to make sense.
     type Ptr: Pointer;
-    type DetachedType: ?Sized;
-    type DetachedOwnedType: Borrow<Self::DetachedType>;
 
-    /// Create an owned 'detached' copy of this object.
+    type ExternalType: ?Sized;
+    type ExternalOwnedType: Borrow<Self::ExternalType>;
+
+    /// Create an owned 'external' copy of this object.
     ///
     /// Detached types are regular rust objects, not stored in the noatun database.
-    /// For example, the detached type for [`data_types::NoatunString`] is [`std::primitive::str`]
-    fn detach(&self) -> Self::DetachedOwnedType;
+    /// For example, the external type for [`data_types::NoatunString`] is [`std::primitive::str`]
+    fn export(&self) -> Self::ExternalOwnedType;
 
     /// Clear this object.
+    ///
     ///
     /// This is called when an object disappears because it is no longer
     /// observable. For example, this happens when an element is deleted from a collection
@@ -1528,8 +1672,8 @@ pub trait Object {
     /// will be cleared at the latest before any such reuse.
     fn destroy(self: Pin<&mut Self>);
 
-    /// Initialize all the fields in 'self' from the given 'detached' type.
-    /// The detached type is a regular rust pod struct, with no requirements
+    /// Initialize all the fields in 'self' from the given 'external' type.
+    /// The external type is a regular rust pod struct, with no requirements
     /// on alignment, pinning or similar. It can therefore be passed around freely,
     /// being more convenient to use for initialization.
     ///
@@ -1548,17 +1692,17 @@ pub trait Object {
     /// It's explicitly allowed to use this method when `Self` has already been
     /// initialized. It must be overwritten, with any behavior that arises from that.
     /// Specifically, a new value must not simply be moved over, replacing the old value.
-    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType);
+    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType);
 
     /// This can in most cases be:
     /// ```dontrun
     ///    let ret: &mut Self = NoatunContext.allocate_storable();
-    ///    ret.init_from_detached(detached);
+    ///    ret.init_from(external);
     ///    ret
     /// ```
     /// The only cases where some other implementation is required is when 'Self' does
     /// not have a fixed size.
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self>;
+    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self>;
 
     /// Write a unique value to 'hasher', that uniquely identifies this data type.
     ///
@@ -1689,13 +1833,13 @@ macro_rules! noatun_object {
         $typ
     };
     ( declare_detached_field object $typ: ty ) => {
-        <$typ as $crate::Object>::DetachedOwnedType
+        <$typ as $crate::Object>::ExternalOwnedType
     };
     ( new_declare_param object $typ: ty ) => {
-        &<$typ as $crate::Object>::DetachedType
+        &<$typ as $crate::Object>::ExternalType
     };
     ( new_assign_field object $self:ident $name: ident $typ: ty ) => {
-        unsafe { <_ as $crate::Object>::init_from_detached(::std::pin::Pin::new_unchecked(&mut $self.$name), $name); }
+        unsafe { <_ as $crate::Object>::init_from(::std::pin::Pin::new_unchecked(&mut $self.$name), $name); }
     };
     ( getter object $name:ident $typ: ty  ) => {
         #[doc ="Get the value of field"]
@@ -1819,9 +1963,9 @@ macro_rules! noatun_object {
                 #[derive(Debug,Clone,$crate::Savefile)]
                 $(#[doc = $doc])*
                 #[doc = ""]
-                #[doc = "This is a detached version of"]
+                #[doc = "This is a external version of"]
                 #[doc = stringify!($n)]
-                pub struct [<$n Detached>]
+                pub struct [<$n External>]
                 {
                     $(
                         $(#[doc = $field_doc])*
@@ -1834,8 +1978,8 @@ macro_rules! noatun_object {
 
             impl $crate::Object for $n {
                 type Ptr = $crate::ThinPtr;
-                type DetachedType = $crate::paste!(noatun_object!(detached_type [<$n Detached>]));
-                type DetachedOwnedType = $crate::paste!(noatun_object!(detached_type [<$n Detached>]));
+                type ExternalType = $crate::paste!(noatun_object!(detached_type [<$n External>]));
+                type ExternalOwnedType = $crate::paste!(noatun_object!(detached_type [<$n External>]));
 
 
                 fn destroy(self: ::std::pin::Pin<&mut Self>) {
@@ -1843,26 +1987,26 @@ macro_rules! noatun_object {
                     $( unsafe { ::std::pin::Pin::new_unchecked(&mut tself.$name).destroy(); } )*
                 }
 
-                fn detach(&self) -> Self::DetachedOwnedType {
-                    Self::DetachedOwnedType {
+                fn export(&self) -> Self::ExternalOwnedType {
+                    Self::ExternalOwnedType {
                         $(
-                            $name: self.$name.detach()
+                            $name: self.$name.export()
                         ),*
                     }
                 }
 
-                fn init_from_detached(mut self: ::std::pin::Pin<&mut Self>, detached: &Self::DetachedType) {
+                fn init_from(mut self: ::std::pin::Pin<&mut Self>, external: &Self::ExternalType) {
                     $(
                     unsafe {
-                        ::std::pin::Pin::new_unchecked(&mut self.as_mut().get_unchecked_mut().$name).init_from_detached(&detached.$name);
+                        ::std::pin::Pin::new_unchecked(&mut self.as_mut().get_unchecked_mut().$name).init_from(&external.$name);
 
                     }
                     )*
                 }
 
-                unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> ::std::pin::Pin<&'a mut Self> {
+                unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> ::std::pin::Pin<&'a mut Self> {
                     let mut ret: ::std::pin::Pin<&mut Self> = $crate::NoatunContext.allocate();
-                    ret.as_mut().init_from_detached(detached);
+                    ret.as_mut().init_from(external);
                     ret
                 }
 
@@ -1879,7 +2023,7 @@ macro_rules! noatun_object {
 
 pub trait FixedSizeObject: Object<Ptr = ThinPtr> + NoatunStorable + Sized + 'static
 where
-    <Self as Object>::DetachedOwnedType: Sized,
+    <Self as Object>::ExternalOwnedType: Sized,
 {
 }
 
@@ -2024,14 +2168,14 @@ impl Pointer for FatPtr {
 
 impl<T: FixedSizeObject> Object for [T]
 where
-    T::DetachedType: Sized,
+    T::ExternalType: Sized,
 {
     type Ptr = FatPtr;
-    type DetachedType = [T::DetachedOwnedType];
-    type DetachedOwnedType = Vec<T::DetachedOwnedType>;
+    type ExternalType = [T::ExternalOwnedType];
+    type ExternalOwnedType = Vec<T::ExternalOwnedType>;
 
-    fn detach(&self) -> Self::DetachedOwnedType {
-        self.iter().map(|x| x.detach()).collect()
+    fn export(&self) -> Self::ExternalOwnedType {
+        self.iter().map(|x| x.export()).collect()
     }
 
     fn destroy(self: Pin<&mut Self>) {
@@ -2041,21 +2185,21 @@ where
         }
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
         unsafe {
-            for (dst, src) in self.get_unchecked_mut().iter_mut().zip(detached.iter()) {
-                Pin::new_unchecked(dst).init_from_detached(src.borrow());
+            for (dst, src) in self.get_unchecked_mut().iter_mut().zip(external.iter()) {
+                Pin::new_unchecked(dst).init_from(src.borrow());
             }
         }
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
-        let bytes = size_of::<T>() * detached.len();
+    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
+        let bytes = size_of::<T>() * external.len();
         let alloc = NoatunContext.allocate_raw(bytes, align_of::<T>());
 
-        let slice: &mut [T] = unsafe { slice::from_raw_parts_mut(alloc as *mut T, detached.len()) };
-        for (src, dst) in detached.iter().zip(&mut *slice) {
-            Pin::new_unchecked(dst).init_from_detached(src.borrow());
+        let slice: &mut [T] = unsafe { slice::from_raw_parts_mut(alloc as *mut T, external.len()) };
+        for (src, dst) in external.iter().zip(&mut *slice) {
+            Pin::new_unchecked(dst).init_from(src.borrow());
         }
         Pin::new_unchecked(slice)
     }

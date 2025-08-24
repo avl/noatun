@@ -51,10 +51,10 @@ impl From<Rgb> for Color32 {
 unsafe impl NoatunStorable for Rgb {}
 
 impl NoatunKey for Rgb {
-    type DetachedType = Rgb;
-    type DetachedOwnedType = Rgb;
+    type ExternalType = Rgb;
+    type ExternalOwnedType = Rgb;
 
-    fn hash<H>(tself: &Self::DetachedType, state: &mut H)
+    fn hash<H>(tself: &Self::ExternalType, state: &mut H)
     where
         H: Hasher
     {
@@ -62,20 +62,20 @@ impl NoatunKey for Rgb {
         (*tself).hash(state);
     }
 
-    fn detach_key_ref(&self) -> &Self::DetachedType {
+    fn export_key_ref(&self) -> &Self::ExternalType {
         self
     }
 
-    fn detach_key(&self) -> Self::DetachedOwnedType {
+    fn export_key(&self) -> Self::ExternalOwnedType {
         *self
     }
 
-    fn eq(a: &Self::DetachedType, b: &Self::DetachedType) -> bool {
+    fn eq(a: &Self::ExternalType, b: &Self::ExternalType) -> bool {
         a == b
     }
 
-    fn init_from_detached(mut self: Pin<&mut Self>, detached: &Self::DetachedType) {
-        self.set(*detached);
+    fn init_from(mut self: Pin<&mut Self>, external: &Self::ExternalType) {
+        self.set(*external);
     }
 }
 
@@ -485,9 +485,9 @@ impl App for Visualizer {
 
                         let session = node.db.begin_session().unwrap();
                         let (r,g,b) = session.with_root(|root|{
-                            (root.key_values.get(&Rgb::RED).map(|x|x.detach()).unwrap_or(0),
-                             root.key_values.get(&Rgb::GREEN).map(|x|x.detach()).unwrap_or(0),
-                             root.key_values.get(&Rgb::BLUE).map(|x|x.detach()).unwrap_or(0))
+                            (root.key_values.get(&Rgb::RED).map(|x|x.export()).unwrap_or(0),
+                             root.key_values.get(&Rgb::GREEN).map(|x|x.export()).unwrap_or(0),
+                             root.key_values.get(&Rgb::BLUE).map(|x|x.export()).unwrap_or(0))
                         });
                         let mut pixel_pos = pixel_pos1;
                         for (value, color) in [
@@ -628,7 +628,7 @@ impl App for Visualizer {
                                 ui.horizontal(|ui|{
                                     let sess = self.ether.nodes[selected_node].db.begin_session().unwrap();
                                     let root = sess.with_root(|root|{
-                                        root.detach()
+                                        root.export()
                                     });
                                     if Button::new(RichText::new(format!("Red:{}", root.key_values.get(&Rgb::RED).unwrap_or(&0))).color(Color32::BLACK)).fill(Rgb::RED.color()).ui(ui).clicked() {
                                         self.temp_col = Rgb::RED;

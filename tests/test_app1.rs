@@ -22,10 +22,10 @@ unsafe impl NoatunStorable for CounterObject {
 
 impl Object for CounterObject {
     type Ptr = ThinPtr;
-    type DetachedType = ();
-    type DetachedOwnedType = ();
+    type ExternalType = ();
+    type ExternalOwnedType = ();
 
-    fn detach(&self) -> Self::DetachedOwnedType {
+    fn export(&self) -> Self::ExternalOwnedType {
         unimplemented!()
     }
 
@@ -33,13 +33,13 @@ impl Object for CounterObject {
         unimplemented!()
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {
+    fn init_from(self: Pin<&mut Self>, _external: &Self::ExternalType) {
         unimplemented!()
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
         let mut this: Pin<&mut CounterObject> = NoatunContext.allocate();
-        this.as_mut().init_from_detached(detached);
+        this.as_mut().init_from(external);
         this
     }
 

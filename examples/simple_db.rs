@@ -34,12 +34,12 @@ impl Message for ExampleMessage {
     fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
 
-        let new_total_salary = root.total_salary_cost.detach() + self.salary;
+        let new_total_salary = root.total_salary_cost.export() + self.salary;
         root.total_salary_cost.set(new_total_salary);
 
         root.employees.insert(
             self.name.as_str(),
-            &EmployeeDetached {
+            &EmployeeExternal {
                 name: self.name.clone(),
                 salary: self.salary,
             },
@@ -67,18 +67,18 @@ fn main() -> Result<()> {
 
     let mut employees: Vec<_> = s.with_root(|root| {
         assert_eq!(root.total_salary_cost.get(), 45);
-        root.employees.detach().values().cloned().collect()
+        root.employees.export().values().cloned().collect()
     });
 
     employees.sort_by_key(|emp| emp.name.clone());
     assert_eq!(
         employees,
         vec![
-            EmployeeDetached {
+            EmployeeExternal {
                 name: "Andersen".to_string(),
                 salary: 25,
             },
-            EmployeeDetached {
+            EmployeeExternal {
                 name: "Smith".to_string(),
                 salary: 20,
             },

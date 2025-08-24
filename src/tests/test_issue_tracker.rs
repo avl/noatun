@@ -80,7 +80,7 @@ impl Message for IssueMessage {
             IssueMessage::AppendText { id, reporter, text } => {
                 if let Some(issue) = root.issues.get_mut_val(id.as_str()) {
                     let issue = issue.pin_project();
-                    issue.description.push(DescriptionTextDetached {
+                    issue.description.push(DescriptionTextExternal {
                         time: message_id.timestamp(),
                         text: text.to_string(),
                         added_by: reporter.to_string(),
@@ -301,8 +301,8 @@ async fn all_up_issue_iteration(seed: u64) {
 
     crate::tests::all_up_sync_test::assert_equal(&mut app1, &mut app2, seed).await;
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
 
     println!("End state: {root1:?}");
     assert_eq!(root1, root2);

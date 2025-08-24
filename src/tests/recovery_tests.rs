@@ -46,7 +46,7 @@ impl Message for KeyValMessage {
             .keyval
             .as_mut()
             .retain(|item| **item.key() != self.key);
-        projected.keyval.push(KeyValItemDetached {
+        projected.keyval.push(KeyValItemExternal {
             key: self.key.clone(),
             value: self.val.clone(),
         });
@@ -71,7 +71,7 @@ impl Message for KeyValMessage2 {
             .keyval
             .as_mut()
             .retain(|item| **item.key() != self.key);
-        projected.keyval.push(KeyValItemDetached {
+        projected.keyval.push(KeyValItemExternal {
             key: self.key.clone(),
             value: self.val.clone(),
         });
@@ -110,13 +110,13 @@ fn test_nominal_load_without_recovery() {
     sess.with_root(|root| {
         assert_eq!(root.edit_count.get(), 3);
         assert_eq!(
-            root.keyval.detach(),
+            root.keyval.export(),
             vec![
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }
@@ -136,13 +136,13 @@ fn test_nominal_load_without_recovery() {
     db.with_root(|root| {
         assert_eq!(root.edit_count.get(), 3);
         assert_eq!(
-            root.keyval.detach(),
+            root.keyval.export(),
             vec![
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }
@@ -195,8 +195,8 @@ fn test_recovery_schema_changed() {
     db.with_root(|root| {
         assert_eq!(root.edit_count.get(), 1);
         assert_eq!(
-            root.keyval.detach(),
-            vec![KeyValItemDetached {
+            root.keyval.export(),
+            vec![KeyValItemExternal {
                 key: "Fruit1".to_string(),
                 value: "Banana".to_string(),
             }]
@@ -237,13 +237,13 @@ fn test_recovery_simple() {
     sess.with_root(|root| {
         assert_eq!(root.keyval.len(), 2);
         assert_eq!(
-            root.keyval.detach(),
+            root.keyval.export(),
             vec![
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }
@@ -266,13 +266,13 @@ fn test_recovery_simple() {
 
     db.with_root(|root| {
         assert_eq!(
-            root.keyval.detach(),
+            root.keyval.export(),
             vec![
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }
@@ -321,13 +321,13 @@ fn test_recovery_corrupted_file() {
     assert_eq!(sess.get_all_message_ids().unwrap().len(), 3);
     sess.with_root(|root| {
         assert_eq!(
-            root.keyval.detach(),
+            root.keyval.export(),
             vec![
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }
@@ -356,8 +356,8 @@ fn test_recovery_corrupted_file() {
 
     db.with_root(|root| {
         assert_eq!(
-            root.keyval.detach(),
-            vec![KeyValItemDetached {
+            root.keyval.export(),
+            vec![KeyValItemExternal {
                 key: "Fruit1".to_string(),
                 value: "Apple".to_string(),
             }]
@@ -403,13 +403,13 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
     assert_eq!(sess.get_all_message_ids().unwrap().len(), 3);
     sess.with_root(|root| {
         assert_eq!(
-            root.keyval.detach(),
+            root.keyval.export(),
             vec![
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemDetached {
+                KeyValItemExternal {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }

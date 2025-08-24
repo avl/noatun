@@ -118,7 +118,7 @@ impl Message for IssueMessage {
                 let id = remap(&root, id);
                 if let Some(issue) = root.issues.get_mut_val(id.as_str()) {
                     let issue = issue.pin_project();
-                    issue.description.push(DescriptionTextDetached {
+                    issue.description.push(DescriptionTextExternal {
                         time: message_id.timestamp(),
                         text: text.to_string(),
                         added_by: reporter.to_string(),
@@ -145,7 +145,7 @@ impl Message for IssueMessage {
                 let id = remap(&root, id);
                 if let Some(issue) = root.issues.get_mut_val(id.as_str()) {
                     let issue = issue.pin_project();
-                    issue.reporter.init_from_detached(new_reporter);
+                    issue.reporter.init_from(new_reporter);
                 }
             }
         }
@@ -354,7 +354,7 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
     let rows: Vec<Row> = app.comms.with_root(|root| {
         let mut rows = Vec::new();
         for (k, v) in root.issues.iter() {
-            rows.push((v.created.get(), k.detach(), v.reporter.detach()));
+            rows.push((v.created.get(), k.export(), v.reporter.export()));
         }
         rows.sort();
         for (idx, item) in rows.iter().enumerate() {
@@ -395,7 +395,7 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
                     rows.push((
                         text.time.to_string(),
                         text.added_by.to_string(),
-                        text.text.detach(),
+                        text.text.export(),
                     ));
                 }
             }
@@ -432,7 +432,7 @@ fn draw(frame: &mut Frame, app: &mut AppState) -> Result<()> {
 
         if let Some(issue) = app
             .comms
-            .with_root(|root| root.issues.get(selected_row).map(|x| x.detach()))
+            .with_root(|root| root.issues.get(selected_row).map(|x| x.export()))
         {
             frame.render_widget(
                 Paragraph::new(vec![

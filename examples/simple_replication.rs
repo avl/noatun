@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await?;
         }
         distributed_db.with_root(|root| {
-            let mut items: Vec<_> = root.items.iter().map(|(k, v)| (*k, v.detach())).collect();
+            let mut items: Vec<_> = root.items.iter().map(|(k, v)| (*k, v.export())).collect();
             items.sort();
             println!("All messages:");
             for (_msg_id, item) in items {

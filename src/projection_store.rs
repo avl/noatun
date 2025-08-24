@@ -5,7 +5,7 @@ use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 use crate::{
-    bytes_of_mut, bytes_of_mut_uninit, dprintln, from_bytes, from_bytes_mut, FatPtr, GenPtr,
+    bytes_of_mut, dprintln, from_bytes, from_bytes_mut, FatPtr, GenPtr,
     Message, NoatunStorable, Object, Pointer, RawFatPtr, SchemaHasher, SerializableGenPtr, Target,
     ThinPtr,
 };
@@ -249,10 +249,10 @@ struct DepTrackEntry {
 
 impl Object for DepTrackEntry {
     type Ptr = ThinPtr;
-    type DetachedType = ();
-    type DetachedOwnedType = ();
+    type ExternalType = ();
+    type ExternalOwnedType = ();
 
-    fn detach(&self) -> Self::DetachedOwnedType {
+    fn export(&self) -> Self::ExternalOwnedType {
         unimplemented!()
     }
 
@@ -260,11 +260,11 @@ impl Object for DepTrackEntry {
         unimplemented!()
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {
+    fn init_from(self: Pin<&mut Self>, _detached: &Self::ExternalType) {
         unimplemented!()
     }
 
-    unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(_detached: &Self::ExternalType) -> Pin<&'a mut Self> {
         unimplemented!()
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {

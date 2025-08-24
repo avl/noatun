@@ -71,18 +71,18 @@ impl<Root> DummyTestApp<Root> {
 
 impl<Root: FixedSizeObject> Object for DummyTestApp<Root> {
     type Ptr = ThinPtr;
-    type DetachedType = ();
-    type DetachedOwnedType = ();
+    type ExternalType = ();
+    type ExternalOwnedType = ();
 
-    fn detach(&self) -> Self::DetachedOwnedType {}
+    fn export(&self) -> Self::ExternalOwnedType {}
 
     fn destroy(self: Pin<&mut Self>) {
         unimplemented!()
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {}
+    fn init_from(self: Pin<&mut Self>, _detached: &Self::ExternalType) {}
 
-    unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(_detached: &Self::ExternalType) -> Pin<&'a mut Self> {
         unimplemented!()
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
@@ -241,10 +241,10 @@ unsafe impl NoatunStorable for CounterObject {
 
 impl Object for CounterObject {
     type Ptr = ThinPtr;
-    type DetachedType = ();
-    type DetachedOwnedType = ();
+    type ExternalType = ();
+    type ExternalOwnedType = ();
 
-    fn detach(&self) -> Self::DetachedOwnedType {
+    fn export(&self) -> Self::ExternalOwnedType {
         unimplemented!()
     }
 
@@ -256,11 +256,11 @@ impl Object for CounterObject {
         }
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {
+    fn init_from(self: Pin<&mut Self>, _detached: &Self::ExternalType) {
         unimplemented!()
     }
 
-    unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(_detached: &Self::ExternalType) -> Pin<&'a mut Self> {
         unimplemented!()
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
@@ -1054,4 +1054,10 @@ fn test_predecessor() {
 fn max_time() {
     println!("Time: {}", NoatunTime((1 << 48) - 1));
     println!("Time: {}", NoatunTime((1 << 49) - 1));
+}
+
+
+#[test]
+fn test_noatun_time_max() {
+    println!("MAX: {:?}", NoatunTime::MAX);
 }

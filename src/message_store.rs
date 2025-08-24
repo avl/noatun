@@ -2868,7 +2868,7 @@ mod tests {
             //header.dirty_status = STATUS_NOK;
         }
         store
-            .recover(|_, _| Ok(()), NoatunTime::ZERO, &CutOffConfig::default())
+            .recover(|_, _| Ok(()), NoatunTime::EPOCH, &CutOffConfig::default())
             .unwrap();
 
         let msg = store

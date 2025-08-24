@@ -38,7 +38,7 @@ noatun_object!(
     }
 );
 
-impl PartialEq for SubObjDetached {
+impl PartialEq for SubObjExternal {
     fn eq(&self, other: &Self) -> bool {
         self.counter == other.counter
     }
@@ -61,9 +61,9 @@ impl Message for TestMessage {
     type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, time: MessageId, mut root: Pin<&mut Self::Root>) {
-        root.as_mut().items_mut().push(SubObjDetached {
+        root.as_mut().items_mut().push(SubObjExternal {
             counter: self.insert,
-            subsub: vec![SubSubObjDetached {
+            subsub: vec![SubSubObjExternal {
                 dummy: DummyObj { x: 1, y: 2 },
             }],
         });
@@ -93,11 +93,11 @@ fn test() {
         let mut msgs: Vec<TestMessage> = (0..NUM_MSGS)
             .map(|x| TestMessage { insert: x as u32 })
             .collect();
-        let orig: Vec<SubObjDetached> = msgs
+        let orig: Vec<SubObjExternal> = msgs
             .iter()
-            .map(|x| SubObjDetached {
+            .map(|x| SubObjExternal {
                 counter: x.insert,
-                subsub: vec![SubSubObjDetached {
+                subsub: vec![SubSubObjExternal {
                     dummy: DummyObj {
                         x: x.insert,
                         y: x.insert,
@@ -123,7 +123,7 @@ fn test() {
 
         db.reproject().unwrap();
         db.with_root(|root: &TestDb| {
-            assert_eq!(&root.items.detach(), &orig[0..=TIME_LIMIT]);
+            assert_eq!(&root.items.export(), &orig[0..=TIME_LIMIT]);
             assert!(root.now().0 > 0);
         });
 
@@ -132,7 +132,7 @@ fn test() {
             .unwrap();
         db.reproject().unwrap();
         db.with_root(|root: &TestDb| {
-            assert_eq!(&root.items.detach(), &orig);
+            assert_eq!(&root.items.export(), &orig);
         });
     }
 }

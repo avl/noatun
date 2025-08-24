@@ -148,8 +148,8 @@ async fn all_up_simple_sync_test() {
 
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
 
     assert_eq!(root1.sum, 3);
     assert_eq!(root2.sum, 3);
@@ -375,8 +375,8 @@ async fn all_up_gradual_update_sync_test() {
     tokio::time::sleep(Duration::from_secs(50)).await;
     tokio::time::sleep(Duration::from_secs(30)).await;
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
 
     let msgs1 = app1
         .inner_database()
@@ -665,8 +665,8 @@ async fn all_up_general_update_sync_test_impl(
     app1.set_mock_time(time_now).unwrap();
     app2.set_mock_time(time_now).unwrap();
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
 
     info!("Test case done");
     println!("{}", driver.raw_frames_snapshot());
@@ -706,8 +706,8 @@ async fn all_up_general_update_sync_test_impl(
     /*app1.inner_database().do_recovery().unwrap();
     app2.inner_database().do_recovery().unwrap();*/
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
 
     assert_eq!(root1, correct_root);
     assert_eq!(root2, correct_root);
@@ -755,8 +755,8 @@ async fn all_up_big_severely_desynced_test() {
     driver.set_loss(0.0);
     tokio::time::sleep(Duration::from_secs(70)).await;
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
 
     assert_eq!(root1, root2);
     println!("{}", driver.messages_snapshot());
@@ -803,8 +803,8 @@ async fn all_up_big_nominal_test() {
     }
     tokio::time::sleep(Duration::from_secs(120)).await;
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
 
     println!("{}", driver.messages_snapshot());
 
@@ -866,8 +866,8 @@ async fn all_up_huge_desynced_test() {
     driver.set_loss(0.0);
     tokio::time::sleep(Duration::from_secs(120)).await;
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
     println!("{}", driver.messages_snapshot());
     assert_snapshot!(driver.messages_snapshot());
     assert_eq!(root1, root2);
@@ -923,9 +923,9 @@ async fn all_up_three_node_resync() {
         app3.get_update_heads().unwrap()
     );
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
-    let root3 = app3.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
+    let root3 = app3.with_root(|root| root.export());
 
     assert_eq!(root1, root2);
     assert_eq!(root2, root3);
@@ -977,9 +977,9 @@ async fn all_up_three_node_partial_resync1() {
             .unwrap();
     }
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
-    let root3 = app3.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
+    let root3 = app3.with_root(|root| root.export());
 
     println!("Start time: {start_time:?}");
     println!("{}", driver.messages_snapshot());
@@ -1037,9 +1037,9 @@ async fn all_up_three_node_partial_resync2() {
             .unwrap();
     }
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
-    let root3 = app3.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
+    let root3 = app3.with_root(|root| root.export());
 
     println!("Start time: {start_time:?}");
     //println!("{}", driver.raw_frames_snapshot());
@@ -1085,10 +1085,10 @@ async fn all_up_four_node_partial_resync1() {
             .unwrap();
     }
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
-    let root3 = app3.with_root(|root| root.detach());
-    let root4 = app4.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
+    let root3 = app3.with_root(|root| root.export());
+    let root4 = app4.with_root(|root| root.export());
 
     println!("Start time: {start_time:?}");
     //println!("{}", driver.raw_frames_snapshot());
@@ -1145,10 +1145,10 @@ async fn all_up_four_node_partial_resync1_node1_isolated() {
         }
     }
 
-    let root1 = app1.with_root(|root| root.detach());
-    let root2 = app2.with_root(|root| root.detach());
-    let root3 = app3.with_root(|root| root.detach());
-    let root4 = app4.with_root(|root| root.detach());
+    let root1 = app1.with_root(|root| root.export());
+    let root2 = app2.with_root(|root| root.export());
+    let root3 = app3.with_root(|root| root.export());
+    let root4 = app4.with_root(|root| root.export());
 
     println!("Start time: {start_time:?}");
     println!("{}", driver.raw_frames_snapshot());
@@ -1219,9 +1219,9 @@ async fn ten_nodes_sync_test() {
         "every one sends heads 7 times, plus a few messages to bring 7 up-to-date"
     );
 
-    let root0 = apps[0].with_root(|root| root.detach());
+    let root0 = apps[0].with_root(|root| root.export());
     for i in 1..10 {
-        let root = apps[i].with_root(|root| root.detach());
+        let root = apps[i].with_root(|root| root.export());
         assert_eq!(root0, root);
     }
 }
@@ -1314,9 +1314,9 @@ async fn complex_forwarding_test() {
 
     println!("Sent Messages: {} ", driver.sent_messages_count());
 
-    let root0 = apps[0].with_root(|root| root.detach());
+    let root0 = apps[0].with_root(|root| root.export());
     for i in 1..6 {
-        let root = apps[i].with_root(|root| root.detach());
+        let root = apps[i].with_root(|root| root.export());
         assert_eq!(root0, root, "node {} and {} should have same state", 0, i);
     }
     assert_snapshot!(driver.sent_messages_snapshot());

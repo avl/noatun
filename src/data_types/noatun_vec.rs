@@ -137,22 +137,22 @@ where
     T: FixedSizeObject + 'static,
 {
     type Ptr = ThinPtr;
-    type DetachedType = [T::DetachedOwnedType];
-    type DetachedOwnedType = Vec<T::DetachedOwnedType>;
+    type ExternalType = [T::ExternalOwnedType];
+    type ExternalOwnedType = Vec<T::ExternalOwnedType>;
 
-    fn detach(&self) -> Self::DetachedOwnedType {
-        unimplemented!("RawDatabaseVec does not support detach")
+    fn export(&self) -> Self::ExternalOwnedType {
+        unimplemented!("RawDatabaseVec does not support export")
     }
 
     fn destroy(self: Pin<&mut Self>) {
         // The Raw type is special, is isn't tracked
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, _detached: &Self::DetachedType) {
-        panic!("init_from_detached is not implemented for RawDatabaseVec");
+    fn init_from(self: Pin<&mut Self>, _detached: &Self::ExternalType) {
+        panic!("init_from is not implemented for RawDatabaseVec");
     }
-    unsafe fn allocate_from_detached<'a>(_detached: &Self::DetachedType) -> Pin<&'a mut Self> {
-        panic!("allocate_from_detached is not implemented for RawDatabaseVec");
+    unsafe fn allocate_from<'a>(_detached: &Self::ExternalType) -> Pin<&'a mut Self> {
+        panic!("allocate_from is not implemented for RawDatabaseVec");
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
         Self::hash_schema(hasher);
@@ -665,14 +665,14 @@ where
         }
     }
 
-    pub fn push(mut self: Pin<&mut Self>, t: impl Borrow<<T as Object>::DetachedType>) {
+    pub fn push(mut self: Pin<&mut Self>, t: impl Borrow<<T as Object>::ExternalType>) {
         self.as_mut().push_zeroed();
 
         let index = self.raw.length - 1;
-        self.get_index_mut(index).init_from_detached(t.borrow());
+        self.get_index_mut(index).init_from(t.borrow());
         /*let offset = ThinPtr(tself.raw.data + index * size_of::<T>());
         unsafe {
-            offset.access_mut::<T>().init_from_detached(t.borrow());
+            offset.access_mut::<T>().init_from(t.borrow());
         }*/
     }
 }
@@ -779,7 +779,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
     pub fn set_item_infallible(
         self: Pin<&mut Self>,
         index: usize,
-        val: impl Borrow<<T as Object>::DetachedType>,
+        val: impl Borrow<<T as Object>::ExternalType>,
     ) {
         let tself = unsafe { self.get_unchecked_mut() };
         if index >= tself.raw.length {
@@ -797,10 +797,10 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
         let offset = ThinPtr(tself.raw.data + index * size_of::<T>());
         unsafe {
             let item_data = offset.access_mut::<T>();
-            item_data.init_from_detached(val.borrow());
+            item_data.init_from(val.borrow());
         }
     }
-    pub fn push(self: Pin<&mut Self>, t: impl Borrow<<T as Object>::DetachedType>) {
+    pub fn push(self: Pin<&mut Self>, t: impl Borrow<<T as Object>::ExternalType>) {
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.push_zeroed(&mut ThreadLocalContext);
 
@@ -808,7 +808,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
         tself
             .raw
             .get_index_mut_pin(index, &mut ThreadLocalContext)
-            .init_from_detached(t.borrow());
+            .init_from(t.borrow());
     }
 }
 
@@ -817,11 +817,11 @@ where
     T: FixedSizeObject + 'static,
 {
     type Ptr = ThinPtr;
-    type DetachedType = [T::DetachedOwnedType];
-    type DetachedOwnedType = Vec<T::DetachedOwnedType>;
+    type ExternalType = [T::ExternalOwnedType];
+    type ExternalOwnedType = Vec<T::ExternalOwnedType>;
 
-    fn detach(&self) -> Self::DetachedOwnedType {
-        self.iter().map(|x| x.detach()).collect()
+    fn export(&self) -> Self::ExternalOwnedType {
+        self.iter().map(|x| x.export()).collect()
     }
 
     fn destroy(self: Pin<&mut Self>) {
@@ -830,18 +830,18 @@ where
         tself.raw.destroy_items(&mut ThreadLocalContext)
     }
 
-    fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
         let tself = unsafe { self.get_unchecked_mut() };
         use std::borrow::Borrow;
-        for item in detached {
+        for item in external {
             let new_item = tself.raw.push_zeroed(&mut ThreadLocalContext);
-            new_item.init_from_detached(item.borrow());
+            new_item.init_from(item.borrow());
         }
     }
 
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
         let mut pod: Pin<&mut Self> = NoatunContext.allocate();
-        pod.as_mut().init_from_detached(detached);
+        pod.as_mut().init_from(external);
         pod
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
@@ -854,11 +854,11 @@ where
     T: FixedSizeObject + 'static,
 {
     type Ptr = ThinPtr;
-    type DetachedType = [T::DetachedOwnedType];
-    type DetachedOwnedType = Vec<T::DetachedOwnedType>;
+    type ExternalType = [T::ExternalOwnedType];
+    type ExternalOwnedType = Vec<T::ExternalOwnedType>;
 
-    fn detach(&self) -> Self::DetachedOwnedType {
-        self.iter().map(|x| x.detach()).collect()
+    fn export(&self) -> Self::ExternalOwnedType {
+        self.iter().map(|x| x.export()).collect()
     }
 
     fn destroy(self: Pin<&mut Self>) {
@@ -870,16 +870,16 @@ where
         }
     }
 
-    fn init_from_detached(mut self: Pin<&mut Self>, detached: &Self::DetachedType) {
+    fn init_from(mut self: Pin<&mut Self>, external: &Self::ExternalType) {
         use std::borrow::Borrow;
-        for item in detached {
+        for item in external {
             let new_item = self.as_mut().push_zeroed();
-            new_item.init_from_detached(item.borrow());
+            new_item.init_from(item.borrow());
         }
     }
-    unsafe fn allocate_from_detached<'a>(detached: &Self::DetachedType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
         let mut pod: Pin<&mut Self> = NoatunContext.allocate();
-        pod.as_mut().init_from_detached(detached);
+        pod.as_mut().init_from(external);
         pod
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {

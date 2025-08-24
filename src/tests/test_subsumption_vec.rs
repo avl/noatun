@@ -293,6 +293,6 @@ fn test_vec5() {
     );
 
     db.with_root(|root| {
-        assert_eq!(root.items.detach(), vec![]);
+        assert_eq!(root.items.export(), vec![]);
     });
 }
