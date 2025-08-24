@@ -73,7 +73,7 @@ fn test_vec0() {
     assert_eq!(
         db.count_messages(),
         1,
-        "last message is present in clear-registrar"
+        "last message is present in clear-tracker"
     );
 }
 
@@ -113,7 +113,7 @@ fn test_vec1() {
     assert_eq!(
         db.count_messages(),
         1,
-        "last message is present in clear-registrar"
+        "last message is present in clear-tracker"
     );
 }
 
@@ -144,7 +144,7 @@ fn test_vec2() {
     assert_eq!(
         db.count_messages(),
         1,
-        "last message is present in clear registrar"
+        "last message is present in clear tracker"
     );
 }
 

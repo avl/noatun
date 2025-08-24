@@ -13,7 +13,7 @@ use std::slice;
 pub struct NoatunString {
     start: ThinPtr,
     length: usize,
-    registrar: Tracker,
+    tracker: Tracker,
     padding: u32,
 }
 
@@ -59,7 +59,9 @@ impl Object for NoatunString {
 
     fn destroy(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
-        NoatunContext.clear_registrar_ptr(&mut tself.registrar, false);
+        unsafe {
+            NoatunContext.clear_tracker_ptr(&mut tself.tracker, false);
+        }
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -87,7 +89,7 @@ impl Deref for NoatunString {
 
 impl NoatunString {
     pub fn get(&self) -> &str {
-        NoatunContext.observe_registrar(self.registrar);
+        NoatunContext.observe_registrar(self.tracker);
 
         if self.length == 0 {
             return "";
@@ -113,7 +115,7 @@ impl NoatunString {
         let raw_index = NoatunContext.index_of_ptr(raw);
         NoatunContext.write_internal(raw_index, &mut tself.start);
         NoatunContext.write_internal(value.len(), &mut tself.length);
-        unsafe { NoatunContext.update_registrar_ptr(addr_of_mut!(tself.registrar), false) };
+        unsafe { NoatunContext.update_tracker_ptr(addr_of_mut!(tself.tracker), false) };
     }
 }
 impl NoatunKey for NoatunString {
@@ -144,7 +146,9 @@ impl NoatunKey for NoatunString {
     }
 
     fn destroy(&mut self) {
-        NoatunContext.clear_registrar_ptr(&mut self.registrar, false);
+        unsafe {
+            NoatunContext.clear_tracker_ptr(&mut self.tracker, false);
+        }
     }
 }
 

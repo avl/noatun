@@ -13,14 +13,14 @@ use tracing::trace;
 pub struct NoatunCell<T> {
     value: T,
     /// The most recent message that did a write to this cell
-    registrar: Tracker,
+    tracker: Tracker,
 }
 
 #[repr(C)]
 pub struct OpaqueNoatunCell<T> {
     value: T,
     /// The most recent message that did a write to this cell
-    registrar: Tracker,
+    tracker: Tracker,
 }
 
 unsafe impl<T: NoatunStorable> NoatunStorable for OpaqueNoatunCell<T> {
@@ -75,7 +75,7 @@ impl<T: Copy> Deref for NoatunCell<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        NoatunContext.observe_registrar(self.registrar);
+        NoatunContext.observe_registrar(self.tracker);
         &self.value
     }
 }
@@ -85,7 +85,7 @@ impl<T: NoatunStorable> NoatunCell<T> {
     where
         T: Copy,
     {
-        NoatunContext.observe_registrar(self.registrar);
+        NoatunContext.observe_registrar(self.tracker);
         self.value
     }
     pub fn set(self: Pin<&mut Self>, new_value: T) {
@@ -94,7 +94,7 @@ impl<T: NoatunStorable> NoatunCell<T> {
         let tself = unsafe { self.get_unchecked_mut() };
         c.assert_mutable();
         unsafe { c.write_storable_ptr(new_value, addr_of_mut!(tself.value)) }
-        c.update_registrar_ptr(addr_of_mut!(tself.registrar), false);
+        c.update_tracker_ptr(addr_of_mut!(tself.tracker), false);
     }
 }
 
@@ -120,13 +120,13 @@ impl<T: NoatunStorable> OpaqueNoatunCell<T> {
         unsafe {
             c.write_storable_ptr(new_value, addr_of_mut!(tself.value));
         }
-        c.update_registrar_ptr(addr_of_mut!(tself.registrar), true);
+        c.update_tracker_ptr(addr_of_mut!(tself.tracker), true);
     }
 }
 
 impl<T: NoatunStorable + AddAssign<T> + Copy> AddAssign<T> for Pin<&mut OpaqueNoatunCell<T>> {
     fn add_assign(&mut self, rhs: T) {
-        NoatunContext.observe_registrar(self.registrar);
+        NoatunContext.observe_registrar(self.tracker);
         let mut new_value = self.value;
         new_value += rhs;
         self.as_mut().set(new_value);
@@ -134,7 +134,7 @@ impl<T: NoatunStorable + AddAssign<T> + Copy> AddAssign<T> for Pin<&mut OpaqueNo
 }
 impl<T: NoatunStorable + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut OpaqueNoatunCell<T>> {
     fn sub_assign(&mut self, rhs: T) {
-        NoatunContext.observe_registrar(self.registrar);
+        NoatunContext.observe_registrar(self.tracker);
         let mut new_value = self.value;
         new_value -= rhs;
         self.as_mut().set(new_value);
@@ -143,7 +143,7 @@ impl<T: NoatunStorable + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut OpaqueNo
 
 impl<T: NoatunStorable + AddAssign<T> + Copy> AddAssign<T> for Pin<&mut NoatunCell<T>> {
     fn add_assign(&mut self, rhs: T) {
-        NoatunContext.observe_registrar(self.registrar);
+        NoatunContext.observe_registrar(self.tracker);
         let mut new_value = self.value;
         new_value += rhs;
         self.as_mut().set(new_value);
@@ -151,7 +151,7 @@ impl<T: NoatunStorable + AddAssign<T> + Copy> AddAssign<T> for Pin<&mut NoatunCe
 }
 impl<T: NoatunStorable + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut NoatunCell<T>> {
     fn sub_assign(&mut self, rhs: T) {
-        NoatunContext.observe_registrar(self.registrar);
+        NoatunContext.observe_registrar(self.tracker);
         let mut new_value = self.value;
         new_value -= rhs;
         self.as_mut().set(new_value);
@@ -171,7 +171,7 @@ impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
     fn destroy(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         trace!("NoatunCell::clear: {:?}", tself.value);
-        NoatunContext.clear_registrar_ptr(&mut tself.registrar, false);
+        unsafe { NoatunContext.clear_tracker_ptr(&mut tself.tracker, false) };
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {
@@ -201,7 +201,7 @@ impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
     fn destroy(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         trace!("OpaqueNoatunCell::clear: {:?}", tself.value);
-        NoatunContext.clear_registrar_ptr(&mut tself.registrar, true);
+        unsafe { NoatunContext.clear_tracker_ptr(&mut tself.tracker, true) };
     }
 
     fn init_from_detached(self: Pin<&mut Self>, detached: &Self::DetachedType) {

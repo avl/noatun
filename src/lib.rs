@@ -18,6 +18,7 @@
 #![allow(clippy::expect_fun_call)]
 #![allow(clippy::needless_late_init)]
 #![allow(clippy::derivable_impls)]
+
 //#![allow(clippy::manual_is_multiple_of)]
 
 use crate::noatun_instant::Instant;
@@ -335,6 +336,8 @@ thread_local! {
 
 #[cfg(any(feature = "debug", debug_assertions))]
 thread_local! {
+    /// In debug-builds, this thread local data tracks which node is current processed
+    /// Useful for debugging printouts and logging.
     pub static DEBUG_NODE: Cell<u16> = const { Cell::new(0) };
 }
 
@@ -367,6 +370,14 @@ pub fn cur_node() -> u16 {
     }
 }
 
+/// Global unit struct used for accessing the current thread local noatun context.
+///
+/// The context gives access to the materialized view and its metadata.
+///
+/// Only advanced users of noatun need to interact with this. It's needed to develop
+/// new custom data types for noatun. Regular structs can be implemented using
+/// the [`crate::noatun_object`]-macro, but custom collections or other special types
+/// may need to interact with `NoatunContext` directly.
 #[derive(Clone, Copy)]
 pub struct NoatunContext;
 
@@ -413,32 +424,46 @@ impl NoatunContext {
         }
     }
 
-    /// Take ownership of the given registrar.
+    /// Take ownership of the given tracker, after having overwritten all its associated data.
+    ///
     /// Any previous owner will have its refcount decreased.
-    /// If 'opaque' is false, the registrar is marked as being opaque (not readable
-    /// during message application). Note, all writers of a specific registrar
-    /// must agree on its opaqueness.
+    ///
+    /// Unless 'opaque' is false, the owner of the tracker is marked as being non-opaque
+    /// (not readable during message application). Note, all writers of a specific tracker
+    /// must agree on its opaqueness. The opaqueness is a property of the tracked data, not
+    /// the owner of the tracker.
     ///
     /// # Safety
     /// The 'seq' pointer must point to valid, unaliased memory.
-    pub unsafe fn update_registrar_ptr(self, seq: *mut Tracker, opaque: bool) {
+    pub unsafe fn update_tracker_ptr(self, seq: *mut Tracker, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).update_registrar_ptr(seq, opaque) }
+        unsafe { (*context_ptr).update_tracker_ptr(seq, opaque) }
     }
 
-    pub fn clear_registrar_ptr(self, seq: *mut Tracker, opaque: bool) {
+    /// Report that the data for the given tracker has been cleared.
+    ///
+    /// This does not take ownership of the data. The tracked data will not have an owner
+    /// after this call returns. To ensure that the writing message
+    /// does not get pruned, it should mark itself as a tombstone.
+    pub unsafe fn clear_tracker_ptr(self, seq: *mut Tracker, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).clear_registrar_ptr(seq, opaque) }
     }
+
+
+    /// Return a mutable reference to the start of the materialized view's store.
     pub fn start_ptr_mut(self) -> *mut u8 {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).start_ptr_mut() }
     }
+
+    /// Return a non-mutable reference to the start of the materialized view's store.
     pub fn start_ptr(self) -> *const u8 {
         let context_ptr = get_context_ptr();
         unsafe { (*context_ptr).start_ptr() }
     }
 
+    /// Calculate the offset for the given object, inside the backing store.
     pub fn index_of<T: Object + ?Sized>(self, t: &T) -> T::Ptr {
         let context_ptr = get_context_ptr();
         unsafe { (*context_ptr).index_of(t) }
@@ -451,39 +476,50 @@ impl NoatunContext {
         unsafe { (*context_ptr).rewind(new_time) }
     }
 
-    pub fn set_next_seqnr(self, seqnr: SequenceNr) {
+
+
+    #[cfg(test)]
+    pub(crate) fn set_next_seqnr(self, seqnr: SequenceNr) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).set_next_seqnr(seqnr) }
     }
-    pub fn copy_ptr(&self, src: FatPtr, dest_index: ThinPtr) {
+
+    /// Copy all bytes designated by 'src' into region starting at 'dest_index'
+    pub unsafe fn copy_ptr(&self, src: FatPtr, dest_index: ThinPtr) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy_bytes(src, dest_index) }
     }
-    pub fn zero(&self, dst: FatPtr) {
+    /// Clear all bytes designated by 'dst'
+    pub unsafe fn zero(&self, dst: FatPtr) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).zero(dst) }
     }
+    /// Clear all bytes of 'dst'
     pub fn zero_storable<T: NoatunStorable>(&self, dst: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).zero_storable(dst) }
     }
+    /// Clear all bytes of 'dst'
     pub fn zero_internal<T: NoatunStorable>(&self, dst: &mut T) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).zero_internal(dst) }
     }
 
-    pub fn copy_sized(&self, src: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
+    /// Copy 'size_bytes' bytes from 'src' to 'dest_index'.
+    pub unsafe fn copy_sized(&self, src: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy_bytes_len(src, dest_index, size_bytes) }
     }
+    /// Copy from 'src' to 'dst'.
+    ///
+    /// This overwrites any previous value of 'dst'.
+    /// Don't use this if 'dst' contains a 'Tracker', since this is just a dumb memcpy.
     pub fn copy<T: NoatunStorable>(&self, src: &T, dst: &mut T) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).copy_storable(src, dst) }
     }
-    pub fn copy_uninit<T: NoatunStorable>(&self, src: &T, dst: &mut MaybeUninit<T>) {
-        let context_ptr = get_context_mut_ptr();
-        unsafe { (*context_ptr).copy_uninit(src, dst) }
-    }
+
+    /// Return the offset of 'ptr' within the materialized view store.
     pub fn index_of_ptr(&self, ptr: *const u8) -> ThinPtr {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
@@ -491,20 +527,29 @@ impl NoatunContext {
         }
         unsafe { (*context_ptr).index_of_ptr(ptr) }
     }
+    /// Allocate 'size' bytes with alignment 'align'
     pub fn allocate_raw(&self, size: usize, align: usize) -> *mut u8 {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_raw(size, align) }
     }
-    pub fn update_registrar(&self, registrar: &mut Tracker, opaque: bool) {
+    /// Report that data owned by 'tracker' has been fully overwritten.
+    pub fn update_tracker(&self, tracker: &mut Tracker, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
         unsafe {
-            (*context_ptr).update_registrar(registrar, opaque);
+            (*context_ptr).update_registrar(tracker, opaque);
         }
     }
+    /// Copy 'value' to 'dest'. Any previous contents of 'dest' are lost.
+    ///
+    /// Do not use if 'dest' contains [`Tracker`]-instances.
     pub fn write<T: NoatunStorable>(&self, value: T, dest: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_storable(value, dest) }
     }
+    /// Report that the current message has removed data in a way that is not tracked.
+    ///
+    /// The message is to be marked as a tombstone, and will not be pruned until it
+    /// has become older than the cutoff age (with some other conditions).
     pub fn wrote_tombstone(&self) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).set_wrote_tombstone() }
@@ -513,20 +558,26 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_storable(value, Pin::new_unchecked(dest)) }
     }
+
+    /// Write 'value' to 'dest'
     pub fn write_ptr<T: NoatunStorable>(&self, value: T, dest: *mut T) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_storable_ptr(value, dest) }
     }
+
+    /// Allocate an instance of 'T' and return a mutable pinned reference to it.
     pub unsafe fn allocate<'a, T: NoatunStorable>(&self) -> Pin<&'a mut T> {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_storable() }
     }
 
+    /// Allocate an instance of 'T' and return a mutable pinned reference to it.
     pub unsafe fn allocate_obj<'a, T: Object>(&self) -> Pin<&'a mut T> {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_obj() }
     }
 
+    /// Access an instance of 'T' at the location given by the ptr..
     pub unsafe fn access_thin<'a, T: ?Sized>(&self, ptr: ThinPtr) -> &'a T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
@@ -534,6 +585,7 @@ impl NoatunContext {
         }
         unsafe { (*context_ptr).access_thin::<T>(ptr) }
     }
+    /// Access an instance of 'T' at the location given by the ptr..
     pub unsafe fn access_thin_mut<'a, T: ?Sized>(&self, ptr: ThinPtr) -> &'a mut T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
@@ -541,6 +593,7 @@ impl NoatunContext {
         }
         unsafe { (*context_ptr).access_thin_mut::<T>(ptr) }
     }
+    /// Access an instance of 'T' at the location given by the ptr..
     pub unsafe fn access_fat<'a, T: ?Sized>(&self, ptr: FatPtr) -> &'a T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
@@ -548,6 +601,7 @@ impl NoatunContext {
         }
         unsafe { (*context_ptr).access_fat::<T>(ptr) }
     }
+    /// Access an instance of 'T' at the location given by the ptr..
     pub unsafe fn access_fat_mut<'a, T: ?Sized>(&self, ptr: FatPtr) -> &'a mut T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
@@ -556,7 +610,9 @@ impl NoatunContext {
         unsafe { (*context_ptr).access_fat_mut::<T>(ptr) }
     }
 
-    pub fn observe_registrar(self, registrar: Tracker) {
+    /// Report that the current message has observed (=read) the data tracked
+    /// by 'tracker'.
+    pub fn observe_registrar(self, tracker: Tracker) {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             return;
@@ -564,10 +620,14 @@ impl NoatunContext {
         if unsafe { (*(context_ptr as *const DatabaseContextData)).is_message_apply == false } {
             return;
         }
-        unsafe { (*context_ptr).observe_registrar(registrar) }
+        unsafe { (*context_ptr).observe_registrar(tracker) }
     }
 }
 
+/// The identity of a message.
+///
+/// The id consists of a timestamp with millisecond precision, and a random part.
+/// In total, the id is always exactly 16 bytes, and is meant to be truly globally unique.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Savefile)]
 #[repr(transparent)]
 pub struct MessageId {
@@ -595,6 +655,12 @@ const _ASSURE_SUPPORTED_USIZE: () = const {
 };
 
 impl MessageId {
+    /// Return a shortened representation of a MessageId.
+    ///
+    /// This representation is not guaranteed to be unique, but can be useful in tests
+    /// and debugging. The returned value has 32 bits of entropy, meaning it is very likely
+    /// to be unique within a small set of messages. For up to 93 messages, the chance of
+    /// collision between 'short' ids is approximately 1 in a million.
     pub fn short(&self) -> String {
         format!("{:08x}", self.data[3])
     }
@@ -666,7 +732,7 @@ static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 thread_local! {
-    pub static TEST_EPOCH: Cell<Option<Instant>> = const { Cell::new(None) };
+    static TEST_EPOCH: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
 #[cfg(test)]
@@ -676,6 +742,10 @@ pub fn reset_random_id() {
     NON_RANDOM_ID_COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Helper useful for tests
+///
+/// Returns the elapsed time since the value provided using ['set_test_epoch'].
+/// Also see [`test_elapsed`].
 pub fn test_epoch() -> Instant {
     TEST_EPOCH.with(|epoch| match epoch.get() {
         None => {
@@ -686,17 +756,29 @@ pub fn test_epoch() -> Instant {
         Some(val) => val,
     })
 }
+
+/// Helper useful for tests.
+///
+/// Sets the current test epoch for this thread. Also see [`test_elapsed`].
 pub fn set_test_epoch(instant: Instant) {
     TEST_EPOCH.with(|epoch| {
         epoch.set(Some(instant));
     })
 }
+
+/// Returns the time elapsed since the test epoch established using
+/// [`set_test_epoch`]
 pub fn test_elapsed() -> Duration {
     test_epoch().elapsed()
 }
 
 impl MessageId {
+    /// An all-zero MessageId. This is generally not useful
+    /// outside of tests
     pub const ZERO: MessageId = MessageId { data: [0u32; 4] };
+    /// Returns the smallest of 'self' and 'other'.
+    ///
+    /// Messages with earlier timestamps sort before messages with later timestamps.
     pub fn min(self, other: MessageId) -> MessageId {
         if self < other {
             self
@@ -704,14 +786,13 @@ impl MessageId {
             other
         }
     }
+    /// Return the 16 bytes of this message id as a slice
     pub fn as_bytes(&self) -> &[u8] {
         cast_slice(&self.data)
     }
+    /// Return true if the message is equal to ZERO
     pub fn is_zero(&self) -> bool {
         self.data[0] == 0 && self.data[1] == 0
-    }
-    pub fn zero() -> MessageId {
-        MessageId { data: [0, 0, 0, 0] }
     }
 
     /// Next larger MessageId.
@@ -759,10 +840,12 @@ impl MessageId {
         )
     }
 
+    /// Return a new randomized message id, with timestamp equal to now
     pub fn new_random() -> Result<Self> {
         Self::generate_for_time(NoatunTime::now())
     }
 
+    /// Return a random MessageId, for the given timestamp.
     pub fn generate_for_time(time: NoatunTime) -> Result<MessageId> {
         let mut random_part = [0u8; 10];
 
@@ -853,6 +936,9 @@ impl MessageId {
         Ok(raw)
     }
 
+    /// Return a MessageId produced from the given time and random part.
+    ///
+    /// This method is mainly intended for tests.
     pub fn from_parts_for_test(time: NoatunTime, random: u64) -> MessageId {
         let mut data = [0u8; 10];
         data[2..10].copy_from_slice(&random.to_le_bytes());
@@ -860,6 +946,7 @@ impl MessageId {
         temp.pred_succ_reserve();
         temp
     }
+    /// Return the timestamp of this message id
     pub fn timestamp(&self) -> NoatunTime {
         let mut alternative_value = (self.data[0] as u64) << 16;
         alternative_value |= (self.data[1] >> 16) as u64;
@@ -874,9 +961,16 @@ impl MessageId {
         let t: u64 = time.as_ms();
         Self::from_parts_raw(t, random)
     }
+    /// Return true if the given timestamp can be used as the timestamp of a MessageId.
+    ///
+    /// Generally, only timestamps extremely far into the future are invalid, all other
+    /// timestamps are valid.
     pub fn is_time_valid_for_message(time: NoatunTime) -> bool {
         time.as_ms() < 1 << 48
     }
+    /// Create a MessageId from a timestamp part and a random part.
+    ///
+    /// Note, the time must be smaller than 2^48.
     pub fn from_parts_raw(time: u64, random: [u8; 10]) -> Result<MessageId> {
         if time >= 1 << 48 {
             bail!("Time value is too large");
@@ -1446,7 +1540,7 @@ pub trait Object {
     /// All noatun objects are valid when initialized with zero bits.
     /// This means that the value is always valid before init runs.
     /// Init is thus technically an overwrite of an existing value. If that
-    /// value had a registrar, it is overwritten.
+    /// value had a tracker, it is overwritten.
     ///
     /// Implementations of this method should not panic. Doing so doesn't lead to
     /// unsoundness, but may leave self in an undesirable half-initialized state.

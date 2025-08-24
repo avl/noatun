@@ -887,11 +887,11 @@ As described in earlier chapters, Noatun keeps track of what information each No
 
 It does this by maintaining a vector of "write counts" for each Message in the database. It also keeps track,
 for each piece of data in the materialized view, what message wrote that piece of data. This piece of
-tracking information is known as a "registrar" (since it registers who wrote it). Each registrar is 32 bits,
-is simply the ordinal number of the Message that updated it.
+tracking information is known as a "Tracker" (since it registers who wrote to the particular data). Each tracker 
+is 32 bits; simply the ordinal number of the Message that updated it.
 
-Whenever a message writes data, its write counter is incremented. Whenever a message overwrites a registrar
-previously written by another message, that other message's write counter is decremented.
+Whenever a message writes data, its write counter is incremented. Whenever a message overwrites tracked data
+previously written by another message(identified by a Tracker), that other message's write counter is decremented.
 
 When a message write counter reaches 0, the message is added to a list of tentatively 'unused' messages.
 

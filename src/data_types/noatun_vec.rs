@@ -582,14 +582,14 @@ where
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.destroy_items(&mut ThreadLocalContext);
-        NoatunContext.update_registrar(&mut tself.length_registrar, false);
-        NoatunContext.update_registrar(&mut tself.clear_registrar, true);
+        NoatunContext.update_tracker(&mut tself.length_registrar, false);
+        NoatunContext.update_tracker(&mut tself.clear_registrar, true);
     }
 
     pub fn push_zeroed(self: Pin<&mut Self>) -> Pin<&mut T> {
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.observe_registrar(tself.length_registrar);
-        NoatunContext.update_registrar(&mut tself.length_registrar, false);
+        NoatunContext.update_tracker(&mut tself.length_registrar, false);
         tself.raw.push_zeroed(&mut ThreadLocalContext)
     }
 
@@ -599,7 +599,7 @@ where
         }
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.observe_registrar(tself.length_registrar);
-        NoatunContext.update_registrar(&mut tself.length_registrar, false);
+        NoatunContext.update_tracker(&mut tself.length_registrar, false);
 
         tself
             .raw
@@ -620,7 +620,7 @@ where
                     if self.read_offset != self.write_offset {
                         let write_ptr =
                             ThinPtr(self.vec.raw.data + self.write_offset * size_of::<T>());
-                        NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>());
+                        unsafe { NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>()) };
                     }
                     self.read_offset += 1;
                     self.write_offset += 1;
@@ -635,7 +635,7 @@ where
 
         let self_mut = unsafe { self.get_unchecked_mut() };
         NoatunContext.observe_registrar(self_mut.length_registrar);
-        NoatunContext.update_registrar(&mut self_mut.length_registrar, false);
+        NoatunContext.update_tracker(&mut self_mut.length_registrar, false);
         let mut panic_handler = PanicHandler {
             new_count: self_mut.raw.length,
             read_offset: 0,
@@ -657,7 +657,7 @@ where
                     let write_ptr = ThinPtr(
                         panic_handler.vec.raw.data + panic_handler.write_offset * size_of::<T>(),
                     );
-                    NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>());
+                    unsafe { NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>()) };
                 }
                 panic_handler.read_offset += 1;
                 panic_handler.write_offset += 1;
@@ -730,7 +730,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
     /// The current message is recorded as the "most recent clearer" of the vector.
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
-        unsafe { NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true) };
+        unsafe { NoatunContext.update_tracker_ptr(addr_of_mut!(tself.clear_registrar), true) };
         tself.raw.destroy_items(&mut ThreadLocalContext);
     }
 
@@ -826,7 +826,7 @@ where
 
     fn destroy(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
-        NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
+        unsafe { NoatunContext.clear_tracker_ptr(addr_of_mut!(tself.clear_registrar), true) };
         tself.raw.destroy_items(&mut ThreadLocalContext)
     }
 
@@ -864,8 +864,10 @@ where
     fn destroy(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.destroy_items(&mut ThreadLocalContext);
-        NoatunContext.clear_registrar_ptr(&mut tself.length_registrar, false);
-        NoatunContext.clear_registrar_ptr(&mut tself.clear_registrar, true);
+        unsafe {
+            NoatunContext.clear_tracker_ptr(&mut tself.length_registrar, false);
+            NoatunContext.clear_tracker_ptr(&mut tself.clear_registrar, true);
+        }
     }
 
     fn init_from_detached(mut self: Pin<&mut Self>, detached: &Self::DetachedType) {

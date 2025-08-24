@@ -80,13 +80,13 @@ pub struct NoatunHashMap<K: NoatunStorable, V: FixedSizeObject> {
     capacity: usize,
     data: usize,
 
-    // By having a registrar for any "clear" calls, we can avoid
+    // By having a tracker for any "clear" calls, we can avoid
     // accumulating multiple "tombstone" messages when clearing hashmaps.
     // The downside is that each hashmap retains a clearing message
     // even _after_ the cutoff (since it remains in the db).
     // Observes any "clear" calls. This allows us to not register
     // such actions as 'tombstones'.
-    clear_registrar: Tracker,
+    clear_tracker: Tracker,
 
     phantom_data: PhantomData<(K, V)>,
 }
@@ -1146,7 +1146,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
 
-        unsafe { NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true) };
+        unsafe { NoatunContext.update_tracker_ptr(addr_of_mut!(tself.clear_tracker), true) };
 
         NoatunContext.write_internal(0, &mut tself.length);
         tself.clear_impl();
@@ -1639,7 +1639,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             length: 0,
             capacity,
             data: NoatunContext.index_of_ptr(data).0,
-            clear_registrar: Tracker{owner: SequenceNr::INVALID},
+            clear_tracker: Tracker{owner: SequenceNr::INVALID},
             phantom_data: PhantomData,
         };
         NoatunContext.write(new, unsafe { Pin::new_unchecked(self) });
@@ -1758,7 +1758,7 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
 
     fn destroy(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
-        NoatunContext.clear_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
+        unsafe { NoatunContext.clear_tracker_ptr(addr_of_mut!(tself.clear_tracker), true) };
 
         tself.clear_impl();
     }

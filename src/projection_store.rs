@@ -131,15 +131,13 @@ mod registrar_info {
         ///
         /// Since we know the order in which events occurred, we *know* that
         /// last_overwriter here must be the highest numbered sequence number that
-        /// overwrote this registrar.
+        /// overwrote this tracker's data.
         ///
         /// This is used in the advance_cutoff function, to know which not-yet-deleted
         /// messages that now have their last-overwriter overtaken by the cutoff-frontier,
         /// so that we can prune messages for the long-term pre-cutoff-life.
         pub last_overwriter: SequenceNr,
         /// The message that is no longer used (to be deleted, possibly).
-        /// This is sometimes known as a 'registrar'.
-        /// Yes, registrar is a funny word here.
         pub seq: SequenceNr,
 
         /// There are two required properties for a message to qualify for early deletion:
@@ -985,14 +983,6 @@ impl DatabaseContextData {
         });
         dest.copy_from(source);
     }
-    pub fn copy_uninit<T: NoatunStorable>(&mut self, source: &T, dest: &mut MaybeUninit<T>) {
-        let dest_index = self.index_of_sized(dest);
-        self.undo_log.record(UndoLogEntry::RestorePod {
-            start: dest_index.0,
-            data: bytes_of_mut_uninit(dest),
-        });
-        T::initialize(dest, source);
-    }
     pub fn allocate_storable<T: NoatunStorable>(&mut self) -> Pin<&mut T> {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
         unsafe { Pin::new_unchecked(&mut *(bytes as *mut T)) }
@@ -1297,19 +1287,6 @@ impl DatabaseContextData {
             opaque,
             false,
         );
-        /*if current_registrar == *registrar_point {
-            return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
-        }
-        if registrar_point.is_valid() {
-            self.rt_decrease_use(*registrar_point, current_registrar, self.tainted, !opaque);
-        }
-        if current_registrar.is_invalid() {
-            // We're in the 'initialize root' method
-            return;
-        }
-        self.rt_increase_use(current_registrar);
-
-        self.write_storable(current_registrar, Pin::new(registrar_point))*/
     }
 
     pub fn update_registrar_ptr_impl(
@@ -1323,7 +1300,7 @@ impl DatabaseContextData {
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
 
         if actor == registrar_point_value.owner {
-            return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
+            return; // Updating tracker to same value must not transiently free use and then re-add, it should be a no-op, like this!
         }
 
         let is_valid = registrar_point_value.owner.is_valid();
@@ -1331,7 +1308,7 @@ impl DatabaseContextData {
             self.rt_decrease_use(registrar_point_value, actor, actor_tainted);
         }
         if is_clear {
-            // Clear registrar point should only happen in "destroy", and destroyed memory
+            // Clear tracker should only happen in "destroy", and destroyed memory
             // should never be reused. In fact, I think correctness hinges on it not being
             // reused, since we won't find the read-dependency if it is reused!
             // So we never need to actually write to memory in this case.
@@ -1343,7 +1320,7 @@ impl DatabaseContextData {
 
         unsafe { self.write_storable_ptr(Tracker { owner: actor}, registrar_point) }
     }
-    pub fn update_registrar_ptr(&mut self, registrar_point: *mut Tracker, opaque: bool) {
+    pub fn update_tracker_ptr(&mut self, registrar_point: *mut Tracker, opaque: bool) {
         self.update_registrar_ptr_impl(
             registrar_point,
             self.next_seqnr(),
@@ -1363,8 +1340,8 @@ impl DatabaseContextData {
         );
     }
 
-    // Signify that the current message has observed data previously written
-    // by 'registrar'.
+    // Signify that the current message has observed data tracker by 'Tracker'
+    // (and thus read data written by that tracker's owner, if any).
     pub fn observe_registrar(&mut self, observee: Tracker) {
         if self.next_seqnr().is_invalid() {
             return;
@@ -1415,13 +1392,7 @@ impl DatabaseContextData {
 
             self.record_overwrite(Tracker{owner: message_seqnr}, message_seqnr);
             self.try_delete(message_seqnr, message_seqnr, must_remove, messages)?;
-            /*self.unused_push(UnusedInfo {
-                seq: message_seqnr,
-                last_overwriter: message_seqnr,
-                can_be_deleted_early: !self.tainted,
-                wrote_tombstone: self.wrote_tombstone,
-                padding: 0,
-            });*/
+
             return Ok(());
         }
 
@@ -1489,6 +1460,9 @@ impl DatabaseContextData {
             if self.outgoing_read_dependencies(seq).len() != 0 {
                 continue;
             }
+
+            // Note: 'last_overwriter' will be 'seq' if message had no overwriters.
+            // This is just a convention, but it turns out to work well.
             let (seq, last_overwriter) = task;
 
             let uses = unsafe { self.get_uses() };
@@ -1614,16 +1588,16 @@ impl DatabaseContextData {
         Ok(())
     }
 
-    pub(crate) fn rt_increase_use(&mut self, registrar: SequenceNr, wrote_non_opaque: bool) {
+    pub(crate) fn rt_increase_use(&mut self, seq: SequenceNr, wrote_non_opaque: bool) {
         let uses = unsafe { self.get_uses() };
-        if uses.len() <= registrar.index() {
-            uses.grow(self, registrar.index() + 1);
+        if uses.len() <= seq.index() {
+            uses.grow(self, seq.index() + 1);
         }
-        let mut info = unsafe { uses.get_mut(self, registrar.index()) };
+        let mut info = unsafe { uses.get_mut(self, seq.index()) };
         info.increase_use(self, wrote_non_opaque);
         trace!(
             "increased use of {:?} to {} (tainted:{}, cur: {})",
-            registrar,
+            seq,
             info.get_use(),
             info.overwriter_tainted(),
             self.next_seqnr()
@@ -1632,17 +1606,16 @@ impl DatabaseContextData {
 
     pub(crate) fn rt_decrease_use(
         &mut self,
-        registrar: Tracker,
+        tracker: Tracker,
         overwriter: SequenceNr,
         overwriter_tainted: bool,
         //wrote_non_opaque: bool,
     ) {
         let uses = unsafe { self.get_uses() };
-        let mut cur = unsafe { uses.get_mut(self, registrar.owner.index()) };
+        let mut cur = unsafe { uses.get_mut(self, tracker.owner.index()) };
         let cur_use = cur.get_use();
         if cur_use == 0 {
-            //panic!("Corrupt use count for sequence nr {registrar:?}, use = {cur_use}");
-            println!("Corrupt use count for sequence nr {registrar:?}, use = {cur_use}");
+            println!("Corrupt use count for sequence nr {tracker:?}, use = {cur_use}");
             std::process::abort();
         }
 
@@ -1653,7 +1626,7 @@ impl DatabaseContextData {
         };
         trace!(
             "decreased use of {:?} is {} (taint:{}) (because overwriter: {:?}(tainted:{}))",
-            registrar,
+            tracker,
             cur.get_use(),
             cur.overwriter_tainted(),
             overwriter,
@@ -1662,24 +1635,13 @@ impl DatabaseContextData {
         if cur.get_use() == 0 {
             // This is the normal way messages end up in 'unused_messages'
             trace!(
-                "Adding {:?} as unused (overwriter.tainted: {}, registrar tainted: {}, cur tombstone: {})",
-                registrar,
+                "Adding {:?} as unused (overwriter.tainted: {}, tracker owner tainted: {}, cur tombstone: {})",
+                tracker,
                 overwriter_tainted,
                 cur.overwriter_tainted(),
                 cur.wrote_tombstones()
             );
-            self.record_overwrite(registrar, overwriter);
-
-            /*self.unused_push(UnusedInfo {
-                seq: registrar,
-                //opaque: cur.get_opaque() as u32,
-                last_overwriter: overwriter,
-                // ALL overwriters must be non-tainted. There can't be a single one that is.
-                // `cur.tainted()` tracks this per registrar.
-                can_be_deleted_early: !cur.tainted() && !cur.wrote_non_opaques(),
-                wrote_tombstone: cur.wrote_tombstones(),
-                padding: 0,
-            });*/
+            self.record_overwrite(tracker, overwriter);
         }
     }
 }
