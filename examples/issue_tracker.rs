@@ -321,7 +321,7 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
     loop {
         terminal.draw(|frame| {
             if app.diagnostics {
-                app.inspector.draw(frame, &app.recorder, &app.comms);
+                app.inspector.draw(frame, Some(&app.recorder), &app.comms);
             } else {
                 draw(frame, &mut app).expect("rendering should not fail");
             }

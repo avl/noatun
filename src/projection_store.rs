@@ -17,7 +17,7 @@ use std::ops::{Range};
 use std::slice;
 
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
-use crate::sequence_nr::SequenceNr;
+use crate::sequence_nr::{SequenceNr, Tracker};
 use std::pin::Pin;
 
 use tracing::{error, info, trace};
@@ -397,7 +397,7 @@ impl DatabaseContextData {
         }
     }
 
-    fn record_overwrite(&mut self, overwritten: SequenceNr, overwriter: SequenceNr) {
+    fn record_overwrite(&mut self, overwritten: Tracker, overwriter: SequenceNr) {
         let keys = unsafe { self.get_deptrack_keys_mut() };
         keys.ensure_size(overwriter.index() + 1, self);
 
@@ -405,7 +405,7 @@ impl DatabaseContextData {
 
         value
             .last_overwriter_of
-            .push(NoatunUntrackedCell(overwritten), self);
+            .push(NoatunUntrackedCell(overwritten.owner), self);
     }
 
     /// Record a read dependency between A and B: A <- B.
@@ -1287,7 +1287,7 @@ impl DatabaseContextData {
             )
     }*/
 
-    pub fn update_registrar(&mut self, registrar_point: &mut SequenceNr, opaque: bool) {
+    pub fn update_registrar(&mut self, registrar_point: &mut Tracker, opaque: bool) {
         let current_registrar = self.next_seqnr();
 
         self.update_registrar_ptr_impl(
@@ -1314,7 +1314,7 @@ impl DatabaseContextData {
 
     pub fn update_registrar_ptr_impl(
         &mut self,
-        registrar_point: *mut SequenceNr,
+        registrar_point: *mut Tracker,
         actor: SequenceNr,
         actor_tainted: bool,
         actor_wrote_non_opaque: bool,
@@ -1322,11 +1322,11 @@ impl DatabaseContextData {
     ) {
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
 
-        if actor == registrar_point_value {
+        if actor == registrar_point_value.owner {
             return; // Updating registrar to same value must not transiently free use and then re-add, it should be a no-op, like this!
         }
 
-        let is_valid = registrar_point_value.is_valid();
+        let is_valid = registrar_point_value.owner.is_valid();
         if is_valid {
             self.rt_decrease_use(registrar_point_value, actor, actor_tainted);
         }
@@ -1341,9 +1341,9 @@ impl DatabaseContextData {
         //all writes and do a single write at the end of message apply!
         self.rt_increase_use(actor, actor_wrote_non_opaque);
 
-        unsafe { self.write_storable_ptr(actor, registrar_point) }
+        unsafe { self.write_storable_ptr(Tracker { owner: actor}, registrar_point) }
     }
-    pub fn update_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
+    pub fn update_registrar_ptr(&mut self, registrar_point: *mut Tracker, opaque: bool) {
         self.update_registrar_ptr_impl(
             registrar_point,
             self.next_seqnr(),
@@ -1352,7 +1352,7 @@ impl DatabaseContextData {
             false,
         );
     }
-    pub fn clear_registrar_ptr(&mut self, registrar_point: *mut SequenceNr, opaque: bool) {
+    pub fn clear_registrar_ptr(&mut self, registrar_point: *mut Tracker, opaque: bool) {
         self.wrote_tombstone = true;
         self.update_registrar_ptr_impl(
             registrar_point,
@@ -1365,16 +1365,16 @@ impl DatabaseContextData {
 
     // Signify that the current message has observed data previously written
     // by 'registrar'.
-    pub fn observe_registrar(&mut self, observee: SequenceNr) {
+    pub fn observe_registrar(&mut self, observee: Tracker) {
         if self.next_seqnr().is_invalid() {
             return;
         }
-        if observee.is_invalid() {
+        if observee.owner.is_invalid() {
             return;
         }
         let observer = self.next_seqnr();
-        if observer != observee {
-            self.record_dependency(observee, observer);
+        if observer != observee.owner {
+            self.record_dependency(observee.owner, observer);
         }
     }
     /*
@@ -1413,7 +1413,7 @@ impl DatabaseContextData {
                 self.tainted
             );
 
-            self.record_overwrite(message_seqnr, message_seqnr);
+            self.record_overwrite(Tracker{owner: message_seqnr}, message_seqnr);
             self.try_delete(message_seqnr, message_seqnr, must_remove, messages)?;
             /*self.unused_push(UnusedInfo {
                 seq: message_seqnr,
@@ -1450,7 +1450,7 @@ impl DatabaseContextData {
         }
 
         if track.get_use() == 0 {
-            self.record_overwrite(message_seqnr, message_seqnr);
+            self.record_overwrite(Tracker{owner: message_seqnr}, message_seqnr);
             self.try_delete(message_seqnr, message_seqnr, must_remove, messages)?;
         }
         Ok(())
@@ -1632,13 +1632,13 @@ impl DatabaseContextData {
 
     pub(crate) fn rt_decrease_use(
         &mut self,
-        registrar: SequenceNr,
+        registrar: Tracker,
         overwriter: SequenceNr,
         overwriter_tainted: bool,
         //wrote_non_opaque: bool,
     ) {
         let uses = unsafe { self.get_uses() };
-        let mut cur = unsafe { uses.get_mut(self, registrar.index()) };
+        let mut cur = unsafe { uses.get_mut(self, registrar.owner.index()) };
         let cur_use = cur.get_use();
         if cur_use == 0 {
             //panic!("Corrupt use count for sequence nr {registrar:?}, use = {cur_use}");

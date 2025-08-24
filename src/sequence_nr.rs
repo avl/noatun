@@ -16,6 +16,24 @@ use std::fmt::{Debug, Display, Formatter};
 // 0 is an invalid sequence number, used to represent 'not a number'
 pub struct SequenceNr(u32);
 
+
+/// A tracker for a piece of data.
+///
+/// The tracker retains information about the most recent writer to the tracked data.
+/// This writer is considered the 'owner' of the data. Messages can never be pruned until
+/// they own no data (though this is not a sufficient condition).
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Tracker {
+    pub owner: SequenceNr,
+}
+
+unsafe impl NoatunStorable for Tracker {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::Tracker");
+    }
+}
+
 unsafe impl NoatunStorable for SequenceNr {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::SequenceNr/1")

@@ -97,10 +97,20 @@ impl Default for DatabaseSettings {
     }
 }
 
+/// A mutable database session.
+///
+/// This allows adding new messages to the database.
+///
+/// Create mutable sessions from an instance of [`Database`], using [`Database::begin_session_mut`] .
 pub struct DatabaseSessionMut<'a, MSG: Message> {
     db: &'a mut Database<MSG>,
 }
 
+/// A readonly database session.
+///
+/// Readonly sessions allow reading the materialized view, as well as the messages.
+///
+/// Create sessions from an instance of [`Database`], using [`Database::begin_session`] .
 pub struct DatabaseSession<'a, MSG: Message> {
     db: &'a Database<MSG>,
 }

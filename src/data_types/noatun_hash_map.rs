@@ -1,5 +1,5 @@
 use crate::data_types::noatun_hash_map::meta_finder::get_any_empty;
-use crate::sequence_nr::SequenceNr;
+use crate::sequence_nr::{SequenceNr, Tracker};
 use crate::xxh3_vendored::NoatunHasher;
 use crate::{
     get_context_ptr, FixedSizeObject, MessageId, NoatunContext, NoatunStorable, Object,
@@ -86,7 +86,7 @@ pub struct NoatunHashMap<K: NoatunStorable, V: FixedSizeObject> {
     // even _after_ the cutoff (since it remains in the db).
     // Observes any "clear" calls. This allows us to not register
     // such actions as 'tombstones'.
-    clear_registrar: SequenceNr,
+    clear_registrar: Tracker,
 
     phantom_data: PhantomData<(K, V)>,
 }
@@ -1146,7 +1146,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
 
-        NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
+        unsafe { NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true) };
 
         NoatunContext.write_internal(0, &mut tself.length);
         tself.clear_impl();
@@ -1639,7 +1639,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             length: 0,
             capacity,
             data: NoatunContext.index_of_ptr(data).0,
-            clear_registrar: SequenceNr::INVALID,
+            clear_registrar: Tracker{owner: SequenceNr::INVALID},
             phantom_data: PhantomData,
         };
         NoatunContext.write(new, unsafe { Pin::new_unchecked(self) });

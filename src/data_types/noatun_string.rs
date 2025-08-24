@@ -1,5 +1,5 @@
 use crate::data_types::NoatunKey;
-use crate::sequence_nr::SequenceNr;
+use crate::sequence_nr::{SequenceNr, Tracker};
 use crate::{NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr};
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
@@ -13,7 +13,7 @@ use std::slice;
 pub struct NoatunString {
     start: ThinPtr,
     length: usize,
-    registrar: SequenceNr,
+    registrar: Tracker,
     padding: u32,
 }
 
@@ -113,7 +113,7 @@ impl NoatunString {
         let raw_index = NoatunContext.index_of_ptr(raw);
         NoatunContext.write_internal(raw_index, &mut tself.start);
         NoatunContext.write_internal(value.len(), &mut tself.length);
-        NoatunContext.update_registrar_ptr(addr_of_mut!(tself.registrar), false);
+        unsafe { NoatunContext.update_registrar_ptr(addr_of_mut!(tself.registrar), false) };
     }
 }
 impl NoatunKey for NoatunString {

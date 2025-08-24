@@ -1,4 +1,4 @@
-use crate::sequence_nr::SequenceNr;
+use crate::sequence_nr::{SequenceNr, Tracker};
 use crate::{NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr, CONTEXT};
 use std::fmt::{Debug, Formatter};
 use std::ops::{AddAssign, Deref, SubAssign};
@@ -13,14 +13,14 @@ use tracing::trace;
 pub struct NoatunCell<T> {
     value: T,
     /// The most recent message that did a write to this cell
-    registrar: SequenceNr,
+    registrar: Tracker,
 }
 
 #[repr(C)]
 pub struct OpaqueNoatunCell<T> {
     value: T,
     /// The most recent message that did a write to this cell
-    registrar: SequenceNr,
+    registrar: Tracker,
 }
 
 unsafe impl<T: NoatunStorable> NoatunStorable for OpaqueNoatunCell<T> {
@@ -158,14 +158,6 @@ impl<T: NoatunStorable + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut NoatunCe
     }
 }
 
-/*impl<T: NoatunStorable> NoatunCell<T> {
-pub fn new(value: T) -> NoatunCell<T> {
-    NoatunCell {
-        value,
-        registrar: Default::default(),
-    }
-}
-}*/
 
 impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
     type Ptr = ThinPtr;

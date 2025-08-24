@@ -1,6 +1,6 @@
 use crate::data_types::context::{ContextGetter, ThreadLocalContext};
 use crate::projection_store::DatabaseContextData;
-use crate::sequence_nr::SequenceNr;
+use crate::sequence_nr::{Tracker};
 use crate::{
     get_context_mut_ptr, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer,
     SchemaHasher, ThinPtr,
@@ -466,8 +466,8 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
 #[repr(C)]
 pub struct NoatunVec<T: FixedSizeObject> {
     raw: NoatunVecRaw<T, ThreadLocalContext>,
-    length_registrar: SequenceNr,
-    clear_registrar: SequenceNr,
+    length_registrar: Tracker,
+    clear_registrar: Tracker,
     phantom_data: PhantomData<T>,
 }
 
@@ -698,7 +698,7 @@ where
 ///
 pub struct OpaqueNoatunVec<T: FixedSizeObject> {
     raw: NoatunVecRaw<T, ThreadLocalContext>,
-    clear_registrar: SequenceNr,
+    clear_registrar: Tracker,
 }
 
 impl<T: FixedSizeObject> Debug for OpaqueNoatunVec<T> {
@@ -730,7 +730,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
     /// The current message is recorded as the "most recent clearer" of the vector.
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
-        NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true);
+        unsafe { NoatunContext.update_registrar_ptr(addr_of_mut!(tself.clear_registrar), true) };
         tself.raw.destroy_items(&mut ThreadLocalContext);
     }
 

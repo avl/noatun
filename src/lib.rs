@@ -23,7 +23,7 @@
 use crate::noatun_instant::Instant;
 pub use crate::data_types::{NoatunCell, OpaqueNoatunCell};
 use crate::private::Sealed;
-use crate::sequence_nr::SequenceNr;
+use crate::sequence_nr::{SequenceNr, Tracker};
 use crate::undo_store::magic_initialize_ptr;
 use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -397,6 +397,10 @@ fn get_context_ptr() -> *const DatabaseContextData {
 pub enum Undetachable {}
 
 impl NoatunContext {
+    /// Verify that reading from opaque messages is currently allowed.
+    ///
+    /// Such reading is not allowed during message application (while building the
+    /// materialized view).
     #[inline]
     pub fn assert_opaque_access_allowed(self, used_type: &str, alternative_type: &str) {
         let context = unsafe { &*get_context_ptr() };
@@ -409,12 +413,20 @@ impl NoatunContext {
         }
     }
 
-    pub fn update_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool) {
+    /// Take ownership of the given registrar.
+    /// Any previous owner will have its refcount decreased.
+    /// If 'opaque' is false, the registrar is marked as being opaque (not readable
+    /// during message application). Note, all writers of a specific registrar
+    /// must agree on its opaqueness.
+    ///
+    /// # Safety
+    /// The 'seq' pointer must point to valid, unaliased memory.
+    pub unsafe fn update_registrar_ptr(self, seq: *mut Tracker, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).update_registrar_ptr(seq, opaque) }
     }
 
-    pub fn clear_registrar_ptr(self, seq: *mut SequenceNr, opaque: bool) {
+    pub fn clear_registrar_ptr(self, seq: *mut Tracker, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).clear_registrar_ptr(seq, opaque) }
     }
@@ -483,7 +495,7 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).allocate_raw(size, align) }
     }
-    pub fn update_registrar(&self, registrar: &mut SequenceNr, opaque: bool) {
+    pub fn update_registrar(&self, registrar: &mut Tracker, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
         unsafe {
             (*context_ptr).update_registrar(registrar, opaque);
@@ -544,7 +556,7 @@ impl NoatunContext {
         unsafe { (*context_ptr).access_fat_mut::<T>(ptr) }
     }
 
-    pub fn observe_registrar(self, registrar: SequenceNr) {
+    pub fn observe_registrar(self, registrar: Tracker) {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             return;
