@@ -82,6 +82,10 @@ impl CutoffHash {
 }
 
 
+/// How far back in time the cutoff time nominally is.
+///
+/// This time should be greater than the maximum network propagation delay (taking into account
+/// nodes that go offline).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CutOffDuration(/*minutes*/ u32);
 
@@ -92,9 +96,12 @@ impl Debug for CutOffDuration {
 }
 
 impl CutOffDuration {
+    /// Create an instance of `CutOffDuration` that corresponds to the given number of minutes.
     pub fn from_minutes(minutes: u32) -> Self {
         Self(minutes)
     }
+
+    /// Create an instance of `CutOffDuration` that corresponds to the given number of hours.
     pub fn from_hours(hours: u32) -> Result<Self> {
         Ok(Self(
             hours
@@ -102,6 +109,8 @@ impl CutOffDuration {
                 .ok_or_else(|| anyhow!("hours value out of range"))?,
         ))
     }
+
+    /// Create an instance of `CutOffDuration` that corresponds to the given number of days.
     pub fn from_days(days: u32) -> Result<Self> {
         let minutes = days
             .checked_mul(24 * 60)
@@ -189,6 +198,7 @@ unsafe impl NoatunStorable for CutOffHashPos {
     }
 }
 
+/// The current cutoff hash and timestamp
 #[derive(Clone, Copy, Debug, Savefile)]
 #[repr(C)]
 pub struct CutOffState {

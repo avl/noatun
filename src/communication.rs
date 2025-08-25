@@ -52,7 +52,7 @@ pub mod udp;
 
 #[doc(hidden)]
 #[derive(Savefile, Debug)]
-pub enum NetworkPacket {
+pub(crate) enum NetworkPacket {
     Data(TransmittedEntitySortable),
     RetransmitRequest {
         /// The destination for the retransmit-request
@@ -70,9 +70,23 @@ const APPROX_HEADER_SIZE: usize = IP_HEADER_SIZE
     + NOATUN_NETWORK_PACKET_OVERHEAD
     + NOATUN_TRANSMITTED_ENTITY_OVERHEAD;
 
+/// Trait for something that can transmit and receive noatun messages.
+///
+/// Noatun requires send and receive, but otherwise places very few requirements
+/// on the network layer.
 #[allow(async_fn_in_trait)] //For now
 pub trait CommunicationDriver: Sync + Send {
+    /// The type of the receive half
+    ///
+    /// When a communication driver is initialized, it creates a receive half and a send half.
+    ///
+    /// The receive half can be allowed to receive messages.
     type Receiver: CommunicationReceiveSocket<Self::Endpoint> + Send + Sync;
+    /// The type of the send half
+    ///
+    /// When a communication driver is initialized, it creates a receive half and a send half.
+    ///
+    /// The send half can be allowed to send messages.
     type Sender: CommunicationSendSocket<Self::Endpoint> + Send + Sync;
 
     /// This is the address type used by this driver.
@@ -93,14 +107,24 @@ pub trait CommunicationDriver: Sync + Send {
     ///    nodes to have the same address. However, if they are within communication
     ///    distance of each other, sharing the same address can lead to decreased performance.
     type Endpoint: Eq + Debug + Hash + Send + Sync + Copy + Display;
+
+    /// Initialize a new driver instance.
+    ///
+    /// This creates a sender (send half) and a receiver (receive half), that are
+    /// then used to send and receives messages over the network.
     async fn initialize(
         &mut self,
         bind_address: &str,
         multicast_group: &str,
         mtu: usize,
     ) -> Result<(Self::Sender, Self::Receiver)>;
+
+    /// Parse an endpoint in text format, converting it to whatever address/endpoint type
+    /// the communication driver needs.
     fn parse_endpoint(s: &str) -> Result<Self::Endpoint>;
 }
+
+/// Trait for the receive half of a communication driver
 #[allow(async_fn_in_trait)] //For now
 pub trait CommunicationReceiveSocket<Endpoint: PartialEq + Debug + Send> {
     /// Receive a message from the network.
@@ -113,6 +137,8 @@ pub trait CommunicationReceiveSocket<Endpoint: PartialEq + Debug + Send> {
         buf: &mut B,
     ) -> impl std::future::Future<Output = std::io::Result<(usize, Option<Endpoint>)>> + Send;
 }
+
+/// Trait for the write half of a communication driver
 #[allow(async_fn_in_trait)] //For now
 pub trait CommunicationSendSocket<Endpoint: PartialEq + Debug + Send> {
     /// In many networks, it's possible to uniquely know the address that
@@ -126,9 +152,11 @@ pub trait CommunicationSendSocket<Endpoint: PartialEq + Debug + Send> {
     fn local_addr(&self) -> Result<Option<Endpoint>> {
         Ok(None)
     }
+    /// Send the bytes of the given 'buf'.
     fn send_to(&mut self, buf: &[u8]) -> impl std::future::Future<Output = io::Result<()>> + Send;
 }
 
+///
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct TransmittedEntitySortable {
@@ -562,7 +590,7 @@ impl BwLimiter {
     }
 }
 
-pub struct ExecutionContext<T> {
+pub(crate) struct ExecutionContext<T> {
     /// Empty if not in use.
     /// We assume any real packet will be at least 1 byte
     cursend: Vec<u8>,
@@ -1009,19 +1037,29 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
     }
 }
 
+
+/// A debug representation of a network packet
 #[derive(Debug)]
 pub struct DebugEvent {
+    /// The first 20 bytes of the peer nodes' address
     pub node: ArrayString<20>,
+    /// The time that the message was received
     pub time: Instant,
+    /// A debug-representation of the message
     pub msg: DebugEventMsg,
 }
 
+/// Debug event type
 pub enum DebugEventMsg {
+    /// Message was sent
     Send(String /*msg*/),
+    /// Message was received
     Receive(String /*msg*/),
 }
 
 impl DebugEvent {
+    /// Returns true if 'self' might be the message that, after having been transmitted,
+    /// was seen as 'receive' by another peer on the network.
     pub fn is_send_of(&self, receive: &DebugEvent) -> bool {
         match (&self.msg, &receive.msg) {
             (DebugEventMsg::Send(s), DebugEventMsg::Receive(r)) => s == r,
@@ -1091,15 +1129,49 @@ where
     }
 }
 
+/// Settings that affect the database replication
+///
+/// Most these settings can be left with their default values.
+///
+/// You probably want to adjust `listen_address`.
+///
+/// Adjustment should only be necessary in special circumstances
 pub struct DatabaseCommunicationConfig {
+    /// The address to which the communication should bind.
+    ///
+    /// For UDP/IP, this should be the local network interface address.
     pub listen_address: String,
-    pub multicast_address: String,
-    pub mtu: usize,
-    pub bandwidth_limit_bytes_per_second: u64,
-    pub retransmit_interval_seconds: f32,
-    pub retransmit_buffer_size_bytes: usize,
-    pub debug_logger: Option<Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>>,
+    /// The interval between periodic messages
+    ///
+    /// Periodic messages are essential for nodes to remain aware of their neighbors
+    /// on the network, and also serve to ensure packet loss is detected.
+    ///
+    /// Shorter values consume more network capacity but ensure the system recovers faster
+    /// from packet loss or after topology changes (like new nodes joining).
+    ///
+    /// Each periodic message has a size typically approximately 16 bytes multiplied by the number
+    /// of relevant actively writing nodes.
     pub periodic_message_interval: Duration,
+
+    /// The broadcast/multicast address
+    ///
+    /// For UDP/IP multicast, this is the multicast group.
+    ///
+    /// Note, some protocols might not have a concept similar to multicast groups, in which
+    /// case this can be left empty.
+    pub multicast_address: String,
+    /// The maximum message size that noatun will use
+    pub mtu: usize,
+    /// The maximum number of bytes to send per second
+    pub bandwidth_limit_bytes_per_second: u64,
+    /// After observing a gap in the received packets, this is the maximum number
+    /// of seconds to wait before requesting transmission of the missing packets.
+    pub retransmit_interval_seconds: f32,
+    /// The number of megabytes of memory to use to retain previously sent messages,
+    /// such that they can be retransmitted if a peer fails to receive one of them.
+    pub retransmit_buffer_size_bytes: usize,
+    /// A debug logger that will be called for each packet send/received
+    pub debug_logger: Option<Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>>,
     /// Specifying this is only useful for debugging. The ephemeral node id is chosen
     /// automatically, and is also automatically changed if conflicts are
     /// detected.
@@ -1409,6 +1481,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
     }
 }
 
+/// Communicator for a Database instance.
+///
+/// The communication synchronizes the database with its neighbors (and by extension,
+/// with the full network).
 pub struct DatabaseCommunication<MSG: Message> {
     database: Arc<Mutex<Database<MSG>>>,
     cmd_tx: Sender<Cmd<MSG>>,
@@ -1430,10 +1506,12 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         }
     }
 
+    /// Return any available diagnostics data
     pub fn diagnostics_data(&self) -> Option<DiagnosticsData> {
         Some(self.diagnostics.as_ref()?.lock().unwrap().clone())
     }
 
+    /// Return synchronization status
     pub async fn get_status(&self) -> Result<Status> {
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
         let status = self.cmd_tx.send(Cmd::GetStatus(oneshot_tx)).await;
@@ -1497,6 +1575,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         self.database.lock().unwrap()
     }
 
+    /// Close the communicator
     pub async fn close(self) -> Result<()> {
         let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
         debug!("Sending quit");
@@ -1522,13 +1601,19 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         }
     }
 
+    /// Add a message to the databse, also ensuring it is replicated to all neighbors
     pub async fn add_message(&self, msg: MSG) -> Result<()> {
         self.add_message_impl(None, msg).await
     }
 
+    /// Add a message to the databse, also ensuring it is replicated to all neighbors.
+    ///
+    /// This method allows overriding the message time. The time must not be in
+    /// the future.
     pub async fn add_message_at(&self, time: NoatunTime, msg: MSG) -> Result<()> {
         self.add_message_impl(Some(time), msg).await
     }
+
     async fn add_message_impl(&self, time: Option<NoatunTime>, msg: MSG) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         match self
@@ -1598,6 +1683,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         self.database.lock().unwrap().count_messages()
     }
 
+    /// Override the internal clock of this database.
+    ///
+    /// Changing the mock time affects the cutoff interval, but does not affect
+    /// the materialized view.
     #[instrument(skip(self),fields(node=?self.node))]
     pub fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
         let mut db = self.database.lock().unwrap();
@@ -1607,16 +1696,42 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         Ok(())
     }
 
+    /// Return all update heads of this database.
+    ///
+    /// Update heads are messages upon which no other message depends. Whenever a new
+    /// message is created, it depends on all previous update heads. After creating
+    /// a new message, a database thus has only a single update head (the newly created
+    /// message).
     pub fn get_update_heads(&self) -> Result<Vec<crate::MessageId>> {
         let db = self.database.lock().unwrap();
         let sess = db.begin_session()?;
         Ok(sess.get_update_heads().to_vec())
     }
+    /// Return the cutoff time for this database.
+    ///
+    /// The cutoff time is a time in the past, long enough ago that any message created
+    /// before the cutoff time must have reached every node in the system.
+    ///
+    /// Note, this must take into account the possibility of nodes being offline.
+    /// Nodes that are offline too long should potentially not be reconnected to the
+    /// system. This goes if they have been offline since before the cutoff time.
+    ///
+    /// Note, connecting a node that has been offline since before the cutoff time
+    /// is supported, but will generate a lot of network traffic as a complete synchronization
+    /// is done. This operation can cause deleted data to reappear, if it was not deleted
+    /// on the node that has been offline.
     pub fn get_cutoff_time(&self) -> Result<NoatunTime> {
         let db = self.database.lock().unwrap();
         let sess = db.begin_session()?;
         sess.current_cutoff_time()
     }
+    /// Preview the effect of applying messages 'preview' on this database.
+    ///
+    /// Closure 'f' will be called with a view to the root object after applying
+    /// messages in 'preview'.
+    ///
+    /// The effect on the materialized view will be rolled back after this method
+    /// returns.
     pub fn with_root_preview<R>(
         &self,
         time: DateTime<Utc>,
@@ -1628,6 +1743,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         sess.with_root_preview(time, preview, f)
     }
 
+    /// Set a 
     pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
         let mut db = self.database.lock().unwrap();
         let mut sess = db.begin_session_mut()?;

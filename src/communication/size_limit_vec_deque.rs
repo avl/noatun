@@ -1,6 +1,10 @@
+//! Simplex wrapper around VecDeque, that provides automatic removal from the front
+//! when the item size exceeds a threshold. See [`SizeLimitVecDeque`] .
 use std::collections::VecDeque;
 
+/// Trait for objects that can estimate their size in RAM
 pub trait MeasurableSize {
+    /// The size in bytes of the object, in memory
     fn size_bytes(&self) -> usize;
 }
 
@@ -14,6 +18,8 @@ pub struct SizeLimitVecDeque<T> {
 }
 
 impl<T: MeasurableSize> SizeLimitVecDeque<T> {
+    /// Create a new instance of SizeLimitVecDeque, with a max size of
+    /// `limit_bytes`.
     pub fn new(limit_bytes: usize) -> SizeLimitVecDeque<T> {
         Self {
             inner: VecDeque::new(),
@@ -56,14 +62,25 @@ impl<T: MeasurableSize> SizeLimitVecDeque<T> {
         self.accum_size += size;
         self.inner.insert(insert_point, value);
     }
+
+    /// The inner vecdeque wrapped by Self
     pub fn inner(&self) -> &VecDeque<T> {
         &self.inner
     }
+    /// Remove element with index 'index'.
+    /// Time complexity is O(N) where N i the number
+    /// of elements in the collection.
     pub fn remove(&mut self, index: usize) -> Option<T> {
         let item = self.inner.remove(index)?;
         self.accum_size -= item.size_bytes();
         Some(item)
     }
+    /// Perform a binary search on the items in the collection.
+    ///
+    /// This method only provides meaningful results if the collection is sorted
+    /// on the key selected.
+    ///
+    /// See [`std::collections::VecDeque::binary_search_by_key`] for docs.
     pub fn binary_search_by_key<'a, B, F>(&'a self, b: &B, f: F) -> Result<usize, usize>
     where
         F: FnMut(&'a T) -> B,

@@ -3,10 +3,7 @@ use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
-use crate::{
-    calculate_schema_hash, ContextGuard, ContextGuardMut, DatabaseContextData, Message,
-    MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target,
-};
+use crate::{calculate_schema_hash, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Persistence, Pointer, Target};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use metrics::{counter, describe_counter, Unit};
@@ -55,6 +52,17 @@ pub struct DatabaseSettings {
     /// If Some, do not project any messages timestamped after the given time
     /// Default None.
     pub projection_time_limit: Option<NoatunTime>,
+
+    /// The maximum propagation delay in the network.
+    ///
+    /// Note, this value must take into account delays caused by nodes being offline.
+    ///
+    /// For example, it may be stipulated that every node in the system must be connected
+    /// to some central server at least every 2 weeks. The maximum propagation delay in the
+    /// system will then be 4 weeks (worst case: data is written to node A two weeks before
+    /// connection, node B is connected just prior to A connecting).
+    pub cutoff_interval: CutOffDuration,
+    
     /// Use false to disable automatic deletion of subsumed messages.
     ///
     /// Normally, Noatun will detect when all effects of a message have been overwritten
@@ -69,7 +77,7 @@ pub struct DatabaseSettings {
     /// It's perfectly reasonable to put a value of 100GB here, even if the database
     /// is usually only a few gigabytes.
     pub max_file_size: usize,
-    pub cutoff_interval: CutOffDuration,
+
 
     /// The size allocated to database size on disks for an empty database.
     ///
@@ -390,6 +398,16 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.with_root_mut(f)
     }
 
+    /// Limit the projection of messages on this database to messages before or at 'limit'.
+    ///
+    /// This can be used to 'travel in time', and observe the database state at an historical
+    /// time, with some limitations.
+    ///
+    /// Specifically, if early pruning has occurred, not all historical context will be available.
+    ///
+    /// To achieve complete history, it is possible to implement [`Message::persistence`] and return
+    /// [`Persistence::AtLeastUntilCutoff`], and then set a very large cutoff_interval (see
+    /// field 'cutoff_interval' in [`DatabaseSettings`] ).
     pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
         self.db.set_projection_time_limit(limit)
     }
@@ -862,9 +880,6 @@ impl<MSG: Message + 'static> Database<MSG> {
             },
             settings,
         )
-    }
-    pub fn open(path: impl AsRef<Path>, settings: DatabaseSettings) -> Result<Database<MSG>> {
-        Self::create(Target::OpenExisting(path.as_ref().to_path_buf()), settings)
     }
 
     /// Remove the given message.

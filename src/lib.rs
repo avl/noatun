@@ -11,7 +11,7 @@
 #![allow(clippy::type_complexity)]
 //TODO: Yeah, this is not ideal. This should be fixed.
 #![allow(clippy::missing_safety_doc)]
-//#![deny(missing_docs)]
+#![deny(missing_docs)]
 #![allow(clippy::let_and_return)]
 #![allow(clippy::collapsible_else_if)]
 #![allow(clippy::too_many_arguments)]
@@ -25,7 +25,6 @@ use crate::noatun_instant::Instant;
 pub use crate::data_types::{NoatunCell, OpaqueNoatunCell};
 use crate::private::Sealed;
 use crate::sequence_nr::{Tracker};
-use crate::undo_store::magic_initialize_ptr;
 use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 pub use cutoff::{CutOffDuration, CutOffState};
@@ -83,6 +82,10 @@ pub mod noatun_instant {
     #[cfg(not(feature = "tokio"))]
     type Inner = std::time::Instant;
 
+    /// Noatun Instant.
+    ///
+    /// This is a simple wrapper around either [`std::time::Instant`], or if tokio support is
+    /// enabled, [`tokio::time::Instant`].
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct Instant(Inner);
 
@@ -93,15 +96,20 @@ pub mod noatun_instant {
     }
 
     impl Instant {
+        /// Return an instant corresponding to the current time
         pub fn now() -> Self {
             Self(Inner::now())
         }
+        /// Calculate the positive duration since 'other'. If 'other' is later than
+        /// 'self', a zero duration is returned.
         pub fn saturating_duration_since(&self, other: Instant) -> Duration {
             self.0.saturating_duration_since(other.0)
         }
+        /// Calculate the amount of time that has elapsed from 'self' until [`Self::now`].
         pub fn elapsed(&self) -> Duration {
             self.0.elapsed()
         }
+        /// Convert this noatun instant to a tokio Instant
         #[cfg(feature = "tokio")]
         pub fn tokio_instant(&self) -> Inner {
             self.0
@@ -292,31 +300,38 @@ pub unsafe trait NoatunStorable: Sized + 'static {
     fn hash_schema(hasher: &mut SchemaHasher);
 }
 
+/// Trait for noatun storable objects that can be unpin, that don't contain any
+/// pointers or references inside the noatun materialized view
+pub unsafe trait NoatunPod : Copy + NoatunStorable {
+
+}
+
 mod noatun_storable_impls {
     use super::NoatunStorable;
     use crate::SchemaHasher;
-    macro_rules! make_noatun_storable {
+    macro_rules! make_noatun_storable_primitive {
         ($t: ident) => {
             unsafe impl NoatunStorable for $t {
                 fn hash_schema(hasher: &mut SchemaHasher) {
                     hasher.write_str(concat!("std::", stringify!($t)));
                 }
             }
+            unsafe impl $crate::NoatunPod for $t {}
         };
     }
 
-    make_noatun_storable!(u8);
-    make_noatun_storable!(u16);
-    make_noatun_storable!(u32);
-    make_noatun_storable!(u64);
-    make_noatun_storable!(u128);
-    make_noatun_storable!(i8);
-    make_noatun_storable!(i16);
-    make_noatun_storable!(i32);
-    make_noatun_storable!(i64);
-    make_noatun_storable!(i128);
-    make_noatun_storable!(isize);
-    make_noatun_storable!(usize);
+    make_noatun_storable_primitive!(u8);
+    make_noatun_storable_primitive!(u16);
+    make_noatun_storable_primitive!(u32);
+    make_noatun_storable_primitive!(u64);
+    make_noatun_storable_primitive!(u128);
+    make_noatun_storable_primitive!(i8);
+    make_noatun_storable_primitive!(i16);
+    make_noatun_storable_primitive!(i32);
+    make_noatun_storable_primitive!(i64);
+    make_noatun_storable_primitive!(i128);
+    make_noatun_storable_primitive!(isize);
+    make_noatun_storable_primitive!(usize);
 
     unsafe impl<T: NoatunStorable, const N: usize> NoatunStorable for [T; N] {
         fn hash_schema(hasher: &mut SchemaHasher) {
@@ -1001,6 +1016,7 @@ unsafe impl NoatunStorable for NoatunTime {
         hasher.write_str("noatun::NoatunTime/1")
     }
 }
+unsafe impl NoatunPod for NoatunTime {}
 
 impl Add<Duration> for NoatunTime {
     type Output = NoatunTime;
@@ -1533,6 +1549,15 @@ pub fn bytes_of_mut<T: NoatunStorable>(t: &mut T) -> &mut [u8] {
     unsafe { slice::from_raw_parts_mut(t as *mut _ as *mut u8, size_of::<T>()) }
 }
 
+/// Cast a reference to a NoatunStorable into a slice of bytes
+pub fn bytes_of_mut_object<T: Object>(t: &mut T) -> &mut [u8] {
+    // # Safety
+    // NoatunStorable instances can always be viewed as a set of by tes
+    // That set of bytes can have uninitialized values, so we can't use the values.
+    // Just copying uninitialized values is ok, and that's all we'll end up doing.
+    unsafe { slice::from_raw_parts_mut(t as *mut _ as *mut u8, size_of::<T>()) }
+}
+
 /// Cast from a slice of I to a slice of O.
 ///
 /// A compile time panic occurs if the alignment of O is not smaller or equal to that of I.
@@ -1645,7 +1670,42 @@ pub trait Object {
     /// FatPtr for dynamically sized objects. Other types are unlikely to make sense.
     type Ptr: Pointer;
 
+    /// A type that is functionally equivalent to `Self`, but which can be moved out
+    /// of the database and used like a plain old data type.
+    ///
+    /// ```
+    /// use noatun::{noatun_object, Object};
+    ///
+    /// noatun_object!(
+    ///     struct Cat {
+    ///         pod weight_g: u32
+    ///     }
+    /// );
+    ///
+    /// fn export(cat: &Cat) -> CatExternal {
+    ///     cat.export()
+    /// }
+    ///
+    ///
+    /// ```
+    ///
+    ///
+    /// # Technical note:
+    /// Instances of `Object` may never be moved out of the database. There are several
+    /// reasons for this:
+    ///
+    ///  - 1: Objects stored in the database may reference memory mapped storage that
+    ///       is only available when the database is open. These references are not
+    ///       tracked using rust lifetimes, so if the object was moved out, there might
+    ///       be a segfault (or worse) on subsequent access.
+    ///  - 2: The undo-logic would have to be special-cased so as not to emit undo entries
+    ///       for instances that are not in the database.
+    ///  - 3: The undo-machinery is on a lower level than the objects, and undo could thus
+    ///       affect objects referenced by moved-out instances, with unintended results.
     type ExternalType: ?Sized;
+    /// Owned version of [`Self::ExternalType`].
+    ///
+    /// If Self is `str`, `ExternalOwnedType` should be String, for example.
     type ExternalOwnedType: Borrow<Self::ExternalType>;
 
     /// Create an owned 'external' copy of this object.
@@ -1728,6 +1788,10 @@ pub trait Object {
 
 // TODO(future): Could we support a noatun_enum! macro?
 
+/// Count the number of token trees given as parameter
+///
+/// This is used by the [`noatun_object`]-macro to figure out the number
+/// of fields in a struct.
 #[macro_export]
 macro_rules! count_ast_nodes {
     () => (0usize);
@@ -2021,6 +2085,11 @@ macro_rules! noatun_object {
 
 }
 
+/// Trait for implementations of `Object` that have a fixed size, and have an internal
+/// representation that is bitwise compatible with their Database format.
+///
+/// Most noatun Object types implement this. There is a blanket implementation for
+/// all types T that have a fixed size and implement `NoatunStorable`.
 pub trait FixedSizeObject: Object<Ptr = ThinPtr> + NoatunStorable + Sized + 'static
 where
     <Self as Object>::ExternalOwnedType: Sized,
@@ -2036,6 +2105,12 @@ struct RawFatPtr {
     size: usize,
 }
 
+/// A fat pointer to noatun materialized view storage.
+///
+/// Contains a start and a count.
+///
+/// Note, in contrast to regular rust fat pointers, the second field really must be a count,
+/// and can not be a vtable.
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 pub struct FatPtr {
@@ -2119,6 +2194,7 @@ impl Pointer for ThinPtr {
 }
 
 impl ThinPtr {
+    /// Return a null pointer
     pub fn null() -> ThinPtr {
         ThinPtr(0)
     }
@@ -2210,32 +2286,34 @@ where
     }
 }
 
+/// Strategy for handling any pre-existing database files when opening a database
 #[derive(Clone)]
 pub enum Target {
+    /// Open an existing file, but fail if no file exists.
     OpenExisting(PathBuf),
+    /// If file does not exist, create it.
+    ///
+    /// If a file does exist, overwrite it.
+    ///
+    /// This does never make use of any stored data.
     CreateNewOrOverwrite(PathBuf),
+    /// If file does not exist, create it.
+    ///
+    /// Otherwise, use the stored file.
     CreateNew(PathBuf),
 }
 impl Target {
-    fn path_buf(&mut self) -> &mut PathBuf {
-        let (Target::CreateNew(x) | Target::CreateNewOrOverwrite(x) | Target::OpenExisting(x)) =
-            self;
-        x
-    }
-    #[must_use]
-    pub fn append(&self, path: &str) -> Target {
-        let mut temp = self.clone();
-        *temp.path_buf() = self.path().join(path);
-        temp
-    }
+    /// The path to the selected file
     pub fn path(&self) -> &Path {
         let (Target::CreateNew(x) | Target::CreateNewOrOverwrite(x) | Target::OpenExisting(x)) =
             self;
         x
     }
+    /// True if the file should be created if it doesn't exist
     pub fn create(&self) -> bool {
         matches!(self, Target::CreateNewOrOverwrite(_) | Target::CreateNew(_))
     }
+    /// True if any existing file should be unconditionally overwritten
     pub fn overwrite(&self) -> bool {
         matches!(self, Target::CreateNewOrOverwrite(_))
     }
@@ -2307,15 +2385,17 @@ fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(buf: &[u8]) -> a
     )?)
 }
 
+/// Trait for a serializer that can serialize/deserialize a Message of type `MSG`.
+///
+/// This trait is used to make noatun completely independent of any particular serialization
+/// framework, like serde. To use serde + postcard, use [`PostcardMessageSerializer`].
 pub trait NoatunMessageSerializer<MSG> {
-    /// Noatun is completely agnostic about event serialization, you just have
-    /// to implement this method and also `serialize` further down.
-    ///
-    /// This example uses "postcard" as serializer
+    /// Deserialize an instance of type [`MSG`] from 'buf'
     fn deserialize(buf: &[u8]) -> anyhow::Result<MSG>
     where
         Self: Sized;
 
+    /// Serialize 'MSG', writing it to 'writer'.
     fn serialize<W: Write>(msg: &MSG, writer: W) -> anyhow::Result<()>;
 }
 
@@ -2340,6 +2420,7 @@ impl<MSG: Serialize + DeserializeOwned> NoatunMessageSerializer<MSG>
     }
 }
 
+/// A noatun serializer using the savefile library. See [`savefile `].
 pub struct SavefileMessageSerializer<
     MSG: savefile::Serialize + savefile::Deserialize + savefile::Packed,
 >(pub PhantomData<MSG>);

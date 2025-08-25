@@ -12,7 +12,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
-use std::mem::{offset_of, transmute_copy, MaybeUninit};
+use std::mem::{offset_of, transmute_copy};
 use std::ops::{Range};
 use std::slice;
 

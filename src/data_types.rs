@@ -138,6 +138,11 @@ impl ContextGetter for DatabaseContextData {
     }
 }
 
+/// A boxed noatun value.
+///
+/// This can be useful since a box can contain an unsized type.
+///
+/// Boxes can be used to store unsized types in collections, for example.
 #[repr(transparent)]
 pub struct NoatunBox<T: Object + ?Sized> {
     object_index: T::Ptr,
@@ -226,6 +231,7 @@ impl<T: Object + ?Sized> NoatunBox<T> {
         unsafe { tself.object_index.access_mut::<T>() }
     }
 
+    /// Create a new box instance pointing at the given address
     pub fn new(value: T::Ptr) -> Self {
         Self {
             object_index: value,
@@ -233,6 +239,7 @@ impl<T: Object + ?Sized> NoatunBox<T> {
         }
     }
 
+    /// Assign the given 'value' to self
     pub fn assign(self: Pin<&mut Self>, value: &T::ExternalType) {
         let tself = unsafe { self.get_unchecked_mut() };
         let target = unsafe { T::allocate_from(value) };
@@ -240,6 +247,7 @@ impl<T: Object + ?Sized> NoatunBox<T> {
         NoatunContext.write_internal(index, &mut tself.object_index);
     }
 
+    /// Allocate a new instance of Self
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn allocate<'a>(value: T) -> Pin<&'a mut Self>
     where

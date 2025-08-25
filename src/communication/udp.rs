@@ -1,3 +1,4 @@
+//! CommunicationDriver for UDP over tokio
 use crate::communication::{
     CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
 };
@@ -98,7 +99,11 @@ impl CommunicationDriver for TokioUdpDriver {
         Ok(s.parse().context(format!("couldn't parse {s:?}"))?)
     }
 }
+
+/// Noatun communication driver using UDP multicast, powered by tokio
 pub struct TokioUdpDriver;
+
+/// Send half for [`TokioUdpDriver`]
 pub struct CommunicationUdpSendSocket {
     multicast_addr: SocketAddr,
     socket: UdpSocket,

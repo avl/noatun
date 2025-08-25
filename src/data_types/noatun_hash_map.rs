@@ -74,7 +74,6 @@ unsafe impl<K: NoatunStorable, V: NoatunStorable> NoatunStorable for NoatunHashB
 /// the field X is overwritten (without dependency on the previous value) will the first message
 /// be pruned.
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub struct NoatunHashMap<K: NoatunStorable, V: FixedSizeObject> {
     length: usize,
     capacity: usize,
@@ -90,6 +89,7 @@ pub struct NoatunHashMap<K: NoatunStorable, V: FixedSizeObject> {
 
     phantom_data: PhantomData<(K, V)>,
 }
+
 
 unsafe impl<K: NoatunStorable, V: FixedSizeObject> NoatunStorable for NoatunHashMap<K, V> {
     fn hash_schema(hasher: &mut SchemaHasher) {

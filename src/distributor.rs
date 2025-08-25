@@ -102,14 +102,17 @@ impl UpToSpeedStatus {
     }
 }
 
+/// Information about closest peers
 #[derive(Debug)]
 pub struct PeerInfo {
     /// How up-to-date we are with respect to this neighbor
     up_to_speed: UpToSpeedStatus,
 
+    /// The last time an UpdateHeads message was received from this peer
     pub(crate) last_seen: Instant,
 }
 impl PeerInfo {
+    /// Return an uninitialized PeerInfo
     pub fn new(now: Instant) -> PeerInfo {
         PeerInfo {
             up_to_speed: Default::default(),
@@ -119,6 +122,7 @@ impl PeerInfo {
 }
 
 impl Neighborhood {
+    /// GC the neighborhood state if timer elapsed
     pub fn gc_if_necessary(
         &mut self,
         our_node_id: EphemeralNodeId,
@@ -159,6 +163,8 @@ impl Neighborhood {
             }
         }
     }
+
+    /// Insert the given peer into the neighborhood
     pub fn get_insert_peer(&mut self, peer_id: EphemeralNodeId, now: Instant) -> &mut PeerInfo {
         let mut len = self.peers.len();
         let t = self.peers.entry(peer_id).or_insert_with(|| {
@@ -169,12 +175,11 @@ impl Neighborhood {
         t.last_seen = now;
         t
     }
-    pub fn get_peer_mut(&mut self, peer_id: EphemeralNodeId) -> Option<&mut PeerInfo> {
-        self.peers.get_mut(&peer_id)
-    }
-    pub fn get_peer(&self, peer_id: EphemeralNodeId) -> Option<&PeerInfo> {
+
+    pub(crate) fn get_peer(&self, peer_id: EphemeralNodeId) -> Option<&PeerInfo> {
         self.peers.get(&peer_id)
     }
+    /// Get the list of neighbors
     pub fn get_neighbors(&self) -> Vec<EphemeralNodeId> {
         let mut t: Vec<_> = self.peers.keys().copied().collect();
         t.sort_unstable();
@@ -193,6 +198,10 @@ pub struct DuplicationChecker<T> {
     interval: Duration,
 }
 impl<T: Eq + Hash> DuplicationChecker<T> {
+    /// Create a new DuplicationChecker instance, with the
+    /// given interval.
+    ///
+    /// Messages are kept in the checker for approximately the given interval.
     pub fn new(interval: Duration) -> DuplicationChecker<T> {
         DuplicationChecker {
             memory: Default::default(),
@@ -201,6 +210,9 @@ impl<T: Eq + Hash> DuplicationChecker<T> {
         }
     }
     /// Returns true if duplicate.
+    ///
+    /// The item is added to the checker, allowing future checks for the same
+    /// item to return true.
     pub fn is_duplicate(&mut self, id: T, now: Instant) -> bool {
         self.gc_counter += 1;
         if self.gc_counter > 10000 {
@@ -226,14 +238,16 @@ impl<T: Eq + Hash> DuplicationChecker<T> {
     }
 }
 
-pub const MAX_RECENT_SENT_MEMORY: usize = 100;
 
 // TODO(future): Maybe nodes that notice that they have more neighbors than basically anybody,
 // should try to change node-id to a small number, so they can be natural, efficient relays for everybody.
 
+/// Information about the current node's neighborhood
 #[derive(Debug)]
 pub struct Neighborhood {
+    /// The set of neighbors
     pub peers: IndexMap<EphemeralNodeId, PeerInfo>,
+    /// Neighbor-tracker with logic to figure out when retransmits need to be sent
     pub fast_pather: Arc<RwLock<MiniPather>>,
 
     last_gc: Instant,
@@ -251,6 +265,7 @@ pub struct Neighborhood {
 }
 
 impl Neighborhood {
+    /// Return a new neighborhood struct with the given pather
     pub fn new(now: Instant, pather: Arc<RwLock<MiniPather>>) -> Neighborhood {
         let neighbor_count = gauge!("neighbor_count");
         describe_gauge!(
@@ -311,6 +326,7 @@ impl Neighborhood {
         }
     }
 
+    /// Record that the given message has been received over the network
     pub fn record_message(&mut self, message: &DistributorMessage) {
         match message {
             DistributorMessage::ReportHeads { heads, source, .. } => {
@@ -352,6 +368,7 @@ impl Neighborhood {
 }
 
 //TODO(future): Consider merging this with NeighborHood?
+/// Output buffer with state
 #[derive(Debug)]
 pub struct QueryableOutbuffer {
     outbuf: VecDeque<DistributorMessage>,
@@ -392,17 +409,21 @@ impl QueryableOutbuffer {
         }
     }
 
+    /// Return true if no message are queued for sending
     pub fn is_empty(&self) -> bool {
         self.outbuf.is_empty()
     }
+    /// Pop the first message from the output queue, if any
     pub fn pop_front(&mut self) -> Option<DistributorMessage> {
         let msg = self.outbuf.pop_front();
         msg
     }
+    /// Add a message to the send queue
     pub fn push_back(&mut self, msg: DistributorMessage) {
         self.outbuf.push_back(msg);
     }
 
+    /// Add multiple messages to the send queue
     pub fn extend<I: IntoIterator<Item = DistributorMessage>>(&mut self, items: I) {
         self.outbuf.extend(items);
     }
@@ -480,6 +501,7 @@ impl QueryableOutbuffer {
 // Otherwise:
 // Must request messages until it has complete picture
 
+/// A serialized [`MessageFrame`].
 #[derive(Debug, Savefile, Clone)]
 pub struct SerializedMessage {
     id: MessageId,
@@ -488,18 +510,25 @@ pub struct SerializedMessage {
 }
 
 impl SerializedMessage {
+    /// Create a serialized message from a header and payload
     pub fn from_header_and_body<M: Message>(
         header: MessageHeader,
         payload: M,
     ) -> Result<SerializedMessage> {
         Self::new(MessageFrame { header, payload })
     }
+
+    /// Retain parents for which the closure returns true.
+    ///
+    /// ALl other parents are removed
     pub fn retain_parents(&mut self, mut predicate: impl FnMut(MessageId) -> bool) {
         self.parents.retain(move |id| predicate(*id));
     }
+    /// Return the message id for this message
     pub fn message_id(&self) -> MessageId {
         self.id
     }
+    /// Convert to [`MessageFrame<M>`]
     pub fn to_message<M: Message>(self) -> Result<MessageFrame<M>> {
         let reader = Cursor::new(&self.data);
         Ok(MessageFrame {
@@ -510,6 +539,7 @@ impl SerializedMessage {
             payload: M::deserialize(&self.data[reader.position() as usize..])?,
         })
     }
+    /// Like [`Self::to_message`], but does not take ownership
     pub fn to_message_from_ref<M: Message>(&self) -> Result<MessageFrame<M>> {
         let reader = Cursor::new(&self.data);
         Ok(MessageFrame {
@@ -520,6 +550,7 @@ impl SerializedMessage {
             payload: M::deserialize(&self.data[reader.position() as usize..])?,
         })
     }
+    /// Create a new instance based on the given message frame
     pub fn new<M: Message>(m: MessageFrame<M>) -> Result<SerializedMessage> {
         let mut data = vec![];
         m.payload.serialize(&mut data)?;
@@ -531,6 +562,8 @@ impl SerializedMessage {
     }
 }
 
+
+/// A message, a set of parents and a query count
 #[derive(Debug, Savefile, Clone)]
 pub struct MessageSubGraphNode {
     pub(crate) id: MessageId,
@@ -538,11 +571,15 @@ pub struct MessageSubGraphNode {
     query_count: usize,
 }
 
+/// A set of parents, and a query count
 pub struct MessageSubGraphNodeValue {
     parents: Vec<MessageId>,
     query_count: usize,
 }
 
+/// An address
+///
+/// Truncated to at most 40 bytes
 #[derive(Savefile, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct Address(ArrayString<40>);
 
@@ -558,7 +595,9 @@ impl PartialEq<Address> for str {
 }
 
 impl Address {
+    /// The maximum address length fully supported by noatun, in bytes
     pub const MAX_LENGTH: usize = 40;
+    /// Convert from a value that implements Display, to Self
     pub fn from(value: impl Display) -> Self {
         use std::fmt::Write;
         let mut x = ArrayString::<40>::new();
@@ -589,6 +628,18 @@ impl Display for Address {
     }
 }
 
+/// An ephemeral node id.
+///
+/// Each node has an ephemeral node id, at any time.
+///
+/// This id is not necessarily globally unique. However, when nodes detect a neighbor
+/// with the same id, the id is re-randomized.
+///
+/// The is is used by the distributor, but not by the database itself.
+///
+/// Under the hood, this value is a 16 bit integer, which gives enough entropy
+/// for approximately a few tens of neighbors.
+//TODO: Increase to 24 bit?
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Savefile, PartialOrd, Ord)]
 pub struct EphemeralNodeId(u16);
 
@@ -608,12 +659,15 @@ pub(crate) static NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER: std::sync::atomic::Atomi
     std::sync::atomic::AtomicU16::new(0);
 
 impl EphemeralNodeId {
+    /// Return the inner 16 bit value
     pub fn raw_u16(self) -> u16 {
         self.0
     }
+    /// Create an instance wrapping the given 16 bit value
     pub fn new(value: u16) -> Self {
         EphemeralNodeId(value)
     }
+    /// Create a random EphemeralNodeId
     pub fn random() -> EphemeralNodeId {
         #[cfg(test)]
         {
@@ -631,19 +685,30 @@ impl EphemeralNodeId {
 //extra ReportHeads, after which the newly joined nodes sends one of its own. Thus we
 //get rid of the 1-periodic msg delay of waiting for ReportHeads-messages
 
+/// An updatehead, and the node we believe wrote this update head (if known)
 #[derive(Debug, Savefile, Clone)]
 pub struct Head {
+    /// The message id
     pub msg: MessageId,
+    /// The origin of said message, if known
     pub origin: Option<EphemeralNodeId>,
 }
 
+/// A message sent by the distributor
+///
+/// This describes every message of the distributor protocol
 #[derive(Debug, Savefile, Clone)]
 pub enum DistributorMessage {
     /// Report all update heads for the sender
     ReportHeads {
+        /// The sender of the message
         source: EphemeralNodeId,
+        /// The cutoff hash for the sender
         cutoff: CutOffHashPos,
+        /// The update heads of the sender
         heads: Vec<Head>,
+        /// Neighbors known by sender
+        ///
         neighbors: Vec<EphemeralNodeId>,
     },
     /// A query to tell if the listed messages are known.
@@ -658,30 +723,42 @@ pub enum DistributorMessage {
     SyncAllAck(Vec<MessageId>),
     /// Report a cut in the source node message graph
     RequestUpstream {
+        /// Sender of this distributor message
         source: EphemeralNodeId,
         /// the usize is How many levels to ascend from message
         query: Vec<(MessageId, usize)>,
+        /// Destination of request
         destination: EphemeralNodeId,
     },
     /// Response to a RequestUpstream, giving information about the message graph
     UpstreamResponse {
+        /// Sender of this distributor message
         source: EphemeralNodeId,
+        /// Destination of response
         dest: EphemeralNodeId,
+        /// Messages
         messages: Vec<MessageSubGraphNode>,
     },
     /// Command the recipient to send all descendants of the given messages
     SendMessageAndAllDescendants {
+        /// Sender of this distributor message
         source: EphemeralNodeId,
+        /// Node that is asked to send all descendants
         destination: EphemeralNodeId,
+        /// Messages whose descendants should be sent
         message_id: Vec<MessageId>,
     },
     /// Actual messages
     Message {
+        /// Sender of this distributor message
         source: EphemeralNodeId,
+        /// Message
         message: SerializedMessage,
+        /// True if we demand recipient to ack this message
         demand_ack: bool,
-        /// This message was created on the node that sent it.
-        /// This means it cannot be squelched.
+
+        /// Original sender of this message, as far as we know.
+        /// If this message was created on the node that sent it, this means it cannot be squelched.
         origin: EphemeralNodeId,
         /// True if this message was transmitted because it was explicitly requested
         explicit_retransmit: bool,
@@ -689,6 +766,7 @@ pub enum DistributorMessage {
 }
 
 impl DistributorMessage {
+    /// Source of this message
     pub fn source(&self) -> Option<EphemeralNodeId> {
         match self {
             DistributorMessage::ReportHeads { source, .. } => Some(*source),
@@ -701,6 +779,7 @@ impl DistributorMessage {
             DistributorMessage::Message { source, .. } => Some(*source),
         }
     }
+    /// Debug representation of this message
     pub fn debug_format<M: Message>(&self) -> Result<String> {
         Ok(match self {
             DistributorMessage::ReportHeads {
@@ -814,6 +893,7 @@ impl SyncAllState {
     }
 }
 
+/// Status of distributor, including information about peers
 #[derive(Debug)]
 pub struct DistributorStatus {
     nominal: bool,
@@ -835,6 +915,8 @@ impl DistributorStatus {
     }
 }
 
+/// The distributor ensures the messages of a Database are synchronized
+/// to other peers in the network.
 #[derive(Debug)]
 pub struct Distributor {
     #[doc(hidden)]
@@ -856,12 +938,18 @@ pub struct Distributor {
     pub neighborhood: Neighborhood,
 }
 
+/// Synchronization status
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Status {
+    /// Synchronization has been achieved
     Nominal,
+    /// Synchronization could not be achieved, because clocks are too far off
     BadClocksDetected,
+    /// Nodes are not synchronized
     OutOfSync,
+    /// There are no peers to synchronize with
     NoPeers,
+    /// Synchronization is happening
     Synchronizing,
 }
 
@@ -887,6 +975,8 @@ impl Display for Status {
     }
 }
 
+
+/// Truncate the given name to a limited length 'Address'
 pub fn truncate_to_arraystring(name: &str) -> Address {
     if name.len() <= Address::MAX_LENGTH {
         return Address::from(name);
@@ -919,10 +1009,13 @@ impl AccumulatedMessage {
 }
 
 impl Distributor {
+    /// The interval between periodic messages
     pub fn periodic_message_interval(&self) -> Duration {
         self.periodic_message_interval
     }
     const BATCH_SIZE: usize = 20;
+
+    /// Create a new distributor
     pub fn new(
         periodic_message_interval: Duration,
         mut initial_node_id: ArcShift<EphemeralNodeId>,
@@ -949,6 +1042,7 @@ impl Distributor {
         }
     }
 
+    /// The current ephemeral node id for this distributor
     pub fn node_id(&mut self) -> EphemeralNodeId {
         *self.ephemeral_node_id.get()
     }

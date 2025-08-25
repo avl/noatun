@@ -8,6 +8,11 @@ use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::slice;
 
+/// A NoatunString can be thought of as a noatun equivalent of [`std::string::String`].
+/// 
+/// However, under the hood, NoatunString does not allow mutation of existing data. Any
+/// modification requires a complete reallocation.
+/// 
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct NoatunString {

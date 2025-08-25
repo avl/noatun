@@ -1,5 +1,5 @@
-use crate::sequence_nr::{SequenceNr, Tracker};
-use crate::{NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr, CONTEXT};
+use crate::sequence_nr::{Tracker};
+use crate::{NoatunContext, NoatunPod, NoatunStorable, Object, SchemaHasher, ThinPtr, CONTEXT};
 use std::fmt::{Debug, Formatter};
 use std::ops::{AddAssign, Deref, SubAssign};
 use std::pin::Pin;
@@ -10,12 +10,20 @@ use tracing::trace;
 /// `NoatunStorable`, which basically means it must be a Copy type that does
 /// not contain any pointers.
 #[repr(C)]
-pub struct NoatunCell<T> {
+pub struct NoatunCell<T: NoatunPod> {
     value: T,
     /// The most recent message that did a write to this cell
     tracker: Tracker,
 }
 
+/// An opaque noatun cell. This is a wrapper around a regular data type.
+///
+/// This type does not allow reading the inner value while applying messages to the
+/// materialized view. In return, messages that wrote an opaque value, can be pruned as
+/// soon as the opaque value is overwritten.
+///
+/// T must implement `NoatunStorable`, which basically means it must be a Copy type that does
+/// not contain any pointers.
 #[repr(C)]
 pub struct OpaqueNoatunCell<T> {
     value: T,
@@ -30,31 +38,33 @@ unsafe impl<T: NoatunStorable> NoatunStorable for OpaqueNoatunCell<T> {
     }
 }
 
-unsafe impl<T: NoatunStorable> NoatunStorable for NoatunCell<T> {
+unsafe impl<T: NoatunPod> NoatunStorable for NoatunCell<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::NoatunCell/1");
         T::hash_schema(hasher);
     }
 }
 
-impl<T: Copy + Debug> Debug for NoatunCell<T> {
+impl<T: NoatunPod + Debug> Debug for NoatunCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let value = self.value;
         value.fmt(f)
     }
 }
 
-impl<T: Copy + Debug> Debug for OpaqueNoatunCell<T> {
+impl<T: NoatunPod + Debug> Debug for OpaqueNoatunCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let value = self.value;
         value.fmt(f)
     }
 }
 
+/// Extension trait to export the contents of a slice of NoatunCell items.
 pub trait NoatunCellArrayExt<T: NoatunStorable> {
+    /// Retrieve the contents of every cell, and return in a Vec
     fn observe(&self) -> Vec<T>;
 }
-impl<T: NoatunStorable + Copy> NoatunCellArrayExt<T> for &[NoatunCell<T>] {
+impl<T: NoatunPod> NoatunCellArrayExt<T> for &[NoatunCell<T>] {
     fn observe(&self) -> Vec<T> {
         self.iter().map(|x| x.get()).collect()
     }
@@ -62,7 +72,7 @@ impl<T: NoatunStorable + Copy> NoatunCellArrayExt<T> for &[NoatunCell<T>] {
 
 impl<T> PartialEq<NoatunCell<T>> for NoatunCell<T>
 where
-    T: Copy + PartialEq,
+    T: NoatunPod + PartialEq,
 {
     fn eq(&self, other: &NoatunCell<T>) -> bool {
         let val1 = self.value;
@@ -71,7 +81,7 @@ where
     }
 }
 
-impl<T: Copy> Deref for NoatunCell<T> {
+impl<T: NoatunPod> Deref for NoatunCell<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -80,7 +90,10 @@ impl<T: Copy> Deref for NoatunCell<T> {
     }
 }
 
-impl<T: NoatunStorable> NoatunCell<T> {
+impl<T: NoatunPod> NoatunCell<T> {
+    /// Get the current value of the cell.
+    /// 
+    /// This records a read dependency on the data. 
     pub fn get(&self) -> T
     where
         T: Copy,
@@ -141,7 +154,7 @@ impl<T: NoatunStorable + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut OpaqueNo
     }
 }
 
-impl<T: NoatunStorable + AddAssign<T> + Copy> AddAssign<T> for Pin<&mut NoatunCell<T>> {
+impl<T: NoatunPod + AddAssign<T> + Copy> AddAssign<T> for Pin<&mut NoatunCell<T>> {
     fn add_assign(&mut self, rhs: T) {
         NoatunContext.observe_registrar(self.tracker);
         let mut new_value = self.value;
@@ -149,7 +162,7 @@ impl<T: NoatunStorable + AddAssign<T> + Copy> AddAssign<T> for Pin<&mut NoatunCe
         self.as_mut().set(new_value);
     }
 }
-impl<T: NoatunStorable + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut NoatunCell<T>> {
+impl<T: NoatunPod + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut NoatunCell<T>> {
     fn sub_assign(&mut self, rhs: T) {
         NoatunContext.observe_registrar(self.tracker);
         let mut new_value = self.value;
@@ -159,7 +172,7 @@ impl<T: NoatunStorable + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut NoatunCe
 }
 
 
-impl<T: NoatunStorable + Debug + Copy> Object for NoatunCell<T> {
+impl<T: NoatunPod + Debug> Object for NoatunCell<T> {
     type Ptr = ThinPtr;
     type ExternalType = T;
     type ExternalOwnedType = T;

@@ -37,6 +37,7 @@ pub struct MessageRow {
     pub src_addr: Option<Address>,
 }
 
+/// Helper type containing various diagnostics data
 #[derive(Clone)]
 pub struct DiagnosticsData {
     /// Sent network packets

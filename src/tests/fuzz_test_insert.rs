@@ -2,7 +2,7 @@ use crate::cutoff::CutOffDuration;
 use crate::data_types::*;
 use crate::database::DatabaseSettings;
 use crate::sequence_nr::SequenceNr;
-use crate::{Database, Message, NoatunTime, SchemaHasher};
+use crate::{Database, Message, NoatunPod, NoatunTime, SchemaHasher};
 use crate::{MessageId, SavefileMessageSerializer};
 use crate::{NoatunStorable, Object};
 use datetime_literal::datetime;
@@ -24,6 +24,7 @@ unsafe impl NoatunStorable for DummyObj {
         hasher.write_str("noatun::DummyObj/1");
     }
 }
+unsafe impl NoatunPod for DummyObj {}
 
 noatun_object!(
     struct SubSubObj {

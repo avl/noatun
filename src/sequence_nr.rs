@@ -25,6 +25,7 @@ pub struct SequenceNr(u32);
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Tracker {
+    /// The current owner of this tracker
     pub owner: SequenceNr,
 }
 
@@ -60,28 +61,41 @@ impl Debug for SequenceNr {
 }
 
 impl SequenceNr {
+    /// An invalid sequence number
     pub const INVALID: SequenceNr = SequenceNr(0);
+    /// True if self is invalid
     pub fn is_invalid(self) -> bool {
         self.0 == 0
     }
+    /// True if self is valid
     pub fn is_valid(self) -> bool {
         self.0 != 0
     }
+    /// The next sequence number in the sequence.
+    ///
+    /// Note, successor of INVALID is 0
     pub fn successor(self) -> SequenceNr {
         SequenceNr(self.0 + 1)
     }
+    /// Convert from index to sequence number
     pub fn from_index(index: usize) -> SequenceNr {
         if index >= (u32::MAX - 1) as usize {
             panic!("More than 2^32 elements created. Not supported by noatun");
         }
         SequenceNr(index as u32 + 1)
     }
+    /// Return the index of this sequence number
+    ///
+    /// Panics if self is invalid
     pub fn index(self) -> usize {
         if self.0 == 0 {
             panic!("0 SequenceNr does not have an index")
         }
         self.0 as usize - 1
     }
+    /// Return the index of this sequence number
+    ///
+    /// Returns None if self is invalid
     pub fn try_index(self) -> Option<usize> {
         if self.0 == 0 {
             return None;
