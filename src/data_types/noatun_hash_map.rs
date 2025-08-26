@@ -153,22 +153,23 @@ impl Add<usize> for BucketNr {
     }
 }
 
+
 #[derive(Clone, Copy)]
-pub struct BucketProbeSequence {
+pub(crate) struct BucketProbeSequence {
     cur_group: usize,
     group_capacity: usize,
     group_step: usize,
 }
 
 impl BucketProbeSequence {
-    pub fn new(start_group: MetaGroupNr, total_group_count: usize) -> BucketProbeSequence {
+    pub(crate) fn new(start_group: MetaGroupNr, total_group_count: usize) -> BucketProbeSequence {
         BucketProbeSequence {
             cur_group: start_group.0,
             group_capacity: total_group_count,
             group_step: 1,
         }
     }
-    pub fn probe_next(&mut self) -> Option<MetaGroupNr> {
+    pub(crate) fn probe_next(&mut self) -> Option<MetaGroupNr> {
         // step is >= capacity after approx self.capacity/2 iterations, since
         // step is incremented by 2
         if self.group_step > self.group_capacity {
@@ -210,7 +211,7 @@ pub struct MetaGroup(pub [Meta; HASH_META_GROUP_SIZE]);
 
 /// Returns when end of probe sequence was reached, or when closure returns true.
 #[doc(hidden)]
-pub fn run_get_probe_sequence(
+pub(crate) fn run_get_probe_sequence(
     metas: &[MetaGroup],
     max_buckets: usize,
     needle: Meta,
@@ -516,12 +517,17 @@ impl Meta {
     }
 }
 
+/// Iterator for [`NoatunHashMap`]
 pub struct NoatunHashMapIterator<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject>
 {
     hash_buckets: &'a [MaybeUninit<NoatunHashBucket<K, V>>],
     metas: &'a [MetaGroup],
     next_position: usize,
 }
+
+/// Iterator for [`NoatunHashMap`] that produces owned values
+///
+/// Not exposed externally
 struct DatabaseHashOwningIterator<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject>
 {
     hash_buckets: HashAccessContextMut<'a, K, V>,
@@ -689,47 +695,49 @@ pub enum NoatunHashMapEntry<'a, K, V>
 where
     K: NoatunStorable + NoatunKey + PartialEq,
     V: FixedSizeObject,
-    K::ExternalOwnedType: Sized,
+    K::NativeOwnedType: Sized,
 {
+    /// The key has a value
     Occupied(OccupiedEntry<'a, K, V>),
+    /// The key is not associated with a value, but a value can be inserted
     Vacant(VacantEntry<'a, K, V>),
 }
 pub struct NoatunHashMapEntryInternal<'a, K, V>
 where
     K: NoatunStorable + NoatunKey + PartialEq,
     V: FixedSizeObject,
-    K::ExternalOwnedType: Sized,
+    K::NativeOwnedType: Sized,
 {
     context: HashAccessContextMut<'a, K, V>,
     probe_result: (BucketNr, Meta),
-    key: K::ExternalOwnedType,
+    key: K::NativeOwnedType,
     length: &'a mut usize,
 }
 
 pub struct VacantEntry<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject>
 where
-    K::ExternalOwnedType: Sized,
+    K::NativeOwnedType: Sized,
 {
     context: HashAccessContextMut<'a, K, V>,
     probe_result: (BucketNr, Meta),
-    key: K::ExternalOwnedType,
+    key: K::NativeOwnedType,
     length: &'a mut usize,
 }
 pub struct OccupiedEntry<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject>
 where
-    K::ExternalOwnedType: Sized,
+    K::NativeOwnedType: Sized,
 {
     context: HashAccessContextMut<'a, K, V>,
     probe_result: (BucketNr, Meta),
-    key: K::ExternalOwnedType,
+    key: K::NativeOwnedType,
     length: &'a mut usize,
 }
 
 impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> VacantEntry<'a, K, V>
 where
-    K::ExternalType: Sized,
+    K::NativeType: Sized,
 {
-    pub fn insert(self, v: &V::ExternalType) -> Pin<&'a mut V> {
+    pub fn insert(self, v: &V::NativeType) -> Pin<&'a mut V> {
         NoatunHashMap::insert_at_bucket(
             true,
             self.probe_result,
@@ -747,7 +755,7 @@ where
 
 impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> OccupiedEntry<'a, K, V>
 where
-    K::ExternalOwnedType: Sized,
+    K::NativeOwnedType: Sized,
 {
     pub fn get(&self) -> &V {
         let bucket_nr = self.probe_result.0;
@@ -757,13 +765,13 @@ where
         let bucket_nr = self.probe_result.0;
         unsafe { Pin::new_unchecked(&mut self.context.buckets[bucket_nr.0].assume_init_mut().v) }
     }
-    pub fn insert(&mut self, v: &V::ExternalType) -> V::ExternalOwnedType {
+    pub fn insert(&mut self, v: &V::NativeType) -> V::NativeOwnedType {
         let val = self.get_mut();
         let ret = val.export();
         val.init_from(v);
         ret
     }
-    pub fn remove(mut self) -> V::ExternalOwnedType {
+    pub fn remove(mut self) -> V::NativeOwnedType {
         let bucket_nr = self.probe_result.0;
         let val = self.get();
         let ret = val.export();
@@ -778,12 +786,12 @@ where
 }
 impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMapEntry<'a, K, V>
 where
-    K::ExternalOwnedType: Sized,
+    K::NativeOwnedType: Sized,
 {
     fn make_enum(
         probe_result: ProbeRunResult,
         context: HashAccessContextMut<'a, K, V>,
-        key: K::ExternalOwnedType,
+        key: K::NativeOwnedType,
         length: &'a mut usize,
     ) -> NoatunHashMapEntry<'a, K, V> {
         match probe_result {
@@ -825,6 +833,9 @@ where
             },
         }
     }
+
+    /// Return the value of the entry, or if it is vacant, insert a new value
+    /// and return it. Inserted values are initialized with an all-zero bit pattern.
     pub fn or_default(self) -> Pin<&'a mut V> {
         let new = matches!(self, NoatunHashMapEntry::Vacant(_));
         let tself = self.unify();
@@ -839,8 +850,8 @@ where
             tself.length,
         )
     }
-    /// In
-    pub fn or_insert(self, v: &V::ExternalType) -> Pin<&'a mut V> {
+    /// Insert a new value for the key, and return a reference to the inserted value.
+    pub fn or_insert(self, v: &V::NativeType) -> Pin<&'a mut V> {
         let new = matches!(self, NoatunHashMapEntry::Vacant(_));
         let tself = self.unify();
         NoatunHashMap::insert_at_bucket(
@@ -856,7 +867,12 @@ where
             tself.length,
         )
     }
-    pub fn or_insert_with(self, v: impl FnOnce() -> V::ExternalOwnedType) -> Pin<&'a mut V> {
+
+
+    /// Insert a new value for the key, and return a reference to the inserted value.
+    ///
+    /// The value to insert is provided by closure 'v'.
+    pub fn or_insert_with(self, v: impl FnOnce() -> V::NativeOwnedType) -> Pin<&'a mut V> {
         let new = matches!(self, NoatunHashMapEntry::Vacant(_));
         let tself = self.unify();
         NoatunHashMap::insert_at_bucket(
@@ -1017,7 +1033,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// Probe only useful for reading/updating existing bucket
     fn probe_read(
         database_context_data: HashAccessContext<K, V>,
-        key: &K::ExternalType,
+        key: &K::NativeType,
     ) -> Option<BucketNr> {
         let key = key.borrow();
         if database_context_data.buckets.is_empty() {
@@ -1155,7 +1171,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// General purpose bucket probe
     fn probe(
         context: HashAccessContext<K, V>,
-        key: impl Borrow<K::ExternalType>,
+        key: impl Borrow<K::NativeType>,
     ) -> ProbeRunResult {
         let HashAccessContext { metas, buckets } = context;
         let cap = buckets.len();
@@ -1291,14 +1307,14 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
     /// For a mutable version of this, see [`get_mut_val`].
     #[inline]
-    pub fn get(&self, key: &K::ExternalType) -> Option<&V> {
+    pub fn get(&self, key: &K::NativeType) -> Option<&V> {
         let context = self.data_meta_len();
         let bucket = Self::probe_read(context, key)?;
         unsafe { Some(&context.buckets[bucket.0].assume_init_ref().v) }
     }
 
     /// Returns true if the given key is present in the map.
-    pub fn contains_key(&self, key: &K::ExternalType) -> bool {
+    pub fn contains_key(&self, key: &K::NativeType) -> bool {
         let context = self.data_meta_len();
         Self::probe_read(context, key).is_some()
     }
@@ -1307,7 +1323,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// and will panic if called from there.
     pub fn get_mut_val<'a>(
         self: Pin<&'a mut Self>,
-        key: &K::ExternalType,
+        key: &K::NativeType,
     ) -> Option<Pin<&'a mut V>> {
         let tself = unsafe { self.get_unchecked_mut() };
         let context = tself.data_meta_len_mut();
@@ -1322,7 +1338,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// Return the value for the given key.
     ///
     /// If the key is not present in the map, insert it with an all-zero value.
-    pub fn get_insert<'a>(mut self: Pin<&'a mut Self>, key: &K::ExternalType) -> Pin<&'a mut V> {
+    pub fn get_insert<'a>(mut self: Pin<&'a mut Self>, key: &K::NativeType) -> Pin<&'a mut V> {
         let context = self.data_meta_len();
         if let Some(bucket) = Self::probe_read(context, key) {
             trace!(bucket=?bucket, "Existing bucket found");
@@ -1344,20 +1360,20 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     }
 
     /// Return true if a value was removed
-    pub fn remove(self: Pin<&mut Self>, key: &K::ExternalType) -> bool {
+    pub fn remove(self: Pin<&mut Self>, key: &K::NativeType) -> bool {
         unsafe { self.get_unchecked_mut().remove_impl(key, |_| {}) }
     }
 
     /// Return true if a value was removed
     #[cfg(test)]
-    pub(crate) fn remove_internal(&mut self, key: &K::ExternalType) -> bool {
+    pub(crate) fn remove_internal(&mut self, key: &K::NativeType) -> bool {
         self.remove_impl(key, |_| {})
     }
 
     /// Remove and return the value for the given key.
     ///
     /// If the key is not present, None is returned.
-    pub fn pop(self: Pin<&mut Self>, key: &K::ExternalType) -> Option<V::ExternalOwnedType> {
+    pub fn pop(self: Pin<&mut Self>, key: &K::NativeType) -> Option<V::NativeOwnedType> {
         let mut retval = None;
         let tself = unsafe { self.get_unchecked_mut() };
         tself.remove_impl(key, |val| {
@@ -1368,7 +1384,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
     fn remove_impl(
         &mut self,
-        key: &K::ExternalType,
+        key: &K::NativeType,
         getval: impl FnOnce(&mut Pin<&mut V>),
     ) -> bool {
         let context = self.data_meta_len_mut();
@@ -1459,13 +1475,13 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// If the key already contained a value, that value is returned.
     pub fn insert(
         self: Pin<&mut Self>,
-        key: impl Borrow<K::ExternalType>,
-        val: &V::ExternalType,
-    ) -> Option<V::ExternalOwnedType>
+        key: impl Borrow<K::NativeType>,
+        val: &V::NativeType,
+    ) -> Option<V::NativeOwnedType>
     where
-        V::ExternalOwnedType: Sized,
+        V::NativeOwnedType: Sized,
     {
-        let mut ret: Option<V::ExternalOwnedType> = None;
+        let mut ret: Option<V::NativeOwnedType> = None;
         unsafe { self.get_unchecked_mut() }.insert_internal_impl(key, |new, target| {
             if !new {
                 ret = Some(target.export());
@@ -1479,8 +1495,8 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// overwritten. If no previous value existed, one is inserted.
     pub fn insert_fast(
         self: Pin<&mut Self>,
-        key: impl Borrow<K::ExternalType>,
-        val: &V::ExternalType,
+        key: impl Borrow<K::NativeType>,
+        val: &V::NativeType,
     ) -> bool {
         let mut existed = false;
         unsafe { self.get_unchecked_mut() }.insert_internal_impl(key, |new, target| {
@@ -1494,15 +1510,19 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
     pub(crate) fn insert_internal(
         &mut self,
-        key: impl Borrow<K::ExternalType>,
-        val: &V::ExternalType,
+        key: impl Borrow<K::NativeType>,
+        val: &V::NativeType,
     ) {
         self.insert_internal_impl(key, |_new, target| V::init_from(target, val))
     }
 
-    pub fn entry(self: Pin<&mut Self>, key: K::ExternalOwnedType) -> NoatunHashMapEntry<'_, K, V>
+    /// Lookup key 'key' in the hashmap, and return an 'Entry' that represents that key's
+    /// position in the hashmap.
+    ///
+    /// Methods on the returned type allow inserting or removing from said entry.
+    pub fn entry(self: Pin<&mut Self>, key: K::NativeOwnedType) -> NoatunHashMapEntry<'_, K, V>
     where
-        K::ExternalOwnedType: Sized,
+        K::NativeOwnedType: Sized,
     {
         let tself = unsafe { self.get_unchecked_mut() };
         let self_cap = tself.capacity;
@@ -1526,7 +1546,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     fn insert_at_bucket<'a>(
         new: bool,
         probe_result: (BucketNr, Meta),
-        key: &K::ExternalType,
+        key: &K::NativeType,
         context: HashAccessContextMut<'a, K, V>,
         val: impl FnOnce(bool, Pin<&mut V>),
         length: &mut usize,
@@ -1551,7 +1571,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
     fn insert_internal_impl(
         &mut self,
-        key: impl Borrow<K::ExternalType>,
+        key: impl Borrow<K::NativeType>,
         val: impl FnMut(bool /*new*/, Pin<&mut V>),
     ) {
         let key = key.borrow();
@@ -1684,40 +1704,71 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 /// This is not an unsafe trait. However, incorrect implementations may potentially lead to
 /// infinite loops, or incorrect hashmap operations.
 pub trait NoatunKey: NoatunStorable + Sized + Debug {
-    /// A 'external' variant of Self.
+    /// A 'native' variant of Self.
     ///
-    /// Detached types are meant to be ergonomic to work with, but may have representations
+    /// Native types are meant to be ergonomic to work with, but may have representations
     /// that do not allow them to be stored in the mmap:ed db. For example, the external
     /// type for `NoatunString` is simply `str`.
     ///
     /// For POD types without internal pointers, the external version should typically be just
     /// `&'a Self`.
-    type ExternalType: ?Sized;
-    type ExternalOwnedType: Eq + Hash + Borrow<Self::ExternalType>;
+    type NativeType: ?Sized;
+    /// Owned version of [`Self::NativeType`].
+    ///
+    /// If `NativeType` is [`str`], this should be [`String`].
+    type NativeOwnedType: Eq + Hash + Borrow<Self::NativeType>;
 
-    fn hash<H>(tself: &Self::ExternalType, state: &mut H)
+    /// Hash the key using the provided hasher 'hasher'.
+    ///
+    /// This method must be compatible with the [`Self::eq`] method.
+    ///
+    /// If the implementation of this or [`Self::eq`] changes, this must be
+    /// reflected by a change in the [`Self::hash_key_schema`] method.
+    fn hash<H>(tself: &Self::NativeType, hasher: &mut H)
     where
         H: Hasher;
 
     /// Clear out any registrars
     fn destroy(&mut self);
 
-    /// Return a reference to a external key. This method should be fast, usually
+    /// Return a reference to a external key. This method should be fast, ideally
     /// just returning a reference to something in memory.
-    fn export_key_ref(&self) -> &Self::ExternalType;
+    fn export_key_ref(&self) -> &Self::NativeType;
 
-    fn export_key(&self) -> Self::ExternalOwnedType;
+    /// Export key, giving an owned instance.
+    fn export_key(&self) -> Self::NativeOwnedType;
 
-    fn eq(a: &Self::ExternalType, b: &Self::ExternalType) -> bool;
+    /// Determine if 'a' and 'b' have identical key values.
+    /// Typically, this method can just return `a == b`.
+    ///
+    /// However, this method is kept separate to ensure that equality is implemented
+    /// consistently with respect to hashing.
+    ///
+    /// NOTE! This method must be compatible with the hashing done by [`Self::hash`].
+    /// Specifically, the hash must not be computed on any field that is not part of
+    /// the comparison.
+    ///
+    /// If the implementation of this or [`Self::eq`] changes, this must be
+    /// reflected by a change in the [`Self::hash_key_schema`] method.
+    fn eq(a: &Self::NativeType, b: &Self::NativeType) -> bool;
 
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType);
+    /// Initialize a key value from the given 'external' type.
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType);
+
+    /// Hash the schema (and comparison/hashing semantics) of the current key
+    /// and write to 'hasher'.
+    ///
+    /// This is used by Noatun to automatically determine at startup if an existing
+    /// materialized view can be reused or not. If the hash of the complete schema
+    /// is not identical, the whole materialized view is rebuilt from scratch.
+    fn hash_key_schema(hasher: &mut SchemaHasher);
 }
 
 impl NoatunKey for MessageId {
-    type ExternalType = MessageId;
-    type ExternalOwnedType = MessageId;
+    type NativeType = MessageId;
+    type NativeOwnedType = MessageId;
 
-    fn hash<H>(tself: &Self::ExternalType, state: &mut H)
+    fn hash<H>(tself: &Self::NativeType, state: &mut H)
     where
         H: Hasher,
     {
@@ -1727,30 +1778,34 @@ impl NoatunKey for MessageId {
 
     fn destroy(&mut self) {}
 
-    fn export_key_ref(&self) -> &Self::ExternalType {
+    fn export_key_ref(&self) -> &Self::NativeType {
         self
     }
 
-    fn export_key(&self) -> Self::ExternalOwnedType {
+    fn export_key(&self) -> Self::NativeOwnedType {
         *self
     }
 
-    fn eq(a: &Self::ExternalType, b: &Self::ExternalType) -> bool {
+    fn eq(a: &Self::NativeType, b: &Self::NativeType) -> bool {
         a == b
     }
 
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
         let tself = unsafe { self.get_unchecked_mut() };
         *tself = *external;
+    }
+
+    fn hash_key_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::MessageId/1");
     }
 }
 
 impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V> {
     type Ptr = ThinPtr;
-    type ExternalType = IndexMap<K::ExternalOwnedType, V::ExternalOwnedType>;
-    type ExternalOwnedType = IndexMap<K::ExternalOwnedType, V::ExternalOwnedType>;
+    type NativeType = IndexMap<K::NativeOwnedType, V::NativeOwnedType>;
+    type NativeOwnedType = IndexMap<K::NativeOwnedType, V::NativeOwnedType>;
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         self.iter()
             .map(|(k, v)| (k.export_key(), v.export()))
             .collect()
@@ -1763,14 +1818,14 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
         tself.clear_impl();
     }
 
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
         let tself = unsafe { self.get_unchecked_mut() };
         for (k, v) in external {
             tself.insert_internal(k.borrow(), v.borrow());
         }
     }
 
-    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::NativeType) -> Pin<&'a mut Self> {
         let mut ret: Pin<&mut Self> = NoatunContext.allocate();
         ret.as_mut().init_from(external);
         ret

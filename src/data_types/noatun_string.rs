@@ -1,5 +1,5 @@
 use crate::data_types::NoatunKey;
-use crate::sequence_nr::{SequenceNr, Tracker};
+use crate::sequence_nr::{Tracker};
 use crate::{NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr};
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
@@ -55,10 +55,10 @@ impl PartialEq for NoatunString {
 
 impl Object for NoatunString {
     type Ptr = ThinPtr;
-    type ExternalType = str;
-    type ExternalOwnedType = String;
+    type NativeType = str;
+    type NativeOwnedType = String;
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         self.get().to_string()
     }
 
@@ -69,11 +69,11 @@ impl Object for NoatunString {
         }
     }
 
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
         self.assign(external);
     }
 
-    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::NativeType) -> Pin<&'a mut Self> {
         let mut temp: Pin<&mut Self> = NoatunContext.allocate();
         temp.as_mut().assign(external);
         temp
@@ -93,6 +93,10 @@ impl Deref for NoatunString {
 }
 
 impl NoatunString {
+    /// Return the str value of this `NoatunString`.
+    ///
+    /// This method does not copy the string, but returns a reference to the memory mapped
+    /// on disk value.
     pub fn get(&self) -> &str {
         NoatunContext.observe_registrar(self.tracker);
 
@@ -105,6 +109,11 @@ impl NoatunString {
             std::str::from_utf8_unchecked(bytes)
         }
     }
+
+    /// Assign a new value to the string.
+    ///
+    /// This method will allocate a new heap block, unless the new value is identical to, or
+    /// a prefix of, the previous value.
     pub fn assign(self: Pin<&mut Self>, value: &str) {
         let tself = unsafe { self.get_unchecked_mut() };
         if tself.get().starts_with(value) {
@@ -124,10 +133,10 @@ impl NoatunString {
     }
 }
 impl NoatunKey for NoatunString {
-    type ExternalType = str;
-    type ExternalOwnedType = String;
+    type NativeType = str;
+    type NativeOwnedType = String;
 
-    fn hash<H>(tself: &Self::ExternalType, state: &mut H)
+    fn hash<H>(tself: &Self::NativeType, state: &mut H)
     where
         H: Hasher,
     {
@@ -138,15 +147,15 @@ impl NoatunKey for NoatunString {
     fn export_key(&self) -> String {
         (*self).to_string()
     }
-    fn export_key_ref(&self) -> &Self::ExternalType {
+    fn export_key_ref(&self) -> &Self::NativeType {
         self
     }
 
-    fn eq(a: &Self::ExternalType, b: &Self::ExternalType) -> bool {
+    fn eq(a: &Self::NativeType, b: &Self::NativeType) -> bool {
         *a == *b
     }
 
-    fn init_from<'a>(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from<'a>(self: Pin<&mut Self>, external: &Self::NativeType) {
         self.assign(external);
     }
 
@@ -155,8 +164,13 @@ impl NoatunKey for NoatunString {
             NoatunContext.clear_tracker_ptr(&mut self.tracker, false);
         }
     }
+    fn hash_key_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::NoatunString/1");
+    }
 }
 
+/// Opaque version of [`NoatunString`]. Opaque objects cannot be read
+/// from with [`crate::Message::apply`], but enable faster pruning of messages.
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct OpaqueNoatunString {
@@ -197,20 +211,20 @@ impl PartialEq for OpaqueNoatunString {
 
 impl Object for OpaqueNoatunString {
     type Ptr = ThinPtr;
-    type ExternalType = str;
-    type ExternalOwnedType = String;
+    type NativeType = str;
+    type NativeOwnedType = String;
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         self.get().to_string()
     }
 
     fn destroy(self: Pin<&mut Self>) {}
 
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
         self.assign(external);
     }
 
-    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::NativeType) -> Pin<&'a mut Self> {
         let mut temp: Pin<&mut Self> = NoatunContext.allocate();
         temp.as_mut().assign(external);
         temp
@@ -230,7 +244,11 @@ impl Deref for OpaqueNoatunString {
 }
 
 impl OpaqueNoatunString {
+    /// Retrieve the value of this opaque string.
+    ///
+    /// This panics if called from within [`Message::apply`].
     pub fn get(&self) -> &str {
+        NoatunContext.assert_opaque_access_allowed("OpaqueNoatunString", "NoatunString");
         if self.length == 0 {
             return "";
         }
@@ -261,10 +279,10 @@ impl OpaqueNoatunString {
     }
 }
 impl NoatunKey for OpaqueNoatunString {
-    type ExternalType = str;
-    type ExternalOwnedType = String;
+    type NativeType = str;
+    type NativeOwnedType = String;
 
-    fn hash<H>(tself: &Self::ExternalType, state: &mut H)
+    fn hash<H>(tself: &Self::NativeType, state: &mut H)
     where
         H: Hasher,
     {
@@ -275,17 +293,21 @@ impl NoatunKey for OpaqueNoatunString {
     fn export_key(&self) -> String {
         (*self).to_string()
     }
-    fn export_key_ref(&self) -> &Self::ExternalType {
+    fn export_key_ref(&self) -> &Self::NativeType {
         self
     }
 
-    fn eq(a: &Self::ExternalType, b: &Self::ExternalType) -> bool {
+    fn eq(a: &Self::NativeType, b: &Self::NativeType) -> bool {
         *a == *b
     }
 
-    fn init_from<'a>(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from<'a>(self: Pin<&mut Self>, external: &Self::NativeType) {
         self.assign(external);
     }
 
     fn destroy(&mut self) {}
+
+    fn hash_key_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("noatun::OpaqueNoatunString/1");
+    }
 }

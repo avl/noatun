@@ -33,7 +33,7 @@ use std::pin::Pin;
 pub use noatun_cell::{NoatunCell, NoatunCellArrayExt, OpaqueNoatunCell};
 pub use noatun_hash_map::meta_finder::get_any_empty;
 pub use noatun_hash_map::{
-    run_get_probe_sequence, BucketProbeSequence, Meta, MetaGroup, MetaGroupNr, NoatunHashMap,
+    Meta, MetaGroup, MetaGroupNr, NoatunHashMap,
     NoatunHashMapEntry, NoatunHashMapIterator, NoatunKey,
 };
 pub use noatun_option::NoatunOption;
@@ -82,23 +82,23 @@ impl<T: NoatunStorable> Deref for NoatunUntrackedCell<T> {
 
 impl<T: NoatunStorable + Copy> Object for NoatunUntrackedCell<T> {
     type Ptr = ThinPtr;
-    type ExternalType = T;
-    type ExternalOwnedType = T;
+    type NativeType = T;
+    type NativeOwnedType = T;
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         self.0
     }
 
     fn destroy(self: Pin<&mut Self>) {}
 
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
         unsafe {
             let value = self.get_unchecked_mut();
             *value = NoatunUntrackedCell(*external);
         }
     }
 
-    unsafe fn allocate_from<'a>(_external: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(_external: &Self::NativeType) -> Pin<&'a mut Self> {
         unimplemented!("NoatunUntrackedCell does not support heap allocation")
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
@@ -169,10 +169,10 @@ where
     T::Ptr: NoatunStorable,
 {
     type Ptr = ThinPtr;
-    type ExternalType = T::ExternalType;
-    type ExternalOwnedType = T::ExternalOwnedType;
+    type NativeType = T::NativeType;
+    type NativeOwnedType = T::NativeOwnedType;
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         self.get_inner().export()
     }
 
@@ -180,7 +180,7 @@ where
         Self::get_inner_mut(self).destroy();
     }
 
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
         unsafe {
             let target = T::allocate_from(external);
             let new_index = NoatunContext.index_of(&*target);
@@ -191,7 +191,7 @@ where
         }
     }
 
-    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::NativeType) -> Pin<&'a mut Self> {
         let mut pod: Pin<&mut Self> = NoatunContext.allocate_obj();
         pod.as_mut().init_from(external);
         pod
@@ -240,7 +240,7 @@ impl<T: Object + ?Sized> NoatunBox<T> {
     }
 
     /// Assign the given 'value' to self
-    pub fn assign(self: Pin<&mut Self>, value: &T::ExternalType) {
+    pub fn assign(self: Pin<&mut Self>, value: &T::NativeType) {
         let tself = unsafe { self.get_unchecked_mut() };
         let target = unsafe { T::allocate_from(value) };
         let index = NoatunContext.index_of(&*target);

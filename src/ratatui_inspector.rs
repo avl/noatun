@@ -65,7 +65,7 @@ pub fn run_inspector<MSG: Message + Send>(
     recorder: Option<&SimpleMetricsRecorder>,
     comm: &DatabaseCommunication<MSG>,
 ) -> anyhow::Result<()> where
-    <MSG::Root as Object>::ExternalOwnedType: Debug {
+    <MSG::Root as Object>::NativeOwnedType: Debug {
     let mut inspector = RatatuiInspector::new();
     let mut terminal = ratatui::init();
 
@@ -214,7 +214,7 @@ impl RatatuiInspector {
         recorder: Option<&SimpleMetricsRecorder>,
         comm: &DatabaseCommunication<MSG>,
     ) where
-        <MSG::Root as Object>::ExternalOwnedType: Debug,
+        <MSG::Root as Object>::NativeOwnedType: Debug,
     {
         let data = comm.diagnostics_data();
         let data = data

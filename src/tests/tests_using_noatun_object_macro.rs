@@ -34,7 +34,7 @@ impl Message for BankMessage {
             BankMessage::AddCustomerAndMoney { money, customer: _ } => {
                 let prev_money = root.total_money();
                 root.as_mut().set_total_money(prev_money + *money);
-                root.customers_mut().push(&CustomerExternal {
+                root.customers_mut().push(&CustomerNative {
                     name: 42,
                     worth: 100,
                 });

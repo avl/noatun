@@ -152,7 +152,6 @@ use dummy_term_colors as colors;
 #[cfg(feature = "debug_color")]
 use crate::colors::{colored_hex_int, colored_hex_sint};
 use crate::cutoff::CutOffTime;
-use crate::database::DatabaseSession;
 
 #[cfg(feature = "tokio")]
 pub mod communication;
@@ -746,6 +745,8 @@ thread_local! {
     static TEST_EPOCH: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
+
+/// Reset the random id sequence used during test to obtain predictable EphemeralNodeId
 #[cfg(test)]
 pub fn reset_random_id() {
     crate::distributor::NON_RANDOM_EPHEMERAL_NODE_ID_COUNTER
@@ -1391,16 +1392,16 @@ unsafe impl NoatunStorable for DummyUnitObject {
 
 impl Object for DummyUnitObject {
     type Ptr = ThinPtr;
-    type ExternalType = ();
-    type ExternalOwnedType = ();
+    type NativeType = ();
+    type NativeOwnedType = ();
 
-    fn export(&self) -> Self::ExternalType {}
+    fn export(&self) -> Self::NativeType {}
 
     fn destroy(self: Pin<&mut Self>) {}
 
-    fn init_from(self: Pin<&mut Self>, _detached: &Self::ExternalType) {}
+    fn init_from(self: Pin<&mut Self>, _detached: &Self::NativeType) {}
 
-    unsafe fn allocate_from<'a>(_detached: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(_detached: &Self::NativeType) -> Pin<&'a mut Self> {
         unsafe { Pin::new_unchecked(&mut *std::ptr::dangling_mut::<DummyUnitObject>()) }
     }
 
@@ -1630,6 +1631,8 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
 ///    allowed to clobber them.
 ///  * All fields of Self must implement NoatunStorable
 ///  * Self must not be Unpin.
+///  * Any bit pattern must be valid
+///  * An all-zero bit pattern must represent a reasonable "default" value.
 ///
 /// TLDR:
 ///  * Use repr(C)
@@ -1646,16 +1649,23 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
 /// Therefore, any type that implements Object must make sure that safe
 /// code cannot obtain an owned instance of Self:
 ///   * No Default-impl!
-///   * No new() impl (though ExternalType can of course have new())
+///   * No new() impl (though NativeType can of course have new())
 ///
-/// NOTE!
+/// # On default values
+/// Objects should ideally not implement [`Default`]. Noatun assumes all objects
+/// can be constructed in a reasonable default state by simply initializing them
+/// with an all zero bit pattern. To avoid confusion, types should therefore not
+/// implement `Default`.
+///
+/// # Contrast to NoatunPod
 /// This trait represents an object that can be stored on its own as a first class
 /// noatun database object. However, noatun has a distinction between objects and values.
 /// At the top level, the root object of a noatun database must be an Object. However,
-/// the [`NoatunCell`] type allows storing values. This allows storing rust standard primitives
-/// like u8, u16, u32 etc directly in the database. It also allows storing custom types, for
-/// example newtype wrappers, identifiers etc directly in the database. All other information
-/// should be wrapped in a type that implements Object, such as [`data_types::NoatunCell`].
+/// the [`NoatunCell`] type allows storing values [implementing [`NoatunPod`]]. This allows
+/// storing rust standard primitives like u8, u16, u32 etc directly in the database. It also
+/// allows storing custom types, for example newtype wrappers, identifiers etc directly in
+/// the database. All other information should be wrapped in a type that implements Object
+/// (such as [`data_types::NoatunCell`]).
 ///
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a noatun Object, and can't appear on its own in a noatun database.",
@@ -1702,17 +1712,17 @@ pub trait Object {
     ///       for instances that are not in the database.
     ///  - 3: The undo-machinery is on a lower level than the objects, and undo could thus
     ///       affect objects referenced by moved-out instances, with unintended results.
-    type ExternalType: ?Sized;
-    /// Owned version of [`Self::ExternalType`].
+    type NativeType: ?Sized;
+    /// Owned version of [`Self::NativeType`].
     ///
-    /// If Self is `str`, `ExternalOwnedType` should be String, for example.
-    type ExternalOwnedType: Borrow<Self::ExternalType>;
+    /// If Self is `str`, `NativeOwnedType` should be String, for example.
+    type NativeOwnedType: Borrow<Self::NativeType>;
 
     /// Create an owned 'external' copy of this object.
     ///
     /// Detached types are regular rust objects, not stored in the noatun database.
     /// For example, the external type for [`data_types::NoatunString`] is [`std::primitive::str`]
-    fn export(&self) -> Self::ExternalOwnedType;
+    fn export(&self) -> Self::NativeOwnedType;
 
     /// Clear this object.
     ///
@@ -1752,7 +1762,7 @@ pub trait Object {
     /// It's explicitly allowed to use this method when `Self` has already been
     /// initialized. It must be overwritten, with any behavior that arises from that.
     /// Specifically, a new value must not simply be moved over, replacing the old value.
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType);
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType);
 
     /// This can in most cases be:
     /// ```dontrun
@@ -1762,7 +1772,7 @@ pub trait Object {
     /// ```
     /// The only cases where some other implementation is required is when 'Self' does
     /// not have a fixed size.
-    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self>;
+    unsafe fn allocate_from<'a>(external: &Self::NativeType) -> Pin<&'a mut Self>;
 
     /// Write a unique value to 'hasher', that uniquely identifies this data type.
     ///
@@ -1897,10 +1907,10 @@ macro_rules! noatun_object {
         $typ
     };
     ( declare_detached_field object $typ: ty ) => {
-        <$typ as $crate::Object>::ExternalOwnedType
+        <$typ as $crate::Object>::NativeOwnedType
     };
     ( new_declare_param object $typ: ty ) => {
-        &<$typ as $crate::Object>::ExternalType
+        &<$typ as $crate::Object>::NativeType
     };
     ( new_assign_field object $self:ident $name: ident $typ: ty ) => {
         unsafe { <_ as $crate::Object>::init_from(::std::pin::Pin::new_unchecked(&mut $self.$name), $name); }
@@ -2029,7 +2039,7 @@ macro_rules! noatun_object {
                 #[doc = ""]
                 #[doc = "This is a external version of"]
                 #[doc = stringify!($n)]
-                pub struct [<$n External>]
+                pub struct [<$n Native>]
                 {
                     $(
                         $(#[doc = $field_doc])*
@@ -2042,8 +2052,8 @@ macro_rules! noatun_object {
 
             impl $crate::Object for $n {
                 type Ptr = $crate::ThinPtr;
-                type ExternalType = $crate::paste!(noatun_object!(detached_type [<$n External>]));
-                type ExternalOwnedType = $crate::paste!(noatun_object!(detached_type [<$n External>]));
+                type NativeType = $crate::paste!(noatun_object!(detached_type [<$n Native>]));
+                type NativeOwnedType = $crate::paste!(noatun_object!(detached_type [<$n Native>]));
 
 
                 fn destroy(self: ::std::pin::Pin<&mut Self>) {
@@ -2051,15 +2061,15 @@ macro_rules! noatun_object {
                     $( unsafe { ::std::pin::Pin::new_unchecked(&mut tself.$name).destroy(); } )*
                 }
 
-                fn export(&self) -> Self::ExternalOwnedType {
-                    Self::ExternalOwnedType {
+                fn export(&self) -> Self::NativeOwnedType {
+                    Self::NativeOwnedType {
                         $(
                             $name: self.$name.export()
                         ),*
                     }
                 }
 
-                fn init_from(mut self: ::std::pin::Pin<&mut Self>, external: &Self::ExternalType) {
+                fn init_from(mut self: ::std::pin::Pin<&mut Self>, external: &Self::NativeType) {
                     $(
                     unsafe {
                         ::std::pin::Pin::new_unchecked(&mut self.as_mut().get_unchecked_mut().$name).init_from(&external.$name);
@@ -2068,7 +2078,7 @@ macro_rules! noatun_object {
                     )*
                 }
 
-                unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> ::std::pin::Pin<&'a mut Self> {
+                unsafe fn allocate_from<'a>(external: &Self::NativeType) -> ::std::pin::Pin<&'a mut Self> {
                     let mut ret: ::std::pin::Pin<&mut Self> = $crate::NoatunContext.allocate();
                     ret.as_mut().init_from(external);
                     ret
@@ -2092,7 +2102,7 @@ macro_rules! noatun_object {
 /// all types T that have a fixed size and implement `NoatunStorable`.
 pub trait FixedSizeObject: Object<Ptr = ThinPtr> + NoatunStorable + Sized + 'static
 where
-    <Self as Object>::ExternalOwnedType: Sized,
+    <Self as Object>::NativeOwnedType: Sized,
 {
 }
 
@@ -2244,13 +2254,13 @@ impl Pointer for FatPtr {
 
 impl<T: FixedSizeObject> Object for [T]
 where
-    T::ExternalType: Sized,
+    T::NativeType: Sized,
 {
     type Ptr = FatPtr;
-    type ExternalType = [T::ExternalOwnedType];
-    type ExternalOwnedType = Vec<T::ExternalOwnedType>;
+    type NativeType = [T::NativeOwnedType];
+    type NativeOwnedType = Vec<T::NativeOwnedType>;
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         self.iter().map(|x| x.export()).collect()
     }
 
@@ -2261,7 +2271,7 @@ where
         }
     }
 
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
         unsafe {
             for (dst, src) in self.get_unchecked_mut().iter_mut().zip(external.iter()) {
                 Pin::new_unchecked(dst).init_from(src.borrow());
@@ -2269,7 +2279,7 @@ where
         }
     }
 
-    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::NativeType) -> Pin<&'a mut Self> {
         let bytes = size_of::<T>() * external.len();
         let alloc = NoatunContext.allocate_raw(bytes, align_of::<T>());
 

@@ -39,7 +39,7 @@ noatun_object!(
     }
 );
 
-impl PartialEq for SubObjExternal {
+impl PartialEq for SubObjNative {
     fn eq(&self, other: &Self) -> bool {
         self.counter == other.counter
     }
@@ -62,9 +62,9 @@ impl Message for TestMessage {
     type Serializer = SavefileMessageSerializer<Self>;
 
     fn apply(&self, time: MessageId, mut root: Pin<&mut Self::Root>) {
-        root.as_mut().items_mut().push(SubObjExternal {
+        root.as_mut().items_mut().push(SubObjNative {
             counter: self.insert,
-            subsub: vec![SubSubObjExternal {
+            subsub: vec![SubSubObjNative {
                 dummy: DummyObj { x: 1, y: 2 },
             }],
         });
@@ -94,11 +94,11 @@ fn test() {
         let mut msgs: Vec<TestMessage> = (0..NUM_MSGS)
             .map(|x| TestMessage { insert: x as u32 })
             .collect();
-        let orig: Vec<SubObjExternal> = msgs
+        let orig: Vec<SubObjNative> = msgs
             .iter()
-            .map(|x| SubObjExternal {
+            .map(|x| SubObjNative {
                 counter: x.insert,
-                subsub: vec![SubSubObjExternal {
+                subsub: vec![SubSubObjNative {
                     dummy: DummyObj {
                         x: x.insert,
                         y: x.insert,

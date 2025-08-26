@@ -19,6 +19,10 @@ struct InnerState {
     counters: IndexMap<Key, Arc<AtomicU64>>,
     gauges: IndexMap<Key, Arc<AtomicU64>>,
 }
+
+/// A simple 'metrics' recorder for noatun.
+///
+/// You don't need to use this, you can use any `metrics`-crate compatible mechanism.
 #[derive(Default, Clone)]
 pub struct SimpleMetricsRecorder {
     inner: Arc<Mutex<InnerState>>,
@@ -118,12 +122,16 @@ impl Recorder for SimpleMetricsRecorder {
 }
 
 impl SimpleMetricsRecorder {
+    /// Register a thread local metrics recorder (useful for tests)
     pub fn register_local(&self) -> metrics::LocalRecorderGuard<'_> {
         metrics::set_default_local_recorder(self)
     }
+    /// Register a thread local global recorder
     pub fn register_global(self) {
         metrics::set_global_recorder(self).unwrap();
     }
+
+    /// Get all recorded metrics
     pub fn metrics_items(&self) -> Vec<(String, String)> {
         let mut ret = Vec::new();
         let guard = self.inner.lock().unwrap();
@@ -142,6 +150,7 @@ impl SimpleMetricsRecorder {
 
         ret
     }
+    /// Get all recorded metrics as a big string
     pub fn get_metrics_text(&self) -> String {
         use std::fmt::Write;
         let guard = self.inner.lock().unwrap();

@@ -137,10 +137,10 @@ where
     T: FixedSizeObject + 'static,
 {
     type Ptr = ThinPtr;
-    type ExternalType = [T::ExternalOwnedType];
-    type ExternalOwnedType = Vec<T::ExternalOwnedType>;
+    type NativeType = [T::NativeOwnedType];
+    type NativeOwnedType = Vec<T::NativeOwnedType>;
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         unimplemented!("RawDatabaseVec does not support export")
     }
 
@@ -148,10 +148,10 @@ where
         // The Raw type is special, is isn't tracked
     }
 
-    fn init_from(self: Pin<&mut Self>, _detached: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, _detached: &Self::NativeType) {
         panic!("init_from is not implemented for RawDatabaseVec");
     }
-    unsafe fn allocate_from<'a>(_detached: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(_detached: &Self::NativeType) -> Pin<&'a mut Self> {
         panic!("allocate_from is not implemented for RawDatabaseVec");
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
@@ -462,11 +462,23 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
 /// can be pruned until the vector is cleared, even if early messages no longer appear to have
 /// any impact on the database state.
 ///
-/// In most cases, applications should use [`NoatunHashMap`] or OpaqueNoatunVec
+/// In most cases, applications should use [`NoatunHashMap`] or OpaqueNoatunVec.
+///
+/// A Vec contains two trackers:
+///  * Clear tracker
+///  * Length tracker
+///
+/// The length tracker is observed whenever the length is observed (for instance, when calling
+/// [`NoatunVec::len`]. The length tracker is both observed and written to when calling
+/// [`NoatunVec::push`] or similar methods.
+///
+/// The clear tracker is written when clearing the vec [`NoatunVec::clear`], and never observed.
+/// The clear tracker allows deleting all elements of the vec, without marking the current message
+/// as a tombstone.
 #[repr(C)]
 pub struct NoatunVec<T: FixedSizeObject> {
     raw: NoatunVecRaw<T, ThreadLocalContext>,
-    length_registrar: Tracker,
+    length_tracker: Tracker,
     clear_registrar: Tracker,
     phantom_data: PhantomData<T>,
 }
@@ -484,12 +496,14 @@ impl<T: FixedSizeObject + Debug> Debug for NoatunVec<T> {
     }
 }
 
+/// Iterator over the elements of a [`NoatunVec`].
 pub struct NoatunVecIterator<'a, T: FixedSizeObject, C: ContextGetter> {
     vec: &'a NoatunVecRaw<T, C>,
     context_getter: &'a C,
     index: usize,
 }
 
+/// Mutable iterator over the elements of a [`NoatunVec`].
 pub struct NoatunVecIteratorMut<'a, T: FixedSizeObject> {
     vec: Pin<&'a mut NoatunVec<T>>,
     index: usize,
@@ -527,24 +541,22 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for NoatunVecIteratorMut<'a, T> 
 }
 
 impl<T: FixedSizeObject + 'static> NoatunVec<T> {
+    /// Iterate over the NoatunVec
     pub fn iter(&self) -> NoatunVecIterator<'_, T, ThreadLocalContext> {
-        NoatunContext.observe_registrar(self.length_registrar);
+        NoatunContext.observe_registrar(self.length_tracker);
         NoatunVecIterator {
             vec: &self.raw,
             context_getter: &ThreadLocalContext,
             index: 0,
         }
     }
+    /// Iterate over the NoatunVec, giving mutable access to elements
     pub fn iter_mut(self: Pin<&mut Self>) -> NoatunVecIteratorMut<'_, T> {
-        NoatunContext.observe_registrar(self.length_registrar);
+        NoatunContext.observe_registrar(self.length_tracker);
         NoatunVecIteratorMut {
             vec: self,
             index: 0,
         }
-    }
-    #[allow(clippy::mut_from_ref)]
-    pub fn new<'a>() -> Pin<&'a mut NoatunVec<T>> {
-        unsafe { NoatunContext.allocate::<NoatunVec<T>>() }
     }
 }
 
@@ -560,52 +572,77 @@ impl<T> NoatunVec<T>
 where
     T: FixedSizeObject + 'static,
 {
+
+    /// Get the length of the vec
+    ///
+    /// This method causes a read dependency on the length of the vector.
     pub fn len(&self) -> usize {
-        NoatunContext.observe_registrar(self.length_registrar);
+        NoatunContext.observe_registrar(self.length_tracker);
         self.raw.length
     }
+    /// Return true if the number of elements i 0
+    ///
+    /// This method causes a read dependency on the length of the vector.
     pub fn is_empty(&self) -> bool {
-        NoatunContext.observe_registrar(self.length_registrar);
+        NoatunContext.observe_registrar(self.length_tracker);
         self.raw.length == 0
     }
+    /// Get the element with the given index.
+    ///
+    /// This method causes a read dependency on the length of the vector.
     pub fn get_index(&self, index: usize) -> &T {
-        NoatunContext.observe_registrar(self.length_registrar);
+        NoatunContext.observe_registrar(self.length_tracker);
         self.raw.get_index(index, &ThreadLocalContext)
     }
 
+    /// Return a mutable reference to the element at the given index.
+    ///
+    /// This method causes a read dependency on the length of the vector.
     pub fn get_index_mut(self: Pin<&mut Self>, index: usize) -> Pin<&mut T> {
-        NoatunContext.observe_registrar(self.length_registrar);
+        NoatunContext.observe_registrar(self.length_tracker);
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.get_index_mut_pin(index, &mut ThreadLocalContext)
     }
 
+    /// This method overwrites the vectors length and interrupts the dependency chain, making
+    /// it possible to prune messages that previously added or removed elements from the vector.
+    ///
+    /// This does also write to the 'clear' tracker, but does not cause any dependency on
+    /// any of the deleted values. It does not make the current message into a tombstone.
     pub fn clear(self: Pin<&mut Self>) {
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.destroy_items(&mut ThreadLocalContext);
-        NoatunContext.update_tracker(&mut tself.length_registrar, false);
+        NoatunContext.update_tracker(&mut tself.length_tracker, false);
         NoatunContext.update_tracker(&mut tself.clear_registrar, true);
     }
 
+    ///
     pub fn push_zeroed(self: Pin<&mut Self>) -> Pin<&mut T> {
         let tself = unsafe { self.get_unchecked_mut() };
-        NoatunContext.observe_registrar(tself.length_registrar);
-        NoatunContext.update_tracker(&mut tself.length_registrar, false);
+        NoatunContext.observe_registrar(tself.length_tracker);
+        NoatunContext.update_tracker(&mut tself.length_tracker, false);
         tself.raw.push_zeroed(&mut ThreadLocalContext)
     }
 
+    /// Remove the element at the given index.
+    ///
+    /// This observes the length tracker
     pub fn swap_remove(self: Pin<&mut Self>, index: usize) {
         if index >= self.raw.length {
             return;
         }
         let tself = unsafe { self.get_unchecked_mut() };
-        NoatunContext.observe_registrar(tself.length_registrar);
-        NoatunContext.update_tracker(&mut tself.length_registrar, false);
+        NoatunContext.observe_registrar(tself.length_tracker);
+        NoatunContext.update_tracker(&mut tself.length_tracker, false);
 
         tself
             .raw
             .swap_remove(index, &mut ThreadLocalContext, |x| x.destroy());
     }
 
+    /// Remove every element from the vec, except those for which the closure 'f' returns true.
+    /// Because the closure could count the number of elements it sees, this casues
+    /// a read dependency on the length tracker.
     pub fn retain(self: Pin<&mut Self>, mut f: impl FnMut(Pin<&mut T>) -> bool) {
         struct PanicHandler<'a, T: FixedSizeObject + 'static> {
             vec: &'a mut NoatunVec<T>,
@@ -634,8 +671,8 @@ where
         }
 
         let self_mut = unsafe { self.get_unchecked_mut() };
-        NoatunContext.observe_registrar(self_mut.length_registrar);
-        NoatunContext.update_tracker(&mut self_mut.length_registrar, false);
+        NoatunContext.observe_registrar(self_mut.length_tracker);
+        NoatunContext.update_tracker(&mut self_mut.length_tracker, false);
         let mut panic_handler = PanicHandler {
             new_count: self_mut.raw.length,
             read_offset: 0,
@@ -665,7 +702,9 @@ where
         }
     }
 
-    pub fn push(mut self: Pin<&mut Self>, t: impl Borrow<<T as Object>::ExternalType>) {
+    /// Add a new element to the end of the vector. This causes a read dependency on
+    /// the length tracker, and also writes to said tracker.
+    pub fn push(mut self: Pin<&mut Self>, t: impl Borrow<<T as Object>::NativeType>) {
         self.as_mut().push_zeroed();
 
         let index = self.raw.length - 1;
@@ -677,9 +716,9 @@ where
     }
 }
 
-/// Like [`NoatunVec`] but does not support all operations during message application.
+/// Like [`NoatunVec`] but without a length tracker.
 ///
-/// Specifically, it doesn't support iteration, and doesn't have a `len` method.
+/// It doesn't support iteration, and doesn't have a `len` method.
 ///
 /// This means less meta data needs to be kept, which avoid building subtle dependencies
 /// between messages. This means messages can be pruned more effectively.
@@ -693,7 +732,7 @@ where
 /// dependency chain of messages that cannot be pruned simply because doing so would change
 /// the length of the collection.
 ///
-/// [`Self`] does not support iteration or retrieving the length, so pushing a message
+/// [`OpaqueNoatunVec`] does not support iteration or retrieving the length, so pushing a message
 /// does not depend on all previous operations.
 ///
 pub struct OpaqueNoatunVec<T: FixedSizeObject> {
@@ -746,6 +785,9 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
         }
     }
 
+    /// Return true if the vector is empty.
+    ///
+    /// This does not cause a read dependency, so use with care.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -779,7 +821,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
     pub fn set_item_infallible(
         self: Pin<&mut Self>,
         index: usize,
-        val: impl Borrow<<T as Object>::ExternalType>,
+        val: impl Borrow<<T as Object>::NativeType>,
     ) {
         let tself = unsafe { self.get_unchecked_mut() };
         if index >= tself.raw.length {
@@ -800,7 +842,11 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
             item_data.init_from(val.borrow());
         }
     }
-    pub fn push(self: Pin<&mut Self>, t: impl Borrow<<T as Object>::ExternalType>) {
+
+    /// Add an element to the end of the vector.
+    ///
+    /// This does not create any read dependency.
+    pub fn push(self: Pin<&mut Self>, t: impl Borrow<<T as Object>::NativeType>) {
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.push_zeroed(&mut ThreadLocalContext);
 
@@ -817,10 +863,10 @@ where
     T: FixedSizeObject + 'static,
 {
     type Ptr = ThinPtr;
-    type ExternalType = [T::ExternalOwnedType];
-    type ExternalOwnedType = Vec<T::ExternalOwnedType>;
+    type NativeType = [T::NativeOwnedType];
+    type NativeOwnedType = Vec<T::NativeOwnedType>;
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         self.iter().map(|x| x.export()).collect()
     }
 
@@ -830,7 +876,7 @@ where
         tself.raw.destroy_items(&mut ThreadLocalContext)
     }
 
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
         let tself = unsafe { self.get_unchecked_mut() };
         use std::borrow::Borrow;
         for item in external {
@@ -839,7 +885,7 @@ where
         }
     }
 
-    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::NativeType) -> Pin<&'a mut Self> {
         let mut pod: Pin<&mut Self> = NoatunContext.allocate();
         pod.as_mut().init_from(external);
         pod
@@ -854,10 +900,10 @@ where
     T: FixedSizeObject + 'static,
 {
     type Ptr = ThinPtr;
-    type ExternalType = [T::ExternalOwnedType];
-    type ExternalOwnedType = Vec<T::ExternalOwnedType>;
+    type NativeType = [T::NativeOwnedType];
+    type NativeOwnedType = Vec<T::NativeOwnedType>;
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         self.iter().map(|x| x.export()).collect()
     }
 
@@ -865,19 +911,19 @@ where
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.destroy_items(&mut ThreadLocalContext);
         unsafe {
-            NoatunContext.clear_tracker_ptr(&mut tself.length_registrar, false);
+            NoatunContext.clear_tracker_ptr(&mut tself.length_tracker, false);
             NoatunContext.clear_tracker_ptr(&mut tself.clear_registrar, true);
         }
     }
 
-    fn init_from(mut self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(mut self: Pin<&mut Self>, external: &Self::NativeType) {
         use std::borrow::Borrow;
         for item in external {
             let new_item = self.as_mut().push_zeroed();
             new_item.init_from(item.borrow());
         }
     }
-    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::NativeType) -> Pin<&'a mut Self> {
         let mut pod: Pin<&mut Self> = NoatunContext.allocate();
         pod.as_mut().init_from(external);
         pod

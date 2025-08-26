@@ -3,7 +3,7 @@ use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
-use crate::{calculate_schema_hash, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Persistence, Pointer, Target};
+use crate::{calculate_schema_hash, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use metrics::{counter, describe_counter, Unit};
@@ -13,10 +13,16 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use tracing::{error, info, trace};
 
+/// The result of attempting to load a database
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LoadingStatus {
+    /// A new database was created
     NewDatabase,
+    /// An existing database was loaded cleanly
     CleanLoad,
+    /// An existing database was loaded, but recovery had to be performed.
+    ///
+    /// Recovery is needed if the database was not previously closed gracefully.
     RecoveryPerformed,
 }
 
@@ -131,27 +137,69 @@ impl<MSG: Message> Drop for DatabaseSessionMut<'_, MSG> {
     }
 }
 
+/// All stored information about a particular message
 pub struct MessageInfo<MSG: Message> {
+    /// The current sequence number of this message.
+    ///
+    /// Sequence numbers change as the database evolves, is compacted etc.
     pub seq: SequenceNr,
-    // Live usages remaining
+    /// The number of pieces of data that this message wrote, that are still
+    /// present in the database materialized view
     pub live: u32,
+    /// Flags for this message:
+    ///
+    /// "T": Tainted
+    ///
+    /// "S": Wrote tombstones
+    ///
+    /// "N": Non-opaque
+    ///
+    /// # Tainted
+    /// A message that overwrote part of the data written by the current message,
+    /// had observed data from the materialized view before doing the overwrite. Since the
+    /// materialized view could change if old messages arrives, this overwrite is not guaranteed
+    /// to happen.
+    ///
+    /// # Wrote tombstones
+    /// The message deleted data. Such data has no ownership. To protect the message from being
+    /// pruned, the message is marked as a tombstone. Tombstones are never deleted until
+    /// the cutoff interval elapses, to avoid deleted entries to linger on nodes that were
+    /// offline during the deletion.
+    ///
+    /// # Wrote non-opaque
+    /// The message wrote non-opaque data. Such data can be observed by later messages. Even if
+    /// the non-opaque data is later overwritten, some other message may arrive that reads the
+    /// to-be-overwritten data, and writes it to some second field. This means the overwritten
+    /// data could yet be salvaged, and the current message must not be pruned before the cutoff
+    /// period has elapsed.
     pub flags: &'static str,
+    /// The message frame, with id, parents and payload.
     pub frame: MessageFrame<MSG>,
+    /// Owning messages for all data that was read by this message
     pub reads: Vec<SequenceNr>,
+    /// All messages whose data was (at least partially) overwritten by this message.
     pub writes: Vec<SequenceNr>,
 }
 
 impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
+    /// Returns true if this database contains the given messsage.
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
     }
 
+    /// From the provided list, remove all message ids that have a timestamp
+    /// before the cutoff period.
     pub fn remove_cutoff_parents(&self, parents: &mut Vec<MessageId>) {
         if let Ok(cutoff) = self.db.current_cutoff_time() {
             parents.retain(|x| x.timestamp() >= cutoff);
         }
     }
 
+    /// Get 'query count' number of messages upstream of each given message.
+    ///
+    /// The messages upstream of a given message, is the transitive closure given by
+    /// the parent relation. That is, all messages that can be reached by following
+    /// parent pointers, recursively. In genealogy, it would be all ancestors.
     pub fn get_upstream_of(
         &self,
         message_id: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
@@ -159,14 +207,19 @@ impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
         self.db.get_upstream_of(message_id)
     }
 
+    /// Load the given message from the store.
     pub fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<MSG>> {
         self.db.load_message(message_id)
     }
 
+    /// Get all current update heads
+    ///
+    /// Update heads are messages that are not parents to any other message
     pub fn get_update_heads(&self) -> &[MessageId] {
         self.db.get_update_heads()
     }
 
+    /// Get all messages that sort at, or after the given message
     pub fn get_messages_at_or_after(
         &self,
         message: MessageId,
@@ -175,15 +228,27 @@ impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
         self.db.get_messages_at_or_after(message, count)
     }
 
+    /// Return the current cutoff hash and time
+    ///
+    /// The cutoff time is the time such that all messages created before this time must
+    /// have reached all nodes in the network.
     pub fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
         self.db.current_cutoff_state()
     }
+    /// Return the current cutoff time
+    ///
+    /// The cutoff time is the time such that all messages created before this time must
+    /// have reached all nodes in the network.
     pub fn current_cutoff_time(&self) -> Result<NoatunTime> {
         self.db.current_cutoff_time()
     }
+
+    /// Get all message ids in the database
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
         self.db.get_all_message_ids()
     }
+
+    /// Get all children of the given message
     pub fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.db.get_message_children(msg)
     }
@@ -202,6 +267,8 @@ impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
     pub fn get_all_messages_meta_vec(&self) -> Result<Vec<MessageInfo<MSG>>> {
         Ok(self.db.get_all_messages_meta()?.collect())
     }
+
+    /// Get all messages in the database, and their children.
     pub fn get_all_messages_with_children(
         &self,
     ) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
@@ -227,6 +294,9 @@ impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
         self.db.with_root(f)
     }
 
+    /// Return the current time, as known by this noatun database instance.
+    ///
+    /// This value is affected by the [`DatabaseSessionMut::set_mock_time`] call.
     pub fn noatun_now(&self) -> NoatunTime {
         self.db.noatun_now()
     }
@@ -253,16 +323,25 @@ impl OpenMode {
 }
 
 impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
+    /// Returns true if this database contains the given message
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
     }
 
+    /// Remove all elements from the vector such that their timestamp is
+    /// before the cutoff time.
+    ///
+    /// All messages that were create before the cutoff time are expected
+    /// to have had time to propagate to every node in the network.
     pub fn remove_cutoff_parents(&self, parents: &mut Vec<MessageId>) {
         if let Ok(cutoff) = self.db.current_cutoff_time() {
             parents.retain(|x| x.timestamp() >= cutoff);
         }
     }
 
+    /// Return every message upstream of the given messages, with the given recursion depth.
+    ///
+    /// Upstream messages are ancestors of a message, based on their list of parents.
     pub(crate) fn get_upstream_of(
         &self,
         message_id: impl DoubleEndedIterator<Item = (MessageId, /*query count*/ usize)>,
@@ -270,14 +349,20 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.get_upstream_of(message_id)
     }
 
+    /// Load the given message from the database
     pub fn load_message(&self, message_id: MessageId) -> Result<MessageFrame<MSG>> {
         self.db.load_message(message_id)
     }
 
+    /// Get all update heads of this database.
+    ///
+    /// Update heads are messages that are not the parent of any other message.
     pub fn get_update_heads(&self) -> &[MessageId] {
         self.db.get_update_heads()
     }
 
+    /// Get all messages in the database with a timestamp at or after the given
+    /// message. Returns at most 'count' messages.
     pub fn get_messages_at_or_after(
         &self,
         message: MessageId,
@@ -293,23 +378,32 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     pub(crate) fn current_cutoff_state(&self) -> Result<CutOffHashPos> {
         self.db.current_cutoff_state()
     }
+    /// Return the current cutoff time
+    ///
+    /// All messages created before the cutoff time are expected to have had enough
+    /// time to propagate to every node in the network.
     pub fn current_cutoff_time(&self) -> Result<NoatunTime> {
         self.db.current_cutoff_time()
     }
+    /// Get all message ids in the database
     pub fn get_all_message_ids(&self) -> Result<Vec<MessageId>> {
         self.db.get_all_message_ids()
     }
+    /// Get the children of the given message
     pub(crate) fn get_message_children(&self, msg: MessageId) -> Result<Vec<MessageId>> {
         self.db.get_message_children(msg)
     }
+    /// Get all messages in the database
     pub fn get_all_messages(
         &self,
     ) -> Result<impl Iterator<Item = MessageFrame<MSG>> + use<'_, MSG>> {
         self.db.get_all_messages()
     }
+    /// Get all messages in the database, in a Vec
     pub fn get_all_messages_vec(&self) -> Result<Vec<MessageFrame<MSG>>> {
         Ok(self.db.get_all_messages()?.collect())
     }
+    /// Get all messages and their children
     pub fn get_all_messages_with_children(
         &self,
     ) -> Result<Vec<(MessageFrame<MSG>, Vec<MessageId>)>> {
@@ -327,6 +421,9 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.with_root(f)
     }
 
+    /// Return the current time, as known by this noatun database instance.
+    ///
+    /// This time is affected by calls to [`DatabaseSessionMut::set_mock_time`].
     pub fn noatun_now(&self) -> NoatunTime {
         self.db.noatun_now()
     }
@@ -379,6 +476,10 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.force_rewind(index);
     }
 
+    /// Apply the messages given by `preview`, then call `f` with a reference to
+    /// the resulting materialized view.
+    ///
+    /// The changes are undone afterwards.
     pub fn with_root_preview<R>(
         &mut self,
         time: DateTime<Utc>,
@@ -420,6 +521,10 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     pub fn reproject(&mut self) -> Result<()> {
         self.db.reproject()
     }
+
+    /// Compact the message index of this database.
+    ///
+    /// Unless compaction is disabled by config, you should never need to call this method
     pub fn compact_index(&mut self) -> Result<()> {
         self.db.compact_index()
     }
@@ -433,6 +538,12 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         Ok(())
     }
 
+    /// Set the mock time, but do not advance the cutoff time yet
+    ///
+    /// The cutoff time is advanced automatically when adding messages and in
+    /// certain other cases.
+    ///
+    /// This method only makes sense for some very specific testing/troubleshooting.
     pub fn set_mock_time_no_advance(&mut self, time: NoatunTime) -> Result<()> {
         self.db.set_mock_time_no_advance(time)?;
         Ok(())
@@ -447,25 +558,47 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.mark_transmitted(message_id)
     }
 
+    /// Add a new local message to the database.
+    ///
+    /// Local messages are messages that are known to not have been observed by any other node.
+    ///
+    /// This means they can be pruned aggressively, if overwritten by later changes.
     #[inline]
     pub fn append_local(&mut self, message: MSG) -> Result<MessageHeader> {
         self.db.append_local(message)
     }
 
-    //TODO: Document this, and other public symbols here (add deny(missing_docs))
+
+    /// Add a message that might already have been observed by other nodes.
     #[inline]
     pub fn append_nonlocal(&mut self, message: MSG) -> Result<MessageHeader> {
         self.db.append_nonlocal(message)
     }
 
+    /// Compact the database
+    ///
+    /// This should never be needed, unless automatic compaction has been disabled by config.
     pub fn compact(&mut self) -> Result<()> {
         self.db.compact()
     }
 
+    /// Add a new local message at the given time.
+    ///
+    /// Local messages are messages that are known to not have been observed by any other node.
+    ///
+    /// Backdating messages can be useful, to ensure they are applied to the database before
+    /// a certain time.
     pub fn append_local_at(&mut self, time: NoatunTime, message: MSG) -> Result<MessageHeader> {
         self.db.append_local_at(time, message)
     }
 
+
+    /// Append many local messages at the given time.
+    ///
+    /// Local messages are messages that are known to not have been observed by any other node.
+    ///
+    /// Backdating messages can be useful, to ensure they are applied to the database before
+    /// a certain time.
     pub fn append_many_local_at(
         &mut self,
         time: NoatunTime,
@@ -474,6 +607,9 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.append_many_local_at(time, messages)
     }
 
+    /// Create a message frame from the given information.
+    ///
+    /// If time is None, the databases current time is used.
     pub fn create_message_frame(
         &mut self,
         time: Option<NoatunTime>,
@@ -491,6 +627,12 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.append_single(message, local)
     }
 
+    /// Create a new local message.
+    ///
+    /// Local messages are messages that are known to not have been observed by any other node.
+    ///
+    /// Backdating messages can be useful, to ensure they are applied to the database before
+    /// a certain time. Provide a time value to override databse time.
     pub fn append_local_opt(
         &mut self,
         time: Option<NoatunTime>,
@@ -519,11 +661,21 @@ impl<MSG: Message> Drop for Database<MSG> {
 }
 
 impl<MSG: Message + 'static> Database<MSG> {
+    /// Begin a write transaction
+    ///
+    /// Each transaction has a significant overhead because of the cost of
+    /// syncing disks.
+    ///
+    /// It is therefore useful to combine as many operations as possible
+    /// into each transaction.
     pub fn begin_session_mut(&mut self) -> Result<DatabaseSessionMut<'_, MSG>> {
         self.mark_dirty()?;
         Ok(DatabaseSessionMut { db: self })
     }
 
+    /// Sync all writes to disk
+    ///
+    /// This will update both file data and metadata
     pub fn sync_all(&mut self) -> Result<()> {
         self.message_store.sync_all()?;
         self.context.sync_all()?;
@@ -531,6 +683,9 @@ impl<MSG: Message + 'static> Database<MSG> {
         Ok(())
     }
 
+    /// Begin a readonly database session.
+    ///
+    ///
     pub fn begin_session(&self) -> Result<DatabaseSession<'_, MSG>> {
         self.assert_not_dirty()?;
         Ok(DatabaseSession { db: self })
@@ -732,6 +887,10 @@ impl<MSG: Message + 'static> Database<MSG> {
         f(root)
     }
 
+    //TODO: Consider what guarantees are given by the DatabaseSessionMut mechanism.
+    //should it "sync_all"?
+
+    /// Return this database's current time
     pub fn noatun_now(&self) -> NoatunTime {
         self.time_override.unwrap_or_else(NoatunTime::now)
     }
@@ -1216,6 +1375,10 @@ impl<MSG: Message + 'static> Database<MSG> {
         db.do_apply_missing()?;
         Ok(db)
     }
+
+    /// Get the loading status of this database.
+    ///
+    /// This gives insight into whether recovery occurred, for example
     pub fn load_status(&self) -> LoadingStatus {
         self.load_status
     }

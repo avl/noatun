@@ -71,18 +71,18 @@ impl<Root> DummyTestApp<Root> {
 
 impl<Root: FixedSizeObject> Object for DummyTestApp<Root> {
     type Ptr = ThinPtr;
-    type ExternalType = ();
-    type ExternalOwnedType = ();
+    type NativeType = ();
+    type NativeOwnedType = ();
 
-    fn export(&self) -> Self::ExternalOwnedType {}
+    fn export(&self) -> Self::NativeOwnedType {}
 
     fn destroy(self: Pin<&mut Self>) {
         unimplemented!()
     }
 
-    fn init_from(self: Pin<&mut Self>, _detached: &Self::ExternalType) {}
+    fn init_from(self: Pin<&mut Self>, _detached: &Self::NativeType) {}
 
-    unsafe fn allocate_from<'a>(_detached: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(_detached: &Self::NativeType) -> Pin<&'a mut Self> {
         unimplemented!()
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {
@@ -241,10 +241,10 @@ unsafe impl NoatunStorable for CounterObject {
 
 impl Object for CounterObject {
     type Ptr = ThinPtr;
-    type ExternalType = ();
-    type ExternalOwnedType = ();
+    type NativeType = ();
+    type NativeOwnedType = ();
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         unimplemented!()
     }
 
@@ -256,11 +256,11 @@ impl Object for CounterObject {
         }
     }
 
-    fn init_from(self: Pin<&mut Self>, _detached: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, _detached: &Self::NativeType) {
         unimplemented!()
     }
 
-    unsafe fn allocate_from<'a>(_detached: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(_detached: &Self::NativeType) -> Pin<&'a mut Self> {
         unimplemented!()
     }
     fn hash_object_schema(hasher: &mut SchemaHasher) {

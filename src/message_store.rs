@@ -2741,12 +2741,7 @@ impl<M> OnDiskMessageStore<M> {
     ) -> Result<Vec<MessageId>> {
         let (_header, search_index) = self.header_and_index()?;
         let (Ok(index) | Err(index)) = search_index.binary_search_by_key(&message, |x| x.message);
-        let mut result = Vec::with_capacity(count);
-        for message in search_index[index..].iter().take(count) {
-            if !message.file_offset.is_deleted() {
-                result.push(message.message);
-            }
-        }
+        let result = search_index[index..].iter().filter(|x|!x.file_offset.is_deleted()).map(|x|x.message).take(count).collect();
         Ok(result)
     }
 

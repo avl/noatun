@@ -39,7 +39,7 @@ impl Message for ExampleMessage {
 
         root.employees.insert(
             self.name.as_str(),
-            &EmployeeExternal {
+            &EmployeeNative {
                 name: self.name.clone(),
                 salary: self.salary,
             },
@@ -74,11 +74,11 @@ fn main() -> Result<()> {
     assert_eq!(
         employees,
         vec![
-            EmployeeExternal {
+            EmployeeNative {
                 name: "Andersen".to_string(),
                 salary: 25,
             },
-            EmployeeExternal {
+            EmployeeNative {
                 name: "Smith".to_string(),
                 salary: 20,
             },

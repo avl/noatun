@@ -46,7 +46,7 @@ impl Message for KeyValMessage {
             .keyval
             .as_mut()
             .retain(|item| **item.key() != self.key);
-        projected.keyval.push(KeyValItemExternal {
+        projected.keyval.push(KeyValItemNative {
             key: self.key.clone(),
             value: self.val.clone(),
         });
@@ -71,7 +71,7 @@ impl Message for KeyValMessage2 {
             .keyval
             .as_mut()
             .retain(|item| **item.key() != self.key);
-        projected.keyval.push(KeyValItemExternal {
+        projected.keyval.push(KeyValItemNative {
             key: self.key.clone(),
             value: self.val.clone(),
         });
@@ -112,11 +112,11 @@ fn test_nominal_load_without_recovery() {
         assert_eq!(
             root.keyval.export(),
             vec![
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }
@@ -138,11 +138,11 @@ fn test_nominal_load_without_recovery() {
         assert_eq!(
             root.keyval.export(),
             vec![
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }
@@ -196,7 +196,7 @@ fn test_recovery_schema_changed() {
         assert_eq!(root.edit_count.get(), 1);
         assert_eq!(
             root.keyval.export(),
-            vec![KeyValItemExternal {
+            vec![KeyValItemNative {
                 key: "Fruit1".to_string(),
                 value: "Banana".to_string(),
             }]
@@ -239,11 +239,11 @@ fn test_recovery_simple() {
         assert_eq!(
             root.keyval.export(),
             vec![
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }
@@ -268,11 +268,11 @@ fn test_recovery_simple() {
         assert_eq!(
             root.keyval.export(),
             vec![
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }
@@ -323,11 +323,11 @@ fn test_recovery_corrupted_file() {
         assert_eq!(
             root.keyval.export(),
             vec![
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }
@@ -357,7 +357,7 @@ fn test_recovery_corrupted_file() {
     db.with_root(|root| {
         assert_eq!(
             root.keyval.export(),
-            vec![KeyValItemExternal {
+            vec![KeyValItemNative {
                 key: "Fruit1".to_string(),
                 value: "Apple".to_string(),
             }]
@@ -405,11 +405,11 @@ fn test_recovery_arbitrary_corruption_impl(corrupt_at_index: usize) {
         assert_eq!(
             root.keyval.export(),
             vec![
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit2".to_string(),
                     value: "Orange".to_string(),
                 },
-                KeyValItemExternal {
+                KeyValItemNative {
                     key: "Fruit1".to_string(),
                     value: "Apple".to_string(),
                 }

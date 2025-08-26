@@ -5,27 +5,30 @@ use std::pin::Pin;
 macro_rules! noatun_hash_primitive {
     ($t: ident, $tm: ident) => {
         impl NoatunKey for $t {
-            type ExternalType = $t;
-            type ExternalOwnedType = $t;
-            fn hash<H>(tself: &Self::ExternalType, state: &mut H)
+            type NativeType = $t;
+            type NativeOwnedType = $t;
+            fn hash<H>(tself: &Self::NativeType, state: &mut H)
             where
                 H: Hasher,
             {
                 state.$tm(*tself);
             }
             fn destroy(&mut self) {}
-            fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+            fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
                 let tself = unsafe { self.get_unchecked_mut() };
                 *tself = *external;
             }
-            fn export_key(&self) -> Self::ExternalType {
+            fn export_key(&self) -> Self::NativeType {
                 *self
             }
-            fn export_key_ref(&self) -> &Self::ExternalType {
+            fn export_key_ref(&self) -> &Self::NativeType {
                 self
             }
-            fn eq(a: &Self::ExternalType, b: &Self::ExternalType) -> bool {
+            fn eq(a: &Self::NativeType, b: &Self::NativeType) -> bool {
                 a == b
+            }
+            fn hash_key_schema(hasher: &mut $crate::SchemaHasher) {
+                hasher.write_str(concat!("std::", stringify!($tm), "/1"));
             }
         }
     };

@@ -80,7 +80,7 @@ impl Message for IssueMessage {
             IssueMessage::AppendText { id, reporter, text } => {
                 if let Some(issue) = root.issues.get_mut_val(id.as_str()) {
                     let issue = issue.pin_project();
-                    issue.description.push(DescriptionTextExternal {
+                    issue.description.push(DescriptionTextNative {
                         time: message_id.timestamp(),
                         text: text.to_string(),
                         added_by: reporter.to_string(),

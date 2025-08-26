@@ -51,10 +51,10 @@ impl From<Rgb> for Color32 {
 unsafe impl NoatunStorable for Rgb {}
 
 impl NoatunKey for Rgb {
-    type ExternalType = Rgb;
-    type ExternalOwnedType = Rgb;
+    type NativeType = Rgb;
+    type NativeOwnedType = Rgb;
 
-    fn hash<H>(tself: &Self::ExternalType, state: &mut H)
+    fn hash<H>(tself: &Self::NativeType, state: &mut H)
     where
         H: Hasher
     {
@@ -62,19 +62,19 @@ impl NoatunKey for Rgb {
         (*tself).hash(state);
     }
 
-    fn export_key_ref(&self) -> &Self::ExternalType {
+    fn export_key_ref(&self) -> &Self::NativeType {
         self
     }
 
-    fn export_key(&self) -> Self::ExternalOwnedType {
+    fn export_key(&self) -> Self::NativeOwnedType {
         *self
     }
 
-    fn eq(a: &Self::ExternalType, b: &Self::ExternalType) -> bool {
+    fn eq(a: &Self::NativeType, b: &Self::NativeType) -> bool {
         a == b
     }
 
-    fn init_from(mut self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(mut self: Pin<&mut Self>, external: &Self::NativeType) {
         self.set(*external);
     }
 }

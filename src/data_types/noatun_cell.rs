@@ -101,6 +101,8 @@ impl<T: NoatunPod> NoatunCell<T> {
         NoatunContext.observe_registrar(self.tracker);
         self.value
     }
+
+    /// Set the value of this cell
     pub fn set(self: Pin<&mut Self>, new_value: T) {
         let cptr = CONTEXT.get();
         let c = unsafe { &mut *cptr };
@@ -112,8 +114,11 @@ impl<T: NoatunPod> NoatunCell<T> {
 }
 
 impl<T: NoatunStorable> OpaqueNoatunCell<T> {
+
+    /// Get the value of this cell.
+    ///
     /// WARNING!
-    /// This must only be called from queries, not from message apply.
+    /// This must only be called from queries, not from message apply, or it will panic.
     ///
     /// I.e, you can call this from within `with_root`, but not from within
     /// `Message::apply`.
@@ -125,6 +130,7 @@ impl<T: NoatunStorable> OpaqueNoatunCell<T> {
         self.value
     }
 
+    /// Set the value of this cell
     pub fn set(self: Pin<&mut Self>, new_value: T) {
         let cptr = CONTEXT.get();
         let c = unsafe { &mut *cptr };
@@ -174,10 +180,10 @@ impl<T: NoatunPod + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut NoatunCell<T>
 
 impl<T: NoatunPod + Debug> Object for NoatunCell<T> {
     type Ptr = ThinPtr;
-    type ExternalType = T;
-    type ExternalOwnedType = T;
+    type NativeType = T;
+    type NativeOwnedType = T;
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         self.get()
     }
 
@@ -187,11 +193,11 @@ impl<T: NoatunPod + Debug> Object for NoatunCell<T> {
         unsafe { NoatunContext.clear_tracker_ptr(&mut tself.tracker, false) };
     }
 
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
         self.set(*external);
     }
 
-    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::NativeType) -> Pin<&'a mut Self> {
         let mut ret: Pin<&mut Self> = NoatunContext.allocate();
         ret.as_mut().init_from(external);
         ret
@@ -203,10 +209,10 @@ impl<T: NoatunPod + Debug> Object for NoatunCell<T> {
 
 impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
     type Ptr = ThinPtr;
-    type ExternalType = T;
-    type ExternalOwnedType = T;
+    type NativeType = T;
+    type NativeOwnedType = T;
 
-    fn export(&self) -> Self::ExternalOwnedType {
+    fn export(&self) -> Self::NativeOwnedType {
         NoatunContext.assert_opaque_access_allowed("OpaqueNoatunCell", "NoatunCell");
         self.value
     }
@@ -217,11 +223,11 @@ impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
         unsafe { NoatunContext.clear_tracker_ptr(&mut tself.tracker, true) };
     }
 
-    fn init_from(self: Pin<&mut Self>, external: &Self::ExternalType) {
+    fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
         self.set(*external);
     }
 
-    unsafe fn allocate_from<'a>(external: &Self::ExternalType) -> Pin<&'a mut Self> {
+    unsafe fn allocate_from<'a>(external: &Self::NativeType) -> Pin<&'a mut Self> {
         let mut ret: Pin<&mut Self> = NoatunContext.allocate();
         ret.as_mut().init_from(external);
         ret
