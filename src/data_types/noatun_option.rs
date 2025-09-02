@@ -1,3 +1,4 @@
+use savefile_derive::Savefile;
 use crate::{NoatunPod, NoatunStorable, SchemaHasher};
 
 
@@ -5,12 +6,14 @@ use crate::{NoatunPod, NoatunStorable, SchemaHasher};
 ///
 /// Note that this is not a [`crate::Object`]. To use an Option, it must
 /// be placed in a [`crate::data_types::NoatunCell`] or similar.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Savefile)]
 #[repr(C)]
 pub struct NoatunOption<T: NoatunPod> {
     value: T,
     present: u8,
 }
+
+unsafe impl<T:NoatunPod> NoatunPod for NoatunOption<T> {}
 
 unsafe impl<T: NoatunPod> NoatunStorable for NoatunOption<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {

@@ -1,25 +1,16 @@
 #![doc = include_str!("../docs/book.md")]
-
-#![allow(clippy::unnecessary_lazy_evaluations)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]
-#![allow(clippy::needless_question_mark)]
 #![allow(clippy::bool_comparison)]
-// At some point we might remove this and actually analyse each individual site that
-// produces this warning.
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
-#![allow(clippy::type_complexity)]
 //TODO: Yeah, this is not ideal. This should be fixed.
 #![allow(clippy::missing_safety_doc)]
 #![deny(missing_docs)]
 #![allow(clippy::let_and_return)]
 #![allow(clippy::collapsible_else_if)]
-#![allow(clippy::too_many_arguments)]
 #![allow(clippy::expect_fun_call)]
 #![allow(clippy::needless_late_init)]
 #![allow(clippy::derivable_impls)]
 
-//#![allow(clippy::manual_is_multiple_of)]
 
 use crate::noatun_instant::Instant;
 pub use crate::data_types::{NoatunCell, OpaqueNoatunCell};
@@ -570,6 +561,7 @@ impl NoatunContext {
     }
 
     /// Write 'value' to 'dest'
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] //write_storable_ptr actually validates 'dest'
     pub fn write_ptr<T: NoatunStorable>(&self, value: T, dest: *mut T) {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).write_storable_ptr(value, dest) }
@@ -1117,7 +1109,7 @@ impl NoatunTime {
 
     /// Find the next value that is a multiple of 'other', greater or equal to 'self'.
     pub fn next_multiple_of(self, other: NoatunTime) -> Option<NoatunTime> {
-        Some(NoatunTime(self.0.checked_next_multiple_of(other.0)?).validate()?)
+        NoatunTime(self.0.checked_next_multiple_of(other.0)?).validate()
     }
 
     /// Find the previous value that is a multiple of 'other', smaller or equal to 'self'.
@@ -1705,13 +1697,13 @@ pub trait Object {
     /// reasons for this:
     ///
     ///  - 1: Objects stored in the database may reference memory mapped storage that
-    ///       is only available when the database is open. These references are not
-    ///       tracked using rust lifetimes, so if the object was moved out, there might
-    ///       be a segfault (or worse) on subsequent access.
+    ///    is only available when the database is open. These references are not
+    ///    tracked using rust lifetimes, so if the object was moved out, there might
+    ///    be a segfault (or worse) on subsequent access.
     ///  - 2: The undo-logic would have to be special-cased so as not to emit undo entries
-    ///       for instances that are not in the database.
+    ///    for instances that are not in the database.
     ///  - 3: The undo-machinery is on a lower level than the objects, and undo could thus
-    ///       affect objects referenced by moved-out instances, with unintended results.
+    ///    affect objects referenced by moved-out instances, with unintended results.
     type NativeType: ?Sized;
     /// Owned version of [`Self::NativeType`].
     ///

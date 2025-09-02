@@ -616,7 +616,7 @@ where
         NoatunContext.update_tracker(&mut tself.clear_registrar, true);
     }
 
-    ///
+    /// Add an all-zero instance of T the end of the NoatunVec
     pub fn push_zeroed(self: Pin<&mut Self>) -> Pin<&mut T> {
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.observe_registrar(tself.length_tracker);

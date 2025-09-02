@@ -208,10 +208,10 @@ impl<MSG: Message + 'static> Projector<MSG> {
     }
 
     pub(crate) fn load_message(&self, id: MessageId) -> Result<MessageFrame<MSG>> {
-        Ok(self
+        self
             .messages
             .read_message(id)?
-            .ok_or_else(|| anyhow::anyhow!("Message not found"))?)
+            .ok_or_else(|| anyhow::anyhow!("Message not found"))
     }
 
     pub fn recover(&mut self, now: NoatunTime) -> Result<()> {

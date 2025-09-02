@@ -1243,7 +1243,7 @@ impl DatabaseContextData {
     /// No references to dest must exist.
     pub unsafe fn write_storable_ptr<T: NoatunStorable>(&mut self, src: T, dest: *mut T) {
         let dest_index = self.index_of_ptr(dest);
-        assert!(dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space());
+        assert!(dest_index.0 <= self.main_db_mmap.used_space() && dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space());
 
         self.undo_log.record(UndoLogEntry::RestorePod {
             start: dest_index.0,

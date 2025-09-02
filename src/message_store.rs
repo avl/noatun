@@ -170,7 +170,7 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
         debug_assert!(index < self.len()?);
         let target = self.start_offset + size_of::<MessageId>() * index;
         self.handle.seek(SeekFrom::Start(target as u64))?;
-        Ok(self.handle.read_pod()?)
+        self.handle.read_pod()
     }
     pub fn set(&mut self, index: usize, val: MessageId) -> Result<()>
     where
@@ -179,7 +179,7 @@ impl<T: Read + Seek> EmbVecAccessor<T> {
         debug_assert!(index < self.len()?);
         let target = self.start_offset + size_of::<MessageId>() * index;
         self.handle.seek(SeekFrom::Start(target as u64))?;
-        Ok(self.handle.write_pod(&val)?)
+        self.handle.write_pod(&val)
     }
 
     pub fn remove(&mut self, id: MessageId) -> Result<()>
@@ -370,12 +370,12 @@ impl FileOffset {
     }
 
     fn file_and_offset(self) -> Option<(U1, u64)> {
-        (self.0 != u64::MAX).then(|| {
+        (self.0 != u64::MAX).then_some(
             (
                 if self.0 & 1 == 1 { U1::ONE } else { U1::ZERO },
                 self.0 >> 1,
             )
-        })
+        )
     }
 }
 
@@ -1623,23 +1623,6 @@ impl<M> OnDiskMessageStore<M> {
             if seq < *earliest {
                 *earliest = seq
             }
-            /*let message_entry = &mut message_index[index];
-
-            if let Some((file, offset)) = message_entry.file_offset.file_and_offset() {
-                let store_file_entry = &mut self.data_files[file.index()];
-                message_entry.file_offset = FileOffset::deleted();
-                debug_assert!(message_entry.file_offset.is_deleted());
-                let index_entry = &mut header.data_files[file.index()];
-
-                store_file_entry
-                    .file
-                    .seek(SeekFrom::Start(offset + offset_of!(FileHeaderEntry, sha2) as u64 ))
-                    .context("seeking file")?;
-                store_file_entry.file.write_zeroes(HASH_SIZE)?;
-                store_file_entry.file.flush()?;
-                index_entry.bytes_used -= message_entry.file_total_size;
-                            }
-             */
         }
 
         if earliest.is_some() {

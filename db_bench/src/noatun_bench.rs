@@ -24,9 +24,11 @@ noatun_object!(
     }
 );
 
+
 noatun_object!(
     /// Define the schema for the main document
     struct MainDoc {
+        /// Boxes, keyed by id
         object boxes: NoatunHashMap<u32, StorageBox>
     }
 );
@@ -44,7 +46,7 @@ impl Message for Task {
                 
                 project.boxes.insert(
                     id.0,
-                    &StorageBoxExternal {
+                    &StorageBoxNative {
                         id: id.0,
                         articles: Default::default(),
                         parent: None.into(),
