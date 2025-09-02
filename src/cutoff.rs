@@ -38,6 +38,7 @@ impl CutOffConfig {
 pub struct CutoffHash {
     values: [u64; 2],
 }
+/// Safety: CutoffHash contains only primitive types that are NoatunStorable
 unsafe impl NoatunStorable for CutoffHash {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::DepTrCutoffHash/1")
@@ -129,6 +130,7 @@ impl Display for CutOffTime {
     }
 }
 
+/// Safety: CutOffTime contains only primitive types that are NoatunStorable
 unsafe impl NoatunStorable for CutOffTime {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::CutOffTime/1")
@@ -192,6 +194,7 @@ impl Display for CutOffHashPos {
     }
 }
 
+/// Safety: CutOffHashPos contains only primitive types that are NoatunStorable
 unsafe impl NoatunStorable for CutOffHashPos {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::CutOffHashPos/1")
@@ -206,6 +209,8 @@ pub struct CutOffState {
     stamps: CutOffHashPos,
 }
 
+
+/// Safety: CutOffState contains only primitive types that are NoatunStorable
 unsafe impl NoatunStorable for CutOffState {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::CutOffState/1");

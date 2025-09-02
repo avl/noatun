@@ -48,11 +48,14 @@ mod unix {
         committed_size: usize,
         total_size: usize,
     }
+    // Safety: FileMapping contains nothing that can't be Sync
     unsafe impl Sync for FileMapping {}
+    // Safety: FileMapping contains nothing that can't be Send
     unsafe impl Send for FileMapping {}
 
     impl Drop for FileMapping {
         fn drop(&mut self) {
+            // Safety: munmap is used with the correct parameters
             unsafe {
                 if libc::munmap(self.base_ptr as *mut _, self.total_size) != 0 {
                     error!("munmap failed");
@@ -66,6 +69,7 @@ mod unix {
 
     impl FileMapping {
         pub fn page_size() -> usize {
+            // Safety: sysconf is used with the correct parameters
             (*PAGE_SIZE.get_or_init(|| unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) as usize }))
                 .max(4096)
         }
@@ -86,6 +90,7 @@ mod unix {
 
             assert_eq!(actual_size % actual_page_size, 0);
 
+            // Safety: mmap is used correctly
             let ptr = unsafe {
                 libc::mmap(
                     null_mut(),
@@ -127,6 +132,7 @@ mod unix {
             self.sync_range(0, self.committed_size)
         }
         fn sync_range(&self, start: usize, len: usize) -> Result<()> {
+            // Safety: libc::msync is used with correct parameters
             unsafe {
                 let start_rounded_down = if start % Self::page_size() == 0 {
                     start
@@ -177,6 +183,7 @@ mod unix {
 
             let prev_size = self.committed_size;
             let shrink_by = prev_size - new_size;
+            // Safety: mmap is used with correct parameters
             let ptr = unsafe {
                 libc::mmap(
                     self.base_ptr.wrapping_add(new_size) as *mut _,
@@ -220,6 +227,7 @@ mod unix {
             // we don't want to deal with.
             self.file.sync_all().context("fsync")?;
 
+            // Safety: mmap is used correctly
             let ptr = unsafe {
                 libc::mmap(
                     self.base_ptr as *mut _,

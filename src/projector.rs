@@ -21,7 +21,13 @@ pub(crate) struct Projector<MSG: Message> {
     abort_on_panic: bool,
 }
 
+
 impl<MSG: Message + 'static> Projector<MSG> {
+
+    pub(crate) fn sync_outstanding(&mut self) -> Result<()> {
+        self.messages.sync_outstanding()
+    }
+
     pub(crate) fn disable_filesystem_sync(&mut self) {
         self.messages.disable_filesystem_sync()
     }
@@ -105,33 +111,9 @@ impl<MSG: Message + 'static> Projector<MSG> {
             }
         }
 
-        /*
-                let unused_list = unsafe { context.get_unused_list() };
-                let unused_list = unused_list.get_full_slice(context);
-
-                dprintln!("@{} Advancing list: {:?}, cutoff_index: {}", crate::cur_node(), unused_list, cutoff_index);
-
-                debug_assert!(unused_list.is_sorted_by_key(|x| x.last_overwriter));
-
-                let (Ok(unused_list_last) | Err(unused_list_last)) =
-                    unused_list.binary_search_by_key(&cutoff_index, |x| x.last_overwriter);
-
-
-                dprintln!("@{} Selected Advancing list: {:?}, last: {}", crate::cur_node(), &unused_list[..unused_list_last] , unused_list_last);
-        */
 
         let mut must_remove = Vec::new();
 
-        /*
-        for index_entry in &messages_slice[old_cutoff_index.index()..cutoff_index.index()] {
-            context.
-        }*/
-
-        /*let mut process_now = vec![];
-        for item in &unused_list[..unused_list_last] {
-            debug_assert!(item.last_overwriter < cutoff_index);
-            process_now.push(*item);
-        }*/
         self.messages
             .advance_cutoff_hash(prev_cutoff_state, cutoff_state)?;
 
@@ -147,12 +129,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
             &self.messages,
             &mut must_remove,
         )?;
-
-        //dprintln!("@{} Calling rt_calc with {:?}", crate::cur_node(), process_now);
-
-        /*let must_remove =
-            context.rt_calculate_stale_messages_impl(&mut self.messages)?;
-        //debug_assert!(process_now.is_empty());*/
 
         for index in must_remove {
             self.messages
@@ -414,7 +390,9 @@ impl<MSG: Message + 'static> Projector<MSG> {
         catch_and_log(
             || {
                 msg.payload
-                    .apply(msg.header.id, unsafe { Pin::new_unchecked(root) });
+                    .apply(msg.header.id,
+                           // Safety: We don't move out of root
+                           unsafe { Pin::new_unchecked(root) });
             },
             abort_on_panic,
         );

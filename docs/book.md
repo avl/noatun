@@ -565,6 +565,13 @@ The size of Noatun databases is, in practice, only bounded by available disk sto
 virtual memory size. The max number of messages stored in Noatun is bounded at 2^32. However, 
 many applications never approach this number of simultaneously live messages. 
 
+There is no hard limit to how many nodes a Noatun deployment can contain. In fact, 
+the total number of nodes in the network doesn't even have to be known. That said,
+due to the way Noatun works, it's recommended to keep the number of active neighbors
+(nodes that can speak directly over the network) to below 100 nodes. The number of
+actively updated nodes should probably not exceed a few hundred (or the update head
+will become too big).
+
 ## Noatun requires correct time
 
 In distributed systems, a decision often has to be made whether nodes are required to have
@@ -816,6 +823,10 @@ The message id consists of 3 parts:
 With 16 bytes of entropy, accidental collisions between MessageId instances are astronomically
 unlikely.
 
+In each Noatun database, the set of messages that are not the parent of any other message, is known
+as the "update heads" set. Knowing the message-id of every message in the update heads set is enough
+to know the complete state of the database.
+
 Every message lists as its parents, the set of update-heads when the message was created.
 The newly added message then becomes the new update-heads (which will thus then have only a single entry).
 If only a single noatun instance exists, there is only ever one update head, and all messages become linked
@@ -823,7 +834,7 @@ in a single long linked list.
 
 With more than one node, the messages and their parents form a DAG (directed acyclic graph). It is
 a Noatun-invariant that a message is never stored in a Noatun database unless all the parents of the message
-also are.
+also are, with one caveat (see further below).
 
 The upshot of all this is that knowing the set of update-heads of a Noatun database is enough to
 know the entire database state (with one caveat, which we'll get to).
@@ -832,6 +843,13 @@ This allows Noatun to easily detect if two nodes are in sync or not.
 
 However, Noatun has the concept of "cutoff_time". See
 
+
+### Pruning
+
+When a message is deemed to no longer have any possible effect on the database state, it is pruned.
+Its children will have the message removed from their parent lists. This means that, at any given time,
+the same message (by message id) may have different parents on different nodes. However, it is always
+the case that such a pruned message will be pruned on every node, eventually.
 
 ## Data storage
 

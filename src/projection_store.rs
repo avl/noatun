@@ -1,6 +1,6 @@
 use crate::boot_checksum::get_boot_checksum;
 use crate::data_types::{NoatunUntrackedCell, NoatunVecRaw, RawDatabaseVec};
-use crate::disk_abstraction::Disk;
+use crate::disk_abstraction::{Disk, DISK_MAP_ALIGNMENT};
 use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
@@ -39,6 +39,7 @@ mod registrar_info {
         uses: u32,
     }
 
+    /// Safety: RegistrarInfo contains only NoatunStorable types
     unsafe impl NoatunStorable for RegistrarInfo {
         fn hash_schema(hasher: &mut SchemaHasher) {
             hasher.write_str("noatun::RegistrarInfo /1")
@@ -76,6 +77,8 @@ mod registrar_info {
                 raw_uses |= 0x4000_0000;
             }
             //TODO(future): We could have a special "increment 1" noatun primitive.
+
+            // Safety: All materialized view types visible to safe code are always pinned.
             context.write_storable(raw_uses + 1, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
         pub fn set_wrote_tombstone(&mut self, context: &mut DatabaseContextData) {
@@ -84,6 +87,7 @@ mod registrar_info {
                 return;
             }
             raw_uses |= 0x2000_0000;
+            // Safety: All materialized view types visible to safe code are always pinned.
             context.write_storable(raw_uses, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
         pub fn decrease_use(
@@ -114,6 +118,7 @@ mod registrar_info {
 
             // TODO(future): We could have a special "decrement 1" noatun primitive.
 
+            // Safety: All materialized view types visible to safe code are always pinned.
             context.write_storable(raw_uses, unsafe { Pin::new_unchecked(&mut self.uses) });
         }
     }
@@ -176,6 +181,7 @@ mod registrar_info {
         }
     }
 
+    /// Safety: UnusedInfo contains only NoatunStorable fields
     unsafe impl NoatunStorable for UnusedInfo {
         fn hash_schema(hasher: &mut SchemaHasher) {
             hasher.write_str("noatun::UnusedInfo/1")
@@ -196,6 +202,7 @@ const MAIN_DB_STATUS_DIRTY: u8 = 0;
 #[repr(transparent)]
 pub struct MainDbStatus(u8);
 
+/// Safety: MainDbStatus contains only NoatunStorable fields.
 unsafe impl NoatunStorable for MainDbStatus {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::MainDbStatus/1")
@@ -233,6 +240,7 @@ impl MainDbHeader {
     }
 }
 
+/// Safety: MainDbHeader contains only NoatunStorable fields.
 unsafe impl NoatunStorable for MainDbHeader {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::MainDbHeader/1")
@@ -272,6 +280,7 @@ impl Object for DepTrackEntry {
     }
 }
 
+/// Safety: DepTrackEntry contains only NoatunStorable fields.
 unsafe impl NoatunStorable for DepTrackEntry {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::DepTrackEntry/1")
@@ -296,6 +305,7 @@ impl Default for MainDbAuxHeader {
     }
 }
 
+/// Safety: MainDbAuxHeader contains only NoatunStorable fields.
 unsafe impl NoatunStorable for MainDbAuxHeader {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::MainDbAuxHeader/1")
@@ -396,6 +406,7 @@ impl DatabaseContextData {
     }
 
     fn record_overwrite(&mut self, overwritten: Tracker, overwriter: SequenceNr) {
+        // Safety: No other live references exist
         let keys = unsafe { self.get_deptrack_keys_mut() };
         keys.ensure_size(overwriter.index() + 1, self);
 
@@ -415,6 +426,7 @@ impl DatabaseContextData {
         }
 
         self.tainted = true;
+        // Safety: No other live references exist
         let keys = unsafe { self.get_deptrack_keys_mut() };
 
         assert!(observee.is_valid());
@@ -466,16 +478,19 @@ impl DatabaseContextData {
         &mut self,
         observee: SequenceNr,
     ) -> &'a mut NoatunVecRaw<NoatunUntrackedCell<SequenceNr>, DatabaseContextData> {
+        // Safety: No other live references exist
         let keys = unsafe { self.get_deptrack_keys_mut() };
 
         &mut keys.get_index_mut(observee.index(), self).incoming_read_dep
     }
 
     pub(crate) fn get_live_values(&self, seq: SequenceNr) -> (u32, &'static str /*flags*/) {
+        // Safety: No other live references exist
         let uses = unsafe { self.get_uses() };
         if uses.len() <= seq.index() {
             return (0, "");
         }
+        // Safety: No other live references exist
         let info = unsafe { uses.get_mut(self, seq.index()) };
 
         let flags = match (
@@ -535,6 +550,7 @@ impl DatabaseContextData {
         &mut self,
         observer: SequenceNr,
     ) -> &'a mut NoatunVecRaw<NoatunUntrackedCell<SequenceNr>, DatabaseContextData> {
+        // Safety: No other live references exist
         let keys = unsafe { self.get_deptrack_keys_mut() };
         &mut keys.get_index_mut(observer.index(), self).outgoing_read_dep
     }
@@ -554,6 +570,7 @@ impl DatabaseContextData {
     /// in memory database.
     #[inline(always)]
     pub fn next_seqnr(&self) -> SequenceNr {
+        // Safety: The map is large enough, and all bit patterns are valid
         let header: &MainDbHeader =
             unsafe { &*(self.main_db_mmap.map_const_ptr() as *const MainDbHeader) };
         header.next_seqnr
@@ -569,6 +586,7 @@ impl DatabaseContextData {
 
     #[inline(always)]
     fn raw_set_next_seqnr(&self, new_value: SequenceNr) {
+        // Safety: The map is large enough, and all bit patterns are valid
         let header: &mut MainDbHeader =
             unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
         header.next_seqnr = new_value;
@@ -583,6 +601,7 @@ impl DatabaseContextData {
     }
     #[inline(always)]
     fn raw_set_next_seqnr_of(main_db_mmap: &FileAccessor, new_value: SequenceNr) {
+        // Safety: The map is large enough, and all bit patterns are valid
         let header: &mut MainDbHeader =
             unsafe { &mut *(main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
 
@@ -591,6 +610,7 @@ impl DatabaseContextData {
 
     /// Returns true if database was previously clean
     pub fn mark_dirty(&mut self) -> Result<bool> {
+        // Safety: The map is large enough, and all bit patterns are valid
         let header: &mut MainDbHeader =
             unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
 
@@ -608,13 +628,16 @@ impl DatabaseContextData {
     /// Db is clean in memory
     #[inline]
     pub fn mark_hot_clean(&mut self) {
+        // Safety: The map is large enough, and all bit patterns are valid
         let header: &mut MainDbHeader =
             unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
 
         header.status = MainDbStatus(MAIN_DB_STATUS_HOT_CLEAN);
     }
+
     #[inline]
     pub fn mark_fully_clean(&mut self) -> Result<()> {
+        // Safety: The map is large enough, and all bit patterns are valid
         let header: &mut MainDbHeader =
             unsafe { &mut *(self.main_db_mmap.map_mut_ptr() as *mut MainDbHeader) };
 
@@ -628,6 +651,7 @@ impl DatabaseContextData {
     }
 
     pub fn is_wrong_version(&self, correct_hash: [u8; 16]) -> bool {
+        // Safety: The map is large enough, and all bit patterns are valid
         let header: &MainDbHeader =
             unsafe { &*(self.main_db_mmap.map_mut_ptr() as *const MainDbHeader) };
         header.materialized_view_schema_hash != correct_hash
@@ -635,6 +659,7 @@ impl DatabaseContextData {
 
     #[inline]
     pub fn is_dirty(&self) -> bool {
+        // Safety: The map is large enough, and all bit patterns are valid
         let header: &MainDbHeader =
             unsafe { &*(self.main_db_mmap.map_mut_ptr() as *const MainDbHeader) };
 
@@ -661,11 +686,13 @@ impl DatabaseContextData {
             .main_db_mmap
             .map_const_ptr()
             .wrapping_add(size_of::<MainDbHeader>());
+        // Safety: The map is large enough, and all bit patterns are valid
         let slice = unsafe { std::slice::from_raw_parts(slice, size_of::<MainDbAuxHeader>()) };
         let aux_header: &MainDbAuxHeader = from_bytes(slice);
         aux_header
     }
     fn get_deptrack_keys<'a>(&self) -> &'a NoatunVecRaw<DepTrackEntry, DatabaseContextData> {
+        // Safety: The calculated position is always home to a valid NoatunVecRaw
         unsafe {
             &mut *(self.main_db_mmap.map_mut_ptr().wrapping_add(
                 size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, deptrack_keys),
@@ -677,21 +704,15 @@ impl DatabaseContextData {
     unsafe fn get_deptrack_keys_mut<'a>(
         &mut self,
     ) -> &'a mut NoatunVecRaw<DepTrackEntry, DatabaseContextData> {
+        // Safety: The calculated position is always home to a valid NoatunVecRaw
         unsafe {
             &mut *(self.main_db_mmap.map_mut_ptr().wrapping_add(
                 size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, deptrack_keys),
             ) as *mut NoatunVecRaw<DepTrackEntry, DatabaseContextData>)
         }
     }
-    /*pub(crate) unsafe fn get_unused_list<'a>(&self) -> &'a mut RawDatabaseVec<UnusedInfo> {
-        unsafe {
-            &mut *(self.main_db_mmap.map_mut_ptr().wrapping_add(
-                size_of::<MainDbHeader>() + offset_of!(MainDbAuxHeader, unused_messages),
-            ) as *mut RawDatabaseVec<UnusedInfo>)
-        }
-    }*/
-
     unsafe fn get_uses<'a>(&self) -> &'a mut RawDatabaseVec<RegistrarInfo> {
+        // Safety: The map is large enough, and all bit patterns are valid
         unsafe {
             &mut *(self
                 .main_db_mmap
@@ -752,6 +773,7 @@ impl DatabaseContextData {
             Self::write_initial_header(&mut main_db_file, schema_hash);
         }
 
+        // Safety: The map is large enough, and all bit patterns are valid
         let header: &MainDbHeader =
             unsafe { &*(main_db_file.map_const_ptr() as *const MainDbHeader) };
         if <u8 as Into<usize>>::into(header.usize_size) != size_of::<usize>() {
@@ -807,6 +829,7 @@ impl DatabaseContextData {
             UndoLogEntry::SetPointer(new_pointer) => {
                 let cur = Self::pointer_of(&self.main_db_mmap);
                 debug_assert!(new_pointer <= cur);
+                // Safety: The map is large enough, and no live references exist
                 unsafe {
                     Self::mut_byte_slice(self.main_db_mmap.map_mut_ptr(), new_pointer..cur).fill(0)
                 };
@@ -814,6 +837,7 @@ impl DatabaseContextData {
                 HowToProceed::PopAndContinue
             }
             UndoLogEntry::ZeroOut { start, len } => {
+                // Safety: The map is large enough, and no live references exist
                 unsafe {
                     Self::mut_byte_slice(self.main_db_mmap.map_mut_ptr(), start..start + len)
                         .fill(0)
@@ -828,6 +852,7 @@ impl DatabaseContextData {
                 HowToProceed::PopAndContinue
             }*/
             UndoLogEntry::RestorePod { start, data } => {
+                // Safety: The map is large enough, and no live references exist
                 unsafe {
                     Self::mut_byte_slice(self.main_db_mmap.map_mut_ptr(), start..start + data.len())
                         .copy_from_slice(data)
@@ -887,6 +912,7 @@ impl DatabaseContextData {
     }
 
     pub fn get_root_ptr<Ptr: Pointer + Any + 'static>(&self) -> Ptr {
+        // Safety: The map is large enough, and all bit patterns are valid
         let root_ptr = unsafe {
             *(self
                 .main_db_mmap
@@ -902,6 +928,7 @@ impl DatabaseContextData {
         match root_ptr {
             GenPtr::Thin(ptr) => {
                 if TypeId::of::<Ptr>() == TypeId::of::<ThinPtr>() {
+                    // Safety: The type check guarantees that the transmute will be an identity transmute
                     return unsafe { transmute_copy(&ptr) };
                 }
                 panic!(
@@ -910,6 +937,7 @@ impl DatabaseContextData {
             }
             GenPtr::Fat(ptr) => {
                 if TypeId::of::<Ptr>() == TypeId::of::<FatPtr>() {
+                    // Safety: The type check guarantees that the transmute will be an identity transmute
                     return unsafe { transmute_copy(&ptr) };
                 }
                 panic!(
@@ -919,6 +947,7 @@ impl DatabaseContextData {
         }
     }
     pub fn zero_storable<T: NoatunStorable>(&mut self, storable: Pin<&mut T>) {
+        // Safety: We don't move the data out
         unsafe { self.zero_internal(storable.get_unchecked_mut()) }
     }
     pub fn zero_internal<T: NoatunStorable>(&mut self, storable: &mut T) {
@@ -936,9 +965,11 @@ impl DatabaseContextData {
         *dataref = T::zeroed();
     }
 
-    pub fn zero(&mut self, dst: FatPtr) {
+    /// # Safety
+    /// The 'dst' pointer must be valid
+    pub unsafe fn zero(&mut self, dst: FatPtr) {
+        // Safety: 'dst' is a valid pointer
         unsafe {
-            //dbg!(&source, &dest_index);
 
             self.undo_log.record(UndoLogEntry::RestorePod {
                 start: dst.start,
@@ -954,7 +985,10 @@ impl DatabaseContextData {
         }
     }
 
-    pub fn copy_bytes(&mut self, source: FatPtr, dest_index: ThinPtr) {
+    /// # Safety
+    /// the pointers must be valid and unaliased.
+    pub unsafe fn copy_bytes(&mut self, source: FatPtr, dest_index: ThinPtr) {
+        // Safety: The pointers are valid and unaliased
         unsafe {
             self.undo_log.record(UndoLogEntry::RestorePod {
                 start: dest_index.0,
@@ -972,8 +1006,13 @@ impl DatabaseContextData {
         }
     }
 
-    pub fn copy_bytes_len(&mut self, source: ThinPtr, dest_index: ThinPtr, num_bytes: usize) {
-        self.copy_bytes(FatPtr::from_idx_count(source.0, num_bytes), dest_index)
+    /// # Safety
+    /// The pointers must be valid and not aliasing
+    pub unsafe fn copy_bytes_len(&mut self, source: ThinPtr, dest_index: ThinPtr, num_bytes: usize) {
+        // Safety: The pointers are valid and not aliasing
+        unsafe {
+            self.copy_bytes(FatPtr::from_idx_count(source.0, num_bytes), dest_index)
+        }
     }
     pub fn copy_storable<T: NoatunStorable>(&mut self, source: &T, dest: &mut T) {
         let dest_index = self.index_of_sized(dest);
@@ -985,12 +1024,16 @@ impl DatabaseContextData {
     }
     pub fn allocate_storable<T: NoatunStorable>(&mut self) -> Pin<&mut T> {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
+        // Safety: bytes is a pointer that is valid until the end of the lifetime of the current
+        // root object. The lifetime of Self has this same lifetime.
         unsafe { Pin::new_unchecked(&mut *(bytes as *mut T)) }
     }
     pub fn allocate_obj<T: Object>(&mut self) -> Pin<&mut T> {
         let bytes = self.allocate_raw(std::mem::size_of::<T>(), std::mem::align_of::<T>());
+        // Safety: 'bytes' will not have been moved.
         unsafe { Pin::new_unchecked(&mut *(bytes as *mut T)) }
     }
+    /// The pointer is only valid for the lifetime of the current root object
     pub fn allocate_raw(&mut self, size: usize, align: usize) -> *mut u8 {
         if align > 256 {
             panic!("Noatun arbitrarily does not support types with alignment > 256");
@@ -1020,6 +1063,8 @@ impl DatabaseContextData {
     }
     pub fn allocate_slice(&mut self, size: usize, align: usize) -> &mut [u8] {
         let start = self.allocate_raw(size, align);
+        // Safety: The 'start' ptr points to an object of 'size' bytes.
+        // It is valid for lifetime of Self.
         unsafe { std::slice::from_raw_parts_mut(start, size) }
     }
     /// # Safety
@@ -1031,6 +1076,7 @@ impl DatabaseContextData {
         size: usize,
     ) -> &'a [T] {
         assert!(offset + size * size_of::<T>() <= self.main_db_mmap.used_space());
+        // Safety: offset and size designate a valid slice
         unsafe {
             std::slice::from_raw_parts(
                 self.main_db_mmap.map_const_ptr().wrapping_add(offset) as *const T,
@@ -1048,6 +1094,7 @@ impl DatabaseContextData {
         size: usize,
     ) -> &'a mut [T] {
         assert!(offset + size * size_of::<T>() <= self.main_db_mmap.used_space());
+        // Safety: offset and size designate a valid slice
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.main_db_mmap.map_mut_ptr().wrapping_add(offset) as *mut T,
@@ -1061,6 +1108,7 @@ impl DatabaseContextData {
     /// Alignment must be right.
     pub unsafe fn access_slice<'a, T: NoatunStorable>(&self, range: FatPtr) -> &'a [T] {
         assert!(range.start + range.count * size_of::<T>() <= self.main_db_mmap.used_space());
+        // Safety: range designates a valid slice
         unsafe {
             std::slice::from_raw_parts(
                 self.main_db_mmap.map_const_ptr().wrapping_add(range.start) as *const T,
@@ -1074,6 +1122,7 @@ impl DatabaseContextData {
     /// Alignment must be right.
     pub unsafe fn access_slice_mut<'a, T: NoatunStorable>(&self, range: FatPtr) -> &'a mut [T] {
         assert!(range.start + range.count * size_of::<T>() <= self.main_db_mmap.used_space());
+        // Safety: range designates a valid slice
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.main_db_mmap.map_mut_ptr().wrapping_add(range.start) as *mut T,
@@ -1085,6 +1134,7 @@ impl DatabaseContextData {
     /// # Safety
     /// The given range must point to valid memory, and must not overlap any other reference
     pub unsafe fn mut_byte_slice<'a>(data: *mut u8, range: Range<usize>) -> &'a mut [u8] {
+        // Safety: range designates a valid slice
         unsafe {
             std::slice::from_raw_parts_mut(data.wrapping_add(range.start), range.end - range.start)
         }
@@ -1101,6 +1151,14 @@ impl DatabaseContextData {
         {
             panic!("invalid pointer value");
         }
+        const {
+            assert!(align_of::<T>() <= DISK_MAP_ALIGNMENT);
+        }
+        if !index.0.is_multiple_of(align_of::<T>()) {
+            panic!("invalid pointer alignment");
+        }
+        // Safety: We've checked the value is in range and correctly aligned.
+        // Caller promises no aliasing.
         unsafe {
             from_bytes(std::slice::from_raw_parts(
                 self.main_db_mmap.map_const_ptr().wrapping_add(index.0),
@@ -1111,9 +1169,11 @@ impl DatabaseContextData {
 
     /// # Safety
     /// Caller must ensure no mutable reference exists to the requested object
+    /// Pointer must be valid and correctly aligned.
     #[inline]
     pub unsafe fn access_thin<'a, T: ?Sized>(&self, ptr: ThinPtr) -> &'a T {
         assert_eq!(size_of::<&T>(), size_of::<*const u8>());
+        // Safety: 'ptr' is valid and correctly aligned
         let ret = unsafe { transmute_copy(&self.main_db_mmap.map_const_ptr().wrapping_add(ptr.0)) };
 
         // Note: If the below fails, there has already been UB (because we'd already have produced
@@ -1131,10 +1191,12 @@ impl DatabaseContextData {
         ret
     }
     /// # Safety
-    /// Caller must ensure no mutable or shared reference exists to the requested object
+    /// Caller must ensure no mutable or shared reference exists to the requested object.
+    /// ptr must be valid and correctly aligned.
     #[inline]
     pub unsafe fn access_thin_mut<'a, T: ?Sized>(&self, ptr: ThinPtr) -> &'a mut T {
         assert_eq!(size_of::<&mut T>(), size_of::<*const u8>());
+        // Safety: ptr is valid
         let ret: &mut _ =
             unsafe { transmute_copy(&self.main_db_mmap.map_mut_ptr().wrapping_add(ptr.0)) };
 
@@ -1154,6 +1216,7 @@ impl DatabaseContextData {
 
     /// # Safety
     /// Caller must ensure no mutable reference exists to the requested object
+    /// ptr must be valid and correctly aligned.
     #[inline]
     pub unsafe fn access_fat<'a, T: ?Sized>(&self, ptr: FatPtr) -> &'a T {
         assert_eq!(size_of::<&T>(), 2 * size_of::<*const u8>());
@@ -1161,6 +1224,7 @@ impl DatabaseContextData {
             data: self.main_db_mmap.map_const_ptr().wrapping_add(ptr.start),
             size: ptr.count,
         };
+        // Safety: ptr is valid
         let ret = unsafe { transmute_copy(&raw) };
 
         // Note: If the below fails, there has already been UB (because we'd already have produced
@@ -1187,6 +1251,7 @@ impl DatabaseContextData {
             data: self.main_db_mmap.map_mut_ptr().wrapping_add(ptr.start),
             size: ptr.count,
         };
+        // Safety: ptr must be valid and correctly aligned
         let ret: &mut _ = unsafe { transmute_copy(&raw) };
 
         // Note: If the below fails, there has already been UB (because we'd already have produced
@@ -1218,6 +1283,10 @@ impl DatabaseContextData {
         {
             panic!("invalid pointer value");
         }
+        if !index.0.is_multiple_of(align_of::<T>()) {
+            panic!("invalid pointer alignment");
+        }
+        // Safety: index has been validated
         unsafe {
             let ptr = self.main_db_mmap.map_mut_ptr().wrapping_add(index.0);
             assert!((ptr as *mut T).is_aligned());
@@ -1229,6 +1298,7 @@ impl DatabaseContextData {
     }
 
     pub fn write_storable<T: NoatunStorable>(&mut self, src: T, dest: Pin<&mut T>) {
+        // Safety: We won't be moving out of dest
         let dest = unsafe { dest.get_unchecked_mut() };
         let dest_index = self.index_of_sized(dest);
 
@@ -1241,14 +1311,17 @@ impl DatabaseContextData {
 
     /// #Safety:
     /// No references to dest must exist.
+    /// 'dest' must be a valid pointer
     pub unsafe fn write_storable_ptr<T: NoatunStorable>(&mut self, src: T, dest: *mut T) {
         let dest_index = self.index_of_ptr(dest);
         assert!(dest_index.0 <= self.main_db_mmap.used_space() && dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space());
 
         self.undo_log.record(UndoLogEntry::RestorePod {
             start: dest_index.0,
+            // Safety: 'dest' is valid
             data: unsafe { slice::from_raw_parts_mut(dest as *mut u8, size_of::<T>()) },
         });
+        // Safety: dest is a valid ptr
         unsafe { dest.write_unaligned(src) };
     }
 
@@ -1280,16 +1353,22 @@ impl DatabaseContextData {
     pub fn update_registrar(&mut self, registrar_point: &mut Tracker, opaque: bool) {
         let current_registrar = self.next_seqnr();
 
-        self.update_registrar_ptr_impl(
-            registrar_point,
-            current_registrar,
-            self.tainted,
-            opaque,
-            false,
-        );
+        // Safety: We're creating the pointer from a mutable ref, so it is guaranteed
+        // valid and unique.
+        unsafe {
+            self.update_registrar_ptr_impl(
+                registrar_point,
+                current_registrar,
+                self.tainted,
+                opaque,
+                false,
+            );
+        }
     }
 
-    pub fn update_registrar_ptr_impl(
+    /// # Safety
+    /// 'registrar_point' must be a valid unaliased pointer
+    pub unsafe fn update_registrar_ptr_impl(
         &mut self,
         registrar_point: *mut Tracker,
         actor: SequenceNr,
@@ -1297,6 +1376,7 @@ impl DatabaseContextData {
         actor_wrote_non_opaque: bool,
         is_clear: bool,
     ) {
+        // Safety: The caller guarantees the pointer is valid
         let registrar_point_value = unsafe { registrar_point.read_unaligned() };
 
         if actor == registrar_point_value.owner {
@@ -1318,9 +1398,13 @@ impl DatabaseContextData {
         //all writes and do a single write at the end of message apply!
         self.rt_increase_use(actor, actor_wrote_non_opaque);
 
+        // Safety: The caller guarantees the pointer is valid
         unsafe { self.write_storable_ptr(Tracker { owner: actor}, registrar_point) }
     }
-    pub fn update_tracker_ptr(&mut self, registrar_point: *mut Tracker, opaque: bool) {
+
+    /// # Safety
+    /// registrar_point must be a valid pointer
+    pub unsafe fn update_tracker_ptr(&mut self, registrar_point: *mut Tracker, opaque: bool) {
         self.update_registrar_ptr_impl(
             registrar_point,
             self.next_seqnr(),
@@ -1329,7 +1413,9 @@ impl DatabaseContextData {
             false,
         );
     }
-    pub fn clear_registrar_ptr(&mut self, registrar_point: *mut Tracker, opaque: bool) {
+    /// # Safety
+    /// registrar_point must be a valid pointer
+    pub unsafe fn clear_registrar_ptr(&mut self, registrar_point: *mut Tracker, opaque: bool) {
         self.wrote_tombstone = true;
         self.update_registrar_ptr_impl(
             registrar_point,
@@ -1371,7 +1457,7 @@ impl DatabaseContextData {
         debug_assert!(message_seqnr.is_valid());
         //let aux_header = self.get_aux_header();
 
-        // #SAFETY
+        // SAFETY:
         // We only hold this for this method, and we call no other code that
         // uses the same memory. So do all other users of 'get_uses'.
         let uses = unsafe { self.get_uses() };
@@ -1396,17 +1482,21 @@ impl DatabaseContextData {
             return Ok(());
         }
 
+        // Safety: There are not other active views
         let mut track = unsafe { uses.get_mut(self, message_seqnr.index()) };
 
         if self.wrote_tombstone {
             // TODO(future): We probably only need to do this write if get_use() != 0 below.
             // In other cases, I believe nothing ever reads this `uses` slot.
+
+            // Safety: We don't move out of the reference
             unsafe {
                 track.as_mut().get_unchecked_mut().set_wrote_tombstone(self);
             }
         }
 
         {
+            // Safety: There are no other views of this data
             let keys = unsafe { self.get_deptrack_keys_mut() };
             dprintln!("Finalize messages, checking for overwriting");
             if let Some(dep_info) = keys.try_get_index(message_seqnr.index(), self) {
@@ -1465,6 +1555,7 @@ impl DatabaseContextData {
             // This is just a convention, but it turns out to work well.
             let (seq, last_overwriter) = task;
 
+            // Safety: There are not other active views
             let uses = unsafe { self.get_uses() };
             let mark_delete = if seq.index() >= uses.len() {
                 dprintln!(
@@ -1522,6 +1613,8 @@ impl DatabaseContextData {
                 for i in 0..outgoing_deps.len() {
                     let right = **outgoing_deps.get_index(i, self);
                     assert!(right > seq);
+                    // Safety: No other active references to the dependencies exist
+                    // (see assert above)
                     unsafe {
                         self.incoming_read_dependencies_mut(right).retain(
                             |x| **x != seq,
@@ -1531,11 +1624,14 @@ impl DatabaseContextData {
                     }
                 }
 
+                // Safety: No other active references to the dependencies exist
                 let incoming_deps = unsafe { self.incoming_read_dependencies_mut(seq) };
                 for i in 0..incoming_deps.len() {
                     let left = **incoming_deps.get_index(i, self);
 
-                    debug_assert!(left < seq);
+                    assert!(left < seq);
+                    // Safety: No other active references to the same dependencies exist
+                    // (see assert above)
                     unsafe {
                         self.outgoing_read_dependencies_mut(left).retain(
                             |x| **x != seq,
@@ -1562,6 +1658,7 @@ impl DatabaseContextData {
         for seq_index in range {
             temp.clear();
             {
+                // Safety: No other views of this data existg
                 let keys = unsafe { self.get_deptrack_keys_mut() };
                 if let Some(overwritten) = keys.try_get_index_mut(seq_index, self) {
                     let l = overwritten.last_overwriter_of.len();
@@ -1589,10 +1686,12 @@ impl DatabaseContextData {
     }
 
     pub(crate) fn rt_increase_use(&mut self, seq: SequenceNr, wrote_non_opaque: bool) {
+        // Safety: No other active view exist
         let uses = unsafe { self.get_uses() };
         if uses.len() <= seq.index() {
             uses.grow(self, seq.index() + 1);
         }
+        // Safety: No other view exists
         let mut info = unsafe { uses.get_mut(self, seq.index()) };
         info.increase_use(self, wrote_non_opaque);
         trace!(
@@ -1611,7 +1710,9 @@ impl DatabaseContextData {
         overwriter_tainted: bool,
         //wrote_non_opaque: bool,
     ) {
+        // Safety: No other view exists
         let uses = unsafe { self.get_uses() };
+        // Safety: No other view exists
         let mut cur = unsafe { uses.get_mut(self, tracker.owner.index()) };
         let cur_use = cur.get_use();
         if cur_use == 0 {
@@ -1619,6 +1720,7 @@ impl DatabaseContextData {
             std::process::abort();
         }
 
+        // Safety: We don't move out of the ref
         unsafe {
             cur.as_mut()
                 .get_unchecked_mut()

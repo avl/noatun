@@ -30,7 +30,7 @@ pub trait FileBackend {
 }
 
 pub(crate) struct FileAccessor {
-    mapping: Box<dyn FileBackend + Send>,
+    mapping: Box<dyn FileBackend + Send + Sync>,
     /// This is the start of the memory-map.
     /// I.e, this points at the header.
     /// The actual contents start after the header.
@@ -41,7 +41,10 @@ pub(crate) struct FileAccessor {
     seek_pos: usize,
     committed_size_gauge: Gauge
 }
+
+// Safety: Nothing in FileAccesor is !Send
 unsafe impl Send for FileAccessor {}
+// Safety: Nothing in FileAccesor is !Sync
 unsafe impl Sync for FileAccessor {}
 
 pub(crate) struct ReadonlyFileAccessor<'a> {
@@ -65,6 +68,7 @@ impl Read for ReadonlyFileAccessor<'_> {
 impl ReadonlyFileAccessor<'_> {
     pub(crate) fn map(&self) -> &[u8] {
         let used = self.size;
+        // Safety: self.ptr is valid
         unsafe { slice::from_raw_parts(self.ptr.wrapping_add(FileAccessor::HEADER_SIZE), used) }
     }
 
@@ -199,6 +203,7 @@ impl Write for FileAccessor {
                 .map_err(std::io::Error::other)?;
         }
 
+        // Safety: self.ptr is valid
         let dest = unsafe {
             slice::from_raw_parts_mut(
                 self.ptr
@@ -241,11 +246,12 @@ impl FileAccessor {
     /// Does _not_ use or update seek position
     /// SAFETY:
     /// Returned reference must not overlap mutable reference. Reference must have
-    /// correct alignment
+    /// correct alignment.
     pub unsafe fn access_pod<R: NoatunStorable>(&self, offset: usize) -> Result<&R> {
         if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");
         }
+        // Safety: self.ptr is valid
         let raw = unsafe {
             slice::from_raw_parts(
                 self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset),
@@ -263,6 +269,7 @@ impl FileAccessor {
         if offset + size_of::<R>() > self.used_space() {
             bail!("requested number of bytes not available in file");
         }
+        // Safety: self.ptr is valid
         let raw = unsafe {
             slice::from_raw_parts_mut(
                 self.ptr.wrapping_add(FileAccessor::HEADER_SIZE + offset),
@@ -274,6 +281,7 @@ impl FileAccessor {
 
     #[inline(always)]
     pub(crate) fn used_space(&self) -> usize {
+        // Safety: self.ptr is valid
         unsafe { *(self.ptr as *const usize) }
     }
 
@@ -289,6 +297,7 @@ impl FileAccessor {
                 .expect("arithmetic overflow")
                 <= self.committed_size
         );
+        // Safety: self.mapping.ptr is valid
         unsafe {
             *(self.mapping.ptr() as *mut usize) = new_value;
         }
@@ -308,6 +317,7 @@ impl FileAccessor {
     }
 
     pub(crate) fn map_all_raw(&self) -> &[u8] {
+        // Safety: self.ptr is valid
         unsafe {
             slice::from_raw_parts(
                 self.ptr.wrapping_add(Self::HEADER_SIZE),
@@ -316,6 +326,7 @@ impl FileAccessor {
         }
     }
     pub(crate) fn map_all_raw_mut(&mut self) -> &mut [u8] {
+        // Safety: self.ptr is valid
         unsafe {
             slice::from_raw_parts_mut(
                 self.ptr.wrapping_add(Self::HEADER_SIZE),
@@ -326,14 +337,17 @@ impl FileAccessor {
 
     pub(crate) fn map(&self) -> &[u8] {
         let used = self.used_space();
+        // Safety: self.ptr is valid
         unsafe { slice::from_raw_parts(self.ptr.wrapping_add(Self::HEADER_SIZE), used) }
     }
     pub(crate) fn map_mut(&mut self) -> &mut [u8] {
         let used = self.used_space();
+        // Safety: self.ptr is valid
+        // Safety: self.ptr is valid
         unsafe { slice::from_raw_parts_mut(self.ptr.wrapping_add(Self::HEADER_SIZE), used) }
     }
 
-    pub(crate) fn from_mapping(mut mapping: impl FileBackend + Send + 'static, name: &str, descr: &str) -> Self {
+    pub(crate) fn from_mapping(mut mapping: impl FileBackend + Send + Sync + 'static, name: &str, descr: &str) -> Self {
         let initial_len = Self::HEADER_SIZE;
         mapping.grow_committed_mapping(initial_len).unwrap();
 
@@ -392,7 +406,7 @@ impl FileAccessor {
         let page_size = FileMapping::page_size();
 
         let mut len = File::metadata(&file)?.len() as usize;
-        //let new_used_size = len.saturating_sub(Self::HEADER_SIZE).max(initial_size);
+
         if len < initial_size + Self::HEADER_SIZE || len % page_size != 0 {
             len = len
                 .max(initial_size + Self::HEADER_SIZE)
@@ -436,6 +450,7 @@ impl FileAccessor {
             self.grow(self.seek_pos + bytes)?;
         }
 
+        // Safety: self.ptr is valid
         unsafe {
             slice::from_raw_parts_mut(
                 self.ptr

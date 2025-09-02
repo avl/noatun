@@ -31,6 +31,8 @@ pub struct OpaqueNoatunCell<T> {
     tracker: Tracker,
 }
 
+
+/// Safety: OpaqueNoatunCell<T> contains only NoatunStorable types
 unsafe impl<T: NoatunStorable> NoatunStorable for OpaqueNoatunCell<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::OpaqueNoatunCell/1");
@@ -38,6 +40,7 @@ unsafe impl<T: NoatunStorable> NoatunStorable for OpaqueNoatunCell<T> {
     }
 }
 
+/// Safety: NoatunCell<T> contains only NoatunStorable types
 unsafe impl<T: NoatunPod> NoatunStorable for NoatunCell<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::NoatunCell/1");
@@ -45,6 +48,7 @@ unsafe impl<T: NoatunPod> NoatunStorable for NoatunCell<T> {
     }
 }
 
+/// Safety: NoatunCell<T> contains only NoatunPod types
 impl<T: NoatunPod + Debug> Debug for NoatunCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let value = self.value;
@@ -52,6 +56,7 @@ impl<T: NoatunPod + Debug> Debug for NoatunCell<T> {
     }
 }
 
+/// Safety: OpaqueNoatunCell<T> contains only NoatunPod types
 impl<T: NoatunPod + Debug> Debug for OpaqueNoatunCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let value = self.value;
@@ -105,11 +110,18 @@ impl<T: NoatunPod> NoatunCell<T> {
     /// Set the value of this cell
     pub fn set(self: Pin<&mut Self>, new_value: T) {
         let cptr = CONTEXT.get();
+        // Safety: cptr is valid, aligned and unaliased (because we only put such pointers
+        // into the thread local.
         let c = unsafe { &mut *cptr };
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         c.assert_mutable();
+        // Safety: tself.value is a valid reference
         unsafe { c.write_storable_ptr(new_value, addr_of_mut!(tself.value)) }
-        c.update_tracker_ptr(addr_of_mut!(tself.tracker), false);
+        // Safety: `tself.tracker` is a valid object
+        unsafe {
+            c.update_tracker_ptr(addr_of_mut!(tself.tracker), false);
+        }
     }
 }
 
@@ -133,13 +145,19 @@ impl<T: NoatunStorable> OpaqueNoatunCell<T> {
     /// Set the value of this cell
     pub fn set(self: Pin<&mut Self>, new_value: T) {
         let cptr = CONTEXT.get();
+        // Safety: We only put valid pointers into the thread local
         let c = unsafe { &mut *cptr };
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         c.assert_mutable();
+        // Safety: tself.value is a value reference
         unsafe {
             c.write_storable_ptr(new_value, addr_of_mut!(tself.value));
         }
-        c.update_tracker_ptr(addr_of_mut!(tself.tracker), true);
+        // Safety: tself.tracker is a valid object
+        unsafe {
+            c.update_tracker_ptr(addr_of_mut!(tself.tracker), true);
+        }
     }
 }
 
@@ -188,8 +206,10 @@ impl<T: NoatunPod + Debug> Object for NoatunCell<T> {
     }
 
     fn destroy(self: Pin<&mut Self>) {
+        // Safety: We don't move out of the reference
         let tself = unsafe { self.get_unchecked_mut() };
         trace!("NoatunCell::clear: {:?}", tself.value);
+        // Safety: tself.tracker is a valid object
         unsafe { NoatunContext.clear_tracker_ptr(&mut tself.tracker, false) };
     }
 
@@ -218,8 +238,10 @@ impl<T: NoatunStorable + Debug + Copy> Object for OpaqueNoatunCell<T> {
     }
 
     fn destroy(self: Pin<&mut Self>) {
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         trace!("OpaqueNoatunCell::clear: {:?}", tself.value);
+        // Safety: tself.tracker is a valid object
         unsafe { NoatunContext.clear_tracker_ptr(&mut tself.tracker, true) };
     }
 

@@ -11,7 +11,7 @@ use std::fmt::{Debug, Formatter};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::pin::Pin;
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 
 /// The result of attempting to load a database
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -132,7 +132,7 @@ pub struct DatabaseSession<'a, MSG: Message> {
 impl<MSG: Message> Drop for DatabaseSessionMut<'_, MSG> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
-            self.db.mark_clean();
+            _ = self.db.mark_hot_clean();
         }
     }
 }
@@ -326,6 +326,16 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     /// Returns true if this database contains the given message
     pub fn contains_message(&self, message_id: MessageId) -> Result<bool> {
         self.db.contains_message(message_id)
+    }
+
+    /// Sync any written messages to the disk, and wait for the disk io
+    /// to complete.
+    ///
+    /// This will not sync the materialized view to disk, but doing so is not necessary
+    /// since it will be rebuilt automatically in case of either operating system or application
+    /// crashes.
+    pub fn commit(self) -> Result<()> {
+        self.db.sync_outstanding()
     }
 
     /// Remove all elements from the vector such that their timestamp is
@@ -698,9 +708,22 @@ impl<MSG: Message + 'static> Database<MSG> {
         Ok(())
     }
 
-    #[inline]
-    fn mark_clean(&mut self) {
-        self.context.mark_hot_clean()
+    fn sync_outstanding(&mut self) -> Result<()> {
+        self.message_store.sync_outstanding()
+    }
+
+
+    fn mark_hot_clean(&mut self) -> Result<()> {
+        match self.message_store.sync_outstanding() {
+            Ok(()) => {
+                self.context.mark_hot_clean();
+                Ok(())
+            }
+            Err(err) => {
+                warn!("Error while syncing outstanding messages: {:?}", err);
+                Err(err)
+            }
+        }
     }
 
     #[inline]
@@ -739,7 +762,7 @@ impl<MSG: Message + 'static> Database<MSG> {
     pub fn recover(&mut self) -> Result<()> {
         if self.context.is_dirty() {
             self.do_recovery()?;
-            self.mark_clean();
+            self.mark_hot_clean()?;
         }
         Ok(())
     }
@@ -863,6 +886,7 @@ impl<MSG: Message + 'static> Database<MSG> {
         self.context.set_next_seqnr(current.successor());
         let root_ptr = self.context.get_root_ptr::<<MSG::Root as Object>::Ptr>();
         let guard = ContextGuardMut::new(&mut self.context, false);
+        // Safety: root_ptr is valid
         let mut root = unsafe { root_ptr.access_mut::<MSG::Root>() };
         self.message_store
             .apply_preview(time, root.as_mut(), preview)?;
@@ -883,12 +907,10 @@ impl<MSG: Message + 'static> Database<MSG> {
     pub(crate) fn with_root<R>(&self, f: impl FnOnce(&MSG::Root) -> R) -> R {
         let root_ptr = self.context.get_root_ptr::<<MSG::Root as Object>::Ptr>();
         let _guard = ContextGuard::new(&self.context);
+        // Safety: The root ptr is valid
         let root = unsafe { root_ptr.access::<MSG::Root>() };
         f(root)
     }
-
-    //TODO: Consider what guarantees are given by the DatabaseSessionMut mechanism.
-    //should it "sync_all"?
 
     /// Return this database's current time
     pub fn noatun_now(&self) -> NoatunTime {
@@ -942,6 +964,7 @@ impl<MSG: Message + 'static> Database<MSG> {
         let mut earliest = None;
 
         while let Some(cur_earliest_deleted) = self.message_store.apply_missing_messages(
+            // Safety: root_ptr is valid
             unsafe { root_ptr.access_ctx_mut::<MSG::Root>(&mut self.context) },
             &mut self.context,
             self.projection_time_limit,
@@ -973,6 +996,7 @@ impl<MSG: Message + 'static> Database<MSG> {
         message_store.recover(settings.mock_time.unwrap_or_else(NoatunTime::now))?;
         let mmap_ptr = context.start_ptr();
         let guard = ContextGuardMut::new(context, true);
+        // Safety: We tie the lifetime to this function
         let root_obj_ref = unsafe { NoatunContext.allocate::<MSG::Root>() };
         let root_ptr = DatabaseContextData::index_of_rel(mmap_ptr, &*root_obj_ref);
         drop(guard);

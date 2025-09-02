@@ -1,5 +1,5 @@
 use crate::cutoff::{Acceptability, CutOffConfig, CutOffHashPos, CutOffTime, CutoffHash};
-use crate::disk_abstraction::Disk;
+use crate::disk_abstraction::{Disk, DISK_MAP_ALIGNMENT};
 use crate::disk_access::FileAccessor;
 use crate::sequence_nr::SequenceNr;
 use crate::sha2_helper::{sha2, sha2_message};
@@ -20,6 +20,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::offset_of;
+use std::ops::Range;
 use tracing::{debug, info, trace, warn};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -36,6 +37,7 @@ impl Debug for FileOffset {
     }
 }
 
+/// Safety: FileOffset is just a transparent wrapper around u64, and is NoatunStorable
 unsafe impl NoatunStorable for FileOffset {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::FileOffset/1")
@@ -247,6 +249,7 @@ struct FileHeaderEntry {
     padding4: u32,
 }
 
+// Safety: FileHeaderEntry contains only NoatunStorable types
 unsafe impl NoatunStorable for FileHeaderEntry {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::FileHeaderEntry/1")
@@ -306,6 +309,7 @@ impl<W: Write> WritePod for W {
 #[repr(transparent)]
 struct U1(u8);
 
+// Safety: u8's are NoatunStorable
 unsafe impl NoatunStorable for U1 {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::U1/1")
@@ -395,6 +399,7 @@ impl IndexEntry {
     }
 }
 
+// Safety: IndexEntry contains only NoatunStorable types
 unsafe impl NoatunStorable for IndexEntry {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::IndexEntry/1")
@@ -449,6 +454,7 @@ impl DataFileEntry {
     }
 }
 
+// Safety: DataFileEntry contains only NoatunStorable types
 unsafe impl NoatunStorable for DataFileEntry {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::DataFileEntry/1")
@@ -459,6 +465,7 @@ unsafe impl NoatunStorable for DataFileEntry {
 struct DataFileInfo {
     file: FileAccessor,
     file_number: U1,
+    outstanding: Vec<Range<u64>>
 }
 
 
@@ -482,6 +489,7 @@ struct StoreHeader {
     prev_cutoff: CutOffHashPos,
 }
 
+// Safety: StoreHeader contains only NoatunStorable types
 unsafe impl NoatunStorable for StoreHeader {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::StoreHeader/1")
@@ -539,6 +547,21 @@ impl<M> OnDiskMessageStore<M> {
         self.index_mmap.sync_all()?;
         Ok(())
     }
+
+    pub fn sync_outstanding(&mut self) -> Result<()> {
+        for file in self.data_files.iter_mut() {
+            while !file.outstanding.is_empty() {
+                let range = file.outstanding.last().unwrap();
+                if !self.filesystem_sync_disabled {
+                    file.file.sync_range(range.start as usize, (range.end - range.start) as usize)?;
+                }
+                file.outstanding.pop();
+            }
+        }
+
+        Ok(())
+    }
+
     fn calculate_cutoff_index(header: &StoreHeader, index_slice: &[IndexEntry]) -> usize {
         let cutoff_time = header.cutoff.before_time.to_noatun_time();
         let (Ok(mut index) | Err(mut index)) =
@@ -726,7 +749,7 @@ impl<M> OnDiskMessageStore<M> {
         Ok(header)
     }
 
-    pub fn contains_index(&self, index: usize) -> Result<bool> {
+    pub(crate) fn contains_index(&self, index: usize) -> Result<bool> {
         let (_header, index_entries) = self.header_and_index()?;
 
         match index_entries.get(index) {
@@ -857,6 +880,12 @@ impl<M> OnDiskMessageStore<M> {
         let magic_finder = memchr::memmem::Finder::new(&MAGIC);
 
         self.index_mmap.write_zeroes(size_of::<StoreHeader>())?;
+
+        const {
+            assert!(align_of::<StoreHeader>() <= DISK_MAP_ALIGNMENT);
+        }
+
+        // Safety: The mmap is always large enough and aligned
         let pending_index_header: &mut StoreHeader =
             unsafe { &mut *(self.index_mmap.map_mut_ptr() as *mut StoreHeader) };
         self.index_mmap
@@ -1202,6 +1231,11 @@ impl<M> OnDiskMessageStore<M> {
             ));
         };
         let file = &mut data_files[file.index()].file;
+
+        const {
+            assert!(align_of::<FileHeaderEntry>() <= DISK_MAP_ALIGNMENT);
+        }
+        // Safety: file is large enough, and 'offset' is always aligned on FileHeaderEntry
         let header: &mut FileHeaderEntry = unsafe { file.access_pod_mut(offset as usize)? };
 
         header.set_deleted();
@@ -1510,6 +1544,7 @@ impl<M> OnDiskMessageStore<M> {
         let index_entry = &message_index[index];
 
         if let Some((file, offset)) = index_entry.file_offset.file_and_offset() {
+            // Safety: Offset has a valid alignment, and we have no other view of this map.
             unsafe {
                 let file_header: &mut FileHeaderEntry = self.data_files[file.index()]
                     .file
@@ -1653,7 +1688,8 @@ impl<M> OnDiskMessageStore<M> {
             }
         }
 
-        let file = &mut files[file_index.index()].file;
+        let file_info = &mut files[file_index.index()];
+        let file = &mut file_info.file;
         let start_pos = file.used_space() as u64;
         file.seek(SeekFrom::Start(start_pos))?;
 
@@ -1729,6 +1765,19 @@ impl<M> OnDiskMessageStore<M> {
 
         Self::do_header_checksum(file, start_pos)?;
 
+        if let Some(last_write) = file_info.outstanding.last_mut() {
+            let gap = start_pos.checked_sub(last_write.end);
+            if gap.map(|x|x<1024).unwrap_or(false)
+            {
+                last_write.start = start_pos.min(last_write.start);
+                last_write.end = end_pos.max(last_write.end);
+            } else {
+                file_info.outstanding.push(start_pos..end_pos);
+            }
+        } else {
+            file_info.outstanding.push(start_pos..end_pos);
+        }
+
         let file = &mut files[file_index.index()].file;
         file.seek(SeekFrom::Start(end_pos))?;
 
@@ -1739,6 +1788,7 @@ impl<M> OnDiskMessageStore<M> {
     }
     fn do_header_checksum(file: &mut FileAccessor, start_pos: u64) -> Result<()> {
         let payload_pos = {
+            // Safety: The start_pos is valid, and there are no other views.
             let header: &FileHeaderEntry = unsafe { file.access_pod(start_pos as usize)? };
             header.offset_of_payload()
         };
@@ -1753,6 +1803,7 @@ impl<M> OnDiskMessageStore<M> {
             sha2,
         )?;
 
+        // Safety: The start_pos is valid, and there are no other views.
         unsafe {
             let header: &mut FileHeaderEntry = file.access_pod_mut(start_pos as usize)?;
             header.header_checksum = header_checksum;
@@ -1811,6 +1862,7 @@ impl<M> OnDiskMessageStore<M> {
         };
         if let Some((file, offset)) = search_index[index].file_offset.file_and_offset() {
             let file = &mut self.data_files[file.index()].file;
+            // Safety: The offset is valid, and there are no other views.
             let header: &FileHeaderEntry = unsafe { file.access_pod(offset as usize)? };
 
             if header.num_parents.free() < new_parents.len()
@@ -2560,6 +2612,7 @@ impl<M> OnDiskMessageStore<M> {
             Ok(DataFileInfo {
                 file: data_file,
                 file_number: U1::from_index(file_number),
+                outstanding: vec![],
             })
         });
 

@@ -15,6 +15,7 @@ macro_rules! noatun_hash_primitive {
             }
             fn destroy(&mut self) {}
             fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
+                // Safety: We don't move out of the ref, we just overwrite it
                 let tself = unsafe { self.get_unchecked_mut() };
                 *tself = *external;
             }

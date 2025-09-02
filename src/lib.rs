@@ -2,8 +2,8 @@
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]
 #![allow(clippy::bool_comparison)]
-//TODO: Yeah, this is not ideal. This should be fixed.
-#![allow(clippy::missing_safety_doc)]
+#![deny(clippy::missing_safety_doc)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(missing_docs)]
 #![allow(clippy::let_and_return)]
 #![allow(clippy::collapsible_else_if)]
@@ -223,7 +223,9 @@ impl Write for SchemaHasher {
     }
 }
 
-/// SAFETY requirements:
+/// A trait for things that can be stored in the noatun materialized view.
+///
+/// # Safety
 /// * Type must not have Drop impl
 /// * Type must have repr(C) or repr(transparent)
 /// * Type must be a struct
@@ -250,11 +252,13 @@ pub unsafe trait NoatunStorable: Sized + 'static {
     ///
     /// An all-zero instance must be valid for every NoatunStorable instance
     fn zeroed<T: NoatunStorable>() -> T {
+        // Safety: All-zero bit-pattern must be valid for NoatunStorable object
         unsafe { MaybeUninit::<T>::zeroed().assume_init() }
     }
 
     /// Shallow copy source to self, unconditionally overwriting self.
     fn copy_from(&mut self, source: &Self) {
+        // Safety: Source and destination are both valid
         unsafe {
             let temp = (source as *const Self).read();
             (self as *mut Self).write(temp);
@@ -265,6 +269,7 @@ pub unsafe trait NoatunStorable: Sized + 'static {
     ///
     /// This is done using a simple memory copy.
     fn initialize(dest: &mut MaybeUninit<Self>, source: &Self) {
+        // Safety: 'self' is a valid ref, dest is valid for writing
         unsafe {
             let temp = (source as *const Self).read();
             (dest as *mut MaybeUninit<Self> as *mut Self).write(temp);
@@ -292,6 +297,12 @@ pub unsafe trait NoatunStorable: Sized + 'static {
 
 /// Trait for noatun storable objects that can be unpin, that don't contain any
 /// pointers or references inside the noatun materialized view
+///
+/// The type should not contain any [`Tracker`] instances.
+///
+/// # Safety
+///  * The type must be completely self-contained, it must not contain pointers
+///    or references to other data, in any way.
 pub unsafe trait NoatunPod : Copy + NoatunStorable {
 
 }
@@ -301,11 +312,13 @@ mod noatun_storable_impls {
     use crate::SchemaHasher;
     macro_rules! make_noatun_storable_primitive {
         ($t: ident) => {
+            // Safety: Type is a primitive and trivially NoatunStorable
             unsafe impl NoatunStorable for $t {
                 fn hash_schema(hasher: &mut SchemaHasher) {
                     hasher.write_str(concat!("std::", stringify!($t)));
                 }
             }
+            // Safety: Type is a primitive and trivially NoatunPod
             unsafe impl $crate::NoatunPod for $t {}
         };
     }
@@ -323,6 +336,7 @@ mod noatun_storable_impls {
     make_noatun_storable_primitive!(isize);
     make_noatun_storable_primitive!(usize);
 
+    // Safety: Slices of NoatunStorable objects are themselves NoatunStorable
     unsafe impl<T: NoatunStorable, const N: usize> NoatunStorable for [T; N] {
         fn hash_schema(hasher: &mut SchemaHasher) {
             hasher.write_str(concat!("std::[_:", stringify!(N), "]"));
@@ -386,6 +400,9 @@ pub fn cur_node() -> u16 {
 #[derive(Clone, Copy)]
 pub struct NoatunContext;
 
+/// Always returns a valid pointer (panics if this is not possible).
+///
+/// The pointer is guaranteed to outlive the current materialized view root object.
 #[inline]
 fn get_context_mut_ptr() -> *mut DatabaseContextData {
     let context_ptr = CONTEXT.get();
@@ -395,6 +412,7 @@ fn get_context_mut_ptr() -> *mut DatabaseContextData {
                may only be accessed from within Message apply, and from `with_root`-methods."
         );
     }
+    // Safety: Context is valid
     unsafe { (*context_ptr).assert_mutable() }
     context_ptr
 }
@@ -415,6 +433,7 @@ impl NoatunContext {
     /// materialized view).
     #[inline]
     pub fn assert_opaque_access_allowed(self, used_type: &str, alternative_type: &str) {
+        // Safety: Context is valid
         let context = unsafe { &*get_context_ptr() };
 
         if context.is_message_apply() {
@@ -438,6 +457,7 @@ impl NoatunContext {
     /// The 'seq' pointer must point to valid, unaliased memory.
     pub unsafe fn update_tracker_ptr(self, seq: *mut Tracker, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
+        // Safety: Context is valid
         unsafe { (*context_ptr).update_tracker_ptr(seq, opaque) }
     }
 
@@ -446,8 +466,12 @@ impl NoatunContext {
     /// This does not take ownership of the data. The tracked data will not have an owner
     /// after this call returns. To ensure that the writing message
     /// does not get pruned, it should mark itself as a tombstone.
+    ///
+    /// # Safety
+    /// The `seq` pointer must be valid to dereference.
     pub unsafe fn clear_tracker_ptr(self, seq: *mut Tracker, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
+        // Safety: Context is valid
         unsafe { (*context_ptr).clear_registrar_ptr(seq, opaque) }
     }
 
@@ -455,18 +479,21 @@ impl NoatunContext {
     /// Return a mutable reference to the start of the materialized view's store.
     pub fn start_ptr_mut(self) -> *mut u8 {
         let context_ptr = get_context_mut_ptr();
+        // Safety: Context is valid
         unsafe { (*context_ptr).start_ptr_mut() }
     }
 
     /// Return a non-mutable reference to the start of the materialized view's store.
     pub fn start_ptr(self) -> *const u8 {
         let context_ptr = get_context_ptr();
+        // Safety: Context is valid
         unsafe { (*context_ptr).start_ptr() }
     }
 
     /// Calculate the offset for the given object, inside the backing store.
     pub fn index_of<T: Object + ?Sized>(self, t: &T) -> T::Ptr {
         let context_ptr = get_context_ptr();
+        // Safety: Context is valid
         unsafe { (*context_ptr).index_of(t) }
     }
 
@@ -482,33 +509,66 @@ impl NoatunContext {
     #[cfg(test)]
     pub(crate) fn set_next_seqnr(self, seqnr: crate::sequence_nr::SequenceNr) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).set_next_seqnr(seqnr) }
     }
 
     /// Copy all bytes designated by 'src' into region starting at 'dest_index'
+    ///
+    /// # Safety
+    /// The two pointers must be valid, and not currently aliased.
     pub unsafe fn copy_ptr(&self, src: FatPtr, dest_index: ThinPtr) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).copy_bytes(src, dest_index) }
     }
     /// Clear all bytes designated by 'dst'
+    ///
+    /// # Safety
+    /// The pointer must be valid, and not currently aliased.
     pub unsafe fn zero(&self, dst: FatPtr) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).zero(dst) }
     }
     /// Clear all bytes of 'dst'
     pub fn zero_storable<T: NoatunStorable>(&self, dst: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).zero_storable(dst) }
     }
     /// Clear all bytes of 'dst'
     pub fn zero_internal<T: NoatunStorable>(&self, dst: &mut T) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).zero_internal(dst) }
     }
 
     /// Copy 'size_bytes' bytes from 'src' to 'dest_index'.
+    ///
+    /// # Safety
+    /// The two pointers must be valid, and not currently aliased.
     pub unsafe fn copy_sized(&self, src: ThinPtr, dest_index: ThinPtr, size_bytes: usize) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).copy_bytes_len(src, dest_index, size_bytes) }
     }
     /// Copy from 'src' to 'dst'.
@@ -517,6 +577,10 @@ impl NoatunContext {
     /// Don't use this if 'dst' contains a 'Tracker', since this is just a dumb memcpy.
     pub fn copy<T: NoatunStorable>(&self, src: &T, dst: &mut T) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).copy_storable(src, dst) }
     }
 
@@ -526,16 +590,28 @@ impl NoatunContext {
         if context_ptr.is_null() {
             panic!("No NoatunContext available");
         }
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).index_of_ptr(ptr) }
     }
     /// Allocate 'size' bytes with alignment 'align'
     pub fn allocate_raw(&self, size: usize, align: usize) -> *mut u8 {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).allocate_raw(size, align) }
     }
     /// Report that data owned by 'tracker' has been fully overwritten.
     pub fn update_tracker(&self, tracker: &mut Tracker, opaque: bool) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe {
             (*context_ptr).update_registrar(tracker, opaque);
         }
@@ -545,6 +621,10 @@ impl NoatunContext {
     /// Do not use if 'dest' contains [`Tracker`]-instances.
     pub fn write<T: NoatunStorable>(&self, value: T, dest: Pin<&mut T>) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).write_storable(value, dest) }
     }
     /// Report that the current message has removed data in a way that is not tracked.
@@ -553,10 +633,18 @@ impl NoatunContext {
     /// has become older than the cutoff age (with some other conditions).
     pub fn wrote_tombstone(&self) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).set_wrote_tombstone() }
     }
     pub(crate) fn write_internal<T: NoatunStorable>(&self, value: T, dest: &mut T) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).write_storable(value, Pin::new_unchecked(dest)) }
     }
 
@@ -564,51 +652,99 @@ impl NoatunContext {
     #[allow(clippy::not_unsafe_ptr_arg_deref)] //write_storable_ptr actually validates 'dest'
     pub fn write_ptr<T: NoatunStorable>(&self, value: T, dest: *mut T) {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).write_storable_ptr(value, dest) }
     }
 
     /// Allocate an instance of 'T' and return a mutable pinned reference to it.
+    ///
+    /// # Safety
+    /// The returned reference must be tied to the lifetime of the current
+    /// root object, before being returned to safe code.
     pub unsafe fn allocate<'a, T: NoatunStorable>(&self) -> Pin<&'a mut T> {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).allocate_storable() }
     }
 
     /// Allocate an instance of 'T' and return a mutable pinned reference to it.
+    ///
+    /// # Safety
+    /// The returned reference must be tied to the lifetime of the current
+    /// root object, before being returned to safe code.
     pub unsafe fn allocate_obj<'a, T: Object>(&self) -> Pin<&'a mut T> {
         let context_ptr = get_context_mut_ptr();
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).allocate_obj() }
     }
 
     /// Access an instance of 'T' at the location given by the ptr..
+    ///
+    /// # Safety
+    /// The ptr must be valid
     pub unsafe fn access_thin<'a, T: ?Sized>(&self, ptr: ThinPtr) -> &'a T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             panic!("No NoatunContext available");
         }
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).access_thin::<T>(ptr) }
     }
     /// Access an instance of 'T' at the location given by the ptr..
+    ///
+    /// # Safety
+    /// The ptr must be valid and unaliased
     pub unsafe fn access_thin_mut<'a, T: ?Sized>(&self, ptr: ThinPtr) -> &'a mut T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             panic!("No NoatunContext available");
         }
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).access_thin_mut::<T>(ptr) }
     }
     /// Access an instance of 'T' at the location given by the ptr..
+    ///
+    /// # Safety
+    /// The ptr must be valid
     pub unsafe fn access_fat<'a, T: ?Sized>(&self, ptr: FatPtr) -> &'a T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             panic!("No NoatunContext available");
         }
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).access_fat::<T>(ptr) }
     }
     /// Access an instance of 'T' at the location given by the ptr..
+    ///
+    /// # Safety
+    /// The ptr must be valid and unaliased
     pub unsafe fn access_fat_mut<'a, T: ?Sized>(&self, ptr: FatPtr) -> &'a mut T {
         let context_ptr = CONTEXT.get();
         if context_ptr.is_null() {
             panic!("No NoatunContext available");
         }
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).access_fat_mut::<T>(ptr) }
     }
 
@@ -619,9 +755,17 @@ impl NoatunContext {
         if context_ptr.is_null() {
             return;
         }
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         if unsafe { (*(context_ptr as *const DatabaseContextData)).is_message_apply == false } {
             return;
         }
+        // Safety:
+        // context_ptr is a valid pointer (get_context_mut_ptr always returns
+        // valid pointers. The pointer is valid for the lifetime of the current
+        // root object, which does not end in this function.
         unsafe { (*context_ptr).observe_registrar(tracker) }
     }
 }
@@ -638,12 +782,14 @@ pub struct MessageId {
 
 impl Hash for MessageId {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Safety: self.data is 16 bytes
         let data1: [u64; 2] = unsafe { std::mem::transmute(self.data) };
         state.write_u64(data1[0]);
         state.write_u64(data1[1]);
     }
 }
 
+// Safety: MessageId has only NoatunStorable fields
 unsafe impl NoatunStorable for MessageId {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::MessageId/1")
@@ -1004,11 +1150,13 @@ impl MessageId {
 #[repr(C)]
 pub struct NoatunTime(pub u64);
 
+// Safety: NoatunTime has only NoatunStorable fields
 unsafe impl NoatunStorable for NoatunTime {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::NoatunTime/1")
     }
 }
+// Safety: NoatunTime has only NoatunPod fields
 unsafe impl NoatunPod for NoatunTime {}
 
 impl Add<Duration> for NoatunTime {
@@ -1376,6 +1524,7 @@ pub(crate) fn catch_and_log(f: impl FnOnce(), abort: bool) {
 #[repr(C)]
 pub struct DummyUnitObject;
 
+// Safety: DummyUnitObject has no fields
 unsafe impl NoatunStorable for DummyUnitObject {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::DummyUnitObject/1")
@@ -1394,6 +1543,7 @@ impl Object for DummyUnitObject {
     fn init_from(self: Pin<&mut Self>, _detached: &Self::NativeType) {}
 
     unsafe fn allocate_from<'a>(_detached: &Self::NativeType) -> Pin<&'a mut Self> {
+        // Safety: Newly allocated object is safely pinned
         unsafe { Pin::new_unchecked(&mut *std::ptr::dangling_mut::<DummyUnitObject>()) }
     }
 
@@ -1426,6 +1576,7 @@ struct SerializableGenPtr {
     count: usize, //usize::MAX for thin
 }
 
+// Safety: SerializableGenPtr has only NoatunStorable fields
 unsafe impl NoatunStorable for SerializableGenPtr {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::SerializableGenPtr/1")
@@ -1474,13 +1625,25 @@ pub trait Pointer: NoatunStorable + Sealed + Copy + Debug + 'static {
     fn is_null(&self) -> bool;
 
     /// Return a reference to the pointee
+    ///
+    /// # Safety
+    /// This pointer (self) must be valid
     unsafe fn access<'a, T: ?Sized>(&self) -> &'a T;
     /// Return a mutable reference to the pointee
+    ///
+    /// # Safety
+    /// This pointer (self) must be valid and unaliased
     unsafe fn access_mut<'a, T: ?Sized>(&self) -> Pin<&'a mut T>;
 
     /// Return a reference to the pointee, given an explicit context
+    ///
+    /// # Safety
+    /// This pointer (self) must be valid
     unsafe fn access_ctx<'a, T: ?Sized>(&self, context: &DatabaseContextData) -> &'a T;
     /// Return a mutable reference to the pointee, given an explicit context
+    ///
+    /// # Safety
+    /// This pointer (self) must be valid and unaliased
     unsafe fn access_ctx_mut<'a, T: ?Sized>(&self, context: &mut DatabaseContextData) -> &'a mut T;
 }
 
@@ -1491,6 +1654,8 @@ pub fn from_bytes<T: NoatunStorable>(s: &[u8]) -> &T {
     assert_eq!(s.len(), size_of::<T>());
     assert!((s.as_ptr() as *mut T).is_aligned());
 
+    // Safety: s is a valid object, with correct size and alignment as T.
+    // Since T is NoatunStorable, any bit pattern is valid
     unsafe { &*s.as_ptr().cast::<T>() }
 }
 
@@ -1501,7 +1666,7 @@ pub fn from_bytes_mut<T: NoatunStorable>(s: &mut [u8]) -> &mut T {
     assert_eq!(s.len(), size_of::<T>());
     assert!((s.as_mut_ptr() as *mut T).is_aligned());
 
-    // # Safety
+    // Safety:
     // We've checked alignment and size, and those are the only requirements
     // an Object need to be valid.
     unsafe {
@@ -1521,12 +1686,14 @@ pub fn cast_storable<I: NoatunStorable, O: NoatunStorable>(i: I) -> O {
             panic!("Source and destination size must be the same");
         }
     }
+    // Safety: We checked the sizes, and since both types are NoatunStorabe,
+    // any bit pattern is valid
     unsafe { transmute_copy::<I, O>(&i) }
 }
 
 /// Cast a reference to a NoatunStorable into a slice of bytes
 pub fn bytes_of<T: NoatunStorable>(t: &T) -> &[u8] {
-    // # Safety
+    // Safety:
     // FixedSizeObject instances can always be viewed as a set of by tes
     // That set of bytes can have uninitialized values, so we can't use the values.
     // Just copying uninitialized values is ok, and that's all we'll end up doing.
@@ -1535,7 +1702,7 @@ pub fn bytes_of<T: NoatunStorable>(t: &T) -> &[u8] {
 
 /// Cast a reference to a NoatunStorable into a slice of bytes
 pub fn bytes_of_mut<T: NoatunStorable>(t: &mut T) -> &mut [u8] {
-    // # Safety
+    // Safety:
     // NoatunStorable instances can always be viewed as a set of by tes
     // That set of bytes can have uninitialized values, so we can't use the values.
     // Just copying uninitialized values is ok, and that's all we'll end up doing.
@@ -1544,7 +1711,7 @@ pub fn bytes_of_mut<T: NoatunStorable>(t: &mut T) -> &mut [u8] {
 
 /// Cast a reference to a NoatunStorable into a slice of bytes
 pub fn bytes_of_mut_object<T: Object>(t: &mut T) -> &mut [u8] {
-    // # Safety
+    // Safety:
     // NoatunStorable instances can always be viewed as a set of by tes
     // That set of bytes can have uninitialized values, so we can't use the values.
     // Just copying uninitialized values is ok, and that's all we'll end up doing.
@@ -1564,6 +1731,7 @@ pub fn cast_slice_mut<I: NoatunStorable, O: NoatunStorable>(s: &mut [I]) -> &mut
     let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
     assert_eq!(tot_size_i, size_of::<O>() * count_o);
+    // Safety: 's' is valid
     unsafe { slice::from_raw_parts_mut(s.as_mut_ptr() as *mut O, count_o) }
 }
 
@@ -1581,6 +1749,7 @@ pub fn cast_slice<I: NoatunStorable, O: NoatunStorable>(s: &[I]) -> &[O] {
     let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
     assert_eq!(tot_size_i, size_of::<O>() * count_o);
+    // Safety: 's' is valid
     unsafe { slice::from_raw_parts(s.as_ptr() as *const O, count_o) }
 }
 
@@ -1591,6 +1760,7 @@ pub fn dyn_cast_slice<I: NoatunStorable, O: NoatunStorable>(s: &[I]) -> &[O] {
     let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
     assert_eq!(tot_size_i, size_of::<O>() * count_o);
+    // Safety: 's' is valid
     unsafe { slice::from_raw_parts(s.as_ptr() as *const O, count_o) }
 }
 /// Requires alignment to be correct at runtime, panics otherwise
@@ -1599,6 +1769,7 @@ pub fn dyn_cast_slice_mut<I: NoatunStorable, O: NoatunStorable>(s: &mut [I]) -> 
     let tot_size_i = size_of_val(s);
     let count_o = tot_size_i / size_of::<O>();
     assert_eq!(tot_size_i, size_of::<O>() * count_o);
+    // Safety: 's' is valid
     unsafe { slice::from_raw_parts_mut(s.as_mut_ptr() as *mut O, count_o) }
 }
 
@@ -1611,6 +1782,7 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
         panic!("Slice is not the correct size");
     }
     let raw = data as *const [u8] as *const T;
+    // Safety: 'data' is valid
     unsafe { raw.read_unaligned() }
 }
 
@@ -1764,6 +1936,10 @@ pub trait Object {
     /// ```
     /// The only cases where some other implementation is required is when 'Self' does
     /// not have a fixed size.
+    ///
+    /// # Safety
+    /// The returned reference lifetime must be tied to the lifetime of the current root object,
+    /// before being returned to safe code.
     unsafe fn allocate_from<'a>(external: &Self::NativeType) -> Pin<&'a mut Self>;
 
     /// Write a unique value to 'hasher', that uniquely identifies this data type.
@@ -2144,11 +2320,13 @@ impl FatPtr {
 #[derive(Copy, Clone, Debug)]
 pub struct ThinPtr(pub usize);
 
+// Safety: All fields of ThinPtr are NoatunStorable
 unsafe impl NoatunStorable for ThinPtr {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::ThinPtr/1")
     }
 }
+// Safety: All fields of FatPtr are NoatunStorable
 unsafe impl NoatunStorable for FatPtr {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::FatPtr/1")
@@ -2212,6 +2390,7 @@ impl Pointer for FatPtr {
             std::mem::size_of::<RawFatPtr>(),
         );
 
+        // Safety: Layout is identical
         let raw: RawFatPtr = unsafe { transmute_copy(&(addr as *const T)) };
 
         FatPtr {
@@ -2257,13 +2436,17 @@ where
     }
 
     fn destroy(self: Pin<&mut Self>) {
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
         for item in tself {
+            // Safety: item is a valid object
             unsafe { Pin::new_unchecked(item).destroy() };
         }
     }
 
     fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
+        // Safety: 'dst' is safely pinnable (since all objects in Noatun materialized view
+        // are pinned. We don't move out of 'self'.
         unsafe {
             for (dst, src) in self.get_unchecked_mut().iter_mut().zip(external.iter()) {
                 Pin::new_unchecked(dst).init_from(src.borrow());
@@ -2275,6 +2458,7 @@ where
         let bytes = size_of::<T>() * external.len();
         let alloc = NoatunContext.allocate_raw(bytes, align_of::<T>());
 
+        // Safety: alloc is valid, we just allocated it
         let slice: &mut [T] = unsafe { slice::from_raw_parts_mut(alloc as *mut T, external.len()) };
         for (src, dst) in external.iter().zip(&mut *slice) {
             Pin::new_unchecked(dst).init_from(src.borrow());
@@ -2364,6 +2548,7 @@ impl ContextGuardMut {
 
 impl Drop for ContextGuardMut {
     fn drop(&mut self) {
+        // Safety: CONTEXT is valid, since otherwise we wouldn't have a guard
         unsafe {
             (*CONTEXT.get()).is_mutable = false;
             (*CONTEXT.get()).is_message_apply = false;

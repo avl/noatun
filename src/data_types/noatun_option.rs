@@ -13,8 +13,10 @@ pub struct NoatunOption<T: NoatunPod> {
     present: u8,
 }
 
+// Safety: NoatunOption<T> contains only NoatunPod objects
 unsafe impl<T:NoatunPod> NoatunPod for NoatunOption<T> {}
 
+// Safety: NoatunOption<T> contains only NoatunStorable objects
 unsafe impl<T: NoatunPod> NoatunStorable for NoatunOption<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::NoatunOption/1");

@@ -31,6 +31,7 @@ DEALINGS IN THE SOFTWARE.
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::identity_op)]
 #![allow(unused)]
+#![allow(clippy::undocumented_unsafe_blocks)] // This is vendored code
 
 use crate::xxh3_vendored::xxh3::Xxh3Default;
 use std::hash::Hasher;
@@ -172,6 +173,7 @@ pub(crate) mod utils {
         debug_assert!(mem::size_of::<T>() > 0); //Size MUST be positive
         debug_assert!(mem::size_of::<T>() <= input.len().saturating_sub(offset)); //Must fit
 
+        // Safety: input is a valid slice
         unsafe { &*(input.as_ptr().add(offset) as *const T) }
     }
 
@@ -186,6 +188,7 @@ pub(crate) mod utils {
         debug_assert!(mem::size_of::<T>() > 0); //Size MUST be positive
         debug_assert!(mem::size_of::<T>() <= input.len().saturating_sub(offset)); //Must fit
 
+        // Safety: input is a valid slice
         unsafe { ptr::read_unaligned(input.as_ptr().add(offset) as *const T) }
     }
 
@@ -206,6 +209,7 @@ pub(crate) mod utils {
         pub fn copy_from_slice_by_size(&self, src: &[u8], len: usize) {
             debug_assert!(self.len.saturating_sub(self.offset) >= len);
 
+            // Safety: src is a valid slice, self.ptr is valid
             unsafe {
                 ptr::copy_nonoverlapping(src.as_ptr(), self.ptr.add(self.offset), len);
             }
@@ -433,6 +437,7 @@ pub mod xxh3 {
             .copy_from_slice(&hi.to_le_bytes());
         }
 
+        // Safety: result has been written to
         unsafe { result.assume_init() }
     }
 

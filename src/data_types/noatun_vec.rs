@@ -23,6 +23,7 @@ pub(crate) struct RawDatabaseVec<T> {
     phantom_data: PhantomData<T>,
 }
 
+// Safety: RawDatabaseVec contains only NoatunStorable fields
 unsafe impl<T: NoatunStorable> NoatunStorable for RawDatabaseVec<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::RawDatabaseVec/1");
@@ -41,11 +42,7 @@ impl<T> Default for RawDatabaseVec<T> {
     }
 }
 
-/*impl<T:Clone> Clone for RawDatabaseVec<T> {
-fn clone(&self) -> Self {
-    *self
-}
-}*/
+
 
 impl<T> Debug for RawDatabaseVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -65,7 +62,10 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
         if self.length > 0 {
             let old_ptr = FatPtr::from_idx_count(self.data, size_of::<T>() * self.length);
             // old_ptr is a u8-pointer
-            ctx.copy_bytes(old_ptr, dest_index);
+            // Safety: The pointers have been calculated here, and are known to be valid.
+            unsafe {
+                ctx.copy_bytes(old_ptr, dest_index);
+            }
         }
 
         ctx.write_storable(
@@ -75,6 +75,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
                 data: dest_index.0,
                 phantom_data: Default::default(),
             },
+            // Safety: We don't move out of elements
             unsafe { Pin::new_unchecked(self) },
         )
     }
@@ -89,6 +90,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
         if self.capacity < new_length {
             self.realloc_add(ctx, 2 * new_length, new_length);
         } else {
+            // Safety: We don't move out of the length
             ctx.write_storable(new_length, unsafe { Pin::new_unchecked(&mut self.length) });
         }
     }
@@ -98,6 +100,7 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
     pub(crate) fn get(&self, ctx: &DatabaseContextData, index: usize) -> &T {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
+        // Safety: The offset is correct
         unsafe { ctx.access_storable(ThinPtr(offset)) }
     }
 
@@ -108,11 +111,13 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
     pub(crate) unsafe fn get_mut(&self, ctx: &DatabaseContextData, index: usize) -> Pin<&mut T> {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
+        // Safety: The offset is correct
         let t = unsafe { ctx.access_storable_mut(ThinPtr(offset)) };
         t
     }
     pub(crate) fn write_untracked(&mut self, ctx: &mut DatabaseContextData, index: usize, val: T) {
         let offset = self.data + index * size_of::<T>();
+        // Safety: The offset is correct
         unsafe {
             ctx.write_storable(val, ctx.access_storable_mut(ThinPtr(offset)));
         };
@@ -168,6 +173,7 @@ struct DatabaseVecLengthCapData {
     data: usize,
 }
 
+// Safety: DatabaseVecLengthCapData contains only NoatunStorable fields
 unsafe impl NoatunStorable for DatabaseVecLengthCapData {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::DatabaseVecLengthCapData/1");
@@ -212,6 +218,7 @@ impl<T: FixedSizeObject> NoatunVecRaw<T, ThreadLocalContext> {
             NoatunContext.zero_storable(val);
         }
         let ctx = ctx.get_context_mut();
+        // Safety: we don't move out of the length
         unsafe {
             ctx.write_storable(0, Pin::new_unchecked(&mut self.length));
         }
@@ -243,6 +250,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
     pub(crate) fn get_index(&self, index: usize, ctx_getter: &C) -> &T {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
+        // Safety: offset is valid
         unsafe {
             ctx_getter
                 .get_context()
@@ -256,6 +264,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
             return None;
         }
         let offset = self.data + index * size_of::<T>();
+        // Safety: offset is valid
         Some(unsafe {
             ctx_getter
                 .get_context()
@@ -267,12 +276,14 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
     pub(crate) fn get_index_mut(&mut self, index: usize, ctx: &mut C) -> &mut T {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
+        // Safety: offset is valid
         let t: &mut T = unsafe { ctx.get_context_mut().access_thin_mut(ThinPtr(offset)) };
         t
     }
 
     #[inline]
     pub(crate) fn get_index_mut_pin(&mut self, index: usize, ctx: &mut C) -> Pin<&mut T> {
+        // Safety: We don't move out of items
         unsafe { Pin::new_unchecked(self.get_index_mut(index, ctx)) }
     }
 
@@ -286,12 +297,14 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
             return None;
         }
         let offset = self.data + index * size_of::<T>();
+        // Safety: offset is valid
         let t = unsafe { ctx.access_thin_mut::<T>(ThinPtr(offset)) };
         Some(t)
     }
 
     /// Doesn't zero memory.
     pub fn clear_fast(&mut self, ctx: &mut DatabaseContextData) {
+        // Safety: we don't move out of self.length
         unsafe { ctx.write_storable(0, Pin::new_unchecked(&mut self.length)) }
     }
 
@@ -309,6 +322,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
 
         while read_offset < self.length {
             let read_ptr = ThinPtr(self.data + read_offset * size_of::<T>());
+            // Safety: the arithmetic guarantees we stay within the vec
             let mut val = unsafe { Pin::new_unchecked(ctx.access_thin_mut::<T>(read_ptr)) };
             let retain = f(val.as_mut());
             if !retain {
@@ -320,14 +334,19 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
                 if read_offset != write_offset {
                     let write_ptr = ThinPtr(self.data + write_offset * size_of::<T>());
 
-                    ctx.copy_bytes_len(read_ptr, write_ptr, size_of::<T>());
+                    // Safety: The pointers have been calculated here, and are known to be valid
+                    unsafe {
+                        ctx.copy_bytes_len(read_ptr, write_ptr, size_of::<T>());
+                    }
                 }
                 read_offset += 1;
                 write_offset += 1;
             }
         }
         assert_eq!(write_offset, new_count);
+        // Safety: The range is within the vec
         self.zero(new_count..self.length, ctx);
+        // Safety: We don't move out of length
         unsafe { ctx.write_storable(new_count, Pin::new_unchecked(&mut self.length)) };
     }
 
@@ -336,8 +355,10 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         debug_assert!(new_capacity >= new_len);
         debug_assert!(new_capacity >= self.capacity);
         debug_assert!(new_len >= self.length);
+
         let dest = ctx.allocate_raw(new_capacity * size_of::<T>(), align_of::<T>());
 
+        // Safety: dest is valid, it was just allocated
         unsafe {
             let new_slice = slice::from_raw_parts(dest, new_capacity * size_of::<T>());
             assert!(new_slice.iter().all(|x| *x == 0));
@@ -348,7 +369,10 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         if self.length > 0 {
             //bytes
             let old_ptr = FatPtr::from_idx_count(self.data, size_of::<T>() * self.length);
-            ctx.copy_bytes(old_ptr, dest_index);
+            // Safety: The pointers have been calculated here, and are known to be valid.
+            unsafe {
+                ctx.copy_bytes(old_ptr, dest_index);
+            }
         }
 
         ctx.write_storable(
@@ -357,6 +381,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
                 capacity: new_capacity,
                 data: dest_index.0,
             },
+            // Safety: Self is known to start with a block identical to DatabaseVecLengthCapData
             unsafe {
                 Pin::new_unchecked(std::mem::transmute::<
                     &mut Self,
@@ -380,6 +405,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
             self.realloc_add((self.capacity + 1) * 2, self.length + 1, ctx);
         } else {
             let ctx = ctx.get_context_mut();
+            // Safety: We have allocated enough space
             unsafe {
                 ctx.write_storable_ptr(self.length + 1, addr_of_mut!(self.length));
             }
@@ -401,6 +427,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         if at_least > self.capacity {
             self.realloc_add((at_least + 1) * 2, at_least, ctx);
         } else {
+            // Safety: item is in range
             unsafe {
                 ctx.get_context_mut()
                     .write_storable_ptr(at_least, addr_of_mut!(self.length));
@@ -413,7 +440,10 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
             self.data + (range.start) * size_of::<T>(),
             (range.end - range.start) * size_of::<T>(),
         );
-        ctx.zero(fat_ptr);
+        // Safety: fat_ptr is valid
+        unsafe {
+            ctx.zero(fat_ptr);
+        }
     }
 
     pub(crate) fn swap_remove(
@@ -424,10 +454,12 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
     ) {
         let ctx = ctx0.get_context_mut();
         if index == self.length - 1 {
+            // Safety: The pointer to self.length is valid
             unsafe {
                 ctx.write_storable_ptr(self.length - 1, addr_of_mut!(self.length));
             }
             let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
+            // Safety: dst_ptr is valid
             unsafe {
                 destroy(Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)));
             }
@@ -437,15 +469,18 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         }
         let src_ptr = ThinPtr(self.data + (self.length - 1) * size_of::<T>());
         let dst_ptr = ThinPtr(self.data + index * size_of::<T>());
+        // Safety: dst_ptr is valid, we don't move out of elements
         unsafe {
             destroy(Pin::new_unchecked(ctx.access_thin_mut::<T>(dst_ptr)));
         }
         let ctx = ctx0.get_context_mut();
-        ctx.copy_bytes(FatPtr::from_idx_count(src_ptr.0, size_of::<T>()), dst_ptr);
-        //NoatunContext.copy_ptr(FatPtr::from_idx_count(src_ptr.0, 1), dst_ptr);
+        // Safety: The pointers have been calculated here, and are known to be valid.
+        unsafe {
+            ctx.copy_bytes(FatPtr::from_idx_count(src_ptr.0, size_of::<T>()), dst_ptr);
+        }
 
-        //NoatunContext.write_ptr(self.length - 1, addr_of_mut!(self.length));
         self.zero(self.length - 1..self.length, ctx);
+        // Safety: self.length is a valid object
         unsafe {
             ctx.write_storable_ptr(self.length - 1, addr_of_mut!(self.length));
         }
@@ -483,6 +518,7 @@ pub struct NoatunVec<T: FixedSizeObject> {
     phantom_data: PhantomData<T>,
 }
 
+/// Safety: NoatunVec contains only NoatunStorable fields
 unsafe impl<T: FixedSizeObject> NoatunStorable for NoatunVec<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::NoatunVec/1");
@@ -530,6 +566,7 @@ impl<'a, T: FixedSizeObject + 'static> Iterator for NoatunVecIteratorMut<'a, T> 
         }
         let index = self.index;
         self.index += 1;
+        // Safety:
         // Transmute is needed, since the rust typesystem "doesn't know" that all the
         // mutable references to `'a` that we're giving out, are in fact disjoint.
         Some(unsafe {
@@ -600,6 +637,7 @@ where
     /// This method causes a read dependency on the length of the vector.
     pub fn get_index_mut(self: Pin<&mut Self>, index: usize) -> Pin<&mut T> {
         NoatunContext.observe_registrar(self.length_tracker);
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.get_index_mut_pin(index, &mut ThreadLocalContext)
     }
@@ -610,6 +648,7 @@ where
     /// This does also write to the 'clear' tracker, but does not cause any dependency on
     /// any of the deleted values. It does not make the current message into a tombstone.
     pub fn clear(self: Pin<&mut Self>) {
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.destroy_items(&mut ThreadLocalContext);
         NoatunContext.update_tracker(&mut tself.length_tracker, false);
@@ -618,6 +657,7 @@ where
 
     /// Add an all-zero instance of T the end of the NoatunVec
     pub fn push_zeroed(self: Pin<&mut Self>) -> Pin<&mut T> {
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.observe_registrar(tself.length_tracker);
         NoatunContext.update_tracker(&mut tself.length_tracker, false);
@@ -631,6 +671,7 @@ where
         if index >= self.raw.length {
             return;
         }
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
         NoatunContext.observe_registrar(tself.length_tracker);
         NoatunContext.update_tracker(&mut tself.length_tracker, false);
@@ -657,6 +698,7 @@ where
                     if self.read_offset != self.write_offset {
                         let write_ptr =
                             ThinPtr(self.vec.raw.data + self.write_offset * size_of::<T>());
+                        // Safety: The pointers are valid
                         unsafe { NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>()) };
                     }
                     self.read_offset += 1;
@@ -664,12 +706,14 @@ where
                 }
                 let old_count = self.vec.raw.length;
                 NoatunContext.write_ptr(self.new_count, addr_of_mut!(self.vec.raw.length));
+                // Safety: The pointer to the context is valid
                 self.vec.raw.zero(self.write_offset..old_count, unsafe {
                     &mut *get_context_mut_ptr()
                 });
             }
         }
 
+        // Safety: We don't move out of self_mut
         let self_mut = unsafe { self.get_unchecked_mut() };
         NoatunContext.observe_registrar(self_mut.length_tracker);
         NoatunContext.update_tracker(&mut self_mut.length_tracker, false);
@@ -683,6 +727,7 @@ where
         while panic_handler.read_offset < panic_handler.vec.raw.length {
             let read_ptr =
                 ThinPtr(panic_handler.vec.raw.data + panic_handler.read_offset * size_of::<T>());
+            // Safety: the pointer is valid
             let mut val = unsafe { read_ptr.access_mut::<T>() };
             let retain = f(val.as_mut());
             if !retain {
@@ -694,6 +739,7 @@ where
                     let write_ptr = ThinPtr(
                         panic_handler.vec.raw.data + panic_handler.write_offset * size_of::<T>(),
                     );
+                    // Safety: The pointers are valid
                     unsafe { NoatunContext.copy_sized(read_ptr, write_ptr, size_of::<T>()) };
                 }
                 panic_handler.read_offset += 1;
@@ -746,6 +792,7 @@ impl<T: FixedSizeObject> Debug for OpaqueNoatunVec<T> {
     }
 }
 
+// Safety: OpaqueNoatunVec contains only NoatunStorable fields
 unsafe impl<T: FixedSizeObject> NoatunStorable for OpaqueNoatunVec<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::OpaqueNoatunVec/1");
@@ -768,7 +815,9 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
     ///
     /// The current message is recorded as the "most recent clearer" of the vector.
     pub fn clear(self: Pin<&mut Self>) {
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
+        // Safety: clear_registrar is a valid object
         unsafe { NoatunContext.update_tracker_ptr(addr_of_mut!(tself.clear_registrar), true) };
         tself.raw.destroy_items(&mut ThreadLocalContext);
     }
@@ -823,6 +872,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
         index: usize,
         val: impl Borrow<<T as Object>::NativeType>,
     ) {
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
         if index >= tself.raw.length {
             let new_length = index + 1;
@@ -837,6 +887,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
             }
         }
         let offset = ThinPtr(tself.raw.data + index * size_of::<T>());
+        // Safety: offset is a valid pointer
         unsafe {
             let item_data = offset.access_mut::<T>();
             item_data.init_from(val.borrow());
@@ -847,6 +898,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
     ///
     /// This does not create any read dependency.
     pub fn push(self: Pin<&mut Self>, t: impl Borrow<<T as Object>::NativeType>) {
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.push_zeroed(&mut ThreadLocalContext);
 
@@ -871,12 +923,15 @@ where
     }
 
     fn destroy(self: Pin<&mut Self>) {
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
+        // Safety: clear_registrar is a valid object
         unsafe { NoatunContext.clear_tracker_ptr(addr_of_mut!(tself.clear_registrar), true) };
         tself.raw.destroy_items(&mut ThreadLocalContext)
     }
 
     fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
         use std::borrow::Borrow;
         for item in external {
@@ -908,8 +963,10 @@ where
     }
 
     fn destroy(self: Pin<&mut Self>) {
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
         tself.raw.destroy_items(&mut ThreadLocalContext);
+        // Safety: Both trackers are valid objects
         unsafe {
             NoatunContext.clear_tracker_ptr(&mut tself.length_tracker, false);
             NoatunContext.clear_tracker_ptr(&mut tself.clear_registrar, true);

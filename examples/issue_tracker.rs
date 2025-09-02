@@ -108,6 +108,7 @@ impl Message for IssueMessage {
             }
             IssueMessage::RemoveIssue { id } => {
                 //TODO: Document clearly for al ops if they cause read deps. Make it possible to manually add read-deps? deny(missing_docs)!
+                // Also document the whole read/write deps thing in the docs!
 
                 let id = remap(&root, id).to_owned();
 

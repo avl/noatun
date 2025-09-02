@@ -22,6 +22,7 @@ pub struct NoatunString {
     padding: u32,
 }
 
+// Safety: NoatunString contains only NoatunStorable fields
 unsafe impl NoatunStorable for NoatunString {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::NoatunString/1")
@@ -63,7 +64,9 @@ impl Object for NoatunString {
     }
 
     fn destroy(self: Pin<&mut Self>) {
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
+        // Safety: tself.tracker is a valid object
         unsafe {
             NoatunContext.clear_tracker_ptr(&mut tself.tracker, false);
         }
@@ -104,6 +107,7 @@ impl NoatunString {
             return "";
         }
         let start_ptr = NoatunContext.start_ptr().wrapping_add(self.start.0);
+        // Safety: The NoatunString contains a valid pointer
         unsafe {
             let bytes = slice::from_raw_parts(start_ptr, self.length);
             std::str::from_utf8_unchecked(bytes)
@@ -115,6 +119,7 @@ impl NoatunString {
     /// This method will allocate a new heap block, unless the new value is identical to, or
     /// a prefix of, the previous value.
     pub fn assign(self: Pin<&mut Self>, value: &str) {
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         if tself.get().starts_with(value) {
             if tself.length != value.len() {
@@ -124,11 +129,13 @@ impl NoatunString {
         }
 
         let raw = NoatunContext.allocate_raw(value.len(), 1);
+        // Safety: We just allocated raw.
         let target = unsafe { slice::from_raw_parts_mut(raw, value.len()) };
         target.copy_from_slice(value.as_bytes());
         let raw_index = NoatunContext.index_of_ptr(raw);
         NoatunContext.write_internal(raw_index, &mut tself.start);
         NoatunContext.write_internal(value.len(), &mut tself.length);
+        // Safety: `tself.tracker` is a valid object
         unsafe { NoatunContext.update_tracker_ptr(addr_of_mut!(tself.tracker), false) };
     }
 }
@@ -160,6 +167,7 @@ impl NoatunKey for NoatunString {
     }
 
     fn destroy(&mut self) {
+        // Safety: `self.tracker` is a valid obj
         unsafe {
             NoatunContext.clear_tracker_ptr(&mut self.tracker, false);
         }
@@ -178,6 +186,7 @@ pub struct OpaqueNoatunString {
     length: usize,
 }
 
+/// Safety: OpaqueNoatunString contains only NoatunStorable fields
 unsafe impl NoatunStorable for OpaqueNoatunString {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::OpaqueNoatunString/1")
@@ -253,6 +262,7 @@ impl OpaqueNoatunString {
             return "";
         }
         let start_ptr = NoatunContext.start_ptr().wrapping_add(self.start.0);
+        // Safety: OpaqueNoatunString contains a valid pointer
         unsafe {
             let bytes = slice::from_raw_parts(start_ptr, self.length);
             std::str::from_utf8_unchecked(bytes)
@@ -262,6 +272,7 @@ impl OpaqueNoatunString {
     ///
     /// This is not a tracked write, since OpaqueNoatunString is always opaque/untracked.
     pub fn assign(self: Pin<&mut Self>, value: &str) {
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         if tself.get().starts_with(value) {
             if tself.length != value.len() {
@@ -271,6 +282,7 @@ impl OpaqueNoatunString {
         }
 
         let raw = NoatunContext.allocate_raw(value.len(), 1);
+        // Safety: We just allocated raw
         let target = unsafe { slice::from_raw_parts_mut(raw, value.len()) };
         target.copy_from_slice(value.as_bytes());
         let raw_index = NoatunContext.index_of_ptr(raw);

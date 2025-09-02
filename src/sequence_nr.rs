@@ -29,12 +29,14 @@ pub struct Tracker {
     pub owner: SequenceNr,
 }
 
+// Safety: All fields of Tracker are NoatunStorable
 unsafe impl NoatunStorable for Tracker {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::Tracker");
     }
 }
 
+// Safety: All fields of SequenceNr are NoatunStorable
 unsafe impl NoatunStorable for SequenceNr {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::SequenceNr/1")

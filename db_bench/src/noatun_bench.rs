@@ -207,7 +207,7 @@ pub(crate) fn run_test(input: impl Iterator<Item = TasksInTransaction>, in_memor
         transaction_count += 1;
     }
 
-    drop(sess);
+    sess.commit().unwrap();
 
     NoatunImpl {
         db,

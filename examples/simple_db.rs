@@ -84,8 +84,7 @@ fn main() -> Result<()> {
             },
         ]
     );
-    drop(s);
-    db.sync_all()?;
+    s.commit()?;
 
     Ok(())
 }

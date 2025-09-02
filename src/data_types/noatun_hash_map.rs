@@ -27,6 +27,7 @@ struct NoatunHashBucket<K, V> {
     v: V,
 }
 
+// Safety: NoatunHashBucket<K,V> contains only NoatunStorable fields
 unsafe impl<K: NoatunStorable, V: NoatunStorable> NoatunStorable for NoatunHashBucket<K, V> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::NoatunHashBucket/1");
@@ -91,6 +92,7 @@ pub struct NoatunHashMap<K: NoatunStorable, V: FixedSizeObject> {
 }
 
 
+// Safety: NoatunHashMap<K,V> contains only NoatunStorable fields
 unsafe impl<K: NoatunStorable, V: FixedSizeObject> NoatunStorable for NoatunHashMap<K, V> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::NoatunHashMap/1(");
@@ -198,6 +200,7 @@ impl BucketProbeSequence {
 #[doc(hidden)]
 pub struct Meta(u8);
 
+// Safety: Meta contains only NoatunStorable fields
 unsafe impl NoatunStorable for Meta {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::data_types::Meta/1");
@@ -547,6 +550,7 @@ impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Iterator
             self.next_position += 1;
             let meta = get_meta(self.metas, BucketNr(pos));
             if meta.populated() {
+                // Safety: If meta is populated, the bucket must have been initialized
                 let bucket = unsafe { self.hash_buckets[pos].assume_init_ref() };
                 return Some((&bucket.key, &bucket.v));
             }
@@ -568,9 +572,12 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Iterator
             self.next_position += 1;
             let meta = get_meta(self.hash_buckets.metas, BucketNr(pos));
             if meta.populated() {
+                // Safety: If meta is populated, the bucket must have been initialized
                 let bucket = unsafe { self.hash_buckets.buckets[pos].assume_init_mut() };
                 let key_p = &mut bucket.key as *mut K;
                 let v_p = &mut bucket.v as *mut V;
+                // Safety: bucket is a valid object, so the two pointers must also be valid.
+                // The key and value are NoatunStorable, which guarantees no Drop impl
                 return unsafe { Some((key_p.read(), v_p.read())) };
             }
         }
@@ -759,10 +766,12 @@ where
 {
     pub fn get(&self) -> &V {
         let bucket_nr = self.probe_result.0;
+        // Safety: The entry is occupied, so it must have been initialized
         unsafe { &self.context.buckets[bucket_nr.0].assume_init_ref().v }
     }
     pub fn get_mut(&mut self) -> Pin<&mut V> {
         let bucket_nr = self.probe_result.0;
+        // Safety: The entry is occupied, so it must have been initialized
         unsafe { Pin::new_unchecked(&mut self.context.buckets[bucket_nr.0].assume_init_mut().v) }
     }
     pub fn insert(&mut self, v: &V::NativeType) -> V::NativeOwnedType {
@@ -892,6 +901,7 @@ where
 
 impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMap<K, V> {
     fn assert_not_apply(&self, method: &str, untracked_version_available: bool) {
+        // Safety: get_context_ptr returns valid pointers
         let context = unsafe { &*get_context_ptr() };
         if context.is_message_apply() {
             let extra = if untracked_version_available {
@@ -967,6 +977,9 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
     /// Note, this takes ownership of keys+values, but doesn't update self.
     /// 'self' _must_ be overwritten subsequently using `Self::replace_internal`.
+    ///
+    /// # Safety
+    /// Must only iterate mutably once at a time
     unsafe fn unsafe_into_iter<'a>(&mut self) -> DatabaseHashOwningIterator<'a, K, V> {
         DatabaseHashOwningIterator {
             hash_buckets: self.data_meta_len_mut_unsafe(),
@@ -992,6 +1005,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         let meta_group_count = cap.div_ceil(HASH_META_GROUP_SIZE);
         let aligned_meta_size = (size_of::<MetaGroup>() * meta_group_count).next_multiple_of(align);
 
+        // Safety: dptr is valid
         unsafe {
             let meta_groups = slice::from_raw_parts_mut(dptr as *mut MetaGroup, meta_group_count);
             let buckets = slice::from_raw_parts_mut(
@@ -1017,6 +1031,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         let meta_group_count = cap.div_ceil(HASH_META_GROUP_SIZE);
         let aligned_meta_size = (size_of::<MetaGroup>() * meta_group_count).next_multiple_of(align);
 
+        // Safety: dptr is valid
         unsafe {
             let meta_groups = slice::from_raw_parts(dptr as *const MetaGroup, meta_group_count);
             let buckets = slice::from_raw_parts(
@@ -1055,6 +1070,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             key_meta,
             |bucket_nr| {
                 if <K as NoatunKey>::eq(
+                    // Safety: probe sequence only visits populated buckets
                     unsafe { buckets[bucket_nr.0].assume_init_ref().key.export_key_ref() },
                     key,
                 ) {
@@ -1102,6 +1118,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// encouraged not to count the number of invocations of the predicate, or if they do,
     /// to not base any logic on the numeric value.
     pub fn retain(self: Pin<&mut Self>, mut predicate: impl FnMut(&K, Pin<&mut V>) -> bool) {
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         let mut length_guard_and_map = LengthGuard::new(tself);
         let mut context = length_guard_and_map.map.data_meta_len_mut();
@@ -1113,7 +1130,9 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             let meta_group_offset = i % HASH_META_GROUP_SIZE;
             let meta = &mut context.metas[meta_group_index].0[meta_group_offset];
             if meta.populated() {
+                // Safety: Populated buckets are always initialized
                 let bucket = unsafe { context.buckets[i].assume_init_mut() };
+                // Safety: We don't move out of the ref
                 let val = unsafe { Pin::new_unchecked(&mut bucket.v) };
                 if !predicate(&bucket.key, val) {
                     let bucket_nr = BucketNr(i);
@@ -1139,7 +1158,9 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             let meta = &mut context.metas[meta_group_index].0[meta_group_offset];
             if meta.populated() {
                 NoatunContext.write_internal(Meta::EMPTY, meta);
+                // Safety: Populated buckets are always initialized
                 let kv = unsafe { context.buckets[i].assume_init_mut() };
+                // Safety: We don't move out of the ref
                 let val = unsafe { Pin::new_unchecked(&mut kv.v) };
                 val.destroy();
                 kv.key.destroy();
@@ -1160,8 +1181,10 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// that after 'clear', Noatun will be able to prune all previous messages, including
     /// those invoking 'clear'.
     pub fn clear(self: Pin<&mut Self>) {
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
 
+        // Safety: `tself.clear_tracker` is a valid object
         unsafe { NoatunContext.update_tracker_ptr(addr_of_mut!(tself.clear_tracker), true) };
 
         NoatunContext.write_internal(0, &mut tself.length);
@@ -1192,7 +1215,10 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             metas,
             cap,
             key_meta,
-            |bucket_nr| unsafe {
+            |bucket_nr|
+                // Safety: The probe sequence only visits populated buckets, which are always
+                // initialized
+                unsafe {
                 <K as NoatunKey>::eq(
                     buckets[bucket_nr.0].assume_init_ref().key.export_key_ref(),
                     key,
@@ -1310,6 +1336,8 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     pub fn get(&self, key: &K::NativeType) -> Option<&V> {
         let context = self.data_meta_len();
         let bucket = Self::probe_read(context, key)?;
+        // Safety: When probe_read returns Some, that bucket contains the searched key,
+        // and is thus initialized.
         unsafe { Some(&context.buckets[bucket.0].assume_init_ref().v) }
     }
 
@@ -1325,9 +1353,11 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         self: Pin<&'a mut Self>,
         key: &K::NativeType,
     ) -> Option<Pin<&'a mut V>> {
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         let context = tself.data_meta_len_mut();
         let bucket = Self::probe_read(context.readonly(), key)?;
+        // Safety: probe_read found the sought key, it must be initialized.
         unsafe {
             Some(Pin::new_unchecked(
                 &mut context.buckets[bucket.0].assume_init_mut().v,
@@ -1342,6 +1372,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         let context = self.data_meta_len();
         if let Some(bucket) = Self::probe_read(context, key) {
             trace!(bucket=?bucket, "Existing bucket found");
+            // Safety: probe_read found the sought key, it must be initialized.
             unsafe {
                 let context = self.get_unchecked_mut().data_meta_len_mut();
                 return Pin::new_unchecked(&mut context.buckets[bucket.0].assume_init_mut().v);
@@ -1349,6 +1380,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         }
 
         {
+            // Safety: We don't move out of the ref
             let tself = unsafe { self.as_mut().get_unchecked_mut() };
 
             tself.insert_internal_impl(key, |_new, _target| {
@@ -1361,6 +1393,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
     /// Return true if a value was removed
     pub fn remove(self: Pin<&mut Self>, key: &K::NativeType) -> bool {
+        // Safety: We don't move out of the ref
         unsafe { self.get_unchecked_mut().remove_impl(key, |_| {}) }
     }
 
@@ -1375,6 +1408,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// If the key is not present, None is returned.
     pub fn pop(self: Pin<&mut Self>, key: &K::NativeType) -> Option<V::NativeOwnedType> {
         let mut retval = None;
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         tself.remove_impl(key, |val| {
             retval = Some(val.export());
@@ -1422,6 +1456,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         bucket_nr: BucketNr,
         getval: impl FnOnce(&mut Pin<&mut V>),
     ) {
+        // Safety: This is only called for populated buckets
         unsafe {
             let kv = context.buckets[bucket_nr.0].assume_init_mut();
             let mut val = Pin::new_unchecked(&mut kv.v);
@@ -1432,6 +1467,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
         match get_meta_mut_and_emptyable(context.metas, bucket_nr) {
             MetaMutAndEmpty::NoEmpty(meta) => {
+                // Safety: Non-empty bucket is initialized
                 unsafe {
                     let kv = context.buckets[bucket_nr.0].assume_init_mut();
                     NoatunContext.zero_internal(kv);
@@ -1439,6 +1475,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 NoatunContext.write_internal(Meta::DELETED, meta);
             }
             MetaMutAndEmpty::HasEmptyAfterMeta(meta) => {
+                // Safety: Meta is populated and bucket is thus initialized
                 unsafe {
                     let kv = context.buckets[bucket_nr.0].assume_init_mut();
                     NoatunContext.zero_internal(kv);
@@ -1459,6 +1496,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                     .get_disjoint_mut([meta_bucket.0, before_empty_bucket.0])
                     .unwrap();
 
+                // Safety: before_empty_bucket is not itself empty
                 unsafe {
                     NoatunContext.copy(
                         before_empty_bucket_obj.assume_init_ref(),
@@ -1482,6 +1520,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         V::NativeOwnedType: Sized,
     {
         let mut ret: Option<V::NativeOwnedType> = None;
+        // Safety: We don't move out of the ref
         unsafe { self.get_unchecked_mut() }.insert_internal_impl(key, |new, target| {
             if !new {
                 ret = Some(target.export());
@@ -1499,6 +1538,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         val: &V::NativeType,
     ) -> bool {
         let mut existed = false;
+        // Safety: We don't move out of the ref
         unsafe { self.get_unchecked_mut() }.insert_internal_impl(key, |new, target| {
             if !new {
                 existed = true;
@@ -1524,6 +1564,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     where
         K::NativeOwnedType: Sized,
     {
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         let self_cap = tself.capacity;
         let context = tself.data_meta_len();
@@ -1552,8 +1593,11 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         length: &mut usize,
     ) -> Pin<&'a mut V> {
         let (bucket, meta) = probe_result;
+        // Safety: Probe found a bucket, it must thus be initialized
         let bucket_obj = unsafe { context.buckets[bucket.0].assume_init_mut() };
 
+        // Safety: We don't move buckets
+        // Se may copy them, but that's okay, it ends the lifetime.
         let mut old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
 
         val(new, old_v.as_mut());
@@ -1561,6 +1605,8 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         if new {
             let bucket_meta = get_meta_mut(context.metas, bucket);
             NoatunContext.write_internal(meta, bucket_meta);
+            // Safety: We don't move buckets
+            // Se may copy them, but that's okay, it ends the lifetime.
             let old_k = unsafe { Pin::new_unchecked(&mut bucket_obj.key) };
             old_k.init_from(key);
             let new_length = *length + 1;
@@ -1626,12 +1672,16 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             }
             ProbeRunResult::FoundUnoccupied(bucket, meta)| //Optimization: We _could_ use the knowledge that this is unoccupied, to avoid the zero-check in write_pod
             ProbeRunResult::FoundPopulated(bucket, meta) => {
+                // Safety: Bucket was populated, or empty. Empty buckets are still technically
+                // initialized by mmap impl.
                 let bucket_obj = unsafe { context.buckets[bucket.0].assume_init_mut()};
+                // Safety: We don't move buckets
                 let old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
                 NoatunContext.write(val, old_v);
                 let bucket_meta = get_meta_mut(context.metas, bucket);
                 NoatunContext.write_internal(meta, bucket_meta);
                 if matches!(probe_result, ProbeRunResult::FoundUnoccupied(_, _)) {
+                    // Safety: We don't move buckets
                     let old_k= unsafe { Pin::new_unchecked(&mut bucket_obj.key) };
                     NoatunContext.write(key, old_k);
 
@@ -1662,11 +1712,13 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             clear_tracker: Tracker{owner: SequenceNr::INVALID},
             phantom_data: PhantomData,
         };
+        // Safety: We don't move buckets
         NoatunContext.write(new, unsafe { Pin::new_unchecked(self) });
     }
 
     // This does not write the handle itself into the noatun database!!
     fn internal_change_capacity(&mut self, new_min_capacity: usize) {
+        // Safety: We have a mutable ref to `self`, so uniqueness is guaranteed
         let i = unsafe { self.unsafe_into_iter() };
         let capacity = i.size_hint().0;
         let new_capacity = Self::next_suitable_capacity(capacity.max(new_min_capacity));
@@ -1772,6 +1824,7 @@ impl NoatunKey for MessageId {
     where
         H: Hasher,
     {
+        // Safety: MessageId is known to be 16 bytes
         let data: [u64; 2] = unsafe { std::mem::transmute(tself.data) };
         state.write_u64(data[0] ^ data[1])
     }
@@ -1791,6 +1844,7 @@ impl NoatunKey for MessageId {
     }
 
     fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         *tself = *external;
     }
@@ -1812,13 +1866,16 @@ impl<K: NoatunKey + Hash + Eq, V: FixedSizeObject> Object for NoatunHashMap<K, V
     }
 
     fn destroy(self: Pin<&mut Self>) {
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
+        // Safety: `tself.clear_tracker` is a valid object
         unsafe { NoatunContext.clear_tracker_ptr(addr_of_mut!(tself.clear_tracker), true) };
 
         tself.clear_impl();
     }
 
     fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
+        // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         for (k, v) in external {
             tself.insert_internal(k.borrow(), v.borrow());

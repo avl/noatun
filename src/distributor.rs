@@ -635,11 +635,13 @@ impl Display for Address {
 /// This id is not necessarily globally unique. However, when nodes detect a neighbor
 /// with the same id, the id is re-randomized.
 ///
-/// The is is used by the distributor, but not by the database itself.
+/// This is used by the distributor, but not by the database itself.
 ///
-/// Under the hood, this value is a 16 bit integer, which gives enough entropy
-/// for approximately a few tens of neighbors.
-//TODO: Increase to 24 bit?
+/// Under the hood, this value is a 16-bit integer, which gives enough entropy
+/// for approximately a few tens of neighbors. However, we don't require that no
+/// collisions occur - collisions mean we change the id dynamically. So we can
+/// probably allow 1000 neighbors, which is enough for what Noatun tries to do a
+/// and be.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Savefile, PartialOrd, Ord)]
 pub struct EphemeralNodeId(u16);
 
@@ -1470,6 +1472,7 @@ impl Distributor {
             self.report_node_id_collision();
         }
 
+        database.commit()?;
         Ok(())
     }
 

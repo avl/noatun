@@ -65,6 +65,7 @@ impl<T: NoatunStorable + Debug> Debug for NoatunUntrackedCell<T> {
     }
 }
 
+// Safety: NoatunUntrackedCell contains only NoatunStorable fields
 unsafe impl<T: NoatunStorable> NoatunStorable for NoatunUntrackedCell<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::NoatunUntrackedCell/1");
@@ -92,6 +93,7 @@ impl<T: NoatunStorable + Copy> Object for NoatunUntrackedCell<T> {
     fn destroy(self: Pin<&mut Self>) {}
 
     fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
+        // Safety: We don't move out of value
         unsafe {
             let value = self.get_unchecked_mut();
             *value = NoatunUntrackedCell(*external);
@@ -120,11 +122,13 @@ use context::{ContextGetter, ThreadLocalContext};
 impl ContextGetter for ThreadLocalContext {
     fn get_context(&self) -> &DatabaseContextData {
         let context_ptr = get_context_ptr();
+        // Safety: The context ptr is valid
         unsafe { &*context_ptr }
     }
 
     fn get_context_mut(&mut self) -> &mut DatabaseContextData {
         let context_ptr = get_context_mut_ptr();
+        // Safety: The context is valid long enough
         unsafe { &mut *context_ptr }
     }
 }
@@ -149,6 +153,7 @@ pub struct NoatunBox<T: Object + ?Sized> {
     phantom: PhantomData<T>,
 }
 
+// Safety: NoatunBox contains only NoatunStorable fields
 unsafe impl<T: Object + ?Sized + 'static> NoatunStorable for NoatunBox<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::NoatunBox/1");
@@ -181,6 +186,7 @@ where
     }
 
     fn init_from(self: Pin<&mut Self>, external: &Self::NativeType) {
+        // Safety: The returned lifetime is tied to `self`
         unsafe {
             let target = T::allocate_from(external);
             let new_index = NoatunContext.index_of(&*target);
@@ -208,6 +214,7 @@ impl<T: Object + ?Sized> Deref for NoatunBox<T> {
         if self.object_index.is_null() {
             panic!("get() called on an uninitialized (null) NoatunBox.");
         }
+        // Safety: object_index is valid
         unsafe { self.object_index.access::<T>() }
     }
 }
@@ -218,16 +225,19 @@ impl<T: Object + ?Sized> NoatunBox<T> {
         if self.object_index.is_null() {
             panic!("get() called on an uninitialized (null) NoatunBox.");
         }
+        // Safety: object_index is valid
         unsafe { self.object_index.access::<T>() }
     }
 
     /// This could have been a `DerefMut` impl, but unfortunately that doesn't work
     /// with a Pin self
     pub fn get_inner_mut(self: Pin<&mut Self>) -> Pin<&mut T> {
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
         if tself.object_index.is_null() {
             panic!("get_mut() called on an uninitialized (null) NoatunBox.");
         }
+        // Safety: object_index is valid
         unsafe { tself.object_index.access_mut::<T>() }
     }
 
@@ -241,13 +251,22 @@ impl<T: Object + ?Sized> NoatunBox<T> {
 
     /// Assign the given 'value' to self
     pub fn assign(self: Pin<&mut Self>, value: &T::NativeType) {
+        // Safety: We don't move out of tself
         let tself = unsafe { self.get_unchecked_mut() };
+        // Safety: We don't keep the reference, lifetime of root object doesn't end
         let target = unsafe { T::allocate_from(value) };
         let index = NoatunContext.index_of(&*target);
         NoatunContext.write_internal(index, &mut tself.object_index);
     }
 
     /// Allocate a new instance of Self
+    ///
+    /// # Safety
+    ///
+    /// The returned reference is allocated in the Noatun database.
+    /// It must not be retained past the lifetime of the currently active [`crate::Database`]
+    /// object. Before the reference is returned to safe code, it must be tied to the
+    /// lifetime of the materialized view main root object.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn allocate<'a>(value: T) -> Pin<&'a mut Self>
     where
@@ -256,9 +275,11 @@ impl<T: Object + ?Sized> NoatunBox<T> {
     {
         let mut this = NoatunContext.allocate::<NoatunBox<T>>();
         let mut target = NoatunContext.allocate::<T>();
+        // Safety: We don't move out of the ref
         unsafe {
             *target.as_mut().get_unchecked_mut() = value;
         }
+        // Safety: We don't move out of the ref
         unsafe {
             this.as_mut().get_unchecked_mut().object_index = NoatunContext.index_of(&*target);
         }

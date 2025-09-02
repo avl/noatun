@@ -69,6 +69,8 @@ pub enum HowToProceed {
 /// memory, for example, having allocated it from a memory-mapped file with known options.
 #[inline]
 pub(crate) unsafe fn magic_initialize_ptr<T>(data_ptr: *mut T) {
+    // Safety: Executing a 'nop' instruction is expected to be safe on
+    // all architectures.
     unsafe {
         asm!(
         "nop",
@@ -212,6 +214,7 @@ impl UndoLog {
                 let all_zero;
                 #[cfg(not(miri))]
                 {
+                    // Safety: 'data' is a valid reference
                     unsafe { magic_initialize_ptr(data.as_mut_ptr()) };
                     all_zero = data.iter().copied().all(|x| x == 0);
                 }

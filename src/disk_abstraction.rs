@@ -4,6 +4,12 @@ use anyhow::{bail, Result};
 use std::alloc::Layout;
 use std::slice;
 
+
+/// The alignment that memory mappings will always have.
+/// This is effectively the largest alignment easily supported by Noatun for
+/// its materialized view. It is larger than any known CPU:s layout requirements.
+pub const DISK_MAP_ALIGNMENT: usize = 256;
+
 /// Use to abstract away the concrete mmap and disk io implementations.
 /// This can be used to easily change implementations of these, but more
 /// importantly, it allows us to run under miri
@@ -31,7 +37,9 @@ struct InMemoryGrowableFileMappingData {
     used_len: usize,
 }
 
+/// Safety: InMemoryGrowableFileMappingData contains nothing that can't be Send
 unsafe impl Send for InMemoryGrowableFileMappingData {}
+/// Safety: InMemoryGrowableFileMappingData contains nothing that can't be Sync
 unsafe impl Sync for InMemoryGrowableFileMappingData {}
 struct InMemoryGrowableFileMapping {
     backing: InMemoryGrowableFileMappingData,
@@ -40,6 +48,7 @@ struct InMemoryGrowableFileMapping {
 impl InMemoryGrowableFileMappingData {
     #[allow(clippy::mut_from_ref)]
     fn map_mut(&self) -> &mut [u8] {
+        // Safety: 'self.data' and 'self.used_len' are always a valid slice.
         let slice = unsafe { slice::from_raw_parts_mut(self.data, self.used_len) };
         slice
     }
@@ -98,7 +107,8 @@ impl Disk for InMemoryDisk {
             panic!("Open-use case not supported for in-memory db");
         } else {
             let data_len = max_size;
-            let new_layout = Layout::from_size_align(data_len, 256).unwrap();
+            let new_layout = Layout::from_size_align(data_len, DISK_MAP_ALIGNMENT).unwrap();
+            // Safety: new_layout is not zero-sized
             let data_ptr = unsafe { std::alloc::alloc_zeroed(new_layout) };
 
             let data = InMemoryGrowableFileMappingData {
@@ -158,6 +168,7 @@ impl Drop for InMemoryGrowableFileMappingData {
     fn drop(&mut self) {
         if !self.data.is_null() {
             let layout = Layout::from_size_align(self.total_data_len, 256).unwrap();
+            // Safety: This is the same layout that was used when allocating
             unsafe { std::alloc::dealloc(self.data, layout) }
         }
     }
