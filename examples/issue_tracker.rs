@@ -1,3 +1,4 @@
+//! Simple distributed "issue tracker", providing a ratatui-based terminal interface.
 use anyhow::{Context, Result};
 use flexi_logger::trc::FormatConfig;
 use flexi_logger::writers::FileLogWriter;

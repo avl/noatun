@@ -1,3 +1,7 @@
+//! Minimal app that replicates text messages
+//!
+//! To use, start the program, enter text, and press enter.
+//! A list of all texts added (on any node) will be shown.
 use noatun::communication::udp::TokioUdpDriver;
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use noatun::data_types::{NoatunHashMap, NoatunString};
