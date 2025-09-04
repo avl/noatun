@@ -1,8 +1,8 @@
 # Introduction to Noatun
 
 Welcome to Noatun! Noatun is an in-process, multi master, distributed event sourced database with automatic
-garbage collection and an automatically materialized view. It's suitable for unreliable networks and can be 
-used in embedded/edge applications (though std required).
+garbage collection and an materialized view support. It's suitable for unreliable networks and can be 
+used in embedded/edge applications (though std required). Noatun is written in 100% Rust.
 
 Unique selling points:
  * Robust, completely automatic non-centralized multi-master replication
