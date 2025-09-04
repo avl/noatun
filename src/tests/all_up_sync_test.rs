@@ -6,6 +6,7 @@ use crate::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use crate::cutoff::{CutOffDuration, CutoffHash};
 use crate::database::DatabaseSettings;
 use crate::distributor::Status;
+use crate::noatun_instant::Instant;
 use crate::simple_metrics::SimpleMetricsRecorder;
 use crate::tests::setup_tracing;
 use crate::{reset_random_id, SavefileMessageSerializer};
@@ -26,7 +27,6 @@ use std::ops::Add;
 use std::ops::Sub;
 use std::pin::Pin;
 use std::time::Duration;
-use crate::noatun_instant::Instant;
 use tracing::info;
 
 thread_local! {

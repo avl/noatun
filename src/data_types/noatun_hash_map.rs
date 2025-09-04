@@ -40,8 +40,15 @@ unsafe impl<K: NoatunStorable, V: NoatunStorable> NoatunStorable for NoatunHashB
 ///
 /// This is expected to be the primary collection type used by Noatun applications.
 ///
+/// This is a non-opaque type that supports reading during materialization. It contains
+/// a single tracker of "clear" type. This tracker records only the latest message to
+/// clear the hashmap. This in turn means that clearing a hashmap does not mark a message
+/// as a tombstone, but does make the message own the "clear"-tracker. The advantage compared
+/// to a tombstone is that subsequent calls to "clear" will take ownership, allowing the
+/// previous owner to be pruned.
+///
 /// # Note regarding [`NoatunHashMap::len`].
-/// The len method is not available during message application. The reason is that
+/// The len method is not available during materialized view-building. The reason is that
 /// the value of len logically depends on all previous inserts and removes. Each message
 /// calling len would thus gain a dependency on a (potentially) very large number of messages.
 /// Also, this set is not presently tracked by Noatun.
@@ -65,7 +72,7 @@ unsafe impl<K: NoatunStorable, V: NoatunStorable> NoatunStorable for NoatunHashB
 ///
 /// T=1: Key 'A' is inserted to hashmap
 ///
-/// T=2: [`NoatunHashMap::contains_key`] is called with parameter 'A' and the presence of 'A'  is stored
+/// T=2: [`NoatunHashMap::untracked_contains_key`] is called with parameter 'A' and the presence of 'A'  is stored
 /// into field X.
 ///
 /// T=3: Key 'A' is removed from hashmap
@@ -90,7 +97,6 @@ pub struct NoatunHashMap<K: NoatunStorable, V: FixedSizeObject> {
 
     phantom_data: PhantomData<(K, V)>,
 }
-
 
 // Safety: NoatunHashMap<K,V> contains only NoatunStorable fields
 unsafe impl<K: NoatunStorable, V: FixedSizeObject> NoatunStorable for NoatunHashMap<K, V> {
@@ -154,7 +160,6 @@ impl Add<usize> for BucketNr {
         Self(self.0 + rhs)
     }
 }
-
 
 #[derive(Clone, Copy)]
 pub(crate) struct BucketProbeSequence {
@@ -698,6 +703,10 @@ impl<K: NoatunKey, V: FixedSizeObject> Drop for LengthGuard<'_, K, V> {
 }
 
 /// Entry type for NoatunHashMap
+///
+/// WARNING!
+/// Matching on this enum is dangerous, since the [`NoatunHashMap::untracked_entry`] does
+/// not establish a read dependency.
 pub enum NoatunHashMapEntry<'a, K, V>
 where
     K: NoatunStorable + NoatunKey + PartialEq,
@@ -705,8 +714,16 @@ where
     K::NativeOwnedType: Sized,
 {
     /// The key has a value
+    ///
+    /// WARNING!
+    /// Matching on this enum is dangerous, since the [`NoatunHashMap::untracked_entry`] does
+    /// not establish a read dependency.
     Occupied(OccupiedEntry<'a, K, V>),
     /// The key is not associated with a value, but a value can be inserted
+    ///
+    /// WARNING!
+    /// Matching on this enum is dangerous, since the [`NoatunHashMap::untracked_entry`] does
+    /// not establish a read dependency.
     Vacant(VacantEntry<'a, K, V>),
 }
 pub struct NoatunHashMapEntryInternal<'a, K, V>
@@ -744,6 +761,10 @@ impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> VacantEn
 where
     K::NativeType: Sized,
 {
+    /// Insert the given value in this entry.
+    ///
+    /// This does not itself update any tracker or cause any read dependency.
+    /// However, the value must contain a tracker, and ownership of this will be gained.
     pub fn insert(self, v: &V::NativeType) -> Pin<&'a mut V> {
         NoatunHashMap::insert_at_bucket(
             true,
@@ -764,22 +785,43 @@ impl<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> Occupied
 where
     K::NativeOwnedType: Sized,
 {
+    /// Get a shared reference to the value of this entry
+    ///
+    /// This itself causes no read dependency, but the operation is useless unless
+    /// the returned value is actually read, which should cause a read dependency.
     pub fn get(&self) -> &V {
         let bucket_nr = self.probe_result.0;
         // Safety: The entry is occupied, so it must have been initialized
         unsafe { &self.context.buckets[bucket_nr.0].assume_init_ref().v }
     }
+    /// Get a mutable reference to the value of this entry
+    ///
+    /// This does not itself cause a write to occur.
+    ///
+    /// This itself causes no read dependency, but the operation is useless unless
+    /// the returned value is actually read, which should cause a read dependency.
     pub fn get_mut(&mut self) -> Pin<&mut V> {
         let bucket_nr = self.probe_result.0;
         // Safety: The entry is occupied, so it must have been initialized
         unsafe { Pin::new_unchecked(&mut self.context.buckets[bucket_nr.0].assume_init_mut().v) }
     }
+
+    /// Insert a new value for the entry.
+    ///
+    /// This does not itself update any tracker or cause any read dependency.
+    /// However, the value must contain a tracker, and ownership of this will be gained.
     pub fn insert(&mut self, v: &V::NativeType) -> V::NativeOwnedType {
         let val = self.get_mut();
         let ret = val.export();
         val.init_from(v);
         ret
     }
+
+    /// Remove the current entry from the map.
+    ///
+    /// This does not cause a read dependency.
+    ///
+    /// This will destroy the value, which will release any trackers contained therein.
     pub fn remove(mut self) -> V::NativeOwnedType {
         let bucket_nr = self.probe_result.0;
         let val = self.get();
@@ -860,6 +902,8 @@ where
         )
     }
     /// Insert a new value for the key, and return a reference to the inserted value.
+    ///
+    /// This does not cause any read dependencies.
     pub fn or_insert(self, v: &V::NativeType) -> Pin<&'a mut V> {
         let new = matches!(self, NoatunHashMapEntry::Vacant(_));
         let tself = self.unify();
@@ -877,10 +921,11 @@ where
         )
     }
 
-
     /// Insert a new value for the key, and return a reference to the inserted value.
     ///
     /// The value to insert is provided by closure 'v'.
+    ///
+    /// This does not cause any read dependencies.
     pub fn or_insert_with(self, v: impl FnOnce() -> V::NativeOwnedType) -> Pin<&'a mut V> {
         let new = matches!(self, NoatunHashMapEntry::Vacant(_));
         let tself = self.unify();
@@ -927,11 +972,13 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         self.length
     }
 
-    /// Note, this does not record a read dependency.
+    /// Return the number of elements in the hashmap
     ///
     /// Future pruning of unrelated messages may affect the result of this method.
     /// Only use the return value for logging/debugging, or uses where the numerical
     /// value will not be used as a decision factor in any logic.
+    ///
+    /// This does not record a read dependency.
     pub fn untracked_len(&self) -> usize {
         self.length
     }
@@ -964,7 +1011,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// However, code could just count the number of elements by exhausting the iterator
     /// and counting the number of values. Doing this will not record any read dependency.
     ///
-    /// It is recommended that applications do not count the number of iterated values, or
+    /// It is strongly recommended that applications do not count the number of iterated values, or
     /// if they do, that they do not use the numerical value for any decisions.
     pub fn iter(&self) -> NoatunHashMapIterator<'_, K, V> {
         let context = self.data_meta_len();
@@ -1178,8 +1225,8 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     ///
     /// If the map is repeatedly built up, then cleared, it's much more efficient to
     /// use this method than other methods to delete items from the map. The reason is
-    /// that after 'clear', Noatun will be able to prune all previous messages, including
-    /// those invoking 'clear'.
+    /// that after 'clear', Noatun will be able to prune all previous messages that
+    /// owned any tracker that used to be in the map, including those messages invoking 'clear'.
     pub fn clear(self: Pin<&mut Self>) {
         // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
@@ -1192,10 +1239,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     }
 
     /// General purpose bucket probe
-    fn probe(
-        context: HashAccessContext<K, V>,
-        key: impl Borrow<K::NativeType>,
-    ) -> ProbeRunResult {
+    fn probe(context: HashAccessContext<K, V>, key: impl Borrow<K::NativeType>) -> ProbeRunResult {
         let HashAccessContext { metas, buckets } = context;
         let cap = buckets.len();
         if cap == 0 {
@@ -1331,6 +1375,11 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         HASH_META_GROUP_SIZE * PRIMES[x.min(PRIMES.len() - 1)]
     }
 
+    /// Return the value associated with key 'key', if present.
+    ///
+    /// This does not itself record a read dependency, though reading
+    /// from the returned value presumably will.
+    ///
     /// For a mutable version of this, see [`get_mut_val`].
     #[inline]
     pub fn get(&self, key: &K::NativeType) -> Option<&V> {
@@ -1342,17 +1391,26 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     }
 
     /// Returns true if the given key is present in the map.
-    pub fn contains_key(&self, key: &K::NativeType) -> bool {
+    ///
+    /// WARNING!
+    /// Note, this does _not_ record a read dependency. Calling this method
+    /// from within [`Message::apply`] is not recommended. If a call is made,
+    /// no decision affecting the materialized state may be made based on the
+    /// value.
+    pub fn untracked_contains_key(&self, key: &K::NativeType) -> bool {
         let context = self.data_meta_len();
         Self::probe_read(context, key).is_some()
     }
 
-    /// NOTE! This method is not available from within [`Message::apply`],
-    /// and will panic if called from there.
-    pub fn get_mut_val<'a>(
-        self: Pin<&'a mut Self>,
-        key: &K::NativeType,
-    ) -> Option<Pin<&'a mut V>> {
+    /// Get a mutable reference to the value for `key`.
+    ///
+    /// Note, this does not record a read dependency, but reading from the
+    /// returned value will.
+    ///
+    /// WARNING!
+    /// Applications should make sure to either read from any returned value, or else
+    /// base no decisions on the return value.
+    pub fn get_mut_val<'a>(self: Pin<&'a mut Self>, key: &K::NativeType) -> Option<Pin<&'a mut V>> {
         // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
         let context = tself.data_meta_len_mut();
@@ -1368,6 +1426,9 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// Return the value for the given key.
     ///
     /// If the key is not present in the map, insert it with an all-zero value.
+    ///
+    /// This does not itself create a read dependency, but reading from the contained
+    /// value will.
     pub fn get_insert<'a>(mut self: Pin<&'a mut Self>, key: &K::NativeType) -> Pin<&'a mut V> {
         let context = self.data_meta_len();
         if let Some(bucket) = Self::probe_read(context, key) {
@@ -1391,10 +1452,33 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         self.get_mut_val(key).unwrap()
     }
 
-    /// Return true if a value was removed
-    pub fn remove(self: Pin<&mut Self>, key: &K::NativeType) -> bool {
+    /// Remove the given key from the map.
+    ///
+    /// Return true if a value was removed.
+    ///
+    /// The current message will be marked as a tombstone (it will not be pruned until after
+    /// the cutoff period has elapsed).
+    ///
+    /// This methods does not cause a read dependency.
+    ///
+    /// WARNING! No decision must be based on the return value, since this method
+    /// does not cause a read dependency.
+    pub fn remove_untracked(self: Pin<&mut Self>, key: &K::NativeType) -> bool {
         // Safety: We don't move out of the ref
         unsafe { self.get_unchecked_mut().remove_impl(key, |_| {}) }
+    }
+
+    /// Remove the given key from the map.
+    ///
+    /// The current message will be marked as a tombstone (it will not be pruned until after
+    /// the cutoff period has elapsed).
+    ///
+    /// This does not cause a read dependency.
+    pub fn remove(self: Pin<&mut Self>, key: &K::NativeType) {
+        // Safety: We don't move out of the ref
+        unsafe {
+            self.get_unchecked_mut().remove_impl(key, |_| {});
+        }
     }
 
     /// Return true if a value was removed
@@ -1406,7 +1490,12 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// Remove and return the value for the given key.
     ///
     /// If the key is not present, None is returned.
-    pub fn pop(self: Pin<&mut Self>, key: &K::NativeType) -> Option<V::NativeOwnedType> {
+    ///
+    /// WARNING!
+    /// This does not cause a read dependency. No decision should be made based on whether
+    /// the key was present or not. If the key was present, it's acceptable to read the removed
+    /// value and base decisions on it.
+    pub fn untracked_pop(self: Pin<&mut Self>, key: &K::NativeType) -> Option<V::NativeOwnedType> {
         let mut retval = None;
         // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
@@ -1416,11 +1505,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         retval
     }
 
-    fn remove_impl(
-        &mut self,
-        key: &K::NativeType,
-        getval: impl FnOnce(&mut Pin<&mut V>),
-    ) -> bool {
+    fn remove_impl(&mut self, key: &K::NativeType, getval: impl FnOnce(&mut Pin<&mut V>)) -> bool {
         let context = self.data_meta_len_mut();
 
         // We mark as tombstone even before actually checking if the entry exists.
@@ -1511,7 +1596,9 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// Insert the given key value pair.
     ///
     /// If the key already contained a value, that value is returned.
-    pub fn insert(
+    ///
+    /// This does not cause a read dependency.
+    pub fn insert_untracked(
         self: Pin<&mut Self>,
         key: impl Borrow<K::NativeType>,
         val: &V::NativeType,
@@ -1530,9 +1617,22 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         ret
     }
 
+    /// Insert the given key value pair.
+    ///
+    /// This does not cause a read dependency.
+    pub fn insert(self: Pin<&mut Self>, key: impl Borrow<K::NativeType>, val: &V::NativeType) {
+        self.insert_untracked(key, val);
+    }
+
     /// Return true if a value with the given key already existed. In this case, it is
     /// overwritten. If no previous value existed, one is inserted.
-    pub fn insert_fast(
+    ///
+    /// This does not cause a read dependency.
+    ///
+    /// WARNING!
+    /// Since this does not cause a read dependency, not decision must be made based
+    /// on the return value.
+    pub fn untracked_insert_fast(
         self: Pin<&mut Self>,
         key: impl Borrow<K::NativeType>,
         val: &V::NativeType,
@@ -1548,11 +1648,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         existed
     }
 
-    pub(crate) fn insert_internal(
-        &mut self,
-        key: impl Borrow<K::NativeType>,
-        val: &V::NativeType,
-    ) {
+    pub(crate) fn insert_internal(&mut self, key: impl Borrow<K::NativeType>, val: &V::NativeType) {
         self.insert_internal_impl(key, |_new, target| V::init_from(target, val))
     }
 
@@ -1560,7 +1656,16 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// position in the hashmap.
     ///
     /// Methods on the returned type allow inserting or removing from said entry.
-    pub fn entry(self: Pin<&mut Self>, key: K::NativeOwnedType) -> NoatunHashMapEntry<'_, K, V>
+    ///
+    /// This does not cause a read dependency.
+    ///
+    /// WARNING!
+    /// Since this does not cause a read dependency, applications should base no decisions
+    /// on the variant of the returned enum value.
+    pub fn untracked_entry(
+        self: Pin<&mut Self>,
+        key: K::NativeOwnedType,
+    ) -> NoatunHashMapEntry<'_, K, V>
     where
         K::NativeOwnedType: Sized,
     {
@@ -1709,7 +1814,9 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             length: 0,
             capacity,
             data: NoatunContext.index_of_ptr(data).0,
-            clear_tracker: Tracker{owner: SequenceNr::INVALID},
+            clear_tracker: Tracker {
+                owner: SequenceNr::INVALID,
+            },
             phantom_data: PhantomData,
         };
         // Safety: We don't move buckets

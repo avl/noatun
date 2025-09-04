@@ -6,7 +6,7 @@ use std::fmt::{Debug, Display, Formatter};
 ///
 /// Each message applied to the database is given a sequence number.
 /// The numbers are monotonically increasing, without gaps.
-/// 
+///
 /// The sequence numbers change as messages are deleted and the database index is compacted.
 /// Each message is uniquely identified by a sequence number at any given time, but the
 /// numbers are not stable across time. Normal users of noatun should never need to
@@ -15,7 +15,6 @@ use std::fmt::{Debug, Display, Formatter};
 #[repr(C)]
 // 0 is an invalid sequence number, used to represent 'not a number'
 pub struct SequenceNr(u32);
-
 
 /// A tracker for a piece of data.
 ///

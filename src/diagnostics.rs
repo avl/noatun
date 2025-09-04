@@ -1,12 +1,12 @@
 //! Module containing data types used by the diagnostics feature of noatun.
 //!
-//! See [`crate::communication::DatabaseCommunication::diagnostics_data`] 
+//! See [`crate::communication::DatabaseCommunication::diagnostics_data`]
 use crate::distributor::{Address, EphemeralNodeId};
-use std::collections::VecDeque;
 use crate::noatun_instant::Instant;
+use std::collections::VecDeque;
 
 /// Information about a sent or received packet.
-/// 
+///
 /// This is a low-level network protocol packet. For example, when UDP is
 /// used as network backend, each instance of `PacketRow` will correspond
 /// to a UDP packet.
@@ -21,7 +21,7 @@ pub struct PacketRow {
 }
 
 /// A communication message. This is on a protocol level higher than [`PacketRow`].
-/// 
+///
 /// For example, if a user message contains 100kB of data, and thus needs multiple
 /// UDP packets for transmission on a UDP network, that message is still carried by a single
 /// communication message.
@@ -31,7 +31,7 @@ pub struct MessageRow {
     pub time: Instant,
     /// A string representation of the message
     pub message: String,
-    /// The ephemeral node id of the transmitting node 
+    /// The ephemeral node id of the transmitting node
     pub from: EphemeralNodeId,
     /// The src address of the node that transmitted this message, if known
     pub src_addr: Option<Address>,

@@ -1,6 +1,7 @@
 use crate::database::DatabaseSettings;
 use crate::distributor::{Distributor, DistributorMessage, EphemeralNodeId, Neighborhood};
 use crate::mini_pather::MiniPather;
+use crate::noatun_instant::Instant;
 use crate::tests::CounterMessage;
 use crate::{set_test_epoch, Database, MessageId, NoatunTime};
 use arcshift::ArcShift;
@@ -9,7 +10,6 @@ use std::iter::once;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::Duration;
-use crate::noatun_instant::Instant;
 
 fn create_app<'a>(
     msgs: impl IntoIterator<

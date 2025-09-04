@@ -33,11 +33,11 @@ use std::pin::Pin;
 pub use noatun_cell::{NoatunCell, NoatunCellArrayExt, OpaqueNoatunCell};
 pub use noatun_hash_map::meta_finder::get_any_empty;
 pub use noatun_hash_map::{
-    Meta, MetaGroup, MetaGroupNr, NoatunHashMap,
-    NoatunHashMapEntry, NoatunHashMapIterator, NoatunKey,
+    Meta, MetaGroup, MetaGroupNr, NoatunHashMap, NoatunHashMapEntry, NoatunHashMapIterator,
+    NoatunKey,
 };
 pub use noatun_option::NoatunOption;
-pub use noatun_string::{OpaqueNoatunString, NoatunString};
+pub use noatun_string::{NoatunString, OpaqueNoatunString};
 pub use noatun_vec::{NoatunVec, NoatunVecIterator, NoatunVecIteratorMut, OpaqueNoatunVec};
 pub(crate) use noatun_vec::{NoatunVecRaw, RawDatabaseVec};
 
@@ -360,12 +360,12 @@ mod tests {
             let mut map = unsafe { map.map_unchecked_mut(|x| &mut x.0) };
             assert_eq!(map.len(), 0);
 
-            map.as_mut().entry(42).or_insert(&420);
+            map.as_mut().untracked_entry(42).or_insert(&420);
 
             let val = map.get(&42).unwrap();
             assert_eq!(val.get(), 420);
 
-            let mut entry = map.as_mut().entry(42);
+            let mut entry = map.as_mut().untracked_entry(42);
             match &mut entry {
                 NoatunHashMapEntry::Occupied(ref mut occ) => {
                     assert_eq!(occ.get().get(), 420);
@@ -379,14 +379,14 @@ mod tests {
             let val = map.get(&42).unwrap();
             assert_eq!(val.get(), 420);
 
-            let entry = map.as_mut().entry(30);
+            let entry = map.as_mut().untracked_entry(30);
             let v = entry.or_default();
             assert_eq!(v.get(), 0);
 
             let val = map.get(&30).unwrap();
             assert_eq!(val.get(), 0);
 
-            let val = match map.as_mut().entry(50) {
+            let val = match map.as_mut().untracked_entry(50) {
                 NoatunHashMapEntry::Occupied(_) => {
                     unreachable!()
                 }
@@ -417,7 +417,7 @@ mod tests {
             assert_eq!(map.len(), 0);
 
             map.insert_internal(42, &42);
-            match map.as_mut().entry(42) {
+            match map.as_mut().untracked_entry(42) {
                 NoatunHashMapEntry::Occupied(mut occ) => {
                     assert_eq!(**occ.get(), 42);
                     assert_eq!(**occ.get_mut(), 42);
@@ -427,7 +427,7 @@ mod tests {
             }
             let val = map.get(&42).unwrap();
             assert_eq!(val.get(), 43);
-            match map.as_mut().entry(42) {
+            match map.as_mut().untracked_entry(42) {
                 NoatunHashMapEntry::Occupied(occ) => {
                     occ.remove();
                 }
@@ -481,7 +481,7 @@ mod tests {
             let mut map = map.inner_mut();
             map.insert_internal("hello", &42);
             assert_eq!(**map.get("hello").unwrap(), 42);
-            assert_eq!(map.as_mut().pop("hello"), Some(42));
+            assert_eq!(map.as_mut().untracked_pop("hello"), Some(42));
             assert!(map.get("hello").is_none());
         })
         .unwrap();

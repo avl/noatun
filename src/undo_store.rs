@@ -87,7 +87,8 @@ impl UndoLog {
         min_size: usize,
         max_size: usize,
     ) -> Result<UndoLog> {
-        let (file, _existed) = disk.open_file(target, "undo", min_size, max_size, "undo", "Undo log")?;
+        let (file, _existed) =
+            disk.open_file(target, "undo", min_size, max_size, "undo", "Undo log")?;
 
         Ok(UndoLog { store_mmap: file })
     }

@@ -8,30 +8,31 @@
 //! and inspect the database using [`DatabaseCommunication::with_root`].
 //!
 //! See example `simple_replication`.
-use crate::distributor::{
-    Address, Distributor, DistributorMessage, EphemeralNodeId, SerializedMessage, Status,
-};
 use crate::colors::rgb;
 use crate::communication::size_limit_vec_deque::{MeasurableSize, SizeLimitVecDeque};
 use crate::communication::udp::TokioUdpDriver;
+use crate::diagnostics::DiagnosticsData;
+use crate::diagnostics::{MessageRow, PacketRow};
+use crate::distributor::{
+    Address, Distributor, DistributorMessage, EphemeralNodeId, SerializedMessage, Status,
+};
+use crate::mini_pather::MiniPather;
+use crate::noatun_instant::Instant;
+use crate::xxh3_vendored::xxh3::Xxh3Default;
 use crate::{track_node, Database, Message, NoatunTime};
 use anyhow::{anyhow, bail, Result};
+use arcshift::ArcShift;
 use arrayvec::ArrayString;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, Utc};
+use indexmap::map::Entry;
 use indexmap::{IndexMap, IndexSet};
+use metrics::{counter, describe_counter, Counter, Unit};
 use savefile::{
     Deserialize, Deserializer, Introspect, IntrospectItem, Packed, SavefileError, Schema,
     Serialize, Serializer, WithSchema, WithSchemaContext,
 };
 use savefile_derive::Savefile;
-use crate::diagnostics::DiagnosticsData;
-use crate::diagnostics::{MessageRow, PacketRow};
-use crate::mini_pather::MiniPather;
-use crate::xxh3_vendored::xxh3::Xxh3Default;
-use arcshift::ArcShift;
-use indexmap::map::Entry;
-use metrics::{counter, describe_counter, Counter, Unit};
 use std::collections::{BTreeSet, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
@@ -43,7 +44,6 @@ use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::time::error::Elapsed;
-use crate::noatun_instant::Instant;
 use tokio::{select, spawn};
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -253,7 +253,6 @@ struct ReceiveTrack {
     disable_retransmit: bool,
     last_success: Instant,
 }
-
 
 impl ReceiveTrack {
     /// How long are packets kept in the retransmit window.
@@ -1037,7 +1036,6 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
     }
 }
 
-
 /// A debug representation of a network packet
 #[derive(Debug)]
 pub struct DebugEvent {
@@ -1743,7 +1741,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         sess.with_root_preview(time, preview, f)
     }
 
-    /// Set a 
+    /// Set a
     pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
         let mut db = self.database.lock().unwrap();
         let mut sess = db.begin_session_mut()?;

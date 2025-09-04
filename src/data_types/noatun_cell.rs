@@ -1,4 +1,4 @@
-use crate::sequence_nr::{Tracker};
+use crate::sequence_nr::Tracker;
 use crate::{NoatunContext, NoatunPod, NoatunStorable, Object, SchemaHasher, ThinPtr, CONTEXT};
 use std::fmt::{Debug, Formatter};
 use std::ops::{AddAssign, Deref, SubAssign};
@@ -9,6 +9,9 @@ use tracing::trace;
 /// A wrapper around a regular plain old data type. T must implement
 /// `NoatunStorable`, which basically means it must be a Copy type that does
 /// not contain any pointers.
+///
+/// This is a tracked, non-opaque type. It can be read from during materialization,
+/// and doing so causes a read dependency.
 #[repr(C)]
 pub struct NoatunCell<T: NoatunPod> {
     value: T,
@@ -24,13 +27,14 @@ pub struct NoatunCell<T: NoatunPod> {
 ///
 /// T must implement `NoatunStorable`, which basically means it must be a Copy type that does
 /// not contain any pointers.
+///
+/// This is a tracked, opaque type. It cannot be read from during materialization.
 #[repr(C)]
 pub struct OpaqueNoatunCell<T> {
     value: T,
     /// The most recent message that did a write to this cell
     tracker: Tracker,
 }
-
 
 /// Safety: OpaqueNoatunCell<T> contains only NoatunStorable types
 unsafe impl<T: NoatunStorable> NoatunStorable for OpaqueNoatunCell<T> {
@@ -97,8 +101,8 @@ impl<T: NoatunPod> Deref for NoatunCell<T> {
 
 impl<T: NoatunPod> NoatunCell<T> {
     /// Get the current value of the cell.
-    /// 
-    /// This records a read dependency on the data. 
+    ///
+    /// This records a read dependency on the data.
     pub fn get(&self) -> T
     where
         T: Copy,
@@ -108,6 +112,8 @@ impl<T: NoatunPod> NoatunCell<T> {
     }
 
     /// Set the value of this cell
+    ///
+    /// This sets ownership of the cell's tracker, but does not cause a read dependency.
     pub fn set(self: Pin<&mut Self>, new_value: T) {
         let cptr = CONTEXT.get();
         // Safety: cptr is valid, aligned and unaliased (because we only put such pointers
@@ -126,7 +132,6 @@ impl<T: NoatunPod> NoatunCell<T> {
 }
 
 impl<T: NoatunStorable> OpaqueNoatunCell<T> {
-
     /// Get the value of this cell.
     ///
     /// WARNING!
@@ -143,6 +148,8 @@ impl<T: NoatunStorable> OpaqueNoatunCell<T> {
     }
 
     /// Set the value of this cell
+    ///
+    /// This sets ownership of the cell's tracker, but does not cause a read dependency.
     pub fn set(self: Pin<&mut Self>, new_value: T) {
         let cptr = CONTEXT.get();
         // Safety: We only put valid pointers into the thread local
@@ -194,7 +201,6 @@ impl<T: NoatunPod + SubAssign<T> + Copy> SubAssign<T> for Pin<&mut NoatunCell<T>
         self.as_mut().set(new_value);
     }
 }
-
 
 impl<T: NoatunPod + Debug> Object for NoatunCell<T> {
     type Ptr = ThinPtr;

@@ -1,7 +1,8 @@
-#![doc = include_str!("../docs/book.md")]
+#![doc = include_str!("../docs/docs.md")]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]
 #![allow(clippy::bool_comparison)]
+#![allow(clippy::manual_is_multiple_of)]
 #![deny(clippy::missing_safety_doc)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(missing_docs)]
@@ -11,11 +12,10 @@
 #![allow(clippy::needless_late_init)]
 #![allow(clippy::derivable_impls)]
 
-
-use crate::noatun_instant::Instant;
 pub use crate::data_types::{NoatunCell, OpaqueNoatunCell};
+use crate::noatun_instant::Instant;
 use crate::private::Sealed;
-use crate::sequence_nr::{Tracker};
+use crate::sequence_nr::Tracker;
 use anyhow::{bail, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 pub use cutoff::{CutOffDuration, CutOffState};
@@ -58,8 +58,10 @@ mod projection_store;
 mod term_colors;
 mod undo_store;
 
-
 pub mod ratatui_inspector;
+
+#[cfg(not(target_endian = "little"))]
+compile_error!("Noatun currently only supports little-endian machines");
 
 /// Module use to abstract 'Instant'. If the tokio feature is activated,
 /// it resolves to 'tokio::time::Instant', otherwise std::time::Instant.
@@ -126,10 +128,7 @@ pub mod noatun_instant {
             self.0 - rhs.0
         }
     }
-
 }
-
-
 
 #[cfg(feature = "debug_color")]
 use term_colors as colors;
@@ -300,12 +299,12 @@ pub unsafe trait NoatunStorable: Sized + 'static {
 ///
 /// The type should not contain any [`Tracker`] instances.
 ///
+/// See `NoatunStorable` for further requirements.
+///
 /// # Safety
 ///  * The type must be completely self-contained, it must not contain pointers
 ///    or references to other data, in any way.
-pub unsafe trait NoatunPod : Copy + NoatunStorable {
-
-}
+pub unsafe trait NoatunPod: Copy + NoatunStorable {}
 
 mod noatun_storable_impls {
     use super::NoatunStorable;
@@ -475,7 +474,6 @@ impl NoatunContext {
         unsafe { (*context_ptr).clear_registrar_ptr(seq, opaque) }
     }
 
-
     /// Return a mutable reference to the start of the materialized view's store.
     pub fn start_ptr_mut(self) -> *mut u8 {
         let context_ptr = get_context_mut_ptr();
@@ -503,8 +501,6 @@ impl NoatunContext {
         let context_ptr = get_context_mut_ptr();
         unsafe { (*context_ptr).rewind(new_time) }
     }
-
-
 
     #[cfg(test)]
     pub(crate) fn set_next_seqnr(self, seqnr: crate::sequence_nr::SequenceNr) {
@@ -882,7 +878,6 @@ static NON_RANDOM_ID_COUNTER: std::sync::atomic::AtomicUsize =
 thread_local! {
     static TEST_EPOCH: Cell<Option<Instant>> = const { Cell::new(None) };
 }
-
 
 /// Reset the random id sequence used during test to obtain predictable EphemeralNodeId
 #[cfg(test)]
@@ -1282,12 +1277,10 @@ impl NoatunTime {
         NoatunTime(self.0.saturating_sub(1))
     }
 
-
-
     /// Returns a NoatunTime equal to 1970-01-01 00:00:00 UTC
     pub const EPOCH: NoatunTime = NoatunTime(0);
     /// The largest possible NoatunTime: 10889-08-02 05:31:50.655 UTC.
-    pub const MAX: NoatunTime = NoatunTime((1<<48)-1);
+    pub const MAX: NoatunTime = NoatunTime((1 << 48) - 1);
 
     /// Returns the current time.
     ///
@@ -1303,7 +1296,6 @@ impl NoatunTime {
     pub fn as_ms(self) -> u64 {
         self.0
     }
-
 
     /// Add the given number of milliseconds, returning a later time.
     ///
@@ -1735,7 +1727,6 @@ pub fn cast_slice_mut<I: NoatunStorable, O: NoatunStorable>(s: &mut [I]) -> &mut
     unsafe { slice::from_raw_parts_mut(s.as_mut_ptr() as *mut O, count_o) }
 }
 
-
 /// Cast from a slice of I to a slice of O.
 ///
 /// A compile time panic occurs if the alignment of O is not smaller or equal to that of I.
@@ -1772,7 +1763,6 @@ pub fn dyn_cast_slice_mut<I: NoatunStorable, O: NoatunStorable>(s: &mut [I]) -> 
     // Safety: 's' is valid
     unsafe { slice::from_raw_parts_mut(s.as_mut_ptr() as *mut O, count_o) }
 }
-
 
 /// Read a value of type T from the bytes of 'data'.
 ///
@@ -2556,7 +2546,6 @@ impl Drop for ContextGuardMut {
         CONTEXT.set(null_mut());
     }
 }
-
 
 fn msg_serialize<T: savefile::Serialize + savefile::Packed>(
     obj: &T,

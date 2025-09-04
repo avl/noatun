@@ -5,15 +5,14 @@ use crate::disk_access::FileAccessor;
 use crate::message_store::OnDiskMessageStore;
 use crate::undo_store::{HowToProceed, UndoLog, UndoLogEntry};
 use crate::{
-    bytes_of_mut, dprintln, from_bytes, from_bytes_mut, FatPtr, GenPtr,
-    Message, NoatunStorable, Object, Pointer, RawFatPtr, SchemaHasher, SerializableGenPtr, Target,
-    ThinPtr,
+    bytes_of_mut, dprintln, from_bytes, from_bytes_mut, FatPtr, GenPtr, Message, NoatunStorable,
+    Object, Pointer, RawFatPtr, SchemaHasher, SerializableGenPtr, Target, ThinPtr,
 };
 use anyhow::{bail, Context, Result};
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
 use std::mem::{offset_of, transmute_copy};
-use std::ops::{Range};
+use std::ops::Range;
 use std::slice;
 
 use crate::projection_store::registrar_info::{RegistrarInfo, UnusedInfo};
@@ -757,7 +756,14 @@ impl DatabaseContextData {
         schema_hash: [u8; 16],
     ) -> Result<Self> {
         let (mut main_db_file, _existed) = s
-            .open_file(name, "maindb", min_size, max_size, "main_db", "Main materialized view")
+            .open_file(
+                name,
+                "maindb",
+                min_size,
+                max_size,
+                "main_db",
+                "Main materialized view",
+            )
             .context("opening main store file")?;
 
         let mut is_new = false;
@@ -970,7 +976,6 @@ impl DatabaseContextData {
     pub unsafe fn zero(&mut self, dst: FatPtr) {
         // Safety: 'dst' is a valid pointer
         unsafe {
-
             self.undo_log.record(UndoLogEntry::RestorePod {
                 start: dst.start,
                 data: self.access_slice_mut(dst),
@@ -1008,11 +1013,14 @@ impl DatabaseContextData {
 
     /// # Safety
     /// The pointers must be valid and not aliasing
-    pub unsafe fn copy_bytes_len(&mut self, source: ThinPtr, dest_index: ThinPtr, num_bytes: usize) {
+    pub unsafe fn copy_bytes_len(
+        &mut self,
+        source: ThinPtr,
+        dest_index: ThinPtr,
+        num_bytes: usize,
+    ) {
         // Safety: The pointers are valid and not aliasing
-        unsafe {
-            self.copy_bytes(FatPtr::from_idx_count(source.0, num_bytes), dest_index)
-        }
+        unsafe { self.copy_bytes(FatPtr::from_idx_count(source.0, num_bytes), dest_index) }
     }
     pub fn copy_storable<T: NoatunStorable>(&mut self, source: &T, dest: &mut T) {
         let dest_index = self.index_of_sized(dest);
@@ -1314,7 +1322,10 @@ impl DatabaseContextData {
     /// 'dest' must be a valid pointer
     pub unsafe fn write_storable_ptr<T: NoatunStorable>(&mut self, src: T, dest: *mut T) {
         let dest_index = self.index_of_ptr(dest);
-        assert!(dest_index.0 <= self.main_db_mmap.used_space() && dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space());
+        assert!(
+            dest_index.0 <= self.main_db_mmap.used_space()
+                && dest_index.0 + size_of::<T>() <= self.main_db_mmap.used_space()
+        );
 
         self.undo_log.record(UndoLogEntry::RestorePod {
             start: dest_index.0,
@@ -1399,7 +1410,7 @@ impl DatabaseContextData {
         self.rt_increase_use(actor, actor_wrote_non_opaque);
 
         // Safety: The caller guarantees the pointer is valid
-        unsafe { self.write_storable_ptr(Tracker { owner: actor}, registrar_point) }
+        unsafe { self.write_storable_ptr(Tracker { owner: actor }, registrar_point) }
     }
 
     /// # Safety
@@ -1476,7 +1487,12 @@ impl DatabaseContextData {
                 self.tainted
             );
 
-            self.record_overwrite(Tracker{owner: message_seqnr}, message_seqnr);
+            self.record_overwrite(
+                Tracker {
+                    owner: message_seqnr,
+                },
+                message_seqnr,
+            );
             self.try_delete(message_seqnr, message_seqnr, must_remove, messages)?;
 
             return Ok(());
@@ -1511,7 +1527,12 @@ impl DatabaseContextData {
         }
 
         if track.get_use() == 0 {
-            self.record_overwrite(Tracker{owner: message_seqnr}, message_seqnr);
+            self.record_overwrite(
+                Tracker {
+                    owner: message_seqnr,
+                },
+                message_seqnr,
+            );
             self.try_delete(message_seqnr, message_seqnr, must_remove, messages)?;
         }
         Ok(())

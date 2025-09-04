@@ -107,9 +107,6 @@ impl Message for IssueMessage {
                 issue.reporter.assign(reporter);
             }
             IssueMessage::RemoveIssue { id } => {
-                //TODO: Document clearly for al ops if they cause read deps. Make it possible to manually add read-deps? deny(missing_docs)!
-                // Also document the whole read/write deps thing in the docs!
-
                 let id = remap(&root, id).to_owned();
 
                 root.issues.as_mut().remove(id.as_str());
@@ -130,10 +127,10 @@ impl Message for IssueMessage {
                 old_id: id,
                 new_id: id_new,
             } => {
-                if !root.issues.as_mut().contains_key(id_new)
-                    && !root.aliases.as_mut().contains_key(id)
+                if !root.issues.as_mut().untracked_contains_key(id_new)
+                    && !root.aliases.as_mut().untracked_contains_key(id)
                 {
-                    match root.issues.as_mut().entry(id.to_string()) {
+                    match root.issues.as_mut().untracked_entry(id.to_string()) {
                         NoatunHashMapEntry::Occupied(o) => {
                             let prev = o.remove();
                             root.issues.as_mut().insert(id_new.as_str(), &prev);
@@ -505,15 +502,15 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
                 | Popup::AddText(w) => {
                     match &event {
                         Event::Key(KeyEvent {
-                                       code: KeyCode::Esc, ..
-                                   }) => {
+                            code: KeyCode::Esc, ..
+                        }) => {
                             app.popup = Popup::None;
                             return Ok(false);
                         }
                         Event::Key(KeyEvent {
-                                       code: KeyCode::Enter,
-                                       ..
-                                   }) => {
+                            code: KeyCode::Enter,
+                            ..
+                        }) => {
                             match &mut app.popup {
                                 Popup::AddHeading(w) => {
                                     let heading: String = w.lines()[0].to_string();
@@ -547,41 +544,39 @@ fn poll_input(app: &mut AppState) -> Result<bool> {
 
         #[allow(clippy::single_match)]
         match &event {
-            Event::Key(key) => {
-                match &key.code {
-                    KeyCode::Esc if app.diagnostics=> {
-                        app.diagnostics = false;
-                        return Ok(false);
-                    }
-                    KeyCode::Char('q') | KeyCode::Char('Q') => {
-                        return Ok(true);
-                    }
-                    KeyCode::Char('d') | KeyCode::Char('D') => {
-                        app.diagnostics = !app.diagnostics;
-                        app.popup = Popup::None;
-                        return Ok(false);
-                    }
-                    KeyCode::Char('v') | KeyCode::Char('V') => {
-                        app.comms
-                            .inner_database()
-                            .begin_session_mut()?
-                            .maybe_advance_cutoff()?;
-                        return Ok(false);
-                    }
-                    KeyCode::Char('p') | KeyCode::Char('P') => {
-                        app.comms
-                            .inner_database()
-                            .begin_session_mut()?
-                            .compact_index()?;
-                        app.comms
-                            .inner_database()
-                            .begin_session_mut()?
-                            .reproject()?;
-                        return Ok(false);
-                    }
-                    _ => {}
+            Event::Key(key) => match &key.code {
+                KeyCode::Esc if app.diagnostics => {
+                    app.diagnostics = false;
+                    return Ok(false);
                 }
-            }
+                KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    return Ok(true);
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') => {
+                    app.diagnostics = !app.diagnostics;
+                    app.popup = Popup::None;
+                    return Ok(false);
+                }
+                KeyCode::Char('v') | KeyCode::Char('V') => {
+                    app.comms
+                        .inner_database()
+                        .begin_session_mut()?
+                        .maybe_advance_cutoff()?;
+                    return Ok(false);
+                }
+                KeyCode::Char('p') | KeyCode::Char('P') => {
+                    app.comms
+                        .inner_database()
+                        .begin_session_mut()?
+                        .compact_index()?;
+                    app.comms
+                        .inner_database()
+                        .begin_session_mut()?
+                        .reproject()?;
+                    return Ok(false);
+                }
+                _ => {}
+            },
             _ => {}
         }
 

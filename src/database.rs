@@ -1,9 +1,12 @@
-//! This module contains the main user-facing database type: [`Database`]. 
+//! This module contains the main user-facing database type: [`Database`].
 use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
 use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
-use crate::{calculate_schema_hash, ContextGuard, ContextGuardMut, DatabaseContextData, Message, MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target};
+use crate::{
+    calculate_schema_hash, ContextGuard, ContextGuardMut, DatabaseContextData, Message,
+    MessageFrame, MessageHeader, MessageId, NoatunContext, NoatunTime, Object, Pointer, Target,
+};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use metrics::{counter, describe_counter, Unit};
@@ -68,7 +71,7 @@ pub struct DatabaseSettings {
     /// system will then be 4 weeks (worst case: data is written to node A two weeks before
     /// connection, node B is connected just prior to A connecting).
     pub cutoff_interval: CutOffDuration,
-    
+
     /// Use false to disable automatic deletion of subsumed messages.
     ///
     /// Normally, Noatun will detect when all effects of a message have been overwritten
@@ -83,7 +86,6 @@ pub struct DatabaseSettings {
     /// It's perfectly reasonable to put a value of 100GB here, even if the database
     /// is usually only a few gigabytes.
     pub max_file_size: usize,
-
 
     /// The size allocated to database size on disks for an empty database.
     ///
@@ -578,7 +580,6 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.append_local(message)
     }
 
-
     /// Add a message that might already have been observed by other nodes.
     #[inline]
     pub fn append_nonlocal(&mut self, message: MSG) -> Result<MessageHeader> {
@@ -601,7 +602,6 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     pub fn append_local_at(&mut self, time: NoatunTime, message: MSG) -> Result<MessageHeader> {
         self.db.append_local_at(time, message)
     }
-
 
     /// Append many local messages at the given time.
     ///
@@ -711,7 +711,6 @@ impl<MSG: Message + 'static> Database<MSG> {
     fn sync_outstanding(&mut self) -> Result<()> {
         self.message_store.sync_outstanding()
     }
-
 
     fn mark_hot_clean(&mut self) -> Result<()> {
         match self.message_store.sync_outstanding() {

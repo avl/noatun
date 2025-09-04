@@ -80,7 +80,6 @@ impl Message for KeyValMessage2 {
     }
 }
 
-
 #[test]
 fn test_nominal_load_without_recovery() {
     let mut db: Database<KeyValMessage> = Database::create_new(

@@ -1,5 +1,5 @@
 use crate::data_types::NoatunKey;
-use crate::sequence_nr::{Tracker};
+use crate::sequence_nr::Tracker;
 use crate::{NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr};
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
@@ -9,10 +9,11 @@ use std::ptr::addr_of_mut;
 use std::slice;
 
 /// A NoatunString can be thought of as a noatun equivalent of [`std::string::String`].
-/// 
+///
 /// However, under the hood, NoatunString does not allow mutation of existing data. Any
 /// modification requires a complete reallocation.
-/// 
+///
+/// This type contains a single tracker, that owns the string's value.
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct NoatunString {
@@ -100,6 +101,8 @@ impl NoatunString {
     ///
     /// This method does not copy the string, but returns a reference to the memory mapped
     /// on disk value.
+    ///
+    /// This method causes a read dependency on the owner of the string's tracker.
     pub fn get(&self) -> &str {
         NoatunContext.observe_registrar(self.tracker);
 
@@ -118,6 +121,8 @@ impl NoatunString {
     ///
     /// This method will allocate a new heap block, unless the new value is identical to, or
     /// a prefix of, the previous value.
+    ///
+    /// This takes ownership of the string's tracker, but does not cause a read dependency.
     pub fn assign(self: Pin<&mut Self>, value: &str) {
         // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };
@@ -270,7 +275,7 @@ impl OpaqueNoatunString {
     }
     /// Replace the string with the given value.
     ///
-    /// This is not a tracked write, since OpaqueNoatunString is always opaque/untracked.
+    /// This takes ownership of the string's tracker, but does not cause a read dependency.
     pub fn assign(self: Pin<&mut Self>, value: &str) {
         // Safety: We don't move out of the ref
         let tself = unsafe { self.get_unchecked_mut() };

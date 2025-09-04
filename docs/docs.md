@@ -2,12 +2,12 @@
 
 Welcome to Noatun! Noatun is an in-process, multi master, distributed event sourced database with automatic
 garbage collection and an automatically materialized view. It's suitable for unreliable networks and can be 
-used in embedded applications (std required).
+used in embedded/edge applications (though std required).
 
 Unique selling points:
- * Robust, completely automatic multi-master replication
+ * Robust, completely automatic non-centralized multi-master replication
  * Full functionality even offline, even for long offline periods.
- * Noatun fakes a linear history: your application doesn't have to consider concurrency. You're an  
+ * Faked linear history: your application doesn't have to consider concurrency. You're an  
    expert in your domain, you shouldn't have to solve distributed computing just because your customers 
    have offline requirements. 
  * Perfectly suited for when internet connectivity cannot be guaranteed.
@@ -16,14 +16,14 @@ Additional features:
  * 100% decentralized - nodes in the network do not need to be assigned unique ids - all they need
    to agree on is the event format and definition. 
  * Data model is 100% event based. Current database state is a function only of current events.
- * Works in any network - and does not require unique network addresses
+ * Works in any network (and does not require unique network addresses)
  * Deterministic replay and time travel for easy debugging
  * Robust persistent store optimized for availability
  * Automatic pruning of stale events
  * Excellent read performance. Reading from Noatun is almost as fast as reading from regular pure 
-   rust data structures in RAM.
+   in-memory rust data structures.
  * Good write performance. Writing events to disk is very fast, and projecting them
-   to the materialized view is often reasonable fast too, but depends on the user logic.
+   to the materialized view is often fast too (but depends on the user logic).
 
 ## Functional overview
 
@@ -64,9 +64,9 @@ columns 3
 ```
 _Information flow (in operation)_
 
-Events (data type `Message`) are applied to the projection in timestamp order. As a user of Noatun, you need to
-implement a method that applies an event to the database `Message::apply`. Noatun 
-then ensures that the materialized view is always just the result of applying all events 
+Events are applied to the projection in timestamp order. As a user of Noatun, you need to
+implement a method that applies an event to the database (method `Message::apply` of trait `Message`). 
+Noatun then ensures that the materialized view is always the result of applying all events 
 in order. Noatun will, under the hood, efficiently roll back and reapply events if they 
 arrive over the network out of order.
 
@@ -92,7 +92,7 @@ use tokio::time::Duration;
 use std::pin::Pin;
 use std::io::Write;
 
-/// Defines our events
+/// Define our events
 /// 
 /// For serialization of events (to disk and on network), we use 
 /// serde + postcard. However, Noatun itself isn't tied to serde in 
@@ -105,6 +105,7 @@ pub enum WarehouseEvent {
 }
 
 /// Define our root database object. Here we have a single pod (plain old data) field of type u32.
+/// (This is an oversimplified example.)
 /// See docs for what types are supported by the noatun_object macro.
 /// It is also possible to implement completely custom types by implementing the [`noatun::Object`]
 /// macro manually.
@@ -116,7 +117,7 @@ noatun_object!(
 
 /// Implement Message for our WarehouseEvent, to tell Noatun how to apply these events to the db
 impl Message for WarehouseEvent {
-    /// The type of database root this event must be used with
+    /// The type of database materialized view root this event must be used with
     type Root = Warehouse;
     
     /// The on-disk/on-wire format of messages is customizable.
@@ -209,6 +210,55 @@ Message parents are handled automatically by Noatun. See chapter on Internals fo
 The user payload serialization format is user-defined. By default Noatun uses serde postcard, but
 any serialization mechanism can be used.
 
+# Data types supported by Noatun
+
+Noatun is completely unopinionated when it comes to message formats.
+
+However, when it comes to the materialized view, noatun ships with a set of standard types. The user
+can define their own types to extend this standard set of types.
+
+Some basic types:
+ * NoatunCell  - wrapper around primitives and many other Copy-types
+ * NoatunHashMap - hash map for Noatun
+ * NoatunString - Noatun equivalent to std::string::String
+ * Struct types defined using `noatun_object!`-macro.
+
+## Objects vs NoatunPods
+
+Data stored in Noatun must implement the `Object` trait. Implementors of Object
+know to import/export, allocate, initialize and destroy themselves. Objects also
+implement read/write dependency tracking through use of `Tracker`s.
+
+Naturally, Noatun supports storing primitives (u8, u16, u32 etc). These types do not implement `Object`,
+but must be wrapped in a type that does. The types `NoatunCell` and `OpaqueNoatunCell` serve this function.
+These cell types add read/write dependency tracking. 
+
+In addition to rust's standard primitives, any type implementing `NoatunPod` can be used inside such a cell.
+In order to be able to implement `NoatunPod`, a type must have a stable memory layout and must be Copy.
+It must also implement the `NoatunStorable` trait.  See `NoatunPod` and `NoatunStorable` docs for a complete list of 
+requirements.
+
+
+## Native types
+
+As noted in the previous section, arbitrary objects cannot be stored directly in a Noatun-database. Instead,
+special types need to be used. For convenience, these types can be "exported" into "native" types. For example,
+the native type of NoatunString is simply `std::string::String`. 
+
+The reason that native types can't be used directly in noatun is that they do not have a guaranteed memory layout.
+If they were stored directly in a noatun database, there would be no guarantee that persisted data would remain
+valid if the application was recompiled.
+
+To retrieve an instance of native type, use the `Object::export` method. To write a native type to a noatun object,
+use `Object::init_from`.
+
+## Schema hash
+
+All types storable in a noatun materialized view have a concept of a schema. Noatun persisted the hash
+of the complete db schema, and rebuild the materialized view if this hash doesn't match between the data types
+in memory and the format on disk. 
+
+
 # Features
 
 ## Automatic pruning
@@ -257,7 +307,7 @@ it wrote the most recent value to "FieldB". However, after Event3 has been writt
 Event1 wrote is still in the database, and Event1 will now be automatically pruned (note this is not always 100% true, 
 please continue reading).
 
-However, consider what happens if messages also read from the database:
+However, consider what happens if messages (actually, the `apply` method of Message impls) also read from the database:
 
 
 ```mermaid 
@@ -294,11 +344,11 @@ classDef BT stroke:transparent,fill:transparent
 _Messages with dependencies_
 
 
-In this example, none of the messages can be deleted. None of the values written by Event1 remain in the database.
-However, the value "1", written to field A, was later read by Event2. Any value subsequently written by Event2
-(i.e, the write to Field B) may depend on the value read from field A. In fact, it is highly likely that the
+In this example, none of the messages can be deleted. Even though none of the values written by Event1 remain in the 
+database, the value "1", written to field A, was later read by Event2. Any value subsequently written by Event2
+(i.e, the write to Field B) might depend on the value read from field A. In fact, it is highly likely that the
 value written to field B depends on what wa read from field A. Otherwise, the implementation of Event2 should just
-be changed to eliminate this useless read. 
+be changed to eliminate an apparently useless read. 
 
 Noatun tracks this type of information flow dependency between events, and will thus _not_ prune Event1 in this case.
 
@@ -418,14 +468,14 @@ may never reach this amount of data.
 Even if pruning is needed, it is likely to be okay that updates to a specific bug aren't pruned until
 the bug is deleted.
 
-But for some applications, this is not enough. Consider a support application for a delivery trucks.
+But for some applications, this is not enough. Consider a support application for delivery trucks.
 
 Each truck may update its current position once a second. With thousands of trucks, the number of position
 updates will soon grow large. However, if we only need the most recent position update, we would like
 previous messages to be pruned.
 
-As we've seen above, this is easily supported by Noatun. However, a complication to be aware of is that
-navigating the materialized view can cause unintended observations. 
+This is easily supported by Noatun. However, a complication to be aware of is that
+navigating the materialized view can cause unintended observations. See next section. 
 
 
 ### Early pruning with opaque data
@@ -465,8 +515,8 @@ classDef BT stroke:transparent,fill:transparent
 ```
 
 If FieldA is an opaque field, we know no message can ever read it. This means that we can be certain that 
-the value that Event1 wrote can never be accessed. Thus, messages that only write opaque data can be pruned
-as soon as all their information has been completely overwritten.
+the value that Event1 wrote can never be accessed by other messages. Thus, messages that only write opaque data 
+can be pruned as soon as all their information has been completely overwritten.
 
 
 ### Collections
@@ -510,6 +560,21 @@ This write is recorded just like the write to any field. Future calls to 'clear'
 allow the previous message to be pruned. This is in contrast with tombstone messages, that are never pruned
 before cutoff.
 
+### Trackers
+
+The way dependencies are handled in Noatun is through "Trackers". The struct `Tracker` is used to 
+record ownership of a piece of data. All tracked data types in Noatun contain a `Tracker` instance.
+The tracker simply records the identity of the most recent message that wrote the piece of data. Note,
+the data must be completely overwritten, or not written at all. The noatun datatypes ensure this invariant is 
+maintained.
+
+When data is read (while building the materialized view), a read dependency is created between the currently
+materialized message, and the owner of the tracker that owns the data which was read.
+
+Types with the word `Opaque` in their name still have trackers, but since their data cannot be read
+by the `Message::apply`-methods while building the materialized view, such trackers never participate in
+establishing read dependencies between messages.
+
 
 ## Validation
 
@@ -534,12 +599,16 @@ There are a few possibilities for undoing events in Noatun:
 
 Events can be deleted using [`DatabaseSessionMut::remove_message`]. Note, however,
 that this is a low level operation that should not be used for events that have been
-(or may have been) transmitted to other nodes.
+(or may have been) transmitted to other nodes. Noatun still guarantees eventual consistency,
+but this will only occur after the cutoff interval has passed, and will be accomplished by
+(potentially) transmitting the entire database state (all messages). It is thus strongly
+recommended to not remove messages from a database in this way.
 
 ### Adding a new event that undoes the previous event
 
 The most straightforward way to handle undo is to create an event that just does
-the reverse of the event that is to be undone.
+the reverse of the event that is to be undone. This will overwrite all data written
+by the original message, and it can then hopefully be automatically pruned.
 
 ### Inhibiting a message from being applied
 

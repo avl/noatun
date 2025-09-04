@@ -5,6 +5,7 @@ use crate::colors::*;
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};
 use crate::mini_pather::MiniPather;
+use crate::noatun_instant::Instant;
 use crate::{Database, Message, MessageExt, MessageFrame, MessageHeader, MessageId};
 use anyhow::Result;
 use arcshift::ArcShift;
@@ -20,7 +21,6 @@ use std::hash::Hash;
 use std::io::Cursor;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use crate::noatun_instant::Instant;
 use tracing::{debug, error, info, trace, warn};
 
 #[derive(Debug)]
@@ -238,7 +238,6 @@ impl<T: Eq + Hash> DuplicationChecker<T> {
     }
 }
 
-
 // TODO(future): Maybe nodes that notice that they have more neighbors than basically anybody,
 // should try to change node-id to a small number, so they can be natural, efficient relays for everybody.
 
@@ -301,7 +300,8 @@ impl Neighborhood {
             for msg in message_ids {
                 match self.inhibited_request_upstream.entry(*msg) {
                     Entry::Occupied(o) => {
-                        let periods = ((now.saturating_duration_since(o.get().0).as_millis() as u64)
+                        let periods = ((now.saturating_duration_since(o.get().0).as_millis()
+                            as u64)
                             / (periodic_interval.as_millis().max(1) as u64))
                             as usize;
                         if periods > ordinal {
@@ -561,7 +561,6 @@ impl SerializedMessage {
         })
     }
 }
-
 
 /// A message, a set of parents and a query count
 #[derive(Debug, Savefile, Clone)]
@@ -976,7 +975,6 @@ impl Display for Status {
         }
     }
 }
-
 
 /// Truncate the given name to a limited length 'Address'
 pub fn truncate_to_arraystring(name: &str) -> Address {

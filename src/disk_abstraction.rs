@@ -4,7 +4,6 @@ use anyhow::{bail, Result};
 use std::alloc::Layout;
 use std::slice;
 
-
 /// The alignment that memory mappings will always have.
 /// This is effectively the largest alignment easily supported by Noatun for
 /// its materialized view. It is larger than any known CPU:s layout requirements.
@@ -29,7 +28,6 @@ pub(crate) trait Disk {
 }
 
 pub struct StandardDisk;
-
 
 struct InMemoryGrowableFileMappingData {
     data: *mut u8,
@@ -76,7 +74,6 @@ impl InMemoryGrowableFileMapping {
         self.backing.used_len
     }
 
-    
     fn truncate(&mut self, len: usize) -> Result<()> {
         let backing = &mut self.backing;
         if backing.used_len > len {
@@ -121,7 +118,10 @@ impl Disk for InMemoryDisk {
 
         let mapping = InMemoryGrowableFileMapping { backing: data };
 
-        Ok((FileAccessor::from_mapping(mapping, name, description), false))
+        Ok((
+            FileAccessor::from_mapping(mapping, name, description),
+            false,
+        ))
     }
 }
 

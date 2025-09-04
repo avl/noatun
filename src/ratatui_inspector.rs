@@ -4,21 +4,21 @@
 //! Construct an instance of [`RatatuiInspector`] to use this feature.
 #![cfg(feature = "ratatui")]
 
-use std::fmt::Debug;
-use std::time::Duration;
 use anyhow::Context;
 use itertools::Itertools;
 use ratatui::crossterm::event;
 use ratatui::layout::Constraint::{Length, Min, Percentage};
 use ratatui::layout::Layout;
 use ratatui::Frame;
+use std::fmt::Debug;
+use std::time::Duration;
 
 use crate::communication::DatabaseCommunication;
+use crate::noatun_instant::Instant;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent};
 use ratatui::prelude::{Color, Stylize};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
-use crate::noatun_instant::Instant;
 
 use crate::simple_metrics::SimpleMetricsRecorder;
 use crate::{Message, Object};
@@ -35,7 +35,7 @@ pub struct RatatuiInspector {
     zoom: bool,
     start: Instant,
     x_offset: usize,
-    table_state: [TableState;7],
+    table_state: [TableState; 7],
 }
 
 impl Default for RatatuiInspector {
@@ -44,14 +44,12 @@ impl Default for RatatuiInspector {
     }
 }
 
-trait BlockExt : Sized {
+trait BlockExt: Sized {
     fn highlight(self, our_index: usize, active_highlight: usize) -> Self;
-
 }
 
 impl<'a> BlockExt for Block<'a> {
     fn highlight(self, our_index: usize, active_highlight: usize) -> Block<'a> {
-
         if our_index == active_highlight {
             self.border_style(Style::default().bg(Color::White).fg(Color::Black))
         } else {
@@ -64,8 +62,10 @@ impl<'a> BlockExt for Block<'a> {
 pub fn run_inspector<MSG: Message + Send>(
     recorder: Option<&SimpleMetricsRecorder>,
     comm: &DatabaseCommunication<MSG>,
-) -> anyhow::Result<()> where
-    <MSG::Root as Object>::NativeOwnedType: Debug {
+) -> anyhow::Result<()>
+where
+    <MSG::Root as Object>::NativeOwnedType: Debug,
+{
     let mut inspector = RatatuiInspector::new();
     let mut terminal = ratatui::init();
 
@@ -73,7 +73,11 @@ pub fn run_inspector<MSG: Message + Send>(
         if event::poll(Duration::from_millis(250)).context("event poll failed")? {
             let event = event::read().context("event read failed")?;
             if !inspector.input(&event) {
-                if let Event::Key(KeyEvent { code: KeyCode::Esc|KeyCode::Char('q')|KeyCode::Char('Q'), .. }) = event {
+                if let Event::Key(KeyEvent {
+                    code: KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q'),
+                    ..
+                }) = event
+                {
                     ratatui::restore();
                     return Ok(());
                 }
@@ -86,50 +90,51 @@ pub fn run_inspector<MSG: Message + Send>(
 }
 
 impl RatatuiInspector {
-
     /// Supply information to the inspector. Use this from a ratatui main-loop in a pre-existing
     /// ratatui app.
     ///
     /// Returns true if input key was caught
     pub fn input(&mut self, event: &Event) -> bool {
         match &event {
-            Event::Key(KeyEvent{code, ..}) => {
-                match code {
-                    KeyCode::Esc if self.zoom => {
-                        self.zoom = false;
-                    }
-                    KeyCode::Left => {
-                        self.x_offset = self.x_offset.saturating_sub(5);
-                    }
-
-                    KeyCode::Right=> {
-                        self.x_offset = self.x_offset.saturating_add(5);
-                    }
-                    KeyCode::Enter|KeyCode::Char(' ') => {
-                        self.zoom = !self.zoom;
-                    }
-                    KeyCode::Tab => {
-                        self.highlight += 1;
-                        self.highlight%=7;
-                    }
-                    KeyCode::BackTab => {
-                        self.highlight += 7 - 1;
-                        self.highlight%=7;
-                    }
-                    KeyCode::Up => {
-                        let next = self.table_state[self.highlight].selected().unwrap_or(0).saturating_sub(1);
-                        self.table_state[self.highlight].select(Some(next));
-                    }
-                    KeyCode::Down => {
-                        let next = self.table_state[self.highlight].selected().map(|x|x+1).unwrap_or(0);
-                        self.table_state[self.highlight].select(Some(next));
-                    }
-                    _ => {return false}
+            Event::Key(KeyEvent { code, .. }) => match code {
+                KeyCode::Esc if self.zoom => {
+                    self.zoom = false;
                 }
-            }
-            _ => {
-                return false
-            }
+                KeyCode::Left => {
+                    self.x_offset = self.x_offset.saturating_sub(5);
+                }
+
+                KeyCode::Right => {
+                    self.x_offset = self.x_offset.saturating_add(5);
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    self.zoom = !self.zoom;
+                }
+                KeyCode::Tab => {
+                    self.highlight += 1;
+                    self.highlight %= 7;
+                }
+                KeyCode::BackTab => {
+                    self.highlight += 7 - 1;
+                    self.highlight %= 7;
+                }
+                KeyCode::Up => {
+                    let next = self.table_state[self.highlight]
+                        .selected()
+                        .unwrap_or(0)
+                        .saturating_sub(1);
+                    self.table_state[self.highlight].select(Some(next));
+                }
+                KeyCode::Down => {
+                    let next = self.table_state[self.highlight]
+                        .selected()
+                        .map(|x| x + 1)
+                        .unwrap_or(0);
+                    self.table_state[self.highlight].select(Some(next));
+                }
+                _ => return false,
+            },
+            _ => return false,
         }
         true
     }
@@ -140,20 +145,24 @@ impl RatatuiInspector {
 
         let received_packet_table = Table::new(rows.clone(), [Length(25), Min(10), Length(15)])
             .block(Block::new().title("Received Packets"))
-            .header(Row::new(vec!["Time", "Type", "Size"])).row_highlight_style(Style::new().reversed());
+            .header(Row::new(vec!["Time", "Type", "Size"]))
+            .row_highlight_style(Style::new().reversed());
 
         let sent_packet_table = Table::new(rows.clone(), [Length(25), Min(10), Length(15)])
             .block(Block::new().title("Sent Packets"))
-            .header(Row::new(vec!["Time", "Type", "Size"])).row_highlight_style(Style::new().reversed());
+            .header(Row::new(vec!["Time", "Type", "Size"]))
+            .row_highlight_style(Style::new().reversed());
 
         let received_message_table =
             Table::new(rows.clone(), [Length(25), Min(10), Length(8), Length(15)])
                 .block(Block::new().title("Received Messages"))
-                .header(Row::new(vec!["Time", "Message", "From", "Src addr"])).row_highlight_style(Style::new().reversed());
+                .header(Row::new(vec!["Time", "Message", "From", "Src addr"]))
+                .row_highlight_style(Style::new().reversed());
 
         let sent_message_table = Table::new(rows.clone(), [Length(25), Min(10)])
             .block(Block::new().title("Sent Messages"))
-            .header(Row::new(vec!["Time", "Message"])).row_highlight_style(Style::new().reversed());
+            .header(Row::new(vec!["Time", "Message"]))
+            .row_highlight_style(Style::new().reversed());
 
         let db_message_table = Table::new(
             rows.clone(),
@@ -179,11 +188,12 @@ impl RatatuiInspector {
             "Overwrites",
             "Message",
         ]))
-            .row_highlight_style(Style::new().reversed());
+        .row_highlight_style(Style::new().reversed());
 
         let metrics_table = Table::new(rows.clone(), [Percentage(50), Percentage(50)])
             .block(Block::new().title("Metrics/info"))
-            .header(Row::new(vec!["Key", "Value"])).row_highlight_style(Style::new().reversed());
+            .header(Row::new(vec!["Key", "Value"]))
+            .row_highlight_style(Style::new().reversed());
 
         RatatuiInspector {
             received_packet_table,
@@ -198,11 +208,9 @@ impl RatatuiInspector {
             zoom: false,
             start: Instant::now(),
             x_offset: 0,
-            table_state: [();7].map(|_|Default::default()),
-
+            table_state: [(); 7].map(|_| Default::default()),
         }
     }
-
 
     /// Draw the diagnostics ui.
     ///
@@ -226,7 +234,7 @@ impl RatatuiInspector {
         let frame_area = frame.area();
 
         let zoom = self.zoom;
-        let zoomed = move |area| if zoom {frame_area} else {area};
+        let zoomed = move |area| if zoom { frame_area } else { area };
 
         let [upper_area, mid_area, bottom_area] = main_layout.areas(frame_area);
 
@@ -240,23 +248,40 @@ impl RatatuiInspector {
         let split_layout = Layout::horizontal([Percentage(25), Percentage(75)]);
         let [metrics_area, db_msg_area] = split_layout.areas(bottom_area);
 
-        let received_packet_block = Block::new().borders(Borders::ALL).title("Packets Received").highlight(0, self.highlight);
+        let received_packet_block = Block::new()
+            .borders(Borders::ALL)
+            .title("Packets Received")
+            .highlight(0, self.highlight);
 
-        let sent_packet_block = Block::new().borders(Borders::ALL).title("Packets Sent").highlight(1, self.highlight);
+        let sent_packet_block = Block::new()
+            .borders(Borders::ALL)
+            .title("Packets Sent")
+            .highlight(1, self.highlight);
 
-        let root_obj_block = Block::new().borders(Borders::ALL).title("Root obj").highlight(2, self.highlight);
+        let root_obj_block = Block::new()
+            .borders(Borders::ALL)
+            .title("Root obj")
+            .highlight(2, self.highlight);
 
         let received_messages_block = Block::new()
             .borders(Borders::ALL)
-            .title("Messages Received").highlight(3, self.highlight);
+            .title("Messages Received")
+            .highlight(3, self.highlight);
 
-        let sent_messages_block = Block::new().borders(Borders::ALL).title("Messages sent").highlight(4, self.highlight);
+        let sent_messages_block = Block::new()
+            .borders(Borders::ALL)
+            .title("Messages sent")
+            .highlight(4, self.highlight);
 
-        let metrics_block = Block::new().borders(Borders::ALL).title("Metrics").highlight(5, self.highlight);
+        let metrics_block = Block::new()
+            .borders(Borders::ALL)
+            .title("Metrics")
+            .highlight(5, self.highlight);
 
         let db_msg_block = Block::new()
             .borders(Borders::ALL)
-            .title("Database messages").highlight(6, self.highlight)
+            .title("Database messages")
+            .highlight(6, self.highlight)
             .title_bottom("Flags: T = Overwriter tainted, S = Tombstone, N = Wrote non-opaque");
 
         let mut max_x_offset = 0;
@@ -286,8 +311,6 @@ impl RatatuiInspector {
                 packet.size.to_string(),
             ]));
         }
-
-
 
         let mut received_message_rows = vec![];
         for message in data.received_messages.iter() {
@@ -363,7 +386,7 @@ impl RatatuiInspector {
                     .rows(received_packet_rows)
                     .block(received_packet_block),
                 zoomed(received_packets_area),
-                &mut self.table_state[0]
+                &mut self.table_state[0],
             );
         }
         if !self.zoom || self.highlight == 1 {
@@ -373,19 +396,17 @@ impl RatatuiInspector {
                     .rows(sent_packet_rows)
                     .block(sent_packet_block),
                 zoomed(sent_packets_area),
-                &mut self.table_state[1]
+                &mut self.table_state[1],
             );
         }
 
         if !self.zoom || self.highlight == 2 {
             let root_obj_str = comm.with_root(|root| format!("{:#?}", root.export()));
 
-
             frame.render_widget(
                 Paragraph::new(root_obj_str).block(root_obj_block),
-                zoomed(root_obj_area)
+                zoomed(root_obj_area),
             );
-
         }
 
         if !self.zoom || self.highlight == 3 {
@@ -395,7 +416,7 @@ impl RatatuiInspector {
                     .rows(received_message_rows)
                     .block(received_messages_block),
                 zoomed(received_messages_area),
-                &mut self.table_state[3]
+                &mut self.table_state[3],
             );
         }
         if !self.zoom || self.highlight == 4 {
@@ -405,7 +426,7 @@ impl RatatuiInspector {
                     .rows(sent_message_rows)
                     .block(sent_messages_block),
                 zoomed(sent_messages_area),
-                &mut self.table_state[4]
+                &mut self.table_state[4],
             );
         }
 
@@ -416,7 +437,7 @@ impl RatatuiInspector {
                     .rows(metrics_rows)
                     .block(metrics_block),
                 zoomed(metrics_area),
-                &mut self.table_state[5]
+                &mut self.table_state[5],
             );
         }
 
@@ -427,7 +448,7 @@ impl RatatuiInspector {
                     .rows(db_rows)
                     .block(db_msg_block),
                 zoomed(db_msg_area),
-                &mut self.table_state[6]
+                &mut self.table_state[6],
             );
         }
     }

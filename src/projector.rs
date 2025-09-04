@@ -21,9 +21,7 @@ pub(crate) struct Projector<MSG: Message> {
     abort_on_panic: bool,
 }
 
-
 impl<MSG: Message + 'static> Projector<MSG> {
-
     pub(crate) fn sync_outstanding(&mut self) -> Result<()> {
         self.messages.sync_outstanding()
     }
@@ -111,7 +109,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
             }
         }
 
-
         let mut must_remove = Vec::new();
 
         self.messages
@@ -184,8 +181,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
     }
 
     pub(crate) fn load_message(&self, id: MessageId) -> Result<MessageFrame<MSG>> {
-        self
-            .messages
+        self.messages
             .read_message(id)?
             .ok_or_else(|| anyhow::anyhow!("Message not found"))
     }
@@ -389,10 +385,11 @@ impl<MSG: Message + 'static> Projector<MSG> {
 
         catch_and_log(
             || {
-                msg.payload
-                    .apply(msg.header.id,
-                           // Safety: We don't move out of root
-                           unsafe { Pin::new_unchecked(root) });
+                msg.payload.apply(
+                    msg.header.id,
+                    // Safety: We don't move out of root
+                    unsafe { Pin::new_unchecked(root) },
+                );
             },
             abort_on_panic,
         );

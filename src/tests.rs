@@ -175,7 +175,7 @@ fn test_mmap_big() {
         0,
         1024 * 1024 * 1024,
         "test_mmap_big",
-        "test-description"
+        "test-description",
     );
     //use std::io::Read;
     //let _ =  std::io::stdin().read(&mut [0u8]).unwrap();
@@ -189,7 +189,7 @@ fn test_mmap_helper() {
         0,
         16 * 1024 * 1024,
         "test_mmap1",
-        "test-description"
+        "test-description",
     )
     .unwrap()
     .0;
@@ -1055,7 +1055,6 @@ fn max_time() {
     println!("Time: {}", NoatunTime((1 << 48) - 1));
     println!("Time: {}", NoatunTime((1 << 49) - 1));
 }
-
 
 #[test]
 fn test_noatun_time_max() {

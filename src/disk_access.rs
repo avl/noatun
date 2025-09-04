@@ -6,8 +6,8 @@ use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 
-use std::slice;
 use metrics::{describe_gauge, gauge, Gauge, Unit};
+use std::slice;
 
 pub trait FileBackend {
     fn page_size(&self) -> usize;
@@ -39,7 +39,7 @@ pub(crate) struct FileAccessor {
     /// of the header. To get the payload/client byte count, subtract HEADER_SIZE
     committed_size: usize,
     seek_pos: usize,
-    committed_size_gauge: Gauge
+    committed_size_gauge: Gauge,
 }
 
 // Safety: Nothing in FileAccesor is !Send
@@ -81,7 +81,6 @@ impl ReadonlyFileAccessor<'_> {
         self.seek_pos += bytes;
         Ok(ret)
     }
-
 }
 impl Seek for ReadonlyFileAccessor<'_> {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
@@ -188,11 +187,7 @@ impl Read for FileAccessor {
 impl FileAccessor {
     fn make_gauge(name: &str, description: &str) -> Gauge {
         let committed_size_gauge = gauge!(name.to_string());
-        describe_gauge!(
-            name.to_string(),
-            Unit::Bytes,
-            description.to_string(),
-        );
+        describe_gauge!(name.to_string(), Unit::Bytes, description.to_string(),);
         committed_size_gauge
     }
 }
@@ -307,7 +302,6 @@ impl FileAccessor {
         self.set_used_space(self.committed_size.saturating_sub(Self::HEADER_SIZE));
     }
 
-
     pub(crate) fn map_const_ptr(&self) -> *const u8 {
         self.ptr.wrapping_add(Self::HEADER_SIZE)
     }
@@ -347,11 +341,15 @@ impl FileAccessor {
         unsafe { slice::from_raw_parts_mut(self.ptr.wrapping_add(Self::HEADER_SIZE), used) }
     }
 
-    pub(crate) fn from_mapping(mut mapping: impl FileBackend + Send + Sync + 'static, name: &str, descr: &str) -> Self {
+    pub(crate) fn from_mapping(
+        mut mapping: impl FileBackend + Send + Sync + 'static,
+        name: &str,
+        descr: &str,
+    ) -> Self {
         let initial_len = Self::HEADER_SIZE;
         mapping.grow_committed_mapping(initial_len).unwrap();
 
-        let committed_size_gauge  = FileAccessor::make_gauge(name, descr);
+        let committed_size_gauge = FileAccessor::make_gauge(name, descr);
         committed_size_gauge.set(mapping.len() as f64);
 
         Self {
@@ -432,7 +430,7 @@ impl FileAccessor {
             ptr: mapping.ptr(),
             mapping: Box::new(mapping),
             seek_pos: 0,
-            committed_size_gauge
+            committed_size_gauge,
         };
         let claimed_used_size = temp.used_space();
         let new_used_size = claimed_used_size.min(len.saturating_sub(Self::HEADER_SIZE));

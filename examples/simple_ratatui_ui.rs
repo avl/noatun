@@ -8,7 +8,10 @@
 //! This app does not persist anything to disk.
 use noatun::communication::udp::TokioUdpDriver;
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
-use noatun::{noatun_object, ratatui_inspector, Database, DatabaseSettings, Message, MessageId, SavefileMessageSerializer};
+use noatun::{
+    noatun_object, ratatui_inspector, Database, DatabaseSettings, Message, MessageId,
+    SavefileMessageSerializer,
+};
 use savefile_derive::Savefile;
 use std::error::Error;
 use std::fmt::Debug;
@@ -36,10 +39,7 @@ impl Message for IncrementMessage {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let db: Database<IncrementMessage> =
-        Database::create_in_memory(10_000_000,
-                                   DatabaseSettings::default()
-        ).unwrap();
-
+        Database::create_in_memory(10_000_000, DatabaseSettings::default()).unwrap();
 
     let distributed_db = DatabaseCommunication::new_custom(
         &mut TokioUdpDriver,
@@ -47,14 +47,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         DatabaseCommunicationConfig {
             enable_diagnostics: true,
             ..DatabaseCommunicationConfig::default()
-        }
-        ,
+        },
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
 
     distributed_db.add_message(IncrementMessage).await.unwrap();
 
-    ratatui_inspector::run_inspector(None,  &distributed_db).unwrap();
+    ratatui_inspector::run_inspector(None, &distributed_db).unwrap();
     Ok(())
 }

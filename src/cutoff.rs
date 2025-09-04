@@ -82,7 +82,6 @@ impl CutoffHash {
     }
 }
 
-
 /// How far back in time the cutoff time nominally is.
 ///
 /// This time should be greater than the maximum network propagation delay (taking into account
@@ -208,7 +207,6 @@ pub struct CutOffState {
     /// The prior, the current, and the upcoming,
     stamps: CutOffHashPos,
 }
-
 
 /// Safety: CutOffState contains only primitive types that are NoatunStorable
 unsafe impl NoatunStorable for CutOffState {

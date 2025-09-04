@@ -1,5 +1,6 @@
 use crate::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
 use crate::data_types::{NoatunHashMap, NoatunString, OpaqueNoatunVec};
+use crate::noatun_instant::Instant;
 use crate::tests::all_up_sync_test::MY_THREAD_RNG;
 use crate::tests::setup_tracing;
 use crate::tests::test_driver::TestDriver;
@@ -16,7 +17,6 @@ use rand::{Rng, SeedableRng};
 use savefile_derive::Savefile;
 use std::pin::Pin;
 use std::time::Duration;
-use crate::noatun_instant::Instant;
 
 noatun_object!(
     #[derive(PartialEq)]

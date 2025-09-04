@@ -3,6 +3,7 @@ use crate::communication::{
     CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket, DebugEvent,
     DebugEventMsg,
 };
+use crate::noatun_instant::Instant;
 use crate::tests::all_up_sync_test::MY_THREAD_RNG;
 use arcshift::ArcShift;
 use bytes::BufMut;
@@ -11,7 +12,6 @@ use rand::Rng;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{Receiver, Sender};
-use crate::noatun_instant::Instant;
 
 #[derive(Clone, Default)]
 pub(crate) struct Partitionings {
@@ -200,7 +200,10 @@ impl TestDriver {
             let lost = match &ev.msg {
                 DebugEventMsg::Send(_) => {
                     if let Some(receive_index) = receive_of[index] {
-                        format!("{:?}", evs[receive_index].time.saturating_duration_since(ev.time))
+                        format!(
+                            "{:?}",
+                            evs[receive_index].time.saturating_duration_since(ev.time)
+                        )
                     } else {
                         "*".to_string()
                     }

@@ -1,6 +1,6 @@
 use crate::data_types::context::{ContextGetter, ThreadLocalContext};
 use crate::projection_store::DatabaseContextData;
-use crate::sequence_nr::{Tracker};
+use crate::sequence_nr::Tracker;
 use crate::{
     get_context_mut_ptr, FatPtr, FixedSizeObject, NoatunContext, NoatunStorable, Object, Pointer,
     SchemaHasher, ThinPtr,
@@ -41,8 +41,6 @@ impl<T> Default for RawDatabaseVec<T> {
         }
     }
 }
-
-
 
 impl<T> Debug for RawDatabaseVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -96,7 +94,6 @@ impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
     }
 }
 impl<T: NoatunStorable + 'static> RawDatabaseVec<T> {
-
     pub(crate) fn get(&self, ctx: &DatabaseContextData, index: usize) -> &T {
         assert!(index < self.length);
         let offset = self.data + index * size_of::<T>();
@@ -236,7 +233,6 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
     pub(crate) fn len(&self) -> usize {
         self.length
     }
-
 
     pub(crate) fn iter<'a>(&'a self, c: &'a C) -> NoatunVecIterator<'a, T, C> {
         NoatunVecIterator {
@@ -489,7 +485,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
 
 /// Noatun version of Vec.
 ///
-/// Supports inserts, remove and iteration.
+/// Supports inserts, remove, reading and iteration.
 ///
 /// NOTE! This type is mostly available for completeness and because it can be convenient for
 /// demos and examples. However, because of the semantics of Noatun, every message that writes
@@ -609,7 +605,6 @@ impl<T> NoatunVec<T>
 where
     T: FixedSizeObject + 'static,
 {
-
     /// Get the length of the vec
     ///
     /// This method causes a read dependency on the length of the vector.
@@ -762,19 +757,18 @@ where
     }
 }
 
-/// Like [`NoatunVec`] but without a length tracker.
+/// Like [`NoatunVec`] but opaque. [`OpaqueNoatunVec`] cannot be read from during
+/// materialization.
 ///
-/// It doesn't support iteration, and doesn't have a `len` method.
-///
-/// This means less meta data needs to be kept, which avoid building subtle dependencies
+/// This means less meta data needs to be kept, which avoid building dependencies
 /// between messages. This means messages can be pruned more effectively.
 ///
-/// An example:
-///
-/// Adding an item to [`NoatunVec`] using [`NoatunVec::push`] changes the length of the
+/// # Contrast to NoatunVec
+/// Even just adding an item to [`NoatunVec`] using [`NoatunVec::push`] changes the length of the
 /// collection. This change is observable, so metadata about the length must be kept.
 /// However, the resulting length after [`NoatunVec::push`] depends on the previous length,
-/// which in turn depends on all previous push/pop operations. This creates a long
+/// which in turn depends on all previous push/pop operations. Thus, pushing a value to
+/// [`NoatunVec`] cause a read dependency. This creates a long
 /// dependency chain of messages that cannot be pruned simply because doing so would change
 /// the length of the collection.
 ///
