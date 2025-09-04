@@ -493,7 +493,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
 /// can be pruned until the vector is cleared, even if early messages no longer appear to have
 /// any impact on the database state.
 ///
-/// In most cases, applications should use [`NoatunHashMap`] or OpaqueNoatunVec.
+/// In most cases, applications should use [`crate::prelude::NoatunHashMap`] or OpaqueNoatunVec.
 ///
 /// A Vec contains two trackers:
 ///  * Clear tracker
@@ -786,7 +786,7 @@ impl<T: FixedSizeObject> Debug for OpaqueNoatunVec<T> {
     }
 }
 
-// Safety: OpaqueNoatunVec contains only NoatunStorable fields
+// Safety: `OpaqueNoatunVec` contains only NoatunStorable fields
 unsafe impl<T: FixedSizeObject> NoatunStorable for OpaqueNoatunVec<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::OpaqueNoatunVec/1");
@@ -818,7 +818,7 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
 
     /// Iterate over the elements of the vector.
     ///
-    /// This is not allowed from within [`Message::apply`] (because this is an opaque data-type).
+    /// This is not allowed from within [`crate::Message::apply`] (because this is an opaque data-type).
     pub fn iter(&self) -> NoatunVecIterator<'_, T, ThreadLocalContext> {
         NoatunContext.assert_opaque_access_allowed("OpaqueNoatunVec", "NoatunVec");
         NoatunVecIterator {
@@ -837,15 +837,15 @@ impl<T: FixedSizeObject> OpaqueNoatunVec<T> {
 
     /// Get the length of the vector.
     ///
-    /// This is not allowed from within [`Message::apply`] (because this is an opaque data-type).
+    /// This is not allowed from within [`crate::Message::apply`] (because this is an opaque data-type).
     pub fn len(&self) -> usize {
         NoatunContext.assert_opaque_access_allowed("OpaqueNoatunVec", "NoatunVec");
         self.raw.length
     }
     /// Returns a reference to the element at position 'index' or None if out of bounds.
     ///
-    /// This panics if called from within [`Message::apply`]. It must only be used
-    /// from within [`Database::with_root`] or similar locations. Opaque data types
+    /// This panics if called from within [`crate::Message::apply`]. It must only be used
+    /// from within [`crate::database::DatabaseSession::with_root`] or similar locations. Opaque data types
     /// are not visible during message application.
     #[inline]
     pub fn get_item(&self, index: usize) -> Option<&T> {

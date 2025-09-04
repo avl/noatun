@@ -36,7 +36,7 @@ pub struct OpaqueNoatunCell<T> {
     tracker: Tracker,
 }
 
-/// Safety: OpaqueNoatunCell<T> contains only NoatunStorable types
+/// Safety: `OpaqueNoatunCell<T>` contains only NoatunStorable types
 unsafe impl<T: NoatunStorable> NoatunStorable for OpaqueNoatunCell<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::OpaqueNoatunCell/1");
@@ -44,7 +44,7 @@ unsafe impl<T: NoatunStorable> NoatunStorable for OpaqueNoatunCell<T> {
     }
 }
 
-/// Safety: NoatunCell<T> contains only NoatunStorable types
+/// Safety: `NoatunCell<T>` contains only NoatunStorable types
 unsafe impl<T: NoatunPod> NoatunStorable for NoatunCell<T> {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::NoatunCell/1");
@@ -52,7 +52,7 @@ unsafe impl<T: NoatunPod> NoatunStorable for NoatunCell<T> {
     }
 }
 
-/// Safety: NoatunCell<T> contains only NoatunPod types
+/// Safety: `NoatunCell<T>` contains only NoatunPod types
 impl<T: NoatunPod + Debug> Debug for NoatunCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let value = self.value;
@@ -60,7 +60,7 @@ impl<T: NoatunPod + Debug> Debug for NoatunCell<T> {
     }
 }
 
-/// Safety: OpaqueNoatunCell<T> contains only NoatunPod types
+/// Safety: `OpaqueNoatunCell<T>` contains only NoatunPod types
 impl<T: NoatunPod + Debug> Debug for OpaqueNoatunCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let value = self.value;

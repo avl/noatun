@@ -1,6 +1,6 @@
 //! The distributor contains all logic needed to distribute events between noatun
 //! instances. It does not contain any actual IO code. Instead, something like
-//! [`crate::communication::DatabaseCommunication`] can be used to communicate over UDP or similar.
+//! `crate::communication::DatabaseCommunication` can be used to communicate over UDP or similar.
 use crate::colors::*;
 use crate::cutoff::{Acceptability, CutOffHashPos};
 use crate::database::{DatabaseSession, DatabaseSessionMut};

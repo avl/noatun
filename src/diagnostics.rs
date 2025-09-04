@@ -1,6 +1,4 @@
 //! Module containing data types used by the diagnostics feature of noatun.
-//!
-//! See [`crate::communication::DatabaseCommunication::diagnostics_data`]
 use crate::distributor::{Address, EphemeralNodeId};
 use crate::noatun_instant::Instant;
 use std::collections::VecDeque;

@@ -519,7 +519,7 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     /// Specifically, if early pruning has occurred, not all historical context will be available.
     ///
     /// To achieve complete history, it is possible to implement [`Message::persistence`] and return
-    /// [`Persistence::AtLeastUntilCutoff`], and then set a very large cutoff_interval (see
+    /// [`crate::Persistence::AtLeastUntilCutoff`], and then set a very large cutoff_interval (see
     /// field 'cutoff_interval' in [`DatabaseSettings`] ).
     pub fn set_projection_time_limit(&mut self, limit: NoatunTime) -> Result<()> {
         self.db.set_projection_time_limit(limit)

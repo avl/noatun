@@ -65,70 +65,7 @@ compile_error!("Noatun currently only supports little-endian machines");
 
 /// Module use to abstract 'Instant'. If the tokio feature is activated,
 /// it resolves to 'tokio::time::Instant', otherwise std::time::Instant.
-pub mod noatun_instant {
-    use std::fmt::{Debug, Formatter};
-    use std::ops::{Add, AddAssign, Sub};
-    use std::time::Duration;
-
-    #[cfg(feature = "tokio")]
-    type Inner = tokio::time::Instant;
-    #[cfg(not(feature = "tokio"))]
-    type Inner = std::time::Instant;
-
-    /// Noatun Instant.
-    ///
-    /// This is a simple wrapper around either [`std::time::Instant`], or if tokio support is
-    /// enabled, [`tokio::time::Instant`].
-    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    pub struct Instant(Inner);
-
-    impl Debug for Instant {
-        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            self.0.fmt(f)
-        }
-    }
-
-    impl Instant {
-        /// Return an instant corresponding to the current time
-        pub fn now() -> Self {
-            Self(Inner::now())
-        }
-        /// Calculate the positive duration since 'other'. If 'other' is later than
-        /// 'self', a zero duration is returned.
-        pub fn saturating_duration_since(&self, other: Instant) -> Duration {
-            self.0.saturating_duration_since(other.0)
-        }
-        /// Calculate the amount of time that has elapsed from 'self' until [`Self::now`].
-        pub fn elapsed(&self) -> Duration {
-            self.0.elapsed()
-        }
-        /// Convert this noatun instant to a tokio Instant
-        #[cfg(feature = "tokio")]
-        pub fn tokio_instant(&self) -> Inner {
-            self.0
-        }
-    }
-    impl AddAssign<Duration> for Instant {
-        fn add_assign(&mut self, rhs: Duration) {
-            self.0 += rhs;
-        }
-    }
-    impl Add<Duration> for Instant {
-        type Output = Instant;
-
-        fn add(self, rhs: Duration) -> Self::Output {
-            Self(self.0 + rhs)
-        }
-    }
-
-    impl Sub<Instant> for Instant {
-        type Output = Duration;
-
-        fn sub(self, rhs: Instant) -> Self::Output {
-            self.0 - rhs.0
-        }
-    }
-}
+pub mod noatun_instant;
 
 #[cfg(feature = "debug_color")]
 use term_colors as colors;
@@ -167,6 +104,20 @@ mod sha2_helper;
 
 pub mod simple_metrics;
 mod xxh3_vendored;
+
+pub mod prelude {
+    //! Commonly used types
+
+    pub use crate::data_types::{
+        NoatunCell, NoatunHashMap, NoatunString, NoatunVec, OpaqueNoatunCell, OpaqueNoatunString,
+        OpaqueNoatunVec,
+    };
+    pub use crate::database::{Database, DatabaseSession, DatabaseSessionMut, DatabaseSettings};
+    pub use crate::{
+        CutOffDuration, CutOffState, Message, MessageId, NoatunPod, NoatunStorable, NoatunTime,
+        Object,
+    };
+}
 
 #[doc(hidden)]
 #[cfg(feature = "debug")]
@@ -1101,7 +1052,7 @@ impl MessageId {
     /// Create a MessageId from the given time and random part.
     ///
     /// Note, this is a low level operation. Use [`Self::generate_for_time`] to generate
-    /// a unique id for a specified timestamp, or [`Self::`]
+    /// a unique id for a specified timestamp.
     pub fn from_parts(time: NoatunTime, random: [u8; 10]) -> Result<MessageId> {
         let t: u64 = time.as_ms();
         Self::from_parts_raw(t, random)
@@ -1446,7 +1397,7 @@ pub trait MessageExt: Message {
 impl<T> MessageExt for T where T: Message {}
 
 /// A Noatun-message has a header with the id, and the list of parents.
-/// See [`Self::MessageFrame`].
+/// See [`MessageFrame`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageHeader {
     /// The identifier of this message.
@@ -2564,9 +2515,9 @@ fn msg_deserialize<T: savefile::Deserialize + savefile::Packed>(buf: &[u8]) -> a
 /// Trait for a serializer that can serialize/deserialize a Message of type `MSG`.
 ///
 /// This trait is used to make noatun completely independent of any particular serialization
-/// framework, like serde. To use serde + postcard, use [`PostcardMessageSerializer`].
+/// framework, like serde. To use serde + postcard, use `PostcardMessageSerializer`.
 pub trait NoatunMessageSerializer<MSG> {
-    /// Deserialize an instance of type [`MSG`] from 'buf'
+    /// Deserialize an instance of type `MSG` from 'buf'
     fn deserialize(buf: &[u8]) -> anyhow::Result<MSG>
     where
         Self: Sized;
@@ -2604,7 +2555,7 @@ pub struct SavefileMessageSerializer<
 /// Dummy serializer that panics on all use
 ///
 /// Only useful for compile tests or similar, where actual serialization isn't needed, but
-/// a type implementing NoatunMessageSerializer<T> is needed
+/// a type implementing `NoatunMessageSerializer<T>` is needed
 pub struct DummyMessageSerializer;
 
 impl<MSG> NoatunMessageSerializer<MSG> for DummyMessageSerializer {

@@ -107,7 +107,7 @@ pub enum WarehouseEvent {
 /// Define our root database object. Here we have a single pod (plain old data) field of type u32.
 /// (This is an oversimplified example.)
 /// See docs for what types are supported by the noatun_object macro.
-/// It is also possible to implement completely custom types by implementing the [`noatun::Object`]
+/// It is also possible to implement completely custom types by implementing the [`crate::prelude::Object`]
 /// macro manually.
 noatun_object!(
     struct Warehouse {
@@ -482,8 +482,8 @@ navigating the materialized view can cause unintended observations. See next sec
 
 Noatun can sometimes prune data even before the cut-off interval has elapsed. This is possible when
 a message has only written "opaque" data to the database. Opaque data is data that cannot be read
-by other messages. That is, information that cannot be read while executing in [`Message::apply`], but only
-from [`DatabaseSession::with_root`]. 
+by other messages. That is, information that cannot be read while executing in [`crate::prelude::Message::apply`], but only
+from [`crate::prelude::DatabaseSession::with_root`]. 
 
 Let's return to a variation of our earlier example:
 
@@ -523,17 +523,17 @@ can be pruned as soon as all their information has been completely overwritten.
 
 Collections offer a challenge. To illustrate this, consider vectors.
 
-It may seem that pushing a new item at the end of a vector [`NoatunVec``] should not introduce any read dependency.
+It may seem that pushing a new item at the end of a vector [`crate::prelude::NoatunVec`] should not introduce any read dependency.
 But actually, the result of such a push depends on the previous contents of, and thus all previous writes
 to the vector. The reason for this is that later messages may use the length of the vector in calculations.
 
-Pruning any messages that wrote to a [`NoatunVec`] would change the later return value of [`NoatunVec::len`], and
-this could change the final materialized state. Because of this [`NoatunVec`] *does* record a read dependency
-on previous messages when pushing to a [`NoatunVec`].
+Pruning any messages that wrote to a [`crate::prelude::NoatunVec`] would change the later return value of [`crate::prelude::NoatunVec::len`], and
+this could change the final materialized state. Because of this [`crate::prelude::NoatunVec`] *does* record a read dependency
+on previous messages when pushing to a [`crate::prelude::NoatunVec`].
 
-To work around this, [`OpaqueNoatunVec`] exists. It works like [`NoatunVec`], but does not record read dependencies
-when pushing new elements. The downside is that it does not support a regular [`len`] operation. This way,
-pruning an element from a `OpaqueNoatunVec` is not observable to any message. Remember that we never prune a message
+To work around this, [`crate::prelude::OpaqueNoatunVec`] exists. It works like [`crate::prelude::NoatunVec`], but does not record read dependencies
+when pushing new elements. The downside is that it does not support a regular `len` operation. This way,
+pruning an element from a `crate::prelude::OpaqueNoatunVec` is not observable to any message. Remember that we never prune a message
 if information it wrote could be read by a later message. So if the message we're about to prune wrote an item
 that is actually read itself by a message, the pruning will not occur.
 
@@ -553,7 +553,7 @@ Emitting tombstones can be costly, so it can make sense for applications to take
 
 Noatun has a tool for avoiding tombstones in some situations: the `clear` method.
 
-[`NoatunVec`], [`OpaqueNoatunVec`] and [`NoatunHashMap`] all have such a `clear`-method. This method, unsurprisingly,
+[`crate::prelude::NoatunVec`], [`crate::prelude::OpaqueNoatunVec`] and [`crate::prelude::NoatunHashMap`] all have such a `clear`-method. This method, unsurprisingly,
 removes all elements from the collection. But additionally, and crucially, it does this without marking the 
 message as a tombstone. Instead, it records itself as the writer of a special 'clear' marker in the collection. 
 This write is recorded just like the write to any field. Future calls to 'clear' will overwrite the marker, and 
@@ -580,7 +580,7 @@ establishing read dependencies between messages.
 
 Interactive applications often have a need to validate messages before emitting them.
 
-In these situations, applications can use [`DatabaseSessionMut::with_root_preview`] to
+In these situations, applications can use [`crate::prelude::DatabaseSessionMut::with_root_preview`] to
 apply a message temporarily, and give the application access to the resulting
 materialized view. An application can then run validation on the actual
 state resulting from applying the message.
@@ -597,7 +597,7 @@ There are a few possibilities for undoing events in Noatun:
 
 ### Deleting the event
 
-Events can be deleted using [`DatabaseSessionMut::remove_message`]. Note, however,
+Events can be deleted using [`crate::prelude::DatabaseSessionMut::remove_message`]. Note, however,
 that this is a low level operation that should not be used for events that have been
 (or may have been) transmitted to other nodes. Noatun still guarantees eventual consistency,
 but this will only occur after the cutoff interval has passed, and will be accomplished by
@@ -613,7 +613,7 @@ by the original message, and it can then hopefully be automatically pruned.
 ### Inhibiting a message from being applied
 
 Since messages have access to their id when being applied, it is possible to
-maintain a set of 'inhibited' messages. A [`Message::apply`] implementation can
+maintain a set of 'inhibited' messages. A [`crate::prelude::Message::apply`] implementation can
 then check if it has been inhibited before executing the bulk of its body.
 
 Separate 'inhibit' messages can then be defined, that add to the set of inhibited
@@ -622,7 +622,7 @@ it will be as if the message never happened.
 
 The inhibit messages can be created with a MessageId that sorts immediately before
 the original message (but still on the same timestamp). See method
-[`MessageId::unique_predecessor`].
+[`crate::prelude::MessageId::unique_predecessor`].
 
 
 
@@ -660,7 +660,7 @@ While requiring correct time is a limitation, it is often the case that IT syste
 need correct time anyway for other purposes, such as validating certificates, 
 correctly timestamping logs, achieving freshness conditions in cryptography, and many more.
 
-The noatun type representing time, `NoatunTime`, has a range from the year 1970 to 
+The noatun type representing time, [`crate::prelude::NoatunTime`], has a range from the year 1970 to 
 the year 10000.
 
 
@@ -725,7 +725,7 @@ as a global count of sold icecream, something that each ice cream cart did not a
 have information about.
 
 If events only encode actual ground truth information, and no derived information, 
-it is often relatively straightforward to correctly implement the [`Message::apply`] method.
+it is often relatively straightforward to correctly implement the [`crate::prelude::Message::apply`] method.
 
 In this example, the information available to each cart was just that a sale had been made
 locally, and that was all the information that should be encoded in the message. Deriving
@@ -833,7 +833,7 @@ However, after having the system in operation for a while, we expand our fleet
 with a new truck. However, it's used, and its last maintenance was on December 1st 2024.
 
 When we enter this event into the system, we notice a problem. We must backdate
-the `RecordMaintenance` event to december 1st 2024. But then [`Message::apply`]
+the `RecordMaintenance` event to december 1st 2024. But then [`crate::prelude::Message::apply`]
 fails, because the maintenance plan doesn't exist yet. It isn't created until 
 January 1st 2025. 
 

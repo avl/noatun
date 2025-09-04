@@ -964,7 +964,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
     /// Returns the number of elements in the map.
     ///
-    /// This method panics if called from within [`Message::apply`]. But also see
+    /// This method panics if called from within [`crate::Message::apply`]. But also see
     /// [`Self::untracked_len`].
     pub fn len(&self) -> usize {
         self.assert_not_apply("len", true);
@@ -985,7 +985,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
     /// Returns true if there are no elements in the map.
     ///
-    /// This method panics if called from within [`Message::apply`]. But also see
+    /// This method panics if called from within [`crate::Message::apply`]. But also see
     /// [`Self::untracked_is_empty`].
     pub fn is_empty(&self) -> bool {
         self.assert_not_apply("is_empty", true);
@@ -1380,7 +1380,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     /// This does not itself record a read dependency, though reading
     /// from the returned value presumably will.
     ///
-    /// For a mutable version of this, see [`get_mut_val`].
+    /// For a mutable version of this, see [`Self::get_mut_val`].
     #[inline]
     pub fn get(&self, key: &K::NativeType) -> Option<&V> {
         let context = self.data_meta_len();
@@ -1394,7 +1394,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
     ///
     /// WARNING!
     /// Note, this does _not_ record a read dependency. Calling this method
-    /// from within [`Message::apply`] is not recommended. If a call is made,
+    /// from within [`crate::Message::apply`] is not recommended. If a call is made,
     /// no decision affecting the materialized state may be made based on the
     /// value.
     pub fn untracked_contains_key(&self, key: &K::NativeType) -> bool {

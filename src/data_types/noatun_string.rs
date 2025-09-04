@@ -191,7 +191,7 @@ pub struct OpaqueNoatunString {
     length: usize,
 }
 
-/// Safety: OpaqueNoatunString contains only NoatunStorable fields
+/// Safety: `OpaqueNoatunString` contains only NoatunStorable fields
 unsafe impl NoatunStorable for OpaqueNoatunString {
     fn hash_schema(hasher: &mut SchemaHasher) {
         hasher.write_str("noatun::OpaqueNoatunString/1")
@@ -260,14 +260,14 @@ impl Deref for OpaqueNoatunString {
 impl OpaqueNoatunString {
     /// Retrieve the value of this opaque string.
     ///
-    /// This panics if called from within [`Message::apply`].
+    /// This panics if called from within [`crate::Message::apply`].
     pub fn get(&self) -> &str {
         NoatunContext.assert_opaque_access_allowed("OpaqueNoatunString", "NoatunString");
         if self.length == 0 {
             return "";
         }
         let start_ptr = NoatunContext.start_ptr().wrapping_add(self.start.0);
-        // Safety: OpaqueNoatunString contains a valid pointer
+        // Safety: `OpaqueNoatunString` contains a valid pointer
         unsafe {
             let bytes = slice::from_raw_parts(start_ptr, self.length);
             std::str::from_utf8_unchecked(bytes)
