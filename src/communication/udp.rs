@@ -96,7 +96,7 @@ impl CommunicationDriver for TokioUdpDriver {
     }
 
     fn parse_endpoint(s: &str) -> anyhow::Result<Self::Endpoint> {
-        Ok(s.parse().context(format!("couldn't parse {s:?}"))?)
+        s.parse().context(format!("couldn't parse {s:?}"))
     }
 }
 

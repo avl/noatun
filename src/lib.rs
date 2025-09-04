@@ -2,7 +2,6 @@
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]
 #![allow(clippy::bool_comparison)]
-#![allow(clippy::manual_is_multiple_of)]
 #![deny(clippy::missing_safety_doc)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(missing_docs)]
@@ -11,6 +10,7 @@
 #![allow(clippy::expect_fun_call)]
 #![allow(clippy::needless_late_init)]
 #![allow(clippy::derivable_impls)]
+//#![allow(clippy::manual_is_multiple_of)]
 
 pub use crate::data_types::{NoatunCell, OpaqueNoatunCell};
 use crate::noatun_instant::Instant;

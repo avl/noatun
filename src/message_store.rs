@@ -1779,7 +1779,7 @@ impl<M> OnDiskMessageStore<M> {
 
         Ok(MessageWriteReport {
             start_pos,
-            total_size: msg_total_size as u64,
+            total_size: msg_total_size,
         })
     }
     fn do_header_checksum(file: &mut FileAccessor, start_pos: u64) -> Result<()> {

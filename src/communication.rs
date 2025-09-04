@@ -294,6 +294,7 @@ impl ReceiveTrack {
         expected_next + short_delta as u64
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn process(
         &mut self,
         packet: TransmittedEntitySortable,
@@ -601,6 +602,7 @@ pub(crate) struct ExecutionContext<T> {
 }
 
 impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
+    #[allow(clippy::too_many_arguments)]
     async fn new(
         driver: &mut Socket,
         bind_address: &str,
