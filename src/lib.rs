@@ -1797,7 +1797,7 @@ pub trait Object {
     ///     }
     /// );
     ///
-    /// fn export(cat: &Cat) -> CatExternal {
+    /// fn export(cat: &Cat) -> CatNative {
     ///     cat.export()
     /// }
     ///

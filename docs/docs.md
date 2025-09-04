@@ -173,7 +173,7 @@ async fn example() {
     distributed_db.with_root(|root|{
         // This will print 42 (unless another node managed to connect
         // and inserted more messages):
-        println!("Quantity: {}", root.quantity);
+        println!("Quantity: {}", root.quantity.get());
     });
     
     // ... run application.
