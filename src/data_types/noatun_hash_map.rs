@@ -684,7 +684,6 @@ struct LengthGuard<'a, K: NoatunKey, V: FixedSizeObject> {
     new_length: usize,
 
     map: &'a mut NoatunHashMap<K, V>,
-   
 }
 
 impl<'a, K: NoatunKey, V: FixedSizeObject> LengthGuard<'a, K, V> {
@@ -1131,7 +1130,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         );
 
         result
-
     }
 
     /// Remove any items in the map for which the predicate returns true.

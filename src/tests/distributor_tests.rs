@@ -50,7 +50,6 @@ fn create_app<'a>(
         )
         .unwrap();
     }
-   
     drop(sess);
     db
 }

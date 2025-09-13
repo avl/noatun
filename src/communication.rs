@@ -317,7 +317,7 @@ impl ReceiveTrack {
         track_node!(self.node.get().raw_u16());
         let reconstructed_seq = self.reconstruct_seq(packet.seq);
 
-        println!("#{:?} {:?} Processing pkt size {:?} from {:?}",
+        trace!("#{:?} {:?} Processing pkt size {:?} from {:?}",
             cur_node(), test_elapsed(), packet.data.len(), packet.src.raw_u16()
         );
         let packet = TransmittedEntityWithFullSeq {
@@ -814,7 +814,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             )?;
         }
 
-        println!("#{}: {:?}: In run: queue: {:?}, cursend: {:?}", cur_node(), test_elapsed(), self.queue.len(), !context.cursend.is_empty());
+        trace!("#{}: {:?}: In run: queue: {:?}, cursend: {:?}", cur_node(), test_elapsed(), self.queue.len(), !context.cursend.is_empty());
 
         let now = Instant::now();
         if self.gc_time < now {
@@ -1408,7 +1408,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                 _ = sender.pump(&mut context, &mut messages_received, &mut message_to_transmit, &mut node_id_collision, self.diagnostics.as_deref()) => {
 
                 }
-                
+
                 _process_incoming = buffering_timer => {
                     track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
                     buffer_timer_instant = None;

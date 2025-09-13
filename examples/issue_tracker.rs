@@ -266,7 +266,6 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
 
     let comms = start_communication(
         std::env::args().nth(1)
-
     )?;
 
     let user = std::env::var("USER").unwrap_or("default-user".to_string());

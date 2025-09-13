@@ -1347,7 +1347,6 @@ impl Distributor {
                             accum_count.1 = (accum_count.1).min(source);
                         }
                     }
-                   
                 }
                 DistributorMessage::UpstreamResponse {
                     source,

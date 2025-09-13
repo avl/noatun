@@ -312,7 +312,6 @@ mod tests {
                     let node = &mut pathers[dest as usize];
                     if node.should_i_forward(src as u16, received_from) {
                        
-                        
                         assert!(node.should_i_forward(src as u16, received_from));
                         for hearing_node in get_who_hears(dest, &node_neighbors) {
                             front.insert((hearing_node, dest));
