@@ -5,7 +5,7 @@ use flexi_logger::writers::FileLogWriter;
 use flexi_logger::{FileSpec, LogSpecification};
 use std::pin::Pin;
 use std::time::Duration;
-
+use itertools::Itertools;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Constraint::Percentage;
 use ratatui::layout::{Flex, Layout};
@@ -151,12 +151,6 @@ impl Message for IssueMessage {
     }
 }
 
-/// This is a bare minimum example. There are many approaches to running an application loop, so
-/// this is not meant to be prescriptive. It is only meant to demonstrate the basic setup and
-/// teardown of a terminal application.
-///
-/// This example does not handle events or update the application state. It just draws a greeting
-/// and exits when the user presses 'q'.
 fn main() -> Result<()> {
     let _keep_alive_handles = flexi_logger::trc::setup_tracing(
         LogSpecification::env().unwrap(),
@@ -244,7 +238,7 @@ impl AppState {
     }
 }
 
-fn start_communication() -> Result<DatabaseCommunication<IssueMessage>> {
+fn start_communication(bind: Option<String>) -> Result<DatabaseCommunication<IssueMessage>> {
     let db: Database<IssueMessage> = Database::create_new(
         "issue_db",
         OpenMode::OpenCreate,
@@ -257,6 +251,7 @@ fn start_communication() -> Result<DatabaseCommunication<IssueMessage>> {
     let distributed_db = DatabaseCommunication::new(
         db,
         DatabaseCommunicationConfig {
+            listen_address: bind.unwrap_or_else(||"127.0.0.1".to_string()),
             enable_diagnostics: true,
             ..Default::default()
         },
@@ -265,15 +260,14 @@ fn start_communication() -> Result<DatabaseCommunication<IssueMessage>> {
     Ok(distributed_db)
 }
 
-/// Run the application loop. This is where you would handle events and update the application
-/// state. This example exits when the user presses 'q'. Other styles of application loops are
-/// possible, for example, you could have multiple application states and switch between them based
-/// on events, or you could have a single application state and update it based on events.
 fn run(mut terminal: DefaultTerminal) -> Result<()> {
     let recorder = SimpleMetricsRecorder::default();
     recorder.clone().register_global();
 
-    let comms = start_communication()?;
+    let comms = start_communication(
+        std::env::args().nth(1)
+
+    )?;
 
     let user = std::env::var("USER").unwrap_or("default-user".to_string());
     // Note: TableState should be stored in your application state (not constructed in your render

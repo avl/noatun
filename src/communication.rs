@@ -1201,7 +1201,7 @@ impl Default for DatabaseCommunicationConfig {
     fn default() -> Self {
         Self {
             listen_address: "127.0.0.1".to_string(),
-            multicast_address: "230.230.230.230".to_string(),
+            multicast_address: "230.230.230.230:9876".to_string(),
             mtu: 1000,
             bandwidth_limit_bytes_per_second: 1000,
             retransmit_interval_seconds: 1.0,
