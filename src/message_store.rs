@@ -747,6 +747,7 @@ impl<M> OnDiskMessageStore<M> {
         Ok(header)
     }
 
+    #[allow(unused)]
     pub(crate) fn contains_index(&self, index: usize) -> Result<bool> {
         let (_header, index_entries) = self.header_and_index()?;
 

@@ -1,5 +1,5 @@
 use divan::counter::BytesCount;
-use noatun::data_types::{
+use noatun::data_types::noatun_hash_map::{
     get_any_empty, run_get_probe_sequence, BucketProbeSequence, Meta, MetaGroup, MetaGroupNr,
 };
 use std::hint::black_box;

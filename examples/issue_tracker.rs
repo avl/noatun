@@ -3,7 +3,6 @@ use anyhow::{Context, Result};
 use flexi_logger::trc::FormatConfig;
 use flexi_logger::writers::FileLogWriter;
 use flexi_logger::{FileSpec, LogSpecification};
-use itertools::Itertools;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Constraint::Percentage;
 use ratatui::layout::{Flex, Layout};

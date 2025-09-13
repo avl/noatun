@@ -1,4 +1,4 @@
-use crate::data_types::noatun_hash_map::meta_finder::get_any_empty;
+pub use meta_finder::get_any_empty;
 use crate::sequence_nr::{SequenceNr, Tracker};
 use crate::xxh3_vendored::NoatunHasher;
 use crate::{
@@ -161,15 +161,17 @@ impl Add<usize> for BucketNr {
     }
 }
 
+#[doc(hidden)]
 #[derive(Clone, Copy)]
-pub(crate) struct BucketProbeSequence {
+pub struct BucketProbeSequence {
     cur_group: usize,
     group_capacity: usize,
     group_step: usize,
 }
 
 impl BucketProbeSequence {
-    pub(crate) fn new(start_group: MetaGroupNr, total_group_count: usize) -> BucketProbeSequence {
+    #[doc(hidden)]
+    pub fn new(start_group: MetaGroupNr, total_group_count: usize) -> BucketProbeSequence {
         BucketProbeSequence {
             cur_group: start_group.0,
             group_capacity: total_group_count,
@@ -219,7 +221,7 @@ pub struct MetaGroup(pub [Meta; HASH_META_GROUP_SIZE]);
 
 /// Returns when end of probe sequence was reached, or when closure returns true.
 #[doc(hidden)]
-pub(crate) fn run_get_probe_sequence(
+pub fn run_get_probe_sequence(
     metas: &[MetaGroup],
     max_buckets: usize,
     needle: Meta,
@@ -248,8 +250,10 @@ pub(crate) fn run_get_probe_sequence(
     }
 }
 
+/// Result of running a hashmap probing sequence
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ProbeRunResult {
+    /// The hashmap is full. No empty bucket can thus be found.
     HashFull,
     /// Found a bucket with the given key, with a value present
     FoundPopulated(BucketNr, Meta),
@@ -725,7 +729,8 @@ where
     /// not establish a read dependency.
     Vacant(VacantEntry<'a, K, V>),
 }
-pub struct NoatunHashMapEntryInternal<'a, K, V>
+
+struct NoatunHashMapEntryInternal<'a, K, V>
 where
     K: NoatunStorable + NoatunKey + PartialEq,
     V: FixedSizeObject,
@@ -737,6 +742,7 @@ where
     length: &'a mut usize,
 }
 
+/// Entry representing the absence of a value for a particular key
 pub struct VacantEntry<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject>
 where
     K::NativeOwnedType: Sized,
@@ -746,6 +752,7 @@ where
     key: K::NativeOwnedType,
     length: &'a mut usize,
 }
+/// Entry representing the value for a particular key
 pub struct OccupiedEntry<'a, K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject>
 where
     K::NativeOwnedType: Sized,

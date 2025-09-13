@@ -252,6 +252,7 @@ struct ReceiveTrack {
     retransmit_interval: Duration,
     disable_retransmit: bool,
     last_success: Instant,
+    #[allow(unused)]
     node: ArcShift<EphemeralNodeId>,
 }
 
@@ -624,6 +625,7 @@ pub(crate) struct ExecutionContext<T> {
     send_local_addr: Option<T>,
     next_retransmit: Instant,
     next_retransmit_active: bool,
+    #[allow(unused)]
     node: ArcShift<EphemeralNodeId>,
 }
 
@@ -1519,6 +1521,7 @@ pub struct DatabaseCommunication<MSG: Message> {
     database: Arc<Mutex<Database<MSG>>>,
     cmd_tx: Sender<Cmd<MSG>>,
     node: String,
+    #[allow(unused)]
     initial_node_id: EphemeralNodeId,
     diagnostics: Option<Arc<Mutex<DiagnosticsData>>>,
 }

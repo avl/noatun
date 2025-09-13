@@ -43,7 +43,8 @@ pub(crate) use noatun_vec::{NoatunVecRaw, RawDatabaseVec};
 
 mod noatun_cell;
 mod noatun_hash_impls;
-mod noatun_hash_map;
+/// Noatun-version of HashMap
+pub mod noatun_hash_map;
 mod noatun_option;
 mod noatun_string;
 mod noatun_vec;
