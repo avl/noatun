@@ -435,7 +435,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
         max_project_to: Option<NoatunTime>,
         auto_delete: bool,
     ) -> Result<Option<SequenceNr> /*earliest deleted index*/> {
-       
         let first_run = self
             .messages
             .query_by_index(context.next_seqnr().try_index().unwrap())?;

@@ -1223,7 +1223,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         K::hash(key, &mut h);
 
         let (meta_group_nr, key_meta) = MetaGroupNr::from_u64(h.finish(), cap);
-       
+
         let probe = BucketProbeSequence::new(meta_group_nr, cap.div_ceil(HASH_META_GROUP_SIZE));
 
         run_insert_probe_sequence(
@@ -1241,8 +1241,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             },
             probe,
         )
-
-       
     }
     fn next_suitable_capacity(capacity: usize) -> usize {
         if capacity == 0 {

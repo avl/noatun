@@ -3,8 +3,6 @@ use anyhow::{Context, Result};
 use flexi_logger::trc::FormatConfig;
 use flexi_logger::writers::FileLogWriter;
 use flexi_logger::{FileSpec, LogSpecification};
-use std::pin::Pin;
-use std::time::Duration;
 use itertools::Itertools;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Constraint::Percentage;
@@ -19,6 +17,8 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 use savefile_derive::Savefile;
+use std::pin::Pin;
+use std::time::Duration;
 use tracing::trace;
 
 use noatun::communication::{DatabaseCommunication, DatabaseCommunicationConfig};
@@ -251,7 +251,7 @@ fn start_communication(bind: Option<String>) -> Result<DatabaseCommunication<Iss
     let distributed_db = DatabaseCommunication::new(
         db,
         DatabaseCommunicationConfig {
-            listen_address: bind.unwrap_or_else(||"127.0.0.1".to_string()),
+            listen_address: bind.unwrap_or_else(|| "127.0.0.1".to_string()),
             enable_diagnostics: true,
             ..Default::default()
         },
@@ -264,9 +264,7 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
     let recorder = SimpleMetricsRecorder::default();
     recorder.clone().register_global();
 
-    let comms = start_communication(
-        std::env::args().nth(1)
-    )?;
+    let comms = start_communication(std::env::args().nth(1))?;
 
     let user = std::env::var("USER").unwrap_or("default-user".to_string());
     // Note: TableState should be stored in your application state (not constructed in your render

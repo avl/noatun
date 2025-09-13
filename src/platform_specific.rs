@@ -6,7 +6,7 @@ pub(crate) use unix::FileMapping;
 #[cfg(windows)]
 compile_error!("noatun does not currently support windows");
 
-#[cfg(target_os="macos")]
+#[cfg(target_os = "macos")]
 compile_error!("noatun does not currently support macos");
 
 #[cfg(unix)]

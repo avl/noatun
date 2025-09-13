@@ -310,7 +310,6 @@ pub mod xxh3 {
         (left as u64).wrapping_mul(right as u64)
     }
 
-
     macro_rules! to_u128 {
         ($lo:expr, $hi:expr) => {
             ($lo) as u128 | ((($hi) as u128) << 64)

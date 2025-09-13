@@ -309,7 +309,6 @@ impl CommunicationDriver for TestDriver {
         _multicast_group: &str,
         _mtu: usize,
     ) -> anyhow::Result<(Self::Sender, Self::Receiver)> {
-       
         let mut rx = None;
         let mut own_id = None;
         self.senders.rcu(|prev| {

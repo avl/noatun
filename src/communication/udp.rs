@@ -2,12 +2,12 @@
 use crate::communication::{
     CommunicationDriver, CommunicationReceiveSocket, CommunicationSendSocket,
 };
+use crate::{cur_node, test_elapsed};
 use anyhow::{bail, Context};
 use socket2::{Domain, Protocol, Type};
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
 use tracing::{info, trace};
-use crate::{cur_node, test_elapsed};
 
 impl CommunicationDriver for TokioUdpDriver {
     type Receiver = UdpSocket;
@@ -110,7 +110,12 @@ impl CommunicationSendSocket<SocketAddr> for CommunicationUdpSendSocket {
     }
 
     async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        trace!("#{} {:?} Sent {} bytes", cur_node(), test_elapsed(), buf.len());
+        trace!(
+            "#{} {:?} Sent {} bytes",
+            cur_node(),
+            test_elapsed(),
+            buf.len()
+        );
         let res = UdpSocket::send_to(&self.socket, buf, self.multicast_addr).await;
         match res {
             Ok(sent_size) => {
@@ -133,7 +138,12 @@ impl CommunicationReceiveSocket<SocketAddr> for tokio::net::UdpSocket {
         buf: &mut B,
     ) -> std::io::Result<(usize, Option<SocketAddr>)> {
         let (size, addr) = UdpSocket::recv_buf_from(self, buf).await?;
-        trace!("#{} {:?} Received {} bytes", cur_node(), test_elapsed(), size);
+        trace!(
+            "#{} {:?} Received {} bytes",
+            cur_node(),
+            test_elapsed(),
+            size
+        );
         Ok((size, Some(addr)))
     }
 }

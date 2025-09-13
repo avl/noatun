@@ -270,7 +270,7 @@ impl<T: Object + ?Sized> NoatunBox<T> {
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn allocate<'a>(value: T) -> Pin<&'a mut Self>
     where
-        T: Object<Ptr=ThinPtr>,
+        T: Object<Ptr = ThinPtr>,
         T: NoatunStorable,
     {
         let mut this = NoatunContext.allocate::<NoatunBox<T>>();

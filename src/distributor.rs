@@ -1332,7 +1332,6 @@ impl Distributor {
                 } => {
                     check_node_id_collision(source);
 
-                   
                     for (msg, count) in query {
                         // TODO(future): Consider if this is fast enough to do unbatched here? (and is batching really faster?)
                         if !database.contains_message(msg)? {
@@ -1549,7 +1548,6 @@ impl Distributor {
         >,
         now: Instant,
     ) -> Result<()> {
-       
         self.distributor_state.nominal = true;
 
         let mut messages_to_request_from_source = IndexMap::<_, Vec<_>>::new();

@@ -247,7 +247,6 @@ fn old_transmitted_messages_without_effect_are_removed1() {
     println!("Add msg2 {:?}", msg2.id);
     assert_eq!(sess.get_all_messages_vec().unwrap().len(), 2);
 
-
     sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
 
     let all_msgs = sess.get_all_messages_vec().unwrap();
@@ -296,7 +295,6 @@ fn old_transmitted_messages_without_effect_are_removed2() {
     println!("Added msg2 {:?}", msg2.id);
     assert_eq!(sess.get_all_messages_vec().unwrap().len(), 2);
 
-
     sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
 
     let all_msgs = sess.get_all_messages_vec().unwrap();
@@ -340,9 +338,7 @@ async fn all_up_gradual_update_sync_test() {
         tokio::time::sleep(Duration::from_secs(random(0..10))).await;
         let elapsed = start_time.elapsed();
         app1.add_message_at(
-            datetime!(2020-01-01 Z)
-                .add(elapsed)
-                .into(),
+            datetime!(2020-01-01 Z).add(elapsed).into(),
             SyncMessage {
                 value: 1,
                 persist: false,
@@ -409,7 +405,6 @@ async fn all_up_gradual_update_sync_test() {
     app1.close().await.unwrap();
     app2.close().await.unwrap();
     println!("{}", driver.messages_snapshot());
-
 }
 
 #[cfg(debug_assertions)]
@@ -419,8 +414,6 @@ const NUM_CASES: u64 = 1000;
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_old_messages_all() {
-
-
     let test_recorder = SimpleMetricsRecorder::default();
     let _guard = test_recorder.register_local();
 
@@ -435,7 +428,6 @@ async fn all_up_general_update_sync_test_old_messages_all() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_old_messages_654() {
-
     {
         let seed = 654;
         println!("=========== Seed = {seed} ===========");
@@ -446,7 +438,6 @@ async fn all_up_general_update_sync_test_old_messages_654() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_persist() {
-
     for seed in 0..NUM_CASES {
         println!("=========== Seed = {seed} ===========");
         all_up_general_update_sync_test_impl(seed, 10, true, usize::MAX, true).await;
@@ -473,7 +464,6 @@ async fn all_up_general_update_sync_test_mid_age_messages_persist_2413() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_no_persist_all() {
-
     for seed in 0..NUM_CASES {
         println!("\n\n============ Seed {seed} ==============\n\n");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, true).await;
@@ -482,7 +472,6 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist_all() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_no_persist87() {
-
     {
         let seed = 87;
         println!("\n\n============ Seed {seed} ==============\n\n");
@@ -492,7 +481,6 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist87() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_no_persist_no_reset() {
-
     for seed in 0..NUM_CASES {
         println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, false).await;

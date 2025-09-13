@@ -1612,9 +1612,7 @@ pub fn from_bytes_mut<T: NoatunStorable>(s: &mut [u8]) -> &mut T {
     // Safety:
     // We've checked alignment and size, and those are the only requirements
     // an Object need to be valid.
-    unsafe {
-        &mut *s.as_mut_ptr().cast::<T>()
-    }
+    unsafe { &mut *s.as_mut_ptr().cast::<T>() }
 }
 
 /// Cast between two different storable objects

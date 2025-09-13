@@ -1161,7 +1161,6 @@ impl<M> OnDiskMessageStore<M> {
             *out_children = child_accessor.all()?;
         }
 
-       
         Ok(MessageHeader {
             id: header.message_id,
             parents,
@@ -1821,7 +1820,7 @@ impl<M> OnDiskMessageStore<M> {
         };
         if let Some((file, offset)) = search_index[index].file_offset.file_and_offset() {
             let file = &mut self.data_files[file.index()].file;
-           
+
             let mut parents = EmbVecAccessor::new_parents(&mut *file, offset);
             parents.clear()?;
 
@@ -2238,7 +2237,7 @@ impl<M> OnDiskMessageStore<M> {
                         index_we_must_rewind_db_to =
                             Some(Self::find_valid_index_at_or_before(cur_index, mmap_index));
                     }
-                   
+
                     if let Some(last_msg_id) = last_msg_id {
                         if last_msg_id >= msg.id() {
                             bail!("MessageId was not applied in correct order.");
@@ -2325,7 +2324,6 @@ impl<M> OnDiskMessageStore<M> {
 
         index_header.entries = index_header.entries.max(cur_index_u32);
 
-       
         debug_assert!(mmap_index[0..index_header.entries as usize]
             .iter()
             .is_sorted_by_key(|x| x.message));
@@ -2886,7 +2884,6 @@ mod tests {
         {
             let _header =
                 OnDiskMessageStore::<OnDiskMessage>::header_mut(&mut store.index_mmap).unwrap();
-           
         }
         store
             .recover(|_, _| Ok(()), NoatunTime::EPOCH, &CutOffConfig::default())
@@ -2909,7 +2906,6 @@ mod tests {
         )
         .unwrap();
 
-       
         let msg = MessageFrame::new(
             MessageId::new_debug(0u32),
             vec![],
@@ -2920,12 +2916,10 @@ mod tests {
             },
         );
 
-       
         store
             .append_many_sorted(std::iter::once(&msg), |_, _| Ok(()), true)
             .unwrap();
 
-       
         let msg = store
             .read_message(MessageId::new_debug(0))
             .unwrap()
@@ -2949,7 +2943,6 @@ mod tests {
         #[cfg(not(debug_assertions))]
         const COUNT: usize = 1000usize;
 
-       
         let msgs: Vec<_> = (0..COUNT)
             .map(|i| {
                 MessageFrame::new(
@@ -2968,7 +2961,6 @@ mod tests {
             })
             .collect();
 
-       
         store
             .append_many_sorted(msgs.iter(), |_, _| Ok(()), true)
             .unwrap();
@@ -2982,7 +2974,6 @@ mod tests {
             all_children_of_0
         );
 
-       
         let msg = store
             .read_message(MessageId::new_debug(2))
             .unwrap()
@@ -3007,7 +2998,6 @@ mod tests {
 
         const COUNT: usize = 5;
 
-       
         let msgs: Vec<_> = (0..COUNT)
             .map(|i| {
                 MessageFrame::new(
@@ -3063,7 +3053,6 @@ mod tests {
         let mut head_tracker = UpdateHeadTracker::new(&mut StandardDisk, &target).unwrap();
         const COUNT: usize = 6;
 
-       
         let msgs: Vec<_> = (0..COUNT)
             .map(|i| {
                 MessageFrame::new(
@@ -3410,14 +3399,12 @@ mod tests {
                 }
             });
 
-           
             let mut was_inserted = IndexSet::new();
-           
+
             store
                 .append_many_sorted(
                     to_insert.iter(),
                     |inserted, _| {
-                       
                         was_inserted.insert(inserted);
                         Ok(())
                     },

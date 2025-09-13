@@ -761,9 +761,9 @@ fn test_vec0() {
             assert_eq!(counter_vec.len(), 2);
 
             let item = counter_vec.as_mut().get_index_mut(1);
-           
+
             assert_eq!(item.counter.get(), 48);
-           
+
             for _ in 0..10 {
                 let _new_element = counter_vec.as_mut().push_zeroed();
             }
@@ -807,7 +807,7 @@ fn test_vec_miri0() {
 
         let item = counter_vec.as_mut().get_index_mut(1);
         assert_eq!(item.counter.get(), 48);
-       
+
         for _i in 0..10 {
             let _new_element = counter_vec.as_mut().push_zeroed();
         }

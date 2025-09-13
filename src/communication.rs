@@ -266,7 +266,11 @@ impl ReceiveTrack {
         Self::RECEIVER_RETRANSMIT_WINDOW as u16
     };
 
-    pub(crate) fn new(retransmit_interval: Duration, retransmit_disabled: bool, node: ArcShift<EphemeralNodeId>) -> Self {
+    pub(crate) fn new(
+        retransmit_interval: Duration,
+        retransmit_disabled: bool,
+        node: ArcShift<EphemeralNodeId>,
+    ) -> Self {
         ReceiveTrack {
             have_valid_accum: true,
             accum: Default::default(),
@@ -275,7 +279,7 @@ impl ReceiveTrack {
             retransmit_interval,
             disable_retransmit: retransmit_disabled,
             last_success: Instant::now(),
-            node
+            node,
         }
     }
 
@@ -317,8 +321,12 @@ impl ReceiveTrack {
         track_node!(self.node.get().raw_u16());
         let reconstructed_seq = self.reconstruct_seq(packet.seq);
 
-        trace!("#{:?} {:?} Processing pkt size {:?} from {:?}",
-            cur_node(), test_elapsed(), packet.data.len(), packet.src.raw_u16()
+        trace!(
+            "#{:?} {:?} Processing pkt size {:?} from {:?}",
+            cur_node(),
+            test_elapsed(),
+            packet.data.len(),
+            packet.src.raw_u16()
         );
         let packet = TransmittedEntityWithFullSeq {
             reconstructed_seq,
@@ -351,8 +359,11 @@ impl ReceiveTrack {
                 }
             }
 
-            debug!("#{:?}: {:?} Available seq: {}, waiting for {}",
-                cur_node(), test_elapsed(), first.reconstructed_seq,
+            debug!(
+                "#{:?}: {:?} Available seq: {}, waiting for {}",
+                cur_node(),
+                test_elapsed(),
+                first.reconstructed_seq,
                 self.expected_next
             );
 
@@ -465,7 +476,11 @@ impl ReceiveTrack {
                         /*tx_finished_received_frame
                         .try_send((Address::from(packet_source), temp.clone()))
                         .unwrap();*/
-                        debug!("#{:?} {:?} emit subsequent message", cur_node(), test_elapsed());
+                        debug!(
+                            "#{:?} {:?} emit subsequent message",
+                            cur_node(),
+                            test_elapsed()
+                        );
                         message_tx.push((raw_address, packet_source, temp));
                     }
 
@@ -503,7 +518,10 @@ impl Default for RetransmitInfo {
 impl<Socket: CommunicationDriver> SenderLoopTrait<Socket::Endpoint>
     for MulticastSenderLoop<Socket>
 {
-    fn make_context(&self, node: ArcShift<EphemeralNodeId>) -> Result<ExecutionContext<Socket::Endpoint>> {
+    fn make_context(
+        &self,
+        node: ArcShift<EphemeralNodeId>,
+    ) -> Result<ExecutionContext<Socket::Endpoint>> {
         self.create_context(node)
     }
 
@@ -606,7 +624,7 @@ pub(crate) struct ExecutionContext<T> {
     send_local_addr: Option<T>,
     next_retransmit: Instant,
     next_retransmit_active: bool,
-    node: ArcShift<EphemeralNodeId>
+    node: ArcShift<EphemeralNodeId>,
 }
 
 impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
@@ -778,7 +796,10 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         }
     }
 
-    pub fn create_context(&self, node: ArcShift<EphemeralNodeId>) -> Result<ExecutionContext<Socket::Endpoint>> {
+    pub fn create_context(
+        &self,
+        node: ArcShift<EphemeralNodeId>,
+    ) -> Result<ExecutionContext<Socket::Endpoint>> {
         Ok(ExecutionContext {
             node,
             cursend: vec![],
@@ -801,7 +822,6 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         track_node!(context.node.get().raw_u16());
         self.recvbuf.clear();
 
-
         let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
 
         for buf in messages_transmit_new_buffer.drain(..) {
@@ -814,7 +834,13 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             )?;
         }
 
-        trace!("#{}: {:?}: In run: queue: {:?}, cursend: {:?}", cur_node(), test_elapsed(), self.queue.len(), !context.cursend.is_empty());
+        trace!(
+            "#{}: {:?}: In run: queue: {:?}, cursend: {:?}",
+            cur_node(),
+            test_elapsed(),
+            self.queue.len(),
+            !context.cursend.is_empty()
+        );
 
         let now = Instant::now();
         if self.gc_time < now {
@@ -1894,13 +1920,13 @@ mod tests {
     use crate::communication::udp::TokioUdpDriver;
     use crate::communication::{MulticastSenderLoop, ReceiveTrack};
     use crate::distributor::EphemeralNodeId;
+    use crate::noatun_instant::Instant;
+    use crate::set_test_epoch;
     use crate::tests::setup_tracing;
     use arcshift::ArcShift;
     use std::collections::HashSet;
     use std::time::Duration;
     use tokio::spawn;
-    use crate::noatun_instant::Instant;
-    use crate::set_test_epoch;
 
     #[test]
     fn reconstruct_seq_logic() {
@@ -1992,7 +2018,7 @@ mod tests {
                     println!("Task1 received {} byte msg", msg.len());
                     assert!(expect.remove(&msg));
                 }
-                if expect.is_empty() && mloop1.queue.is_empty() && ctx.cursend.is_empty()  {
+                if expect.is_empty() && mloop1.queue.is_empty() && ctx.cursend.is_empty() {
                     return Ok(());
                 }
             }
