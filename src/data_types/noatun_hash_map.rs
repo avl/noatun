@@ -1,4 +1,3 @@
-pub use meta_finder::get_any_empty;
 use crate::sequence_nr::{SequenceNr, Tracker};
 use crate::xxh3_vendored::NoatunHasher;
 use crate::{
@@ -6,6 +5,7 @@ use crate::{
     SchemaHasher, ThinPtr,
 };
 use indexmap::IndexMap;
+pub use meta_finder::get_any_empty;
 use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
