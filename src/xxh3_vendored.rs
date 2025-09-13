@@ -310,18 +310,6 @@ pub mod xxh3 {
         (left as u64).wrapping_mul(right as u64)
     }
 
-    //#[inline(always)]
-    //fn _mm_prefetch(_ptr: *const i8, _offset: isize) {
-    //    #[cfg(target_arch = "x86")]
-    //    unsafe {
-    //        core::arch::x86::_mm_prefetch(_ptr.offset(_offset), core::arch::x86::_MM_HINT_T0);
-    //    }
-    //
-    //    #[cfg(target_arch = "x86_64")]
-    //    unsafe {
-    //        core::arch::x86_64::_mm_prefetch(_ptr.offset(_offset), core::arch::x86_64::_MM_HINT_T0);
-    //    }
-    //}
 
     macro_rules! to_u128 {
         ($lo:expr, $hi:expr) => {
@@ -1677,98 +1665,6 @@ pub mod xxh3 {
             Ok(())
         }
     }
-    /*
-        #[derive(Clone, Copy)]
-        ///Hash builder for `Xxh3`
-        pub struct Xxh3Builder {
-            seed: u64,
-            secret: [u8; DEFAULT_SECRET_SIZE],
-        }
-
-        impl Xxh3Builder {
-            #[inline(always)]
-            ///Creates new instance with default params.
-            pub const fn new() -> Self {
-                Self {
-                    seed: 0,
-                    secret: DEFAULT_SECRET,
-                }
-            }
-
-            #[inline(always)]
-            ///Sets `seed` for `xxh3` algorithm
-            pub const fn with_seed(mut self, seed: u64) -> Self {
-                self.seed = seed;
-                self
-            }
-
-            #[inline(always)]
-            ///Sets custom `secret` for `xxh3` algorithm
-            pub const fn with_secret(mut self, secret: [u8; DEFAULT_SECRET_SIZE]) -> Self {
-                self.secret = secret;
-                self
-            }
-
-            #[inline(always)]
-            ///Creates `Xxh3` instance
-            pub const fn build(self) -> Xxh3 {
-                Xxh3::with_custom_ops(self.seed, self.secret)
-            }
-        }
-
-        impl core::hash::BuildHasher for Xxh3Builder {
-            type Hasher = Xxh3;
-
-            #[inline(always)]
-            fn build_hasher(&self) -> Self::Hasher {
-                self.build()
-            }
-        }
-
-        impl Default for Xxh3Builder {
-            #[inline(always)]
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-
-        #[derive(Clone, Copy)]
-        ///Hash builder for `Xxh3Default`
-        pub struct Xxh3DefaultBuilder;
-
-        impl Xxh3DefaultBuilder {
-            #[inline(always)]
-            ///Creates new instance with default params.
-            pub const fn new() -> Self {
-                Self
-            }
-
-            #[inline(always)]
-            ///Creates `Xxh3` instance
-            pub const fn build(self) -> Xxh3Default {
-                Xxh3Default::new()
-            }
-        }
-
-        impl core::hash::BuildHasher for Xxh3DefaultBuilder {
-            type Hasher = Xxh3Default;
-
-            #[inline(always)]
-            fn build_hasher(&self) -> Self::Hasher {
-                self.build()
-            }
-        }
-
-        impl Default for Xxh3DefaultBuilder {
-            #[inline(always)]
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-    */
-    //
-    //128bit
-    //
 
     #[inline]
     fn xxh3_128_long_impl(input: &[u8], secret: &[u8]) -> u128 {

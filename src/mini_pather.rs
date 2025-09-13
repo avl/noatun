@@ -297,7 +297,7 @@ mod tests {
         }
 
         for src in 0..node_count {
-            //println!("--- Analyzing src {} ---", src);
+           
             let mut front = IndexSet::new();
             let mut covered = IndexSet::new();
             let mut nodes_that_have_received_msg = IndexSet::new();
@@ -307,19 +307,19 @@ mod tests {
                 if !covered.insert((dest, received_from)) {
                     continue;
                 }
-                //println!(" == == Analyzing what {} does when it receives {}.{} == ==", dest, src, received_from);
+               
                 {
                     let node = &mut pathers[dest as usize];
                     if node.should_i_forward(src as u16, received_from) {
-                        //println!("Node {} decided to forward msg from {} via {}", dest, src, received_from);
-
+                       
+                        
                         assert!(node.should_i_forward(src as u16, received_from));
                         for hearing_node in get_who_hears(dest, &node_neighbors) {
                             front.insert((hearing_node, dest));
                         }
                     } else {
                         assert!(!node.should_i_forward(src as u16, received_from));
-                        //println!("Node {} decided NOT to forward msg from {} via {}", dest, src, received_from);
+                       
                     }
                 }
             }
@@ -344,7 +344,7 @@ mod tests {
         }
 
         for src in 0..node_count {
-            //let mut num_in_same_island = 0;
+           
             let mut some_ask = false;
             let mut some_ask0 = false;
             let mut have_same_island = 0;
@@ -360,7 +360,7 @@ mod tests {
                 if islands[src] == islands[dst] {
                     have_same_island += 1;
                 }
-                //num_in_same_island += 1;
+               
                 if ask.is_some() {
                     some_ask = true;
                 }
@@ -438,7 +438,7 @@ mod tests {
     }
 
     fn islands(node_neighbors: &[Vec<u16>]) -> Vec<u8> {
-        //println!("Input: {:?}", node_neighbors);
+       
         let mut explored = IndexSet::new();
         fn explore(
             explored: &mut IndexSet<u16>,

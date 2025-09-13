@@ -19,7 +19,7 @@ use crate::distributor::{
 use crate::mini_pather::MiniPather;
 use crate::noatun_instant::Instant;
 use crate::xxh3_vendored::xxh3::Xxh3Default;
-use crate::{track_node, Database, Message, NoatunTime};
+use crate::{cur_node, test_elapsed, track_node, Database, Message, NoatunTime};
 use anyhow::{anyhow, bail, Result};
 use arcshift::ArcShift;
 use arrayvec::ArrayString;
@@ -252,6 +252,7 @@ struct ReceiveTrack {
     retransmit_interval: Duration,
     disable_retransmit: bool,
     last_success: Instant,
+    node: ArcShift<EphemeralNodeId>,
 }
 
 impl ReceiveTrack {
@@ -265,7 +266,7 @@ impl ReceiveTrack {
         Self::RECEIVER_RETRANSMIT_WINDOW as u16
     };
 
-    pub(crate) fn new(retransmit_interval: Duration, retransmit_disabled: bool) -> Self {
+    pub(crate) fn new(retransmit_interval: Duration, retransmit_disabled: bool, node: ArcShift<EphemeralNodeId>) -> Self {
         ReceiveTrack {
             have_valid_accum: true,
             accum: Default::default(),
@@ -274,6 +275,7 @@ impl ReceiveTrack {
             retransmit_interval,
             disable_retransmit: retransmit_disabled,
             last_success: Instant::now(),
+            node
         }
     }
 
@@ -312,8 +314,12 @@ impl ReceiveTrack {
                   + Send),
         new_track: bool,
     ) -> Result<()> {
+        track_node!(self.node.get().raw_u16());
         let reconstructed_seq = self.reconstruct_seq(packet.seq);
 
+        println!("#{:?} {:?} Processing pkt size {:?} from {:?}",
+            cur_node(), test_elapsed(), packet.data.len(), packet.src.raw_u16()
+        );
         let packet = TransmittedEntityWithFullSeq {
             reconstructed_seq,
             entity: packet,
@@ -344,6 +350,11 @@ impl ReceiveTrack {
                     retransmit_requests.swap_remove(&packet_source);
                 }
             }
+
+            debug!("#{:?}: {:?} Available seq: {}, waiting for {}",
+                cur_node(), test_elapsed(), first.reconstructed_seq,
+                self.expected_next
+            );
 
             if first.reconstructed_seq != self.expected_next {
                 let mut give_up_on_retransmit = false;
@@ -429,12 +440,7 @@ impl ReceiveTrack {
                         .extend(&first.entity.data[0..first.entity.first_boundary as usize]);
                 }
                 if !self.accum.is_empty() {
-                    /*tx_finished_received_frame
-                    .try_send((
-                        Address::from(packet_source),
-                        self.accum.iter().copied().collect(),
-                    ))
-                    .unwrap();*/
+                    debug!("#{:?} {:?} emit prefix message", cur_node(), test_elapsed());
                     message_tx.push((
                         raw_address,
                         packet_source,
@@ -459,6 +465,7 @@ impl ReceiveTrack {
                         /*tx_finished_received_frame
                         .try_send((Address::from(packet_source), temp.clone()))
                         .unwrap();*/
+                        debug!("#{:?} {:?} emit subsequent message", cur_node(), test_elapsed());
                         message_tx.push((raw_address, packet_source, temp));
                     }
 
@@ -496,8 +503,8 @@ impl Default for RetransmitInfo {
 impl<Socket: CommunicationDriver> SenderLoopTrait<Socket::Endpoint>
     for MulticastSenderLoop<Socket>
 {
-    fn make_context(&self) -> Result<ExecutionContext<Socket::Endpoint>> {
-        self.create_context()
+    fn make_context(&self, node: ArcShift<EphemeralNodeId>) -> Result<ExecutionContext<Socket::Endpoint>> {
+        self.create_context(node)
     }
 
     fn has_send_capacity(&self, context: &mut ExecutionContext<Socket::Endpoint>) -> bool {
@@ -599,6 +606,7 @@ pub(crate) struct ExecutionContext<T> {
     send_local_addr: Option<T>,
     next_retransmit: Instant,
     next_retransmit_active: bool,
+    node: ArcShift<EphemeralNodeId>
 }
 
 impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
@@ -607,8 +615,6 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         driver: &mut Socket,
         bind_address: &str,
         multicast_group: &str,
-        //message_tx: Sender<(Address, Vec<u8>)>,
-        //message_rx: Receiver<Vec<u8>>,
         bandwidth_bytes_per_second: u64,
         quit_rx: tokio::sync::oneshot::Receiver<()>,
         mtu: usize,
@@ -772,8 +778,9 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         }
     }
 
-    pub fn create_context(&self) -> Result<ExecutionContext<Socket::Endpoint>> {
+    pub fn create_context(&self, node: ArcShift<EphemeralNodeId>) -> Result<ExecutionContext<Socket::Endpoint>> {
         Ok(ExecutionContext {
+            node,
             cursend: vec![],
             cursend_is_retransmit: false,
             send_local_addr: self.send_socket.local_addr()?,
@@ -791,7 +798,10 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         node_id_collision_detected: &mut bool,
         mut diagnostics: Option<&Mutex<DiagnosticsData>>,
     ) -> Result<bool /*quit*/> {
+        track_node!(context.node.get().raw_u16());
         self.recvbuf.clear();
+
+
         let receive = self.receive_socket.recv_buf_from(&mut self.recvbuf);
 
         for buf in messages_transmit_new_buffer.drain(..) {
@@ -803,6 +813,8 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                 *self.ephemeral_node_id.get(),
             )?;
         }
+
+        println!("#{}: {:?}: In run: queue: {:?}, cursend: {:?}", cur_node(), test_elapsed(), self.queue.len(), !context.cursend.is_empty());
 
         let now = Instant::now();
         if self.gc_time < now {
@@ -922,7 +934,6 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                         self.packets_sent.increment(1);
                         self.limiter.incur_debt(send_size as u64);
 
-                        //trace!("Actually sent {} raw bytes", sent);
                         context.cursend.clear();
                     }
                     Err(err) => {
@@ -938,7 +949,6 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             }
         };
 
-        //let get_cmd = self.message_rx.recv();
         select! {
             biased;
             _ = &mut self.quit_rx => {
@@ -1008,7 +1018,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
                                 (e.into_mut(), false)
                             }
                             Entry::Vacant(e) => {
-                                (e.insert(ReceiveTrack::new(self.retransmit_interval, self.disable_retransmit)), true)
+                                (e.insert(ReceiveTrack::new(self.retransmit_interval, self.disable_retransmit, self.ephemeral_node_id.clone())), true)
                             }
                         };
 
@@ -1097,10 +1107,6 @@ where
     Self: Send,
 {
     database: Arc<Mutex<Database<MSG>>>,
-    /// Join handle for MulticastSenderLoop
-    //jh: tokio::task::JoinHandle<Result<()>>,
-    //sender_tx: Sender<Vec<u8>>,
-    //receiver_rx: Receiver<(Address, Vec<u8>)>,
     distributor: Distributor,
     cmd_rx: Receiver<Cmd<MSG>>,
 
@@ -1140,6 +1146,8 @@ pub struct DatabaseCommunicationConfig {
     /// The address to which the communication should bind.
     ///
     /// For UDP/IP, this should be the local network interface address.
+    ///
+    /// Default value: "127.0.0.1"
     pub listen_address: String,
     /// The interval between periodic messages
     ///
@@ -1155,7 +1163,9 @@ pub struct DatabaseCommunicationConfig {
 
     /// The broadcast/multicast address
     ///
-    /// For UDP/IP multicast, this is the multicast group.
+    /// For UDP/IP multicast, this is the multicast group and port.
+    ///
+    /// Default value: "230.230.230.230:9876"
     ///
     /// Note, some protocols might not have a concept similar to multicast groups, in which
     /// case this can be left empty.
@@ -1190,8 +1200,8 @@ const REPORT_HEAD_INTERVAL_DEFAULT: Duration = Duration::from_secs(5);
 impl Default for DatabaseCommunicationConfig {
     fn default() -> Self {
         Self {
-            listen_address: "127.0.0.1:0".to_string(),
-            multicast_address: "230.230.230.230:7777".to_string(),
+            listen_address: "127.0.0.1".to_string(),
+            multicast_address: "230.230.230.230".to_string(),
             mtu: 1000,
             bandwidth_limit_bytes_per_second: 1000,
             retransmit_interval_seconds: 1.0,
@@ -1207,7 +1217,7 @@ impl Default for DatabaseCommunicationConfig {
 
 #[allow(async_fn_in_trait)]
 pub(crate) trait SenderLoopTrait<E> {
-    fn make_context(&self) -> Result<ExecutionContext<E>>;
+    fn make_context(&self, node: ArcShift<EphemeralNodeId>) -> Result<ExecutionContext<E>>;
     fn has_send_capacity(&self, context: &mut ExecutionContext<E>) -> bool;
     async fn pump(
         &mut self,
@@ -1323,7 +1333,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
     ) -> Result<Option<tokio::sync::oneshot::Sender<()>>> {
         self.nextsend.clear();
         let mut buffer_timer_instant = None;
-        let mut context = sender.make_context()?;
+        let mut context = sender.make_context(self.distributor.ephemeral_node_id.clone())?;
         let mut messages_received: Vec<(Option<Address>, EphemeralNodeId, Vec<u8>)> = Vec::new();
         let mut message_to_transmit: Vec<Vec<u8>> = Vec::new();
         loop {
@@ -1383,14 +1393,12 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
             }
 
             if !self.nextsend.is_empty() && sender.has_send_capacity(&mut context) {
-                //let permit = self.sender_tx.reserve().await?;
                 if !self.nextsend.is_empty() {
                     if let Some(msg) = self.nextsend_obj.take() {
                         self.debug_record_sent(&msg)?;
                     }
                     message_to_transmit.push(std::mem::take(&mut self.nextsend));
                 }
-                //permit.send(std::mem::take(&mut self.nextsend));
             }
 
             let mut node_id_collision = false;
@@ -1400,9 +1408,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                 _ = sender.pump(&mut context, &mut messages_received, &mut message_to_transmit, &mut node_id_collision, self.diagnostics.as_deref()) => {
 
                 }
-                /*res = sendtask => {
-                    res?;
-                }*/
+                
                 _process_incoming = buffering_timer => {
                     track_node!(self.distributor.ephemeral_node_id.get().raw_u16());
                     buffer_timer_instant = None;
@@ -1434,8 +1440,6 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
                             return Ok(Some(sender));
                         }
                         Cmd::GetStatus(sender) => {
-                            //let db = self.database.lock().unwrap();
-                            //let now = db.noatun_now();
                             sender.send(self.distributor.get_status(Instant::now())).map_err(|_|anyhow!("oneshot sender failed"))?;
                         }
                         Cmd::AddMessage(time, msg,result) => {
@@ -1758,9 +1762,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         database: Database<MSG>,
         config: DatabaseCommunicationConfig,
     ) -> Result<DatabaseCommunication<MSG>> {
-        //let (sender_tx, sender_rx) = tokio::sync::mpsc::channel(1);
         let (quit_tx, quit_rx) = tokio::sync::oneshot::channel();
-        //let (receiver_tx, receiver_rx) = tokio::sync::mpsc::channel(1000);
         let mut our_node_id = ArcShift::new(
             config
                 .initial_ephemeral_node_id
@@ -1791,8 +1793,6 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             driver,
             &config.listen_address,
             &config.multicast_address,
-            //receiver_tx,
-            //sender_rx,
             config.bandwidth_limit_bytes_per_second,
             quit_rx,
             config.mtu,
@@ -1828,8 +1828,6 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             ),
             node: node.clone(),
             database: database.clone(),
-            //sender_tx,
-            //receiver_rx,
             cmd_rx,
             buffer_life_start: Instant::now(),
             next_periodic: Instant::now(),
@@ -1901,6 +1899,8 @@ mod tests {
     use std::collections::HashSet;
     use std::time::Duration;
     use tokio::spawn;
+    use crate::noatun_instant::Instant;
+    use crate::set_test_epoch;
 
     #[test]
     fn reconstruct_seq_logic() {
@@ -1926,7 +1926,7 @@ mod tests {
 
         let mloop1 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
-            "127.0.0.1:0",
+            "127.0.0.1",
             "224.230.0.1:7777",
             10000,
             quit_rx1,
@@ -1940,13 +1940,11 @@ mod tests {
         .await
         .unwrap();
 
-        //let (sender_tx2, sender_rx2) = tokio::sync::mpsc::channel(1000);
         let (_quit_tx2, quit_rx2) = tokio::sync::oneshot::channel();
-        //let (receiver_tx2, mut receiver_rx2) = tokio::sync::mpsc::channel(1000);
 
         let mloop2 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
-            "127.0.0.1:0",
+            "127.0.0.1",
             "224.230.0.1:7777",
             10000,
             quit_rx2,
@@ -1966,6 +1964,11 @@ mod tests {
         mut mloop1: MulticastSenderLoop<TokioUdpDriver>,
         mut mloop2: MulticastSenderLoop<TokioUdpDriver>,
     ) {
+        // This is not a fantastic test.
+        // It's basically testing a layer in the API stack where semantics are
+        // unclear and unintuitive. It could be argued that this API should just be improved,
+        // but it may also be that it's just internal and inherently messy. The tests
+        // should be either just above the UDP-driver, or at a higher level.
         let payloads = || {
             vec![
                 vec![1u8; 1],
@@ -1978,7 +1981,7 @@ mod tests {
         let task1 = async move {
             let mut to_send = payloads();
             let mut expect: HashSet<Vec<u8>> = payloads().into_iter().collect();
-            let mut ctx = mloop1.create_context()?;
+            let mut ctx = mloop1.create_context(ArcShift::new(EphemeralNodeId::new(1)))?;
             let mut received = Vec::new();
             while mloop1
                 .run(&mut ctx, &mut received, &mut to_send, &mut false, None)
@@ -1989,7 +1992,7 @@ mod tests {
                     println!("Task1 received {} byte msg", msg.len());
                     assert!(expect.remove(&msg));
                 }
-                if expect.is_empty() {
+                if expect.is_empty() && mloop1.queue.is_empty() && ctx.cursend.is_empty()  {
                     return Ok(());
                 }
             }
@@ -1998,7 +2001,7 @@ mod tests {
         let task2 = async move {
             let mut to_send = payloads();
             let mut expect: HashSet<Vec<u8>> = payloads().into_iter().collect();
-            let mut ctx = mloop2.create_context()?;
+            let mut ctx = mloop2.create_context(ArcShift::new(EphemeralNodeId::new(2)))?;
             let mut received = Vec::new();
             while mloop2
                 .run(&mut ctx, &mut received, &mut to_send, &mut false, None)
@@ -2009,7 +2012,7 @@ mod tests {
                     println!("Task2 received {} byte msg", msg.len());
                     assert!(expect.remove(&msg));
                 }
-                if expect.is_empty() {
+                if expect.is_empty() && mloop2.queue.is_empty() && ctx.cursend.is_empty() {
                     return Ok(());
                 }
             }
@@ -2019,12 +2022,12 @@ mod tests {
         let jh1: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(task1);
         let jh2: tokio::task::JoinHandle<anyhow::Result<()>> = spawn(task2);
 
-        tokio::time::timeout(Duration::from_secs(10), jh1)
+        tokio::time::timeout(Duration::from_secs(5), jh1)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(10), jh2)
+        tokio::time::timeout(Duration::from_secs(5), jh2)
             .await
             .unwrap()
             .unwrap()
@@ -2033,15 +2036,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_sender_ipv6() {
+        let start_instant = Instant::now();
+        set_test_epoch(start_instant);
         setup_tracing();
         let (_quit_tx1, quit_rx1) = tokio::sync::oneshot::channel();
 
         let mloop1 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
-            "[::]:0",
+            "::",
             "[ff02::42:41%2]:7775",
-            //receiver_tx1,
-            //sender_rx1,
             10000,
             quit_rx1,
             200,
@@ -2058,7 +2061,7 @@ mod tests {
 
         let mloop2 = MulticastSenderLoop::new(
             &mut TokioUdpDriver,
-            "[::]:0",
+            "::",
             "[ff02::42:41%2]:7775",
             10000,
             quit_rx2,

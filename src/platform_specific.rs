@@ -3,6 +3,12 @@ pub(crate) use unix::get_boot_time;
 #[cfg(unix)]
 pub(crate) use unix::FileMapping;
 
+#[cfg(windows)]
+compil_error!("noatun does not currently support windows");
+
+#[cfg(target_os="macos")]
+compil_error!("noatun does not currently support macos");
+
 #[cfg(unix)]
 mod unix {
     use crate::disk_access::FileBackend;

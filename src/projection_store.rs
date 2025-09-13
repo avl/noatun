@@ -326,7 +326,7 @@ pub struct DatabaseContextData {
     // The next message expected to be applied.
     // Starts at 0. When a message is being applied, this field
     // will have the seqnr of the message being applied, not the next one.
-    //next_seqnr: SequenceNr,
+    // next_seqnr: SequenceNr,
     filesystem_sync_disabled: bool,
     /// Flag that keeps track of whether the current message has observed
     /// any part of the database. If it has, it's considered tainted, which means
@@ -850,13 +850,6 @@ impl DatabaseContextData {
                 };
                 HowToProceed::PopAndContinue
             }
-            /*UndoLogEntry::RestoreUninit { start, data } => {
-                unsafe {
-                    Self::mut_slice_uninit(self.main_db_mmap.map_mut_ptr_uninit(), start..start + data.len())
-                        .copy_from_slice(data)
-                };
-                HowToProceed::PopAndContinue
-            }*/
             UndoLogEntry::RestorePod { start, data } => {
                 // Safety: The map is large enough, and no live references exist
                 unsafe {

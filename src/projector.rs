@@ -423,7 +423,6 @@ impl<MSG: Message + 'static> Projector<MSG> {
     /// Returns the first index _after_ the given time.
     /// I.e, rewinding to this index will leave only messages at time and before.
     pub(crate) fn get_index_of_time(&mut self, time: NoatunTime) -> Result<usize> {
-        //let stamp = time.timestamp_millis() as u64;
         let key = MessageId::from_parts_raw(time.as_ms() + 1, [0; 10])?;
         let index = self.messages.get_insertion_point(key)?;
         Ok(index)
@@ -436,8 +435,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         max_project_to: Option<NoatunTime>,
         auto_delete: bool,
     ) -> Result<Option<SequenceNr> /*earliest deleted index*/> {
-        //context.clear_unused_tracking();
-
+       
         let first_run = self
             .messages
             .query_by_index(context.next_seqnr().try_index().unwrap())?;

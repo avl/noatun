@@ -98,7 +98,7 @@ fn test_rotation_big1() {
 #[cfg(feature = "expensive_tests")]
 fn test_rotation_big2() {
     let mut db: Database<RotMessage> = Database::create_new(
-        "test/test_rotation2",
+        "test/test_rotation3",
         OpenMode::Overwrite,
         DatabaseSettings::default(),
     )

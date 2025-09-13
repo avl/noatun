@@ -319,7 +319,6 @@ impl Neighborhood {
                 }
             }
             inhibit
-            // inhibit
         } else {
             // They can't hear us.
             true
@@ -1333,7 +1332,7 @@ impl Distributor {
                 } => {
                     check_node_id_collision(source);
 
-                    //if let Some(peer) = neighborhood.peers.get_peer(source) {
+                   
                     for (msg, count) in query {
                         // TODO(future): Consider if this is fast enough to do unbatched here? (and is batching really faster?)
                         if !database.contains_message(msg)? {
@@ -1348,7 +1347,7 @@ impl Distributor {
                             accum_count.1 = (accum_count.1).min(source);
                         }
                     }
-                    //}
+                   
                 }
                 DistributorMessage::UpstreamResponse {
                     source,
@@ -1551,8 +1550,7 @@ impl Distributor {
         >,
         now: Instant,
     ) -> Result<()> {
-        //let self_node_id = *self.ephemeral_node_id.get();
-
+       
         self.distributor_state.nominal = true;
 
         let mut messages_to_request_from_source = IndexMap::<_, Vec<_>>::new();
@@ -1616,7 +1614,6 @@ impl Distributor {
         for (src, heads) in by_src {
             let messages: Vec<MessageSubGraphNode> = database
                 .get_upstream_of(heads.into_iter())?
-                // Is the following filter correct?
                 .filter(|x| self.outbuf.upstream_response_blocked(x.0.id, now) == false)
                 .map(|(msg, query_count)| MessageSubGraphNode {
                     id: msg.id,
@@ -1679,11 +1676,6 @@ impl Distributor {
                 .collect::<Vec<_>>();
             debug_assert!(err.is_ok());
             err?;
-
-            /*let all_parents_are_also_in_request = msg_value
-            .parents
-            .iter()
-            .all(|x| upstream_response.contains_key(x));*/
 
             if missing_parents.is_empty() {
                 // We have all the parents, a perfect msg to request!

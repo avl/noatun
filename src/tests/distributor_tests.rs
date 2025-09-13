@@ -50,7 +50,7 @@ fn create_app<'a>(
         )
         .unwrap();
     }
-    //println!("Messages present: {:?}", db.get_all_message_ids());
+   
     drop(sess);
     db
 }

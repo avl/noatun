@@ -363,7 +363,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
         let dest_index = ctx.index_of_ptr(dest);
 
         if self.length > 0 {
-            //bytes
+            // bytes
             let old_ptr = FatPtr::from_idx_count(self.data, size_of::<T>() * self.length);
             // Safety: The pointers have been calculated here, and are known to be valid.
             unsafe {

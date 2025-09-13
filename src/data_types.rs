@@ -270,7 +270,7 @@ impl<T: Object + ?Sized> NoatunBox<T> {
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn allocate<'a>(value: T) -> Pin<&'a mut Self>
     where
-        T: Object<Ptr = ThinPtr>,
+        T: Object<Ptr=ThinPtr>,
         T: NoatunStorable,
     {
         let mut this = NoatunContext.allocate::<NoatunBox<T>>();
@@ -285,29 +285,6 @@ impl<T: Object + ?Sized> NoatunBox<T> {
         }
         this
     }
-
-    /*#[allow(clippy::mut_from_ref)]
-    pub unsafe fn allocate_unsized<'a>(value: &T) -> Pin<&'a mut Self>
-    where
-        T: Object<Ptr = FatPtr> + 'static,
-    {
-        let size_bytes = std::mem::size_of_val(value);
-        let mut this = NoatunContext.allocate::<NoatunBox<T>>();
-        let target_dst_ptr = NoatunContext.allocate_raw(size_bytes, std::mem::align_of_val(value));
-
-        let target_src_ptr = value as *const T as *const u8;
-
-        //let (src_ptr, src_metadata): (*const u8, usize) = unsafe { transmute_copy(&value) };
-
-        unsafe { std::ptr::copy(target_src_ptr, target_dst_ptr, size_bytes) };
-        let thin_index = NoatunContext.index_of_ptr(target_dst_ptr);
-
-        unsafe {
-            this.as_mut().get_unchecked_mut().object_index =
-                FatPtr::from_idx_count(thin_index.start(), count)
-        };
-        this
-    }*/
 }
 
 #[allow(non_local_definitions)]

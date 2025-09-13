@@ -1161,8 +1161,7 @@ impl<M> OnDiskMessageStore<M> {
             *out_children = child_accessor.all()?;
         }
 
-        //file.seek(SeekFrom::Start(offset + header.size_before_payload() as u64))?;
-
+       
         Ok(MessageHeader {
             id: header.message_id,
             parents,
@@ -1816,14 +1815,13 @@ impl<M> OnDiskMessageStore<M> {
     where
         M: Message,
     {
-        //dbg!(id,new_parents,new_children, removed_parent, removed_child);
         let (_header, search_index) = Self::header_and_index_mut(&mut self.index_mmap)?;
         let Ok(index) = search_index.binary_search_by_key(&id, |x| x.message) else {
             return Ok(());
         };
         if let Some((file, offset)) = search_index[index].file_offset.file_and_offset() {
             let file = &mut self.data_files[file.index()].file;
-            //let _header: &FileHeaderEntry = file.access_pod(offset as usize)?;
+           
             let mut parents = EmbVecAccessor::new_parents(&mut *file, offset);
             parents.clear()?;
 
@@ -1963,18 +1961,6 @@ impl<M> OnDiskMessageStore<M> {
             index -= 1;
         }
     }
-
-    /* fn do_append_many_sorted2<'a>(
-        &mut self,
-        messages: impl ExactSizeIterator<Item = &'a MessageFrame<M>>,
-        mut message_inserted: impl FnMut(MessageId, &[MessageId] /*parents*/) -> Result<()>,
-        local: bool,
-    ) -> Result<Option<usize>>
-    where
-        M: Message + Debug + 'a,
-    {
-
-    }*/
 
     fn do_append_many_sorted<'a>(
         &mut self,
@@ -2252,7 +2238,7 @@ impl<M> OnDiskMessageStore<M> {
                         index_we_must_rewind_db_to =
                             Some(Self::find_valid_index_at_or_before(cur_index, mmap_index));
                     }
-                    //Self::register_heads_and_tails(&mut self.update_heads, &parents, &msg.id())?;
+                   
                     if let Some(last_msg_id) = last_msg_id {
                         if last_msg_id >= msg.id() {
                             bail!("MessageId was not applied in correct order.");
@@ -2339,7 +2325,7 @@ impl<M> OnDiskMessageStore<M> {
 
         index_header.entries = index_header.entries.max(cur_index_u32);
 
-        //Self::check_duplicates(&mmap_index[0..index_header.entries as usize]);
+       
         debug_assert!(mmap_index[0..index_header.entries as usize]
             .iter()
             .is_sorted_by_key(|x| x.message));
@@ -2709,7 +2695,6 @@ impl<M> OnDiskMessageStore<M> {
             active_file: U1::from_index(active),
             phantom: Default::default(),
             loaded_existing: db_existed,
-            //update_heads,
             filesystem_sync_disabled: false,
             auto_compact_enabled: auto_compact,
             cutoff_index,
@@ -2878,9 +2863,8 @@ mod tests {
         )
         .unwrap();
 
-        const COUNT: usize = 5; //1_000_000usize;
+        const COUNT: usize = 5;
 
-        //let init = Instant::now();
         let msgs: Vec<_> = (0..COUNT)
             .map(|i| {
                 MessageFrame::new(
@@ -2902,7 +2886,7 @@ mod tests {
         {
             let _header =
                 OnDiskMessageStore::<OnDiskMessage>::header_mut(&mut store.index_mmap).unwrap();
-            //header.dirty_status = STATUS_NOK;
+           
         }
         store
             .recover(|_, _| Ok(()), NoatunTime::EPOCH, &CutOffConfig::default())
@@ -2925,7 +2909,7 @@ mod tests {
         )
         .unwrap();
 
-        //let init = Instant::now();
+       
         let msg = MessageFrame::new(
             MessageId::new_debug(0u32),
             vec![],
@@ -2936,12 +2920,12 @@ mod tests {
             },
         );
 
-        //let prev = Instant::now();
+       
         store
             .append_many_sorted(std::iter::once(&msg), |_, _| Ok(()), true)
             .unwrap();
 
-        //let prev = Instant::now();
+       
         let msg = store
             .read_message(MessageId::new_debug(0))
             .unwrap()
@@ -2965,7 +2949,7 @@ mod tests {
         #[cfg(not(debug_assertions))]
         const COUNT: usize = 1000usize;
 
-        //let init = Instant::now();
+       
         let msgs: Vec<_> = (0..COUNT)
             .map(|i| {
                 MessageFrame::new(
@@ -2984,7 +2968,7 @@ mod tests {
             })
             .collect();
 
-        //let prev = Instant::now();
+       
         store
             .append_many_sorted(msgs.iter(), |_, _| Ok(()), true)
             .unwrap();
@@ -2998,7 +2982,7 @@ mod tests {
             all_children_of_0
         );
 
-        //let prev = Instant::now();
+       
         let msg = store
             .read_message(MessageId::new_debug(2))
             .unwrap()
@@ -3021,9 +3005,9 @@ mod tests {
         )
         .unwrap();
 
-        const COUNT: usize = 5; //1_000_000usize;
+        const COUNT: usize = 5;
 
-        //let init = Instant::now();
+       
         let msgs: Vec<_> = (0..COUNT)
             .map(|i| {
                 MessageFrame::new(
@@ -3079,7 +3063,7 @@ mod tests {
         let mut head_tracker = UpdateHeadTracker::new(&mut StandardDisk, &target).unwrap();
         const COUNT: usize = 6;
 
-        //let init = Instant::now();
+       
         let msgs: Vec<_> = (0..COUNT)
             .map(|i| {
                 MessageFrame::new(
@@ -3239,7 +3223,7 @@ mod tests {
         )
         .unwrap();
 
-        const COUNT: usize = 1_000; //1_000_000usize;
+        const COUNT: usize = 1_000;
 
         let init = Instant::now();
         let msgs: Vec<_> = (0..COUNT)
@@ -3285,7 +3269,7 @@ mod tests {
         )
         .unwrap();
 
-        const COUNT: usize = 1; //1_000_000usize;
+        const COUNT: usize = 1;
 
         let init = Instant::now();
         let msgs: Vec<_> = (0..COUNT)
@@ -3426,16 +3410,14 @@ mod tests {
                 }
             });
 
-            //
-
+           
             let mut was_inserted = IndexSet::new();
-            //println!("To insert: {to_insert:?}");
-            //println!("Pre-state:\n{:#?}", store.header_and_index());
+           
             store
                 .append_many_sorted(
                     to_insert.iter(),
                     |inserted, _| {
-                        //println!("Reported insert of {inserted:?}");
+                       
                         was_inserted.insert(inserted);
                         Ok(())
                     },

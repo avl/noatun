@@ -166,7 +166,7 @@ fn old_local_messages_without_effect_are_removed0() {
         10000,
         DatabaseSettings {
             mock_time: Some(datetime!(2020-01-01 00:01:00 Z).into()),
-            cutoff_interval: CutOffDuration::from_days(2).unwrap(), // 2 days
+            cutoff_interval: CutOffDuration::from_days(2).unwrap(),
             ..Default::default()
         },
     )
@@ -218,7 +218,7 @@ fn old_transmitted_messages_without_effect_are_removed1() {
         10000,
         DatabaseSettings {
             mock_time: Some(datetime!(2020-01-01 00:01:00 Z).into()),
-            cutoff_interval: CutOffDuration::from_days(2).unwrap(), // 2 days
+            cutoff_interval: CutOffDuration::from_days(2).unwrap(),
             ..Default::default()
         },
     )
@@ -233,7 +233,7 @@ fn old_transmitted_messages_without_effect_are_removed1() {
         .unwrap();
     sess.mark_transmitted(msg1.id).unwrap();
     println!("Add msg1 {:?}", msg1.id);
-    //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
+
     sess.set_mock_time(datetime!(2020-01-01 00:01:10 Z).into())
         .unwrap();
     let msg2 = sess
@@ -247,7 +247,7 @@ fn old_transmitted_messages_without_effect_are_removed1() {
     println!("Add msg2 {:?}", msg2.id);
     assert_eq!(sess.get_all_messages_vec().unwrap().len(), 2);
 
-    //println!("Advancing time to 2024");
+
     sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
 
     let all_msgs = sess.get_all_messages_vec().unwrap();
@@ -281,7 +281,7 @@ fn old_transmitted_messages_without_effect_are_removed2() {
         .unwrap();
     sess.mark_transmitted(msg1.id).unwrap();
     println!("Added msg1 {:?}", msg1.id);
-    //println!("Cutoff-hash: {:?}", db.nominal_cutoff_state().unwrap());
+
     sess.set_mock_time(datetime!(2020-01-01 01:00:00 Z).into())
         .unwrap();
 
@@ -296,7 +296,7 @@ fn old_transmitted_messages_without_effect_are_removed2() {
     println!("Added msg2 {:?}", msg2.id);
     assert_eq!(sess.get_all_messages_vec().unwrap().len(), 2);
 
-    //println!("Advancing time to 2024");
+
     sess.set_mock_time(datetime!(2024-01-02 Z).into()).unwrap();
 
     let all_msgs = sess.get_all_messages_vec().unwrap();
@@ -323,8 +323,6 @@ async fn all_up_gradual_update_sync_test() {
     let mut correct_sum = 0;
     let start_time = Instant::now();
     for _i in 0..10 {
-        //println!("I = {}", i);
-        //println!("Msgs1: {:#?}", app1.get_all_messages_vec().unwrap());
         assert!(app1
             .inner_database()
             .begin_session()
@@ -344,7 +342,6 @@ async fn all_up_gradual_update_sync_test() {
         app1.add_message_at(
             datetime!(2020-01-01 Z)
                 .add(elapsed)
-                //.add(TimeDelta::seconds(random(0..100)))
                 .into(),
             SyncMessage {
                 value: 1,
@@ -370,7 +367,7 @@ async fn all_up_gradual_update_sync_test() {
         correct_count += 2;
         correct_sum += 3;
     }
-    //info!(" -------------- NETWORK HEALED -----------------");
+
     driver.set_loss(0.0);
     tokio::time::sleep(Duration::from_secs(50)).await;
     tokio::time::sleep(Duration::from_secs(30)).await;
@@ -392,7 +389,7 @@ async fn all_up_gradual_update_sync_test() {
         .unwrap();
     assert!(msgs1.is_sorted_by_key(|x| x.header.id));
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
-    //println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
+
     assert_eq!(msgs1.len(), msgs2.len());
     assert_eq!(msgs1, msgs2);
     assert_eq!(root1.sum, correct_sum);
@@ -412,7 +409,7 @@ async fn all_up_gradual_update_sync_test() {
     app1.close().await.unwrap();
     app2.close().await.unwrap();
     println!("{}", driver.messages_snapshot());
-    //  assert_snapshot!(driver.messages_snapshot());
+
 }
 
 #[cfg(debug_assertions)]
@@ -422,7 +419,7 @@ const NUM_CASES: u64 = 1000;
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_old_messages_all() {
-    //setup_tracing();
+
 
     let test_recorder = SimpleMetricsRecorder::default();
     let _guard = test_recorder.register_local();
@@ -433,12 +430,12 @@ async fn all_up_general_update_sync_test_old_messages_all() {
         all_up_general_update_sync_test_impl(seed, 7200, true, usize::MAX, true).await;
     }
     #[cfg(not(debug_assertions))]
-    assert_snapshot!(test_recorder.get_metrics());
+    assert_snapshot!(test_recorder.get_metrics_text());
 }
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_old_messages_654() {
-    //setup_tracing();
+
     {
         let seed = 654;
         println!("=========== Seed = {seed} ===========");
@@ -449,7 +446,7 @@ async fn all_up_general_update_sync_test_old_messages_654() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_persist() {
-    //setup_tracing();
+
     for seed in 0..NUM_CASES {
         println!("=========== Seed = {seed} ===========");
         all_up_general_update_sync_test_impl(seed, 10, true, usize::MAX, true).await;
@@ -476,7 +473,7 @@ async fn all_up_general_update_sync_test_mid_age_messages_persist_2413() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_no_persist_all() {
-    //setup_tracing();
+
     for seed in 0..NUM_CASES {
         println!("\n\n============ Seed {seed} ==============\n\n");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, true).await;
@@ -485,7 +482,7 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist_all() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_no_persist87() {
-    //setup_tracing();
+
     {
         let seed = 87;
         println!("\n\n============ Seed {seed} ==============\n\n");
@@ -495,7 +492,7 @@ async fn all_up_general_update_sync_test_newer_messages_no_persist87() {
 
 #[tokio::test(start_paused = true)]
 async fn all_up_general_update_sync_test_newer_messages_no_persist_no_reset() {
-    //setup_tracing();
+
     for seed in 0..NUM_CASES {
         println!("Seed = {seed}");
         all_up_general_update_sync_test_impl(seed, 10, false, usize::MAX, false).await;
@@ -543,8 +540,7 @@ pub async fn assert_equal<T: Message + Send + PartialEq>(
     assert!(msgs2.is_sorted_by_key(|x| x.header.id));
     let smsgs1: IndexSet<_> = msgs1.iter().map(|x| x.header.id).collect();
     let smsgs2: IndexSet<_> = msgs2.iter().map(|x| x.header.id).collect();
-    //println!("Cutoff time1: {:?}", app1.get_cutoff_time().unwrap());
-    //println!("Cutoff time2: {:?}", app2.get_cutoff_time().unwrap());
+
     println!("Seed: {seed}");
     println!("Only in 0: {:?}", smsgs1.sub(&smsgs2));
     println!("Only in 1: {:?}", smsgs2.sub(&smsgs1));
@@ -687,24 +683,11 @@ async fn all_up_general_update_sync_test_impl(
         assert_eq!(root2.counter, total_count);
     }
     assert_eq!(root1, root2);
-    //println!("Roots: {:?} {:?}", root1, root2);
-    //println!("Msgs 1:\n{:#?}\nMsgs 2:\n{:#?}", msgs1, msgs2);
 
     let correct_root = root1;
 
     assert_eq!(app1.get_status().await.unwrap(), Status::Nominal);
     assert_eq!(app2.get_status().await.unwrap(), Status::Nominal);
-    /*app1.add_message(SyncMessage {
-            value: 1,
-            reset: false,
-            persist,
-        })
-        .await
-        .unwrap();
-    */
-
-    /*app1.inner_database().do_recovery().unwrap();
-    app2.inner_database().do_recovery().unwrap();*/
 
     let root1 = app1.with_root(|root| root.export());
     let root2 = app2.with_root(|root| root.export());
@@ -1042,7 +1025,7 @@ async fn all_up_three_node_partial_resync2() {
     let root3 = app3.with_root(|root| root.export());
 
     println!("Start time: {start_time:?}");
-    //println!("{}", driver.raw_frames_snapshot());
+
     println!("{}", driver.messages_snapshot());
 
     assert_eq!(root1, root2);
@@ -1091,7 +1074,7 @@ async fn all_up_four_node_partial_resync1() {
     let root4 = app4.with_root(|root| root.export());
 
     println!("Start time: {start_time:?}");
-    //println!("{}", driver.raw_frames_snapshot());
+
     println!("{}", driver.messages_snapshot());
 
     assert_eq!(root1, root2);
@@ -1277,7 +1260,7 @@ async fn complex_forwarding_test() {
     driver.partition_all();
     // a/b can hear each other
     driver.unpartition_bidirectional_links([(a0, a1), (b2, b3)]);
-    //cs can hear everyone
+    // cs can hear everyone
     driver.unpartition_node(c4);
     driver.unpartition_node(c5);
 

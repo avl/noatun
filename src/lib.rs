@@ -1614,7 +1614,6 @@ pub fn from_bytes_mut<T: NoatunStorable>(s: &mut [u8]) -> &mut T {
     // an Object need to be valid.
     unsafe {
         &mut *s.as_mut_ptr().cast::<T>()
-        //transmute::<*mut u8, &mut T>(s.as_mut_ptr())
     }
 }
 

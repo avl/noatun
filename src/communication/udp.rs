@@ -7,6 +7,7 @@ use socket2::{Domain, Protocol, Type};
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
 use tracing::info;
+use crate::{cur_node, test_elapsed};
 
 impl CommunicationDriver for TokioUdpDriver {
     type Receiver = UdpSocket;
@@ -15,16 +16,17 @@ impl CommunicationDriver for TokioUdpDriver {
 
     async fn initialize(
         &mut self,
-        bind_address: &str,
-        multicast_group: &str,
+        bind_address_str: &str,
+        multicast_group_str: &str,
         mtu: usize,
     ) -> anyhow::Result<(Self::Sender, Self::Receiver)> {
-        let multicast_group: SocketAddr = multicast_group
+        let multicast_group: SocketAddr = multicast_group_str
             .parse()
-            .context(format!("parsing multicast group {multicast_group}"))?;
-        let bind_address: SocketAddr = bind_address
+            .context(format!("parsing multicast group {multicast_group_str}. Remember to include a port number: '230.1.0.1:9876'."))?;
+        let bind_address_addr: IpAddr = bind_address_str
             .parse()
-            .context(format!("parsing listening/bind address {bind_address}"))?;
+            .context(format!("parsing listening/bind address {bind_address_str}"))?;
+        let bind_address = SocketAddr::new(bind_address_addr, 0);
         let send_socket = UdpSocket::bind(bind_address).await?;
         let domain;
         match (multicast_group.ip(), bind_address.ip()) {
@@ -53,7 +55,6 @@ impl CommunicationDriver for TokioUdpDriver {
         if mtu >= u16::MAX as usize {
             bail!("Maximum MTU supported by noatun is 65534");
         }
-        //udp.set_multicast_loop_v4(true)?;
         info!("Binding to group {:?}", multicast_group);
         let receive_socket;
         match (multicast_group.ip(), bind_address) {
@@ -69,11 +70,6 @@ impl CommunicationDriver for TokioUdpDriver {
                 udp_receive.set_reuse_address(true)?;
                 udp_receive.set_nonblocking(true)?;
                 udp_receive.set_multicast_loop_v6(true)?;
-                //udp_receive.bind(&multicast_group.into()).context("binding ipv6 multicast group")?;
-                /*udp_receive.bind(&SockAddr::from(
-                    SocketAddr::V6(SocketAddrV6::new(multicast_group, bind_address.port(), 0 ,0))
-                ))?;*/
-                //udp_receive.set_only_v6(true)?;
                 udp_receive
                     .bind(&multicast_group.into())
                     .context("binding multicast group")?;
@@ -114,6 +110,7 @@ impl CommunicationSendSocket<SocketAddr> for CommunicationUdpSendSocket {
     }
 
     async fn send_to(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        println!("#{} {:?} Sent {} bytes", cur_node(), test_elapsed(), buf.len());
         let res = UdpSocket::send_to(&self.socket, buf, self.multicast_addr).await;
         match res {
             Ok(sent_size) => {
@@ -136,6 +133,7 @@ impl CommunicationReceiveSocket<SocketAddr> for tokio::net::UdpSocket {
         buf: &mut B,
     ) -> std::io::Result<(usize, Option<SocketAddr>)> {
         let (size, addr) = UdpSocket::recv_buf_from(self, buf).await?;
+        println!("#{} {:?} Received {} bytes", cur_node(), test_elapsed(), size);
         Ok((size, Some(addr)))
     }
 }

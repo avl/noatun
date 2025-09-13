@@ -107,7 +107,6 @@ impl Default for DatabaseSettings {
             max_file_size: 1_000_000_000,
             cutoff_interval: CutOffDuration::from_minutes(15),
             initial_file_size: 4096,
-            //TODO: Check why ipv4/ipv6 tests sometimes fail.
             auto_compact_enabled: true,
         }
     }

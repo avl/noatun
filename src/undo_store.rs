@@ -15,7 +15,7 @@ pub enum UndoLogEntry<'a> {
     ZeroOut { start: usize, len: usize },
     // Restore memory at start, with the contents of the slice
     // It is okay for the slice to contain uninitialized values
-    //RestoreUninit { start: usize, data: &'a [MaybeUninit<u8>] },
+    // RestoreUninit { start: usize, data: &'a [MaybeUninit<u8>] },
     /// Restore memory at start, with the contents of the slice.
     /// The slice cannot contain uninitialized values.
     /// Note, all bytes in 'data' must be initialized
@@ -190,25 +190,6 @@ impl UndoLog {
                     .expect("Failed to write to undo store");
                 store.write_u8(2).expect("Failed to write to undo store");
             }
-            /*UndoLogEntry::RestoreUninit { start, data } => {
-                // SAFETY:
-                // This is safe, since no other references to these 'u8' exist.
-                // Everyone else has only at most a &Cell<..>.
-                // This whole data structure is !Sync, so no other threads exist.
-                let data: &[MaybeUninit<u8>] = unsafe { std::mem::transmute(data) };
-                store
-                    .write_uninit(data)
-                    .expect("Failed to write to undo store");
-                store
-                    .write_u64::<LittleEndian>(start as u64)
-                    .expect("Failed to write to undo store");
-                store
-                    .write_u64::<LittleEndian>(data.len() as u64)
-                    .expect("Failed to write to undo store");
-                store
-                    .write_u8(3)
-                    .expect("Failed to write to undo store");
-            }*/
             UndoLogEntry::RestorePod { start, data } => {
                 let data_len = data.len();
 

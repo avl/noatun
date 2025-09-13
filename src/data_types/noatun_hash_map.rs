@@ -684,7 +684,7 @@ struct LengthGuard<'a, K: NoatunKey, V: FixedSizeObject> {
     new_length: usize,
 
     map: &'a mut NoatunHashMap<K, V>,
-    //length_field: *mut usize,
+   
 }
 
 impl<'a, K: NoatunKey, V: FixedSizeObject> LengthGuard<'a, K, V> {
@@ -1132,31 +1132,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
 
         result
 
-        /*
-        let mut visited_buckets = 0;
-        let max_visited_buckets = self.capacity/2;
-        let mut first_deleted = None;
-
-        loop {
-            let cur_bucket_meta = self.get_meta(data_and_meta_ptr, bucket_nr);
-            if cur_bucket_meta.deleted() {
-                if first_deleted.is_none() {
-                    first_deleted = Some(bucket_nr);
-                }
-            } else if cur_bucket_meta == key_meta {
-                let bucket = self.get_bucket(data_and_meta_ptr, bucket_nr);
-                if bucket.key == *key {
-                    return ProbeRunResult::FoundPopulated(bucket_nr, key_meta);
-                }
-            } else if cur_bucket_meta.empty() {
-                return ProbeRunResult::FoundUnoccupied(first_deleted.unwrap_or(bucket_nr), key_meta);
-            }
-            visited_buckets += 1;
-            if visited_buckets >= max_visited_buckets {
-                return ProbeRunResult::HashFull
-            }
-            bucket_nr.advance(self.capacity);
-        }*/
     }
 
     /// Remove any items in the map for which the predicate returns true.
@@ -1250,9 +1225,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
         K::hash(key, &mut h);
 
         let (meta_group_nr, key_meta) = MetaGroupNr::from_u64(h.finish(), cap);
-        //let mut visited_buckets = 0;
-        //let max_visited_buckets = self.capacity/2;
-        //let mut first_deleted = None;
+       
         let probe = BucketProbeSequence::new(meta_group_nr, cap.div_ceil(HASH_META_GROUP_SIZE));
 
         run_insert_probe_sequence(
@@ -1271,28 +1244,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             probe,
         )
 
-        /*
-
-        loop {
-            let cur_bucket_meta = self.get_meta(data_and_meta_ptr, bucket_nr);
-            if cur_bucket_meta.deleted() {
-                if first_deleted.is_none() {
-                    first_deleted = Some(bucket_nr);
-                }
-            } else if cur_bucket_meta == key_meta {
-                let bucket = self.get_bucket(data_and_meta_ptr, bucket_nr);
-                if bucket.key == *key {
-                    return ProbeRunResult::FoundPopulated(bucket_nr, key_meta);
-                }
-            } else if cur_bucket_meta.empty() {
-                return ProbeRunResult::FoundUnoccupied(first_deleted.unwrap_or(bucket_nr), key_meta);
-            }
-            visited_buckets += 1;
-            if visited_buckets >= max_visited_buckets {
-                return ProbeRunResult::HashFull
-            }
-            bucket_nr.advance(self.capacity);
-        }*/
+       
     }
     fn next_suitable_capacity(capacity: usize) -> usize {
         if capacity == 0 {
@@ -1743,23 +1695,6 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 Self::insert_at_bucket(
                     matches!(probe_result, ProbeRunResult::FoundUnoccupied(..)),
                     probe_result.bucket_meta(), key, context, val, length);
-                /*
-                let bucket_obj = unsafe { context.buckets[bucket.0].assume_init_mut() };
-
-                let old_v = unsafe { Pin::new_unchecked(&mut bucket_obj.v) };
-
-
-                val(old_v);
-
-                if matches!(probe_result, ProbeRunResult::FoundUnoccupied(_, _)) {
-                    let bucket_meta = get_meta_mut(context.metas, bucket);
-                    NoatunContext.write_internal(meta, bucket_meta);
-                    let old_k= unsafe { Pin::new_unchecked(&mut bucket_obj.key) };
-                    old_k.init_from(key);
-                    let new_length = self.length + 1;
-                    NoatunContext.write_internal(new_length, &mut self.length);
-                }
-                */
             }
         }
     }

@@ -85,7 +85,7 @@ fn test() {
             DatabaseSettings {
                 mock_time: Some(fake_time),
                 projection_time_limit: Some(limit_time),
-                cutoff_interval: CutOffDuration::from_hours(1).unwrap(), // 2 days
+                cutoff_interval: CutOffDuration::from_hours(1).unwrap(),
                 ..Default::default()
             },
         )
