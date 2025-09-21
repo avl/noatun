@@ -232,8 +232,8 @@ pub unsafe trait NoatunStorable: Sized + 'static {
     /// and in-memory representations.
     ///
     /// The following guidelines are provided:
-    ///  * Structs should write their full name, including crate name, their field count, and the
-    ///    hash of each field.
+    ///  * Structs should write their full name, including crate name, their field count, and then
+    ///    call each field's `hash_schema`.
     ///  * Newtypes should write their full name, including crate name, and the hash of their
     ///    inner type (unless the inner type is a primitive), and a '/' followed by a version number.
     ///    The version number must be changed if memory format changes.
