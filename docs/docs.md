@@ -40,7 +40,7 @@ block-beta
 columns 3
     U["Application"]:3
     space:3
-    Noatun:3
+    NoatunApi:3
     space:3
     space:3
     block:ID:3
@@ -52,9 +52,9 @@ columns 3
     end
     space:3
     Disk:3
-    U --> Noatun
-    Noatun --> E
-    M --> Noatun
+    U --> NoatunApi
+    NoatunApi --> E
+    M --> NoatunApi
     E --> Projector
     Projector --> M
     M --> Projector
