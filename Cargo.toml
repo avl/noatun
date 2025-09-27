@@ -9,7 +9,6 @@ rust-version = "1.87"
 name = "meta"
 harness = false
 
-# The `foo` package will use the -Copt-level=3 flag.
 [profile.dev.package.sha2]
 opt-level = 3
 [profile.dev.package.byteorder]

@@ -1,0 +1,10 @@
+[package]
+name = "doc_helper"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+rust-version = "1.87"
+
+[dependencies]
+mermaid-rs = "0.1.1"
+regex = "0.2.11"

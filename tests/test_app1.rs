@@ -122,7 +122,7 @@ fn test_counter_object_miri() {
         true,
     )
     .unwrap();
-    
+
     db.with_root(|root| {
         assert_eq!(root.counter.get(), 85);
         assert_eq!(root.counter2.len(), 2);

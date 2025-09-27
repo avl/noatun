@@ -62,6 +62,7 @@ columns 3
     M --> Disk
     Disk --> M
 ```
+
 _Information flow (in operation)_
 
 Events are applied to the projection in timestamp order. As a user of Noatun, you need to
@@ -344,6 +345,7 @@ class uct1 BT
 class uct2 BT
 classDef BT stroke:transparent,fill:transparent
 ```
+
 _Basic Example_
 
 Event 1 writes both fields. After Event2 has been written, Event1 still needs to be retained, since

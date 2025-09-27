@@ -1,4 +1,4 @@
-#![doc = include_str!("../docs/docs.md")]
+#![doc = include_str!("../doc_helper/docs-svg.md")]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]
 #![allow(clippy::bool_comparison)]
