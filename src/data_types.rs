@@ -162,14 +162,6 @@ unsafe impl<T: Object + ?Sized + 'static> NoatunStorable for NoatunBox<T> {
     }
 }
 
-impl<T: Object + ?Sized> Copy for NoatunBox<T> {}
-
-impl<T: Object + ?Sized> Clone for NoatunBox<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
 impl<T: Object + ?Sized + 'static> Object for NoatunBox<T>
 where
     T::Ptr: NoatunStorable,

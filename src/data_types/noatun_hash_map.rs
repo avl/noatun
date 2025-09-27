@@ -1124,7 +1124,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             |bucket_nr| {
                 if <K as NoatunKey>::eq(
                     // Safety: probe sequence only visits populated buckets
-                    unsafe { buckets[bucket_nr.0].assume_init_ref().key.export_key_ref() },
+                    unsafe { buckets[bucket_nr.0].assume_init_ref().key.export_key_ref().borrow() },
                     key,
                 ) {
                     result = Some(bucket_nr);
@@ -1242,7 +1242,7 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
                 // initialized
                 unsafe {
                 <K as NoatunKey>::eq(
-                    buckets[bucket_nr.0].assume_init_ref().key.export_key_ref(),
+                    buckets[bucket_nr.0].assume_init_ref().key.export_key_ref().borrow(),
                     key,
                 )
             },
@@ -1804,7 +1804,7 @@ pub trait NoatunKey: NoatunStorable + Sized + Debug {
     /// A 'native' variant of Self.
     ///
     /// Native types are meant to be ergonomic to work with, but may have representations
-    /// that do not allow them to be stored in the mmap:ed db. For example, the external
+    /// that do not allow them to be stored in the materialiaed view. For example, the external
     /// type for `NoatunString` is simply `str`.
     ///
     /// For POD types without internal pointers, the external version should typically be just
@@ -1812,10 +1812,10 @@ pub trait NoatunKey: NoatunStorable + Sized + Debug {
     type NativeType: ?Sized;
     /// Owned version of [`Self::NativeType`].
     ///
-    /// If `NativeType` is [`str`], this should be [`String`].
+    /// For example, If `NativeType` is [`str`], this should be [`String`].
     type NativeOwnedType: Eq + Hash + Borrow<Self::NativeType>;
 
-    /// Hash the key using the provided hasher 'hasher'.
+    /// Hash the key using the provided 'hasher'.
     ///
     /// This method must be compatible with the [`Self::eq`] method.
     ///
@@ -1828,9 +1828,9 @@ pub trait NoatunKey: NoatunStorable + Sized + Debug {
     /// Clear out any registrars
     fn destroy(&mut self);
 
-    /// Return a reference to a external key. This method should be fast, ideally
+    /// Return a reference to an external key. This method should be fast, ideally
     /// just returning a reference to something in memory.
-    fn export_key_ref(&self) -> &Self::NativeType;
+    fn export_key_ref(&self) -> impl Borrow<Self::NativeType>;
 
     /// Export key, giving an owned instance.
     fn export_key(&self) -> Self::NativeOwnedType;
@@ -1876,7 +1876,7 @@ impl NoatunKey for MessageId {
 
     fn destroy(&mut self) {}
 
-    fn export_key_ref(&self) -> &Self::NativeType {
+    fn export_key_ref(&self) -> impl Borrow<Self::NativeType> {
         self
     }
 

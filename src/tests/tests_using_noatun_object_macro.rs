@@ -7,9 +7,23 @@ use datetime_literal::datetime;
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
+noatun_pod! {
+    #[derive(PartialEq)]
+    /// Docs for MyName
+    struct MyName {
+        /// Docs for name
+        name: u32,
+        /// Docs for age
+        age: u32
+    }
+}
+
 noatun_object!(
+    /// Docs for customer struct
     struct Customer {
-        pod name: u32,
+        /// Docs for customer name
+        pod name: MyName,
+        /// Docs for worth
         pod worth: u32,
     }
 );
@@ -35,7 +49,7 @@ impl Message for BankMessage {
                 let prev_money = root.total_money();
                 root.as_mut().set_total_money(prev_money + *money);
                 root.customers_mut().push(&CustomerNative {
-                    name: 42,
+                    name: MyName { name: 42, age: 31 },
                     worth: 100,
                 });
             }

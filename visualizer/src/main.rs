@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use anyhow::Result;
 use arcshift::ArcShift;
 use datetime_literal::datetime;
@@ -62,7 +63,7 @@ impl NoatunKey for Rgb {
         (*tself).hash(state);
     }
 
-    fn export_key_ref(&self) -> &Self::NativeType {
+    fn export_key_ref(&self) -> impl Borrow<Self::NativeType> {
         self
     }
 

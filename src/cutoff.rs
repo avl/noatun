@@ -2,6 +2,7 @@ use crate::{cast_slice, cast_storable, MessageId, NoatunStorable, NoatunTime, Sc
 use anyhow::{anyhow, bail, Result};
 use savefile_derive::Savefile;
 use std::fmt::{Debug, Display, Formatter};
+use std::time::Duration;
 
 pub(crate) struct CutOffConfig {
     /// The approximate time in history at which all nodes must have been in sync.
@@ -92,6 +93,12 @@ pub struct CutOffDuration(/*minutes*/ u32);
 impl Debug for CutOffDuration {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} minutes", self.0)
+    }
+}
+
+impl From<std::time::Duration> for CutOffDuration {
+    fn from(value: Duration) -> Self {
+        CutOffDuration::from_minutes((value.as_secs_f64() / 60.0).ceil() as u32)
     }
 }
 

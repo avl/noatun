@@ -1559,6 +1559,14 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
         }
     }
 
+    /// Return all messages in the database.
+    ///
+    /// This method can be very expensive, and is mostly useful for tests or diagnostics
+    pub fn get_all_messages(&self) -> Result<Vec<crate::MessageFrame<MSG>>> {
+        let db = self.database.lock().unwrap();
+        Ok(db.begin_session()?.get_all_messages_vec()?)
+    }
+
     /// Get the synchronization status of this instance.
     ///
     /// This method must not be called from within a tokio runtime. Tokio tasks

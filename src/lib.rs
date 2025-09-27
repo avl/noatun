@@ -1914,6 +1914,103 @@ macro_rules! count_ast_nodes {
     ( $x:tt $($xs:tt)* ) => (1usize + $crate::count_ast_nodes!($($xs)*));
 }
 
+/// Define a noatun pod struct.
+///
+/// Usage:
+///
+/// ```
+/// use noatun::noatun_pod;
+///
+/// noatun_pod!{
+///    struct MyPod {
+///        x: u32,
+///        y: u16,
+///    }
+/// }
+///
+/// ```
+/// or
+/// ```
+/// use noatun::noatun_pod;
+///
+/// noatun_pod!{
+///    struct MyTuplePod(u32,u16)
+/// }
+///
+/// ```
+#[macro_export]
+macro_rules! noatun_pod {
+    (   $(#[derive($($trait_name: ident),*)])*
+        $(#[doc = $doc:expr])*
+        struct $name: ident {
+            $(
+                $(#[doc = $field_doc:expr])*
+                $field_name:ident : $field_type: ty
+            ),*$(,)?
+    }$(;)*) => {
+        $(#[derive($($trait_name),*)])*
+        #[derive(Clone, Copy, Debug, $crate::Savefile)]
+        $(#[doc = $doc])*
+        #[repr(C)]
+        pub struct $name {
+            $(
+                $(#[doc = $field_doc])*
+                pub $field_name: $field_type,
+            )*
+        }
+        unsafe impl $crate::NoatunStorable for $name where
+            $($field_type: $crate::NoatunStorable,)*
+        {
+            fn hash_schema(hasher: &mut $crate::SchemaHasher) {
+                hasher.write_str(std::any::type_name::<Self>());
+                hasher.write_usize($crate::count_ast_nodes!($($field_type)*));
+                $(
+                    hasher.write_str(stringify!($field_name));
+                    <$field_type as $crate::NoatunStorable>::hash_schema(hasher);
+                )*
+            }
+        }
+        unsafe impl $crate::NoatunPod for $name where
+            $($field_type: $crate::NoatunPod,)*
+        {
+        }
+    };
+    (   $(#[derive($($trait_name: ident),*)])*
+        $(#[doc = $doc:expr])*
+        struct $name: ident(
+            $(
+                $(#[doc = $field_doc:expr])*
+                $field_type: ty
+            ),* $(,)?
+    )$(;)?) => {
+        $(#[derive($($trait_name),*)])*
+        #[derive(Clone, Copy, Debug, $crate::Savefile)]
+        $(#[doc = $doc])*
+        #[repr(C)]
+        pub struct $name (
+            $(
+                $(#[doc = $field_doc])*
+                pub $field_type,
+            )*
+        );
+        unsafe impl $crate::NoatunStorable for $name where
+            $($field_type: $crate::NoatunStorable,)*
+        {
+            fn hash_schema(hasher: &mut $crate::SchemaHasher) {
+                hasher.write_str(std::any::type_name::<Self>());
+                hasher.write_usize($crate::count_ast_nodes!($($field_type)*));
+                $(
+                    <$field_type as $crate::NoatunStorable>::hash_schema(hasher);
+                )*
+            }
+        }
+        unsafe impl $crate::NoatunPod for $name where
+            $($field_type: $crate::NoatunPod,)*
+        {
+        }
+    };
+}
+
 /// Define a noatun object.
 ///
 /// Example:

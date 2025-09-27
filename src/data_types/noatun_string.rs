@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use crate::data_types::NoatunKey;
 use crate::sequence_nr::Tracker;
 use crate::{NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr};
@@ -14,7 +15,6 @@ use std::slice;
 /// modification requires a complete reallocation.
 ///
 /// This type contains a single tracker, that owns the string's value.
-#[derive(Copy, Clone)]
 #[repr(C)]
 pub struct NoatunString {
     start: ThinPtr,
@@ -144,6 +144,17 @@ impl NoatunString {
         unsafe { NoatunContext.update_tracker_ptr(addr_of_mut!(tself.tracker), false) };
     }
 }
+impl Borrow<str> for NoatunString {
+    fn borrow(&self) -> &str {
+        self.get()
+    }
+}
+impl Borrow<str> for &NoatunString {
+    fn borrow(&self) -> &str {
+        self.get()
+    }
+}
+
 impl NoatunKey for NoatunString {
     type NativeType = str;
     type NativeOwnedType = String;
@@ -159,7 +170,7 @@ impl NoatunKey for NoatunString {
     fn export_key(&self) -> String {
         (*self).to_string()
     }
-    fn export_key_ref(&self) -> &Self::NativeType {
+    fn export_key_ref(&self) -> impl Borrow<Self::NativeType> {
         self
     }
 
@@ -184,11 +195,21 @@ impl NoatunKey for NoatunString {
 
 /// Opaque version of [`NoatunString`]. Opaque objects cannot be read
 /// from with [`crate::Message::apply`], but enable faster pruning of messages.
-#[derive(Copy, Clone)]
 #[repr(C)]
 pub struct OpaqueNoatunString {
     start: ThinPtr,
     length: usize,
+}
+
+impl Borrow<str> for &OpaqueNoatunString {
+    fn borrow(&self) -> &str {
+        self.get()
+    }
+}
+impl Borrow<str> for OpaqueNoatunString {
+    fn borrow(&self) -> &str {
+        self.get()
+    }
 }
 
 /// Safety: `OpaqueNoatunString` contains only NoatunStorable fields
@@ -310,7 +331,7 @@ impl NoatunKey for OpaqueNoatunString {
     fn export_key(&self) -> String {
         (*self).to_string()
     }
-    fn export_key_ref(&self) -> &Self::NativeType {
+    fn export_key_ref(&self) -> impl Borrow<Self::NativeType> {
         self
     }
 

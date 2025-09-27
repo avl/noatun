@@ -860,6 +860,9 @@ impl<MSG: Message + 'static> Database<MSG> {
     }
 
     /// Retrieve all messages in the database.
+    /// This does not advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn get_all_messages(&self) -> Result<impl Iterator<Item = MessageFrame<MSG>> + use<'_, MSG>> {
         self.message_store.get_all_messages()
     }
@@ -873,6 +876,9 @@ impl<MSG: Message + 'static> Database<MSG> {
         self.message_store.get_all_messages_with_children()
     }
 
+    /// This does not advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn with_root_preview<R>(
         &mut self,
         time: DateTime<Utc>,
@@ -902,6 +908,10 @@ impl<MSG: Message + 'static> Database<MSG> {
     /// In normal operation, the database is never corrupted. However, if it somehow is
     /// (by a thread being killed, for example), this method could produce a root object that
     /// is in a state of a message being half-applied, for example.
+    ///
+    /// This does not advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     pub(crate) fn with_root<R>(&self, f: impl FnOnce(&MSG::Root) -> R) -> R {
         let root_ptr = self.context.get_root_ptr::<<MSG::Root as Object>::Ptr>();
         let _guard = ContextGuard::new(&self.context);
@@ -942,6 +952,10 @@ impl<MSG: Message + 'static> Database<MSG> {
     /// You should never need this, but it remains publicly visible to ease in
     /// debugging. Since this re-runs all message-applies, it can be used during debugging
     /// of [`crate::Message::apply`].
+    ///
+    /// This does not advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn reproject(&mut self) -> Result<()> {
         self.reproject_from(SequenceNr::from_index(0))?;
         Ok(())
@@ -1066,6 +1080,10 @@ impl<MSG: Message + 'static> Database<MSG> {
     /// Remove the given message.
     ///
     /// If force == false, don't delete message if it has been transmitted
+    ///
+    /// This does not advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn remove_message(&mut self, message_id: MessageId, force: bool) -> Result<()> {
         if let Some(seq) = self.message_store.remove_message(message_id, force)? {
             self.reproject_from(seq)?;
@@ -1076,6 +1094,10 @@ impl<MSG: Message + 'static> Database<MSG> {
 
     /// Local is true if this message has been locally created. I.e, it isn't a message that
     /// has been received from some other node.
+    ///
+    /// This does not advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn append_single(&mut self, message: &MessageFrame<MSG>, local: bool) -> Result<()> {
         self.append_many(std::iter::once(message), local, true)
     }
@@ -1084,6 +1106,10 @@ impl<MSG: Message + 'static> Database<MSG> {
     /// This does not update the system time, it only affects the time for Noatun.
     ///
     /// This may advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
+    ///
+    /// This does not advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
         self.time_override = Some(time);
         self.maybe_advance_cutoff()?;
@@ -1093,6 +1119,8 @@ impl<MSG: Message + 'static> Database<MSG> {
     /// Set the current time to the given value.
     ///
     /// This does not advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn set_mock_time_no_advance(&mut self, time: NoatunTime) -> Result<()> {
         self.time_override = Some(time);
         Ok(())
@@ -1124,10 +1152,14 @@ impl<MSG: Message + 'static> Database<MSG> {
         self.message_store.compact()
     }
 
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn append_local_at(&mut self, time: NoatunTime, message: MSG) -> Result<MessageHeader> {
         self.append_opt(Some(time), message, true)
     }
 
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn append_many_local_at(
         &mut self,
         time: NoatunTime,
@@ -1136,6 +1168,8 @@ impl<MSG: Message + 'static> Database<MSG> {
         self.append_local_many_opt(Some(time), messages)
     }
 
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn create_message_frame(
         &mut self,
         time: Option<NoatunTime>,
@@ -1181,6 +1215,8 @@ impl<MSG: Message + 'static> Database<MSG> {
         Ok(t)
     }
 
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn append_opt(
         &mut self,
         time: Option<NoatunTime>,
@@ -1194,6 +1230,8 @@ impl<MSG: Message + 'static> Database<MSG> {
         Ok(header)
     }
 
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     // Returns first message header
     fn append_local_many_opt(
         &mut self,
@@ -1248,6 +1286,9 @@ impl<MSG: Message + 'static> Database<MSG> {
     }
 
     /// For messages before the cutoff-time, all parents are removed.
+    ///
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn append_many<'a>(
         &mut self,
         messages: impl Iterator<Item = &'a MessageFrame<MSG>>,
@@ -1258,6 +1299,9 @@ impl<MSG: Message + 'static> Database<MSG> {
     }
 
     /// For messages before the cutoff-time, all parents are removed.
+    ///
+    /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`
+    /// and use a method on the returned session instead.
     fn append_many_impl<'a>(
         &mut self,
         messages: impl Iterator<Item = &'a MessageFrame<MSG>>,
@@ -1276,6 +1320,7 @@ impl<MSG: Message + 'static> Database<MSG> {
         self.do_apply_missing()?;
         Ok(())
     }
+
     /// Create a database residing entirely in memory.
     /// This is mostly useful for tests
     pub fn create_in_memory(max_size: usize, settings: DatabaseSettings) -> Result<Database<MSG>> {

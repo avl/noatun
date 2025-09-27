@@ -25,7 +25,14 @@ impl CommunicationDriver for TokioUdpDriver {
             .context(format!("parsing multicast group {multicast_group_str}. Remember to include a port number: '230.1.0.1:9876'."))?;
         let bind_address_addr: IpAddr = bind_address_str
             .parse()
-            .context(format!("parsing listening/bind address {bind_address_str}"))?;
+            .with_context(||{
+                let without_last_digit = bind_address_str.trim_end_matches(char::is_numeric);
+                if without_last_digit.len() != bind_address_str.len() && without_last_digit.ends_with(":") {
+                    format!("parsing listening/bind address {bind_address_str}. Note, this should be a pure ip-address, not an address + port.")
+                } else {
+                    format!("parsing listening/bind address {bind_address_str}")
+                }
+            })?;
         let bind_address = SocketAddr::new(bind_address_addr, 0);
         let send_socket = UdpSocket::bind(bind_address).await?;
         let domain;

@@ -222,6 +222,44 @@ Some basic types:
  * NoatunHashMap - hash map for Noatun
  * NoatunString - Noatun equivalent to std::string::String
  * Struct types defined using `noatun_object!`-macro.
+ * Pods defined using `noatun_pod!`-macro.
+
+## Defining custom types
+
+The `noatun_object!` macro can be used to define a custom object types like this:
+
+```rust
+noatun_object!{
+    /// Documentation for struct
+    struct MyType {
+        /// Documentation for field
+        pod foo: u32,
+        /// Documentation for other field
+        object bar: NoatunHashMap<u32, NoautunString>,
+    }
+}
+```
+Map-keys must implement `NoatunKey`. Map-values must be objects. Pod-types can
+be turned into objects by wrapping in `NoatunCell`.
+
+The `noatun_pod!`-macro can be used to define custom pod types:
+
+```rust
+noatun_pod! {
+    /// Documentation for struct
+    struct MyPodType {
+        foo: u32,
+        bar: u16
+    }
+}
+
+noatun_pod!{
+    struct MyTuplePodType(u32,u16)
+}
+```
+All fields of a pod type must also be pod-types.
+
+
 
 ## Objects vs NoatunPods
 
@@ -231,12 +269,18 @@ implement read/write dependency tracking through use of `Tracker`s.
 
 Naturally, Noatun supports storing primitives (u8, u16, u32 etc). These types do not implement `Object`,
 but must be wrapped in a type that does. The types `NoatunCell` and `OpaqueNoatunCell` serve this function.
-These cell types add read/write dependency tracking. 
+These cell types (`NoatunCell` and `OpaqueNoatunCell`) add read/write dependency tracking. 
 
 In addition to rust's standard primitives, any type implementing `NoatunPod` can be used inside such a cell.
-In order to be able to implement `NoatunPod`, a type must have a stable memory layout and must be Copy.
+In order to implement `NoatunPod`, a type must have a stable memory layout and must be Copy.
 It must also implement the `NoatunStorable` trait.  See `NoatunPod` and `NoatunStorable` docs for a complete list of 
 requirements.
+
+## Key types
+Hashmaps are a central datatype, that is well suited for use with noatun (see type `NoatunHashmap`).
+Hashmap keys must be pods. In addition, they must implement the `NoatunKey`-trait. This trait provides
+predictable (non-randomized) hashing. The regular rust hash functions can't be used since the random
+seed is different for each execution, making on-disk hashmaps invalid after restart.
 
 
 ## Native types

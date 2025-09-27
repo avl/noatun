@@ -22,7 +22,7 @@ macro_rules! noatun_hash_primitive {
             fn export_key(&self) -> Self::NativeType {
                 *self
             }
-            fn export_key_ref(&self) -> &Self::NativeType {
+            fn export_key_ref(&self) -> impl ::std::borrow::Borrow<Self::NativeType> {
                 self
             }
             fn eq(a: &Self::NativeType, b: &Self::NativeType) -> bool {
