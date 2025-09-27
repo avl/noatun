@@ -18,7 +18,7 @@ opt-level = 3
 opt-level = 3
 
 [features]
-debug_color = ["colored"]
+debug_color = ["dep:colored"]
 debug = []
 expensive_tests = []
 serde = ["dep:serde", "serde_derive"]
