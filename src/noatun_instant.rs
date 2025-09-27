@@ -22,10 +22,12 @@ impl Debug for Instant {
 
 impl From<std::time::Instant> for Instant {
     fn from(value: std::time::Instant) -> Self {
-        #[cfg(feature = "tokio")] {
+        #[cfg(feature = "tokio")]
+        {
             Instant(value.into())
         }
-        #[cfg(not(feature = "tokio"))] {
+        #[cfg(not(feature = "tokio"))]
+        {
             Instant(value)
         }
     }
