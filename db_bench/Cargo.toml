@@ -8,7 +8,7 @@ rusqlite = {version = "0.32", features = ["bundled"] }
 rand = { version = "0.8", features = ["small_rng"] }
 noatun = { path = ".." }
 indexmap = "2.9"
-savefile = {  version = "0.19.0"}
+savefile = {  version = "0.20.1"}
 savefile-derive = { version = "0.19.0"}
 anyhow = "1.0"
 tracing-subscriber = "0.3"

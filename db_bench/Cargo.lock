@@ -197,7 +197,7 @@ dependencies = [
  "noatun",
  "rand",
  "rusqlite",
- "savefile 0.19.0",
+ "savefile",
  "savefile-derive 0.19.0",
  "tracing",
  "tracing-subscriber",
@@ -437,7 +437,7 @@ dependencies = [
  "metrics",
  "paste",
  "rand",
- "savefile 0.20.1",
+ "savefile",
  "savefile-derive 0.20.1",
  "sha2",
  "socket2",
@@ -683,26 +683,6 @@ name = "rustversion"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a0d197bd2c9dc6e53b84da9556a69ba4cdfab8619eb41a8bd1cc2027a0f6b1d"
-
-[[package]]
-name = "savefile"
-version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efae543b0c35dafb640485acfae6db2c57da94a81393fb411c12f3d6c9084139"
-dependencies = [
- "arrayvec",
- "bit-set 0.5.3",
- "bit-set 0.8.0",
- "bit-vec 0.6.3",
- "bit-vec 0.8.0",
- "byteorder",
- "chrono",
- "indexmap",
- "memoffset",
- "parking_lot",
- "rustc_version",
- "smallvec",
-]
 
 [[package]]
 name = "savefile"
