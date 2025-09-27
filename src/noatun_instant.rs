@@ -20,6 +20,17 @@ impl Debug for Instant {
     }
 }
 
+impl From<std::time::Instant> for Instant {
+    fn from(value: std::time::Instant) -> Self {
+        #[cfg(feature = "tokio")] {
+            Instant(value.into())
+        }
+        #[cfg(not(feature = "tokio"))] {
+            Instant(value)
+        }
+    }
+}
+
 impl Instant {
     /// Return an instant corresponding to the current time
     pub fn now() -> Self {

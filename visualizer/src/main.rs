@@ -7,12 +7,11 @@ use eframe::{App, Frame};
 use egui::epaint::{RectShape, TextShape};
 use egui::scroll_area::ScrollBarVisibility;
 use egui::{Button, Color32, Context, CornerRadius, FontFamily, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, TextEdit, Vec2, Widget};
-use noatun::{noatun_object, CutOffDuration, Database, Message, MessageFrame, MessageId, NoatunCell, NoatunStorable, Object, Savefile, SavefileMessageSerializer};
+use noatun::{noatun_object, CutOffDuration, Database, Message, MessageFrame, MessageId, NoatunCell, NoatunStorable, Object, Savefile, SavefileMessageSerializer, SchemaHasher};
 use std::default::Default;
 use std::fmt::Debug;
 use std::hash::Hasher;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use noatun::data_types::{NoatunHashMap, NoatunKey};
@@ -49,7 +48,11 @@ impl From<Rgb> for Color32 {
 /// SAFETY:
 /// This is safe only because we never persist anything, so there's no
 /// risk of loading a file with invalid values.
-unsafe impl NoatunStorable for Rgb {}
+unsafe impl NoatunStorable for Rgb {
+    fn hash_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("Rgb")
+    }
+}
 
 impl NoatunKey for Rgb {
     type NativeType = Rgb;
@@ -61,6 +64,10 @@ impl NoatunKey for Rgb {
     {
         use std::hash::Hash;
         (*tself).hash(state);
+    }
+
+    fn destroy(&mut self) {
+
     }
 
     fn export_key_ref(&self) -> impl Borrow<Self::NativeType> {
@@ -77,6 +84,10 @@ impl NoatunKey for Rgb {
 
     fn init_from(mut self: Pin<&mut Self>, external: &Self::NativeType) {
         self.set(*external);
+    }
+
+    fn hash_key_schema(hasher: &mut SchemaHasher) {
+        hasher.write_str("Rgb")
     }
 }
 
@@ -178,6 +189,7 @@ impl Node {
             auto_prune: false,
             max_file_size: 100_000_000,
             cutoff_interval: CutOffDuration::from_minutes(5),
+            ..Default::default()
         }).unwrap();
 
         Node {
@@ -185,18 +197,18 @@ impl Node {
             db,
             distributor: Distributor::new(Duration::from_secs(5), ArcShift::new(ephemeral_node_id.unwrap_or(
                 EphemeralNodeId::new(id.into())
-            )), now, None),
+            )), now.into(), None),
             last_periodic: now,
         }
     }
     fn receive_message(&mut self, message: DistributorMessage, src: u8, now: Instant, _actual_ether: &mut ActualEther) {
-        self.distributor.receive_message(&mut self.db, std::iter::once((Address::from(src), message)), now).unwrap();
+        self.distributor.receive_message(&mut self.db, std::iter::once((Some(Address::from(src)), EphemeralNodeId::new(src as u16), message)), now.into()).unwrap();
 
     }
     fn step(&mut self, now: Instant, actual_ether: &mut ActualEther) {
         if now >= self.last_periodic + self.distributor.periodic_message_interval() {
             let session = self.db.begin_session().unwrap();
-            let msgs = self.distributor.get_periodic_message(&session, now).unwrap();
+            let msgs = self.distributor.get_periodic_message(&session, now.into()).unwrap();
             for msg in msgs {
                 actual_ether.do_send(self.whoami, msg, now).unwrap();
             }
