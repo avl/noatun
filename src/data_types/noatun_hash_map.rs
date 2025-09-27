@@ -1124,7 +1124,13 @@ impl<K: NoatunStorable + NoatunKey + PartialEq, V: FixedSizeObject> NoatunHashMa
             |bucket_nr| {
                 if <K as NoatunKey>::eq(
                     // Safety: probe sequence only visits populated buckets
-                    unsafe { buckets[bucket_nr.0].assume_init_ref().key.export_key_ref().borrow() },
+                    unsafe {
+                        buckets[bucket_nr.0]
+                            .assume_init_ref()
+                            .key
+                            .export_key_ref()
+                            .borrow()
+                    },
                     key,
                 ) {
                     result = Some(bucket_nr);

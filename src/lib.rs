@@ -1,3 +1,4 @@
+#![doc(html_favicon_url = "../../../icon/noatun-black128.png")]
 #![doc = include_str!("../doc_helper/docs-svg.md")]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]

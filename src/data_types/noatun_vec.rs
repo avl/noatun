@@ -493,7 +493,7 @@ impl<T: FixedSizeObject, C: ContextGetter> NoatunVecRaw<T, C> {
 /// can be pruned until the vector is cleared, even if early messages no longer appear to have
 /// any impact on the database state.
 ///
-/// In most cases, applications should use [`crate::prelude::NoatunHashMap`] or OpaqueNoatunVec.
+/// In most cases, applications should use [`crate::prelude::NoatunHashMap`] or [`OpaqueNoatunVec`].
 ///
 /// A Vec contains two trackers:
 ///  * Clear tracker

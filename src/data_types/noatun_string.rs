@@ -1,7 +1,7 @@
-use std::borrow::Borrow;
 use crate::data_types::NoatunKey;
 use crate::sequence_nr::Tracker;
 use crate::{NoatunContext, NoatunStorable, Object, SchemaHasher, ThinPtr};
+use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
