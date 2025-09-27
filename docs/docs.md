@@ -231,13 +231,14 @@ Some basic types:
 The `noatun_object!` macro can be used to define a custom object types like this:
 
 ```rust
+use noatun::{noatun_object, data_types::{NoatunString, NoatunHashMap}};
 noatun_object!{
     /// Documentation for struct
     struct MyType {
         /// Documentation for field
         pod foo: u32,
         /// Documentation for other field
-        object bar: NoatunHashMap<u32, NoautunString>,
+        object bar: NoatunHashMap<u32, NoatunString>,
     }
 }
 ```
@@ -247,6 +248,7 @@ be turned into objects by wrapping in `NoatunCell`.
 The `noatun_pod!`-macro can be used to define custom pod types:
 
 ```rust
+use noatun::noatun_pod;
 noatun_pod! {
     /// Documentation for struct
     struct MyPodType {
