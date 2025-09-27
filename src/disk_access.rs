@@ -405,7 +405,7 @@ impl FileAccessor {
 
         let mut len = File::metadata(&file)?.len() as usize;
 
-        if len < initial_size + Self::HEADER_SIZE || len % page_size != 0 {
+        if len < initial_size + Self::HEADER_SIZE || !len.is_multiple_of(page_size) {
             len = len
                 .max(initial_size + Self::HEADER_SIZE)
                 .next_multiple_of(page_size);

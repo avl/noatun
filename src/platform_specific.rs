@@ -94,7 +94,7 @@ mod unix {
             let actual_page_size = Self::page_size();
             let actual_size = max_size.next_multiple_of(actual_page_size);
 
-            assert_eq!(actual_size % actual_page_size, 0);
+            assert!(actual_size.is_multiple_of(actual_page_size));
 
             // Safety: mmap is used correctly
             let ptr = unsafe {
@@ -140,7 +140,7 @@ mod unix {
         fn sync_range(&self, start: usize, len: usize) -> Result<()> {
             // Safety: libc::msync is used with correct parameters
             unsafe {
-                let start_rounded_down = if start % Self::page_size() == 0 {
+                let start_rounded_down = if start.is_multiple_of(Self::page_size()) {
                     start
                 } else {
                     start.next_multiple_of(Self::page_size()) - Self::page_size()
@@ -182,7 +182,7 @@ mod unix {
         }
 
         fn shrink_committed_mapping(&mut self, new_size: usize) -> Result<()> {
-            assert_eq!(new_size % self.page_size(), 0);
+            assert!(new_size.is_multiple_of(self.page_size()));
             if new_size >= self.committed_size {
                 return Ok(());
             }
@@ -215,7 +215,7 @@ mod unix {
         }
 
         fn grow_committed_mapping(&mut self, new_size: usize) -> Result<()> {
-            assert_eq!(new_size % self.page_size(), 0);
+            assert!(new_size.is_multiple_of(self.page_size()));
             if new_size <= self.committed_size {
                 return Ok(());
             }
