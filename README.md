@@ -5,25 +5,36 @@
 
 Welcome to Noatun!
 
-Noatun is an in-process, multi master, distributed event sourced database with automatic
-garbage collection and an materialized view support, written in 100% Rust.
+Noatun is an in-process, multi master, distributed database with automatic
+garbage collection and a materialized view support, written in 100% Rust.
+Noatun currently supports linux.
 
 Using Noatun:
 
  * Define your messages
  * Define rules to apply messages to a materialized view
  * Noatun applies messages in order, time-traveling as needed if messages arrive out-of-order
+ * Query materialized view using native rust
 
 Noatun properties:
  * Synchronizes messages efficiently over networks
- * Automatically prunes messages that no longer affect state
- * Fast, in-process, memory mapped view
+ * Automatically prunes messages that no longer have any effect
+ * Fast, in-process, memory mapped materialized view
 
 Resources:
 
-[Docs](https://docs.rs/noatun/latest/noatun/) [Manual](https://github.com/avl/noatun/blob/master/docs/docs.md)
+[Rust Docs](https://docs.rs/noatun/latest/noatun/) 
 
+[Manual](https://github.com/avl/noatun/blob/master/docs/docs.md)
 
+### Limitations
 
+ * Noatun is very new. There is an extensive test suite, but there may be bugs.
+ * Currently only linux is supported. Macos/windows support is possible, and PR:s are welcome.
+ 
+### Examples
+
+The folder `examples` contains several examples. `examples/issue_tracker.rs` contains a ratatui-based
+issue tracker.
 
 
