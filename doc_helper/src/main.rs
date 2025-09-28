@@ -7,7 +7,7 @@ fn main() {
 
     let doc = std::fs::read_to_string("../docs/docs.md").unwrap();
     let re = Regex::new(r"(?s)```mermaid(.*?)```").unwrap();
-    let re2 = Regex::new(r"`([\w:]+?)`").unwrap();
+    let re2 = Regex::new(r"`([\w_:]+?)`").unwrap();
 
     let val = re.replace_all(&doc, |cap: &Captures|{
         let render = mermaid.render(&cap[1]).unwrap();

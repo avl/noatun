@@ -284,13 +284,15 @@ impl<MSG: Message + 'static> DatabaseSession<'_, MSG> {
     /// [`Message::apply`] method modify the database.
     ///
     /// NOTE!
-    /// This method offer very little overhead, but this means it also does not validate
+    /// This method has very little overhead, but this means it also does not validate
     /// the database before executing. This should always be safe, but it means that recovery
     /// will not occur if the database has been corrupted by a previous operation.
     ///
     /// In normal operation, the database is never corrupted. However, if it somehow is
-    /// (by a thread being killed, for example), this method could produce a root object that
-    /// is in a state of a message being half-applied, for example.
+    /// (by a thread being killed, for example), this method could produce a root object
+    /// in a state of a message being half-applied, for example.
+    ///
+    /// This does not advance the cutoff frontier. See [`DatabaseSessionMut::maybe_advance_cutoff`].
     pub fn with_root<R>(&self, f: impl FnOnce(&MSG::Root) -> R) -> R {
         self.db.with_root(f)
     }
@@ -330,7 +332,8 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
     }
 
     /// Sync any written messages to the disk, and wait for the disk io
-    /// to complete.
+    /// to complete. Once this method returns Ok, all messages have been persisted
+    /// to disk.
     ///
     /// This will not sync the materialized view to disk, but doing so is not necessary
     /// since it will be rebuilt automatically in case of either operating system or application
@@ -339,10 +342,14 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.sync_outstanding()
     }
 
-    /// Remove all elements from the vector such that their timestamp is
-    /// before the cutoff time.
+    /// Trim the given vector, removing all items that have a timestamp
+    /// prior to the cutoff time.
     ///
-    /// All messages that were create before the cutoff time are expected
+    /// This is a helper intended to prune the parent list of a message.
+    /// Message parents can never have a timestamp before the cutoff time, such
+    /// parents aren't tracked by noatun.
+    ///
+    /// All messages that were created before the cutoff time are expected
     /// to have had time to propagate to every node in the network.
     pub fn remove_cutoff_parents(&self, parents: &mut Vec<MessageId>) {
         if let Ok(cutoff) = self.db.current_cutoff_time() {
@@ -421,13 +428,15 @@ impl<MSG: Message + 'static> DatabaseSessionMut<'_, MSG> {
         self.db.get_all_messages_with_children()
     }
 
-    /// Note, this method offer very little overhead, but this means it also does not validate
+    /// Note, this method has very little overhead, but this means it also does not validate
     /// the database before executing. This should always be safe, but it means that recovery
     /// will not occur if the database has been corrupted by a previous operation.
     ///
     /// In normal operation, the database is never corrupted. However, if it somehow is
     /// (by a thread being killed, for example), this method could produce a root object that
     /// is in a state of a message being half-applied, for example.
+    ///
+    /// This does not advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
     pub fn with_root<R>(&self, f: impl FnOnce(&MSG::Root) -> R) -> R {
         self.db.with_root(f)
     }
@@ -901,13 +910,13 @@ impl<MSG: Message + 'static> Database<MSG> {
         Ok(ret)
     }
 
-    /// Note, this method offer very little overhead, but this means it also does not validate
+    /// Note, this method has very little overhead, but this means it also does not validate
     /// the database before executing. This should always be safe, but it means that recovery
     /// will not occur if the database has been corrupted by a previous operation.
     ///
     /// In normal operation, the database is never corrupted. However, if it somehow is
     /// (by a thread being killed, for example), this method could produce a root object that
-    /// is in a state of a message being half-applied, for example.
+    /// is in a state of a message being half-applied.
     ///
     /// This does not advance the cutoff frontier. See [`Self::maybe_advance_cutoff`].
     /// This method is not public, please call `Self::begin_session` or `Self::begin_session_mut`

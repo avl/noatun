@@ -220,11 +220,11 @@ However, when it comes to the materialized view, noatun ships with a set of stan
 can define their own types to extend this standard set of types.
 
 Some basic types:
- * NoatunCell  - wrapper around primitives and many other Copy-types
- * NoatunHashMap - hash map for Noatun
- * NoatunString - Noatun equivalent to std::string::String
- * Struct types defined using `noatun_object!`-macro.
- * Pods defined using `noatun_pod!`-macro.
+ * `NoatunCell`  - wrapper around primitives and many other Copy-types
+ * `prelude::NoatunHashMap` - hash map for Noatun
+ * `prelude::NoatunString` - Noatun equivalent to std::string::String
+ * Struct types defined using `noatun_object`-macro.
+ * Pods defined using `noatun_pod`-macro.
 
 ## Defining custom types
 
@@ -242,10 +242,10 @@ noatun_object!{
     }
 }
 ```
-Map-keys must implement `NoatunKey`. Map-values must be objects. Pod-types can
-be turned into objects by wrapping in `NoatunCell`.
+Map-keys must implement `prelude::NoatunKey`. Map-values must be objects. Pod-types can
+be turned into objects by wrapping in `prelude::NoatunCell`.
 
-The `noatun_pod!`-macro can be used to define custom pod types:
+The `noatun_pod`-macro can be used to define custom pod types:
 
 ```rust
 use noatun::noatun_pod;
@@ -281,8 +281,8 @@ It must also implement the `NoatunStorable` trait.  See `NoatunPod` and `NoatunS
 requirements.
 
 ## Key types
-Hashmaps are a central datatype, that is well suited for use with noatun (see type `NoatunHashmap`).
-Hashmap keys must be pods. In addition, they must implement the `NoatunKey`-trait. This trait provides
+Hashmaps are a central datatype, that is well suited for use with noatun (see type `prelude::NoatunHashMap`).
+Hashmap keys must be pods. In addition, they must implement the `prelude::NoatunKey`-trait. This trait provides
 predictable (non-randomized) hashing. The regular rust hash functions can't be used since the random
 seed is different for each execution, making on-disk hashmaps invalid after restart.
 
@@ -315,7 +315,7 @@ in memory and the format on disk.
 
 Messages are automatically removed from the database when they are no longer needed.
 
-The basic approach is that Noatun tracks exactly what information a message's `apply`-method writes.
+The basic approach is that Noatun tracks exactly what information a message's `Message::apply`-method writes.
 Once all that information has been overwritten, the message can be removed (with some caveats).
 
 ```mermaid 
@@ -356,7 +356,7 @@ it wrote the most recent value to "FieldB". However, after Event3 has been writt
 Event1 wrote is still in the database, and Event1 will now be automatically pruned (note this is not always 100% true, 
 please continue reading).
 
-However, consider what happens if messages (actually, the `apply` method of Message impls) also read from the database:
+However, consider what happens if messages (actually, the `Message::apply` method of Message impls) also read from the database:
 
 
 ```mermaid 
@@ -450,11 +450,11 @@ class uct2 BT
 classDef BT stroke:transparent,fill:transparent
 ```
 
+
 Event2 completely overwrites everything created by Event1. So it may seem we could always prune Event1.
 
 However, this is not the case. It's possible that, sometime after Event1 was created, but before Event2 was created,
-on a different node, there may be an Event1.5:
-
+on a different node, there may be an Event1.5 that reads the value written by Event1, and stores it to another field:
 
 ```mermaid 
 block-beta
@@ -477,17 +477,15 @@ block-beta
         space
         space
         FieldB
-
     end
     Event1-- "write" -->FieldA
     FieldA-- "read" -->Event15
     Event15-- "write" -->FieldB
     Event2-- "write" -->FieldA
-class Event15 D
 class uct1 BT
 class uct2 BT
-classDef BT stroke:transparent, fill:transparent
-classDef D stroke-dasharray: 5
+classDef BT stroke:transparent,fill:transparent
+style Event15 stroke-dasharray:5
 ```
 
 Since we cannot know if such an event will arrive, we cannot immediately prune event 1.
@@ -503,7 +501,7 @@ Event1) that the cutoff_interval is relative to.
 
 Note, Noatun verifies that nodes always agree on the set of events with timestamps before `now - cutoff_interval`
 (this time is known as the "cutoff_time"). A hash of all messages timestamped before the cutoff time is maintained
-and periodically sent to all neighbors. The cutoff_time advances periodically by a the "cutoff stride". When
+and periodically sent to all neighbors. The cutoff_time advances periodically by a "cutoff stride". When
 nodes detect that peers have cutoff intervals in the near future, they immediately advance to be in sync.
 Large clock drift is detected and flagged as an error. Noatun requires approximate clock synchronization.
 
@@ -531,8 +529,8 @@ navigating the materialized view can cause unintended observations. See next sec
 
 Noatun can sometimes prune data even before the cut-off interval has elapsed. This is possible when
 a message has only written "opaque" data to the database. Opaque data is data that cannot be read
-by other messages. That is, information that cannot be read while executing in `crate::prelude::Message::apply`, but only
-from `crate::prelude::DatabaseSession::with_root`. 
+by other messages. That is, information that cannot be read while executing in `prelude::Message::apply`, but only
+from `prelude::DatabaseSession::with_root`. 
 
 Let's return to a variation of our earlier example:
 
@@ -572,17 +570,17 @@ can be pruned as soon as all their information has been completely overwritten.
 
 Collections offer a challenge. To illustrate this, consider vectors.
 
-It may seem that pushing a new item at the end of a vector `crate::prelude::NoatunVec` should not introduce any read dependency.
+It may seem that pushing a new item at the end of a vector `prelude::NoatunVec` should not introduce any read dependency.
 But actually, the result of such a push depends on the previous contents of, and thus all previous writes
 to the vector. The reason for this is that later messages may use the length of the vector in calculations.
 
-Pruning any messages that wrote to a `crate::prelude::NoatunVec` would change the later return value of `crate::prelude::NoatunVec::len`, and
-this could change the final materialized state. Because of this `crate::prelude::NoatunVec` *does* record a read dependency
-on previous messages when pushing to a `crate::prelude::NoatunVec`.
+Pruning any messages that wrote to a `prelude::NoatunVec` would change the later return value of `prelude::NoatunVec::len`, and
+this could change the final materialized state. Because of this `prelude::NoatunVec` *does* record a read dependency
+on previous messages when pushing to a `prelude::NoatunVec`.
 
-To work around this, `crate::prelude::OpaqueNoatunVec` exists. It works like `crate::prelude::NoatunVec`, but does not record read dependencies
-when pushing new elements. The downside is that it does not support a regular `len` operation. This way,
-pruning an element from a `crate::prelude::OpaqueNoatunVec` is not observable to any message. Remember that we never prune a message
+To work around this, `prelude::OpaqueNoatunVec` exists. It works like `prelude::NoatunVec`, but does not record read dependencies
+when pushing new elements. The downside is that it does not support a regular 'len' operation. This way,
+pruning an element from a `prelude::OpaqueNoatunVec` is not observable to any message. Remember that we never prune a message
 if information it wrote could be read by a later message. So if the message we're about to prune wrote an item
 that is actually read itself by a message, the pruning will not occur.
 
@@ -600,9 +598,9 @@ until the cutoff interval has elapsed, even if the message only wrote opaque dat
 
 Emitting tombstones can be costly, so it can make sense for applications to take care to avoid doing so.
 
-Noatun has a tool for avoiding tombstones in some situations: the `clear` method.
+Noatun has a tool for avoiding tombstones in some situations: the 'clear' method.
 
-`crate::prelude::NoatunVec`, `crate::prelude::OpaqueNoatunVec` and `crate::prelude::NoatunHashMap` all have such a `clear`-method. This method, unsurprisingly,
+`prelude::NoatunVec`, `prelude::OpaqueNoatunVec` and `prelude::NoatunHashMap` all have such a 'clear'-method. This method, unsurprisingly,
 removes all elements from the collection. But additionally, and crucially, it does this without marking the 
 message as a tombstone. Instead, it records itself as the writer of a special 'clear' marker in the collection. 
 This write is recorded just like the write to any field. Future calls to 'clear' will overwrite the marker, and 
@@ -620,7 +618,7 @@ maintained.
 When data is read (while building the materialized view), a read dependency is created between the currently
 materialized message, and the owner of the tracker that owns the data which was read.
 
-Types with the word `Opaque` in their name still have trackers, but since their data cannot be read
+Types with the word 'Opaque' in their name still have trackers, but since their data cannot be read
 by the `Message::apply`-methods while building the materialized view, such trackers never participate in
 establishing read dependencies between messages.
 
@@ -629,7 +627,7 @@ establishing read dependencies between messages.
 
 Interactive applications often have a need to validate messages before emitting them.
 
-In these situations, applications can use `crate::prelude::DatabaseSessionMut::with_root_preview` to
+In these situations, applications can use `prelude::DatabaseSessionMut::with_root_preview` to
 apply a message temporarily, and give the application access to the resulting
 materialized view. An application can then run validation on the actual
 state resulting from applying the message.
@@ -637,7 +635,7 @@ state resulting from applying the message.
 If message application has complex application logic, this can be useful for
 reducing code duplication in validators.
 
-After `with_root_preview` returns, the database is restored to the previous
+After `prelude::DatabaseSessionMut::with_root_preview` returns, the database is restored to the previous
 state.
 
 ## Undo
@@ -646,7 +644,7 @@ There are a few possibilities for undoing events in Noatun:
 
 ### Deleting the event
 
-Events can be deleted using `crate::prelude::DatabaseSessionMut::remove_message`. Note, however,
+Events can be deleted using `prelude::DatabaseSessionMut::remove_message`. Note, however,
 that this is a low level operation that should not be used for events that have been
 (or may have been) transmitted to other nodes. Noatun still guarantees eventual consistency,
 but this will only occur after the cutoff interval has passed, and will be accomplished by
@@ -662,7 +660,7 @@ by the original message, and it can then hopefully be automatically pruned.
 ### Inhibiting a message from being applied
 
 Since messages have access to their id when being applied, it is possible to
-maintain a set of 'inhibited' messages. A `crate::prelude::Message::apply` implementation can
+maintain a set of 'inhibited' messages. A `prelude::Message::apply` implementation can
 then check if it has been inhibited before executing the bulk of its body.
 
 Separate 'inhibit' messages can then be defined, that add to the set of inhibited
@@ -671,7 +669,7 @@ it will be as if the message never happened.
 
 The inhibit messages can be created with a MessageId that sorts immediately before
 the original message (but still on the same timestamp). See method
-`crate::prelude::MessageId::unique_predecessor`.
+`prelude::MessageId::unique_predecessor`.
 
 
 
@@ -709,7 +707,7 @@ While requiring correct time is a limitation, it is often the case that IT syste
 need correct time anyway for other purposes, such as validating certificates, 
 correctly timestamping logs, achieving freshness conditions in cryptography, and many more.
 
-The noatun type representing time, `crate::prelude::NoatunTime`, has a range from the year 1970 to 
+The noatun type representing time, `prelude::NoatunTime`, has a range from the year 1970 to 
 the year 10000.
 
 
@@ -758,27 +756,27 @@ impl Message for Event {
 }
 ```
 
-Ice cream cart #1 sells 2 cones, and records an event `Event::IceCreamSold(2)`.
+Ice cream cart #1 sells 2 cones, and records an event 'Event::IceCreamSold(2)'.
 This sets the total number of sold cones to 2. So far so good.
 
-Now, ice cream cart #2 sells 3 cones, and records `Event::IceCreamSold(3)`.
+Now, ice cream cart #2 sells 3 cones, and records 'Event::IceCreamSold(3)'.
 This sets the total number to 3.
 
-With the above `apply` definition, this will result in total_ice_cream_sold equal to 3, 
+With the above `Message::apply` definition, this will result in total_ice_cream_sold equal to 3, 
 instead of the correct 5. 
 
-The correct apply method should increment `total_ice_cream_sold`, not assign it.
+The correct apply method should increment 'total_ice_cream_sold', not assign it.
 
 The trouble in the original naive implementation was that IceCreamSold was interpreted
 as a global count of sold icecream, something that each ice cream cart did not actually
 have information about.
 
 If events only encode actual ground truth information, and no derived information, 
-it is often relatively straightforward to correctly implement the `crate::prelude::Message::apply` method.
+it is often relatively straightforward to correctly implement the `prelude::Message::apply` method.
 
 In this example, the information available to each cart was just that a sale had been made
 locally, and that was all the information that should be encoded in the message. Deriving
-the total count of sold cones could only be done in the `apply`-method.
+the total count of sold cones could only be done in the `Message::apply`-method.
 
 In general, Noatun events should contain events that exactly reflect what has happened
 in the real world, with the timestamp of the actual event, without any extra information.
@@ -835,11 +833,11 @@ enum SparePartEvent {
 
 Imagine a situation where a technician consumed a spare part, but forgot to enter it
 into the computer system. The next day, the technician realizes their mistake, and
-enters a `ConsumeSparePart` event in into the system.
+enters a 'ConsumeSparePart' event in into the system.
 
 The problem here is that the kit might already have been inventoried (and the missing
 quantity presumably noted), and might now physically be out with some other technician.
-Entering the missing `ConsumeSparePart` after-the-fact is only correct if the event
+Entering the missing 'ConsumeSparePart' after-the-fact is only correct if the event
 is backdated to the correct time. Usually, such a 'correct' timestamp can be found.
 
 Such backdating is easy in this example, but we'll see in the next chapter a situation where
@@ -875,30 +873,30 @@ enum MaintenanceEvent {
 
 We initially set up a new plan, say "standard maintenance" with oil change interval
 of 180 days and brake inspection interval 360 days. Let's say we set this up on
-January 1st 2025. We make sure to timestamp this `NewMaintenancePlan` event before
-any `AddTruck` events.
+January 1st 2025. We make sure to timestamp this 'NewMaintenancePlan' event before
+any 'AddTruck' events.
 
 However, after having the system in operation for a while, we expand our fleet
 with a new truck. However, it's used, and its last maintenance was on December 1st 2024.
 
 When we enter this event into the system, we notice a problem. We must backdate
-the `RecordMaintenance` event to december 1st 2024. But then `crate::prelude::Message::apply`
+the 'RecordMaintenance' event to december 1st 2024. But then `prelude::Message::apply`
 fails, because the maintenance plan doesn't exist yet. It isn't created until 
 January 1st 2025. 
 
 We claimed earlier that events should always be entered into the system with their
 "natural" timestamp. However, in the situation described here, there isn't really
-a natural timestamp for the `NewMaintenancePlan` event. Users are often not accustomed
+a natural timestamp for the 'NewMaintenancePlan' event. Users are often not accustomed
 to event sourced architectures, and might assume that any change to the maintenance plans
 affects also data established by events timestamped in the distant past.
 
 Generally, there are two options:
 
  * Stick with the "events have natural timestamps" idea. In this case there are a few options:
-   * Create a new `NewMaintenancePlan` element backdated to December 1st 2024. 
-   * Create a new `NewMaintenancePlan` element backdated to January 1st 1970 UTC
+   * Create a new 'NewMaintenancePlan' element backdated to December 1st 2024. 
+   * Create a new 'NewMaintenancePlan' element backdated to January 1st 1970 UTC
      (the earliest supported NoatunTime), and figure out a strategy for when the element
-     needs to be updated: Potentially using `Message::unique_successor`.
+     needs to be updated: Potentially using `MessageId::unique_successor`.
  * Use 'data entry' timestamps for all elements. That is, timestamp all events with the
    time at which they were entered into the system. This loses some benefits
    of a timestamped event source, but may be the right choice in this particular example.
@@ -932,7 +930,7 @@ _MessageId layout_
 The message id consists of 3 parts:
 * A 48 bit timestamp (with millisecond precision and a range of more than 10000 years)
 * 2 "special" bits used to provide 16384 'successor' and 'predecessor' values for each original value.
-  For newly generated message ids, these two bits always have the value `01`or `10`.
+  For newly generated message ids, these two bits always have the value "01"or "10".
   This ensures that there is always room to create new Message-id values before and after
   any other id, and that these ids will have the same timestamp as the original.
   These can be used to generate a message id that occurs "immediately before" some other message.
@@ -1062,7 +1060,7 @@ the underlying network. Specifically:
  * The nodes don't need to know their own address
 
 The only requirement of addresses is that if the network has addresses, nodes may not change addresses too frequently.
-Note that on linux you may need to disable `rp_filter`, if there are address duplicates in your network. 
+Note that on linux you may need to disable 'rp_filter', if there are address duplicates in your network. 
 
 
 

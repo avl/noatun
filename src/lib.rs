@@ -110,7 +110,7 @@ pub mod prelude {
 
     pub use crate::data_types::{
         NoatunCell, NoatunHashMap, NoatunString, NoatunVec, OpaqueNoatunCell, OpaqueNoatunString,
-        OpaqueNoatunVec,
+        OpaqueNoatunVec, NoatunKey
     };
     pub use crate::database::{Database, DatabaseSession, DatabaseSessionMut, DatabaseSettings};
     pub use crate::{
