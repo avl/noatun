@@ -1,5 +1,5 @@
 #![doc(html_favicon_url = "../../../icon/noatun-black128.png")]
-#![doc = include_str!("../doc_helper/docs-svg.md")]
+#![doc = include_str!("../doc_helper/docs-svg.md")] // Run `update_docs.sh` to update this from `docs/docs.md`
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]
 #![allow(clippy::bool_comparison)]
