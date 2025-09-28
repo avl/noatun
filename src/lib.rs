@@ -109,8 +109,8 @@ pub mod prelude {
     //! Commonly used types
 
     pub use crate::data_types::{
-        NoatunCell, NoatunHashMap, NoatunString, NoatunVec, OpaqueNoatunCell, OpaqueNoatunString,
-        OpaqueNoatunVec, NoatunKey
+        NoatunCell, NoatunHashMap, NoatunKey, NoatunString, NoatunVec, OpaqueNoatunCell,
+        OpaqueNoatunString, OpaqueNoatunVec,
     };
     pub use crate::database::{Database, DatabaseSession, DatabaseSessionMut, DatabaseSettings};
     pub use crate::{
