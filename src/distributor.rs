@@ -975,8 +975,8 @@ impl Display for Status {
     }
 }
 
-/// Truncate the given name to a limited length 'Address'
-pub fn truncate_to_arraystring(name: &str) -> Address {
+/// Truncate the given name to a limited length 'Address'.
+pub fn truncate_to_address(name: &str) -> Address {
     if name.len() <= Address::MAX_LENGTH {
         return Address::from(name);
     }
@@ -1890,28 +1890,28 @@ impl Distributor {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_to_arraystring;
+    use super::truncate_to_address;
     #[test]
     fn do_test_truncate() {
         assert_eq!(
-            truncate_to_arraystring("012345678901234567890123456789012345678﷽")
+            truncate_to_address("012345678901234567890123456789012345678﷽")
                 .0
                 .as_str(),
             "012345678901234567890123456789012345678"
         );
         assert_eq!(
-            truncate_to_arraystring("0123456789012345678901234567890123456789A")
+            truncate_to_address("0123456789012345678901234567890123456789A")
                 .0
                 .as_str(),
             "0123456789012345678901234567890123456789"
         );
-        assert_eq!(truncate_to_arraystring("abcd").0.as_str(), "abcd");
+        assert_eq!(truncate_to_address("abcd").0.as_str(), "abcd");
         assert_eq!(
-            truncate_to_arraystring("0123456789").0.as_str(),
+            truncate_to_address("0123456789").0.as_str(),
             "0123456789"
         );
         assert_eq!(
-            truncate_to_arraystring("01234567890123456789012345678901234567◌")
+            truncate_to_address("01234567890123456789012345678901234567◌")
                 .0
                 .as_str(),
             "01234567890123456789012345678901234567"

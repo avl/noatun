@@ -21,6 +21,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 pub use cutoff::{CutOffDuration, CutOffState};
 pub use database::{Database, DatabaseSettings, OpenMode};
 use datetime_literal::datetime;
+#[doc(hidden)]
 pub use paste::paste;
 pub(crate) use projection_store::DatabaseContextData;
 use rand::RngCore;
@@ -176,7 +177,7 @@ impl Write for SchemaHasher {
 /// A trait for things that can be stored in the noatun materialized view.
 ///
 /// # Safety
-/// * Type must not have Drop impl
+/// * Type must not have a Drop impl
 /// * Type must have repr(C) or repr(transparent)
 /// * Type must be a struct
 /// * All bit patterns must be valid
@@ -189,7 +190,7 @@ impl Write for SchemaHasher {
 /// Note that type is allowed to have padding.
 /// Type is also allowed to contain indices inside the database file ([`ThinPtr`]/[`FatPtr`]).
 ///
-/// Note that tuples do not fulfill the criteria (no guaranteed stable memory layout).
+/// Note that tuples do not fulfill these criteria (no guaranteed stable memory layout).
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be stored in a noatun database.",
     label = "`{Self}` does not implement NoatunStorable.",
@@ -245,12 +246,16 @@ pub unsafe trait NoatunStorable: Sized + 'static {
     fn hash_schema(hasher: &mut SchemaHasher);
 }
 
-/// Trait for noatun storable objects that can be unpin, that don't contain any
-/// pointers or references inside the noatun materialized view
+/// Trait for noatun plain data objects.
+///
+/// Use the [`noatun_pod`]-macro to automatically implement this for custom structs.
+///
+/// NoatunPod-objects can be unpin, since they don't contain any
+/// pointers or references inside the noatun materialized view.
 ///
 /// The type should not contain any [`Tracker`] instances.
 ///
-/// See `NoatunStorable` for further requirements.
+/// See [`NoatunStorable`] for further requirements.
 ///
 /// # Safety
 ///  * The type must be completely self-contained, it must not contain pointers
@@ -299,13 +304,17 @@ thread_local! {
     /// The current context for the running thread.
     ///
     /// This is always set when user code runs in [`Message::apply`],
-    /// [`DatabaseSession::with_root`] or similar methods.
+    /// [`database::DatabaseSession::with_root`] or similar methods.
+    ///
+    /// NOTE! This is not intended to be used directly by user applications.
+    /// It remains exposed to make it possible to write custom noatun types.
     pub static CONTEXT: Cell<*mut DatabaseContextData> = const { Cell::new(null_mut()) };
 }
 
 #[cfg(any(feature = "debug", debug_assertions))]
 thread_local! {
-    /// In debug-builds, this thread local data tracks which node is current processed
+    /// In debug-builds, this thread local data tracks which node is currently processed
+    ///
     /// Useful for debugging printouts and logging.
     pub static DEBUG_NODE: Cell<u16> = const { Cell::new(0) };
 }
@@ -1328,7 +1337,7 @@ pub enum Persistence {
     AtLeastUntilCutoff,
 }
 
-/// An event handled by Noatun
+/// An event handled by Noatun.
 ///
 /// Messages carry all primary data in Noatun. The noatun materialized
 /// view is a function of the complete set of messages. Messages are the events in
@@ -1724,10 +1733,14 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
     unsafe { raw.read_unaligned() }
 }
 
+/// An item that can be stored in the noatun db materialized view.
+///
+/// To automatically implement `Object` for custom types, use the [`noatun_object!`]-macro.
+///
 /// # Safety
 /// To implement this safely:
 ///  * Self must be repr(C) or repr(transparent). repr(packed) may also work.
-///  * Self must not utilize any niches in owned objects. This is because the undo-function
+///  * Self must not use any niches in owned objects. This is because the undo-function
 ///    of noatun will overwrite such niches during undo.
 ///  * Self can have niches, but noatun guarantees they will never be used and Self is
 ///    allowed to clobber them.
@@ -1741,12 +1754,13 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
 ///  * Make sure all your fields also implement Object.
 ///
 /// # Note on Pin::set
-/// Pin::set might seem to be a problem:
+/// [`Pin::set`] might seem to be a problem:
 /// It allows the user to overwrite the target of a pinned ptr, in a for-noatun-unobservable way.
 /// However:
-/// 1: Just don't do that!
-/// 2: In order to be able to call Pin::set, the user needs to have an owned value of
+///
+/// 1. To be able to call Pin::set, the user needs to have an owned value of
 ///    an Object-type. This must be made impossible to obtain.
+/// 2. Also: Just don't do that.
 ///
 /// Therefore, any type that implements Object must make sure that safe
 /// code cannot obtain an owned instance of Self:
@@ -1754,21 +1768,20 @@ pub fn read_unaligned<T>(data: &[u8]) -> T {
 ///   * No new() impl (though NativeType can of course have new())
 ///
 /// # On default values
-/// Objects should ideally not implement [`Default`]. Noatun assumes all objects
+/// Objects must not implement [`Default`]. However, Noatun assumes all objects
 /// can be constructed in a reasonable default state by simply initializing them
-/// with an all zero bit pattern. To avoid confusion, types should therefore not
-/// implement `Default`.
+/// with an all zero bit pattern.
 ///
 /// # Contrast to NoatunPod
 /// This trait represents an object that can be stored on its own as a first class
 /// noatun database object. However, noatun has a distinction between objects and values.
 /// At the top level, the root object of a noatun database must be an Object. However,
-/// the [`NoatunCell`] type allows storing values [implementing [`NoatunPod`]]. This allows
+/// the [`NoatunCell`] type allows storing values (that [`NoatunPod`]). NoatunCell itself implements
+/// [`Object`]. This allows
 /// storing rust standard primitives like u8, u16, u32 etc directly in the database. It also
 /// allows storing custom types, for example newtype wrappers, identifiers etc directly in
 /// the database. All other information should be wrapped in a type that implements Object
 /// (such as [`data_types::NoatunCell`]).
-///
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a noatun Object, and can't appear on its own in a noatun database.",
     label = "`{Self}` does not implement Object.",
@@ -1806,13 +1819,13 @@ pub trait Object {
     /// Instances of `Object` may never be moved out of the database. There are several
     /// reasons for this:
     ///
-    ///  - 1: Objects stored in the database may reference memory mapped storage that
+    /// 1. Objects stored in the database may reference memory mapped storage that
     ///    is only available when the database is open. These references are not
     ///    tracked using rust lifetimes, so if the object was moved out, there might
     ///    be a segfault (or worse) on subsequent access.
-    ///  - 2: The undo-logic would have to be special-cased so as not to emit undo entries
+    /// 2. The undo-logic would have to be special-cased so as not to emit undo entries
     ///    for instances that are not in the database.
-    ///  - 3: The undo-machinery is on a lower level than the objects, and undo could thus
+    /// 3. The undo-machinery is on a lower level than the objects, and undo could thus
     ///    affect objects referenced by moved-out instances, with unintended results.
     type NativeType: ?Sized;
     /// Owned version of [`Self::NativeType`].
@@ -1909,12 +1922,15 @@ pub trait Object {
 /// This is used by the [`noatun_object`]-macro to figure out the number
 /// of fields in a struct.
 #[macro_export]
+#[doc(hidden)]
 macro_rules! count_ast_nodes {
     () => (0usize);
     ( $x:tt $($xs:tt)* ) => (1usize + $crate::count_ast_nodes!($($xs)*));
 }
 
 /// Define a noatun pod struct.
+///
+/// This macro implements [`NoatunPod`].
 ///
 /// Usage:
 ///

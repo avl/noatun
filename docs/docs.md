@@ -6,15 +6,14 @@ used in embedded/edge applications (though std required). Noatun is written in 1
 
 Unique selling points:
  * Robust, completely automatic non-centralized multi-master replication
- * Full functionality even offline, even for long offline periods.
- * Faked linear history: your application doesn't have to consider concurrency. You're an  
-   expert in your domain, you shouldn't have to solve distributed computing just because your customers 
-   have offline requirements. 
- * Perfectly suited for when internet connectivity cannot be guaranteed.
+ * Full functionality even offline, optionally even for long offline periods.
+ * Faked linear history: your application doesn't have to directly consider concurrency. You're an  
+   expert in your domain, you shouldn't have to be an expert in distributed computing just because 
+   your customers have offline requirements. See further down in this document for details. 
 
 Additional features:
  * 100% decentralized - nodes in the network do not need to be assigned unique ids - all they need
-   to agree on is the event format and definition. 
+   to agree on is the message definition. 
  * Data model is 100% event based. Current database state is a function only of current events.
  * Works in any network (and does not require unique network addresses)
  * Deterministic replay and time travel for easy debugging
@@ -33,7 +32,8 @@ an event.
 
 Each Noatun database has two parts: 
  * Event store: contains all events in the database
- * Materialized view: maintained by "applying" all events in order
+ * Materialized view: maintained by "applying" all events in order, rolling back as needed to handle
+   messages that arrive out-of-order.     
 
 
 ```mermaid
@@ -1061,6 +1061,17 @@ the underlying network. Specifically:
 
 The only requirement of addresses is that if the network has addresses, nodes may not change addresses too frequently.
 Note that on linux you may need to disable 'rp_filter', if there are address duplicates in your network. 
+
+## On long offline periods
+
+If a noatun deployment is expected to experience prolonged offline periods, it is recommended to
+adjust the cutoff interval accordingly. For example, if nodes are expected to be offline 1 week at a time,
+the cutoff interval may have to be 1 month. The reason is that the relevant time period is the longest time
+it can take for a message to be propagated to every other node. When a node comes back after having been offline
+1 week, another node may already have commenced its own offline period. The necessary cutoff interval will
+depend on the exact network topology evolution.
+
+
 
 
 

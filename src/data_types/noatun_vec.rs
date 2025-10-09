@@ -757,10 +757,11 @@ where
     }
 }
 
-/// Like [`NoatunVec`] but opaque. [`OpaqueNoatunVec`] cannot be read from during
-/// materialization.
+/// Like [`NoatunVec`] but opaque.
 ///
-/// This means less meta data needs to be kept, which avoid building dependencies
+/// [`OpaqueNoatunVec`] cannot be read from during materialization.
+///
+/// This means less metadata needs to be kept, which avoid building dependencies
 /// between messages. This means messages can be pruned more effectively.
 ///
 /// # Contrast to NoatunVec
@@ -768,7 +769,7 @@ where
 /// collection. This change is observable, so metadata about the length must be kept.
 /// However, the resulting length after [`NoatunVec::push`] depends on the previous length,
 /// which in turn depends on all previous push/pop operations. Thus, pushing a value to
-/// [`NoatunVec`] cause a read dependency. This creates a long
+/// [`NoatunVec`] causes a read dependency. This has the potential to create a long
 /// dependency chain of messages that cannot be pruned simply because doing so would change
 /// the length of the collection.
 ///

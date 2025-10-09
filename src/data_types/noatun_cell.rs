@@ -6,8 +6,9 @@ use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use tracing::trace;
 
-/// A wrapper around a regular plain old data type. T must implement
-/// `NoatunStorable`, which basically means it must be a Copy type that does
+/// A wrapper around a regular plain old data type. 
+/// 
+/// T must implement `NoatunStorable`, which basically means it must be a Copy type that does
 /// not contain any pointers.
 ///
 /// This is a tracked, non-opaque type. It can be read from during materialization,

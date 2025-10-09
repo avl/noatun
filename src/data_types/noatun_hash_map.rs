@@ -196,7 +196,7 @@ impl BucketProbeSequence {
     }
 }
 
-/// Meta data for bucket
+/// Metadata for bucket
 ///
 /// 0 = unoccupied
 /// 1 = deleted
@@ -323,6 +323,7 @@ pub mod meta_finder {
     use std::ops::Range;
 
     #[inline]
+    #[doc(hidden)]
     pub fn get_any_empty(group: &MetaGroup) -> Option<usize> {
         unsafe {
             let group_reg = _mm256_load_si256(group.0.as_ptr() as *const __m256i);
@@ -447,6 +448,7 @@ pub mod meta_finder {
     use super::{BucketNr, Meta, MetaGroup, ProbeRunResult};
 
     #[inline]
+    #[doc(hidden)]
     pub fn get_any_empty(group: &MetaGroup) -> Option<usize> {
         group
             .0

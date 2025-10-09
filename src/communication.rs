@@ -1165,7 +1165,7 @@ where
 
 /// Settings that affect the database replication
 ///
-/// Most these settings can be left with their default values.
+/// Most of these settings can be left at their default values.
 ///
 /// You probably want to adjust `listen_address`.
 ///
@@ -1198,29 +1198,29 @@ pub struct DatabaseCommunicationConfig {
     /// Note, some protocols might not have a concept similar to multicast groups, in which
     /// case this can be left empty.
     pub multicast_address: String,
-    /// The maximum message size that noatun will use
+    /// The maximum message size that noatun will use. Values larger than 200 are recommended.
     pub mtu: usize,
-    /// The maximum number of bytes to send per second
+    /// The maximum number of bytes to send per second.
     pub bandwidth_limit_bytes_per_second: u64,
     /// After observing a gap in the received packets, this is the maximum number
     /// of seconds to wait before requesting transmission of the missing packets.
     pub retransmit_interval_seconds: f32,
-    /// The number of megabytes of memory to use to retain previously sent messages,
+    /// The number of bytes of memory to use to retain previously sent messages,
     /// such that they can be retransmitted if a peer fails to receive one of them.
     pub retransmit_buffer_size_bytes: usize,
-    /// A debug logger that will be called for each packet send/received
+    /// A debug logger that will be called for each packet sent/received
     pub debug_logger: Option<Box<dyn FnMut(DebugEvent) + 'static + Send + Sync>>,
     /// Specifying this is only useful for debugging. The ephemeral node id is chosen
-    /// automatically, and is also automatically changed if conflicts are
+    /// automatically and is also automatically changed if conflicts are
     /// detected.
     pub initial_ephemeral_node_id: Option<EphemeralNodeId>,
     /// Disable the NACK-based low-level retransmit protocol.
     ///
-    /// This is basically never recommended, but can possibly be useful for troubleshooting.
+    /// This is basically never recommended but can possibly be useful for troubleshooting.
     pub disable_retransmit: bool,
     /// Enable collection of in-memory diagnostics logs.
     ///
-    /// This in turn enables use of the ratatui feature, to render a TUI debug UI
+    /// This in turn enables use of the ratatui feature, to render a TUI debug UI.
     pub enable_diagnostics: bool,
 }
 const REPORT_HEAD_INTERVAL_DEFAULT: Duration = Duration::from_secs(5);
@@ -1517,6 +1517,8 @@ impl<MSG: Message + 'static + Send> DatabaseCommunicationLoop<MSG> {
 ///
 /// The communication synchronizes the database with its neighbors (and by extension,
 /// with the full network).
+///
+/// Initialize by calling [`DatabaseCommunication::new`].
 pub struct DatabaseCommunication<MSG: Message> {
     database: Arc<Mutex<Database<MSG>>>,
     cmd_tx: Sender<Cmd<MSG>>,
@@ -1726,7 +1728,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
 
     /// Override the internal clock of this database.
     ///
-    /// Changing the mock time affects the cutoff interval, but does not affect
+    /// Changing the mock time affects the cutoff interval but does not affect
     /// the materialized view.
     #[instrument(skip(self),fields(node=?self.node))]
     pub fn set_mock_time(&mut self, time: NoatunTime) -> Result<()> {
@@ -1899,6 +1901,10 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
     }
 
     /// Create a new instance for communication over UDP multicast.
+    ///
+    /// The returned handle must be kept alive.
+    ///
+    /// Communication parameters can be adjusted, see [`DatabaseCommunicationConfig`].
     pub fn new(
         database: Database<MSG>,
         config: DatabaseCommunicationConfig,

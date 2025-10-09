@@ -193,8 +193,10 @@ impl NoatunKey for NoatunString {
     }
 }
 
-/// Opaque version of [`NoatunString`]. Opaque objects cannot be read
-/// from with [`crate::Message::apply`], but enable faster pruning of messages.
+/// Opaque version of [`NoatunString`].
+///
+/// Opaque objects cannot be read from with [`crate::Message::apply`], but enable
+/// faster pruning of messages.
 #[repr(C)]
 pub struct OpaqueNoatunString {
     start: ThinPtr,

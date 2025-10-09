@@ -29,11 +29,25 @@ pub enum LoadingStatus {
     RecoveryPerformed,
 }
 
+/// Main database object.
+///
+/// This object implements the main Noatun database functionality.
+///
+/// Use [`Database::create_new`] to create a database.
+/// Use [`Database::begin_session_mut`] to start a mutable session to write to the database.
+/// Use [`Database::begin_session`] to start a read-only session to gain access to the database
+/// data using [`DatabaseSession::with_root`].
+///
+///
+#[cfg_attr(feature="tokio", doc = "For replication, see [`crate::communication::DatabaseCommunication`].")]
+///
+/// # Consistency
+///
 /// If thread execution is halted while a mutable Database-operation is running,
 /// the Database will enter a "corrupted" state. Clearing this state requires mutable access,
 /// and this state can thus not be recovered from within any of the methods accepting `&self`.
 ///
-/// Any access to a method using `&mut self` (and [`Self::recover`] in particular), will
+/// Any access to a method using `&mut self` (and [`Self::recover`] in particular) will
 /// execute the recovery procedure and restore the database to working order.
 pub struct Database<MSG: Message> {
     context: DatabaseContextData,
@@ -693,7 +707,7 @@ impl<MSG: Message + 'static> Database<MSG> {
 
     /// Sync all writes to disk
     ///
-    /// This will update both file data and metadata
+    /// This will update both file data and file metadata
     pub fn sync_all(&mut self) -> Result<()> {
         self.message_store.sync_all()?;
         self.context.sync_all()?;
@@ -811,9 +825,12 @@ impl<MSG: Message + 'static> Database<MSG> {
             .advance_cutoff(new_cutoff, &mut self.context)
     }
 
-    /// Set noatun to abort on any panicking message, instead of just catching it
-    /// and loggin an error. This is mostly useful when debugging, as it can sometimes
-    /// be useful to stop immediately at first error.
+    /// Set noatun to abort on any panicking message.
+    ///
+    /// The default is to catch panics and log an error.
+    ///
+    /// Aborting can be useful when debugging, as it can sometimes
+    /// be useful to stop _immediately_ at the first error.
     pub fn set_abort_on_panic(&mut self) {
         self.message_store.set_abort_on_panic();
     }
@@ -929,7 +946,10 @@ impl<MSG: Message + 'static> Database<MSG> {
         f(root)
     }
 
-    /// Return this database's current time
+    /// Return this database's current time.
+    ///
+    /// If time has not been explicitly overridden by calling [`DatabaseSessionMut::set_mock_time`],
+    /// this will return current system time.
     pub fn noatun_now(&self) -> NoatunTime {
         self.time_override.unwrap_or_else(NoatunTime::now)
     }
@@ -1029,6 +1049,7 @@ impl<MSG: Message + 'static> Database<MSG> {
     }
 
     /// Remove all cache files, retaining only the actual data files.
+    ///
     /// This should never be needed, but can possibly serve a purpose if
     /// archiving noatun files, since the cache files can always be recreated from the
     /// data files.
@@ -1038,6 +1059,7 @@ impl<MSG: Message + 'static> Database<MSG> {
     /// Remove all database files for a database at the given path
     ///
     /// Succeeds if the database was removed, or if it didn't even exist.
+    /// This is mostly useful to clean up integration tests.
     pub fn remove_db_files(path: impl AsRef<Path>) -> Result<()> {
         Self::remove_db_files_impl(path, false)
     }
@@ -1454,7 +1476,7 @@ impl<MSG: Message + 'static> Database<MSG> {
 
     /// Get the loading status of this database.
     ///
-    /// This gives insight into whether recovery occurred, for example
+    /// This gives insight into whether recovery occurred, for example.
     pub fn load_status(&self) -> LoadingStatus {
         self.load_status
     }

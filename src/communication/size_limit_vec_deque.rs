@@ -1,4 +1,4 @@
-//! Simplex wrapper around VecDeque, that provides automatic removal from the front
+//! Simple wrapper around VecDeque, that provides automatic removal from the front
 //! when the item size exceeds a threshold. See [`SizeLimitVecDeque`] .
 use std::collections::VecDeque;
 

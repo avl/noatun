@@ -1,4 +1,5 @@
 //! Datatypes for use in the noatun materialized view.
+//!
 //! Normal rust types cannot be used in a noatun view, since they do not have a guaranteed
 //! stable memory layout. Noatun persists materialized views to facilitate quick startup
 //! after reboot. This means that every type used in a noatun materialized view
