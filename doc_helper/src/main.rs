@@ -18,5 +18,5 @@ fn main() {
         format!("[`{}`]",&cap[1])
     });
 
-    std::fs::write("docs-svg.md", val.as_bytes()).unwrap();
+    std::fs::write("../src/docs-svg.md", val.as_bytes()).unwrap();
 }
