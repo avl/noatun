@@ -39,7 +39,10 @@ pub enum LoadingStatus {
 /// data using [`DatabaseSession::with_root`].
 ///
 ///
-#[cfg_attr(feature="tokio", doc = "For replication, see [`crate::communication::DatabaseCommunication`].")]
+#[cfg_attr(
+    feature = "tokio",
+    doc = "For replication, see [`crate::communication::DatabaseCommunication`]."
+)]
 ///
 /// # Consistency
 ///

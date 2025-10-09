@@ -1906,10 +1906,7 @@ mod tests {
             "0123456789012345678901234567890123456789"
         );
         assert_eq!(truncate_to_address("abcd").0.as_str(), "abcd");
-        assert_eq!(
-            truncate_to_address("0123456789").0.as_str(),
-            "0123456789"
-        );
+        assert_eq!(truncate_to_address("0123456789").0.as_str(), "0123456789");
         assert_eq!(
             truncate_to_address("01234567890123456789012345678901234567◌")
                 .0

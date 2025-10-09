@@ -65,7 +65,7 @@ fn main() -> Result<()> {
         salary: 20,
     })?;
     s.commit()?;
-    
+
     let s = db.begin_session()?;
     let mut employees: Vec<_> = s.with_root(|root| {
         assert_eq!(root.total_salary_cost.get(), 45);
