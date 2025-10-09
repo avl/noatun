@@ -6,6 +6,7 @@ resolver = "2"
 rust-version = "1.87"
 repository = "https://github.com/avl/noatun"
 license = "MIT"
+description = "Noatun is an in-process, distributed database with materialized view support."
 
 [[bench]]
 name = "meta"
