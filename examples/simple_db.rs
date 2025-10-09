@@ -64,7 +64,9 @@ fn main() -> Result<()> {
         name: "Smith".to_string(),
         salary: 20,
     })?;
-
+    s.commit()?;
+    
+    let s = db.begin_session()?;
     let mut employees: Vec<_> = s.with_root(|root| {
         assert_eq!(root.total_salary_cost.get(), 45);
         root.employees.export().values().cloned().collect()
@@ -84,7 +86,6 @@ fn main() -> Result<()> {
             },
         ]
     );
-    s.commit()?;
 
     Ok(())
 }
