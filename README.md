@@ -1,5 +1,7 @@
-![build](https://github.com/avl/noatun/actions/workflows/rust.yml/badge.svg)
-![clippy](https://github.com/avl/noatun/actions/workflows/clippy.yml/badge.svg)
+[![Build](https://github.com/avl/noatun/actions/workflows/rust.yml/badge.svg)](https://github.com/avl/noatun/actions/workflows/rust.yml)
+[![Clippy](https://github.com/avl/noatun/actions/workflows/clippy.yml/badge.svg)](https://github.com/avl/noatun/actions/workflows/clippy.yml)
+[![Miri](https://github.com/avl/noatun/actions/workflows/miri.yml/badge.svg)](https://github.com/avl/noatun/actions/workflows/miri.yml)
+[![Visualizer](https://github.com/avl/noatun/actions/workflows/visualizer.yml/badge.svg)](https://github.com/avl/noatun/actions/workflows/visualizer.yml)
 
 # Noatun
 
