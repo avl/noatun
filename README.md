@@ -48,8 +48,8 @@ _Queries_:
 <img src="query_bench.png" />
 
 Noatun write speed is expected to be similar to Sqlite, because a similar amount of work needs
-to be performed. With complex materialized views, noatun will be slower. However, with more indices,
-sqlite writes may at some point be slower.
+to be performed. Noatun write speed will be reduced with more complex materialization rules.
+Sqlite write performance is affected by the complexity of indices. 
 
 For simple queries in a moderately sized database, Noatun will likely always be significantly faster than 
 Sqlite. The reason is that noatun queries are written in rust, and operate directly on memory-mapped RAM.
