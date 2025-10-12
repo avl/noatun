@@ -41,13 +41,13 @@ block-beta
 columns 3
     U["Application"]:3
     space:3
-    NoatunApi:3
+    NoatunApi["NoatunApi"]:3
     space:3
     space:3
     block:ID:3
       E["Event Store"]
       space
-      Projector
+      Projector["Projector"]
       space
       M["Materialized View"]
     end
@@ -324,21 +324,21 @@ block-beta
     block
         columns 1
         uct1("Event Store")
-        Event1
+        Event1("Event1")
         space
-        Event2
+        Event2("Event2")
         space
-        Event3
+        Event3("Event3")
     end
     space
     space
     block
         columns 1
         uct2("Materialized View")
-        FieldA
+        FieldA("FieldA")
         space
         space
-        FieldB
+        FieldB("FieldB")
     end
     Event1-- "write" -->FieldA
     Event1-- "write" -->FieldB
@@ -365,21 +365,21 @@ block-beta
     block
         columns 1
         uct1("Event Store")
-        Event1
+        Event1("Event1")
         space
-        Event2
+        Event2("Event2")
         space
-        Event3
+        Event3("Event3")
     end
     space
     space
     block
         columns 1
         uct2("Materialized View")
-        FieldA
+        FieldA("FieldA")
         space
         space
-        FieldB
+        FieldB("FieldB")
     end
     Event1-- "write:1" -->FieldA
     Event1-- "write:1" -->FieldB
@@ -429,19 +429,19 @@ block-beta
     block
         columns 1
         uct1("Event Store")
-        Event1
+        Event1("Event1")
         space
-        Event2
+        Event2("Event2")
     end
     space
     space
     block
         columns 1
         uct2("Materialized View")
-        FieldA
+        FieldA("FieldA")
         space
         space
-        FieldB
+        FieldB("FieldB")
     end
     Event1-- "write" -->FieldA
     Event2-- "write" -->FieldA
@@ -462,21 +462,21 @@ block-beta
     block
         columns 1
         uct1("Event Store")
-        Event1
+        Event1("Event1")
         space
         Event15("Event1.5")
         space
-        Event2
+        Event2("Event2")
     end
     space
     space
     block
         columns 1
         uct2("Materialized View")
-        FieldA
+        FieldA("FieldA")
         space
         space
-        FieldB
+        FieldB("FieldB")
     end
     Event1-- "write" -->FieldA
     FieldA-- "read" -->Event15
@@ -540,19 +540,19 @@ block-beta
     block
         columns 1
         uct1("Event Store")
-        Event1
+        Event1("Event1")
         space
-        Event2
+        Event2("Event2")
     end
     space
     space
     block
         columns 1
         uct2("Materialized View")
-        FieldA
+        FieldA("FieldA")
         space
         space
-        FieldB
+        FieldB("FieldB")
     end
     Event1-- "write" -->FieldA
     Event2-- "write" -->FieldA

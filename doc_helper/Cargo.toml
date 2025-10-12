@@ -6,9 +6,6 @@ resolver = "2"
 rust-version = "1.87"
 description = "Small helper to convert mermaid-diagrams in `docs.md` to svg-files"
 
-
-# These deps are quite heavy, so we don't run this as part of the build, but
-# only manually, after updating any of the mermaid-diagrams in `docs.md`
 [dependencies]
-mermaid-rs = "0.1.1"
 regex = "1.11.3"
+base64 = "0.22.1"

@@ -34,7 +34,10 @@ pub enum LoadingStatus {
 /// This object implements the main Noatun database functionality.
 ///
 /// Use [`Database::create_new`] to create a database.
-/// Use [`Database::begin_session_mut`] to start a mutable session to write to the database.
+///
+/// Use [`Database::begin_session_mut`] to start a mutable session to write to the database, using
+/// [`DatabaseSessionMut::append_single`] to add a message.
+///
 /// Use [`Database::begin_session`] to start a read-only session to gain access to the database
 /// data using [`DatabaseSession::with_root`].
 ///

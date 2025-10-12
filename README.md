@@ -31,6 +31,29 @@ Resources:
 
  * Noatun is very new. There is an extensive test suite, but there may be bugs.
  * Currently only linux is supported. Macos/windows support is possible, and PR:s are welcome.
+ * Only 64 bit, little endian machines are supported (this includes arm and x86_64).
+
+### Benchmark
+
+See "db_bench"-subfolder for more information. As always, do your own benchmarking, your mileage
+may vary. This benchmark compares Noatun with sqlite. Suggestions for other products to benchmark
+against are welcome!
+
+_Writes_:
+
+<img src="write_bench.png" />
+
+_Queries_:
+
+<img src="query_bench.png" />
+
+Noatun write speed is expected to be similar to Sqlite, because a similar amount of work needs
+to be performed. With complex materialized views, noatun will be slower. However, with more indices,
+sqlite writes may at some point be slower.
+
+For simple queries in a moderately sized database, Noatun will likely always be significantly faster than 
+Sqlite. The reason is that noatun queries are written in rust, and operate directly on memory-mapped RAM.
+For complex queries, sqlite query optimizer may give it the edge. 
  
 ### Examples
 

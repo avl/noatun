@@ -1,5 +1,4 @@
 #![doc(html_favicon_url = "../../../icon/noatun-black128.png")]
-#![doc = include_str!("docs-svg.md")] // Run `update_docs.sh` to update this from `docs/docs.md`
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::comparison_chain)]
 #![allow(clippy::bool_comparison)]
@@ -11,7 +10,18 @@
 #![allow(clippy::expect_fun_call)]
 #![allow(clippy::needless_late_init)]
 #![allow(clippy::derivable_impls)]
-
+//! # Welcome to Noatun
+//!
+//! For a comprehensive introduction, see [`guide`].
+//!
+//! For getting started, see the following key types:
+//!
+//! * [`Database`] - Main database object.
+//! * [`Message`] - Trait that messages must implement.
+#[cfg_attr(
+    feature = "tokio",
+    doc = " * [`communication::DatabaseCommunication`] - Networking support."
+)]
 pub use crate::data_types::{NoatunCell, OpaqueNoatunCell};
 use crate::noatun_instant::Instant;
 use crate::private::Sealed;
@@ -60,6 +70,9 @@ mod term_colors;
 mod undo_store;
 
 pub mod ratatui_inspector;
+
+#[doc = include_str!("docs-svg.md")] // Run `update_docs.sh` to update this from `docs/docs.md`
+pub mod guide {}
 
 #[cfg(not(target_endian = "little"))]
 compile_error!("Noatun currently only supports little-endian machines");
@@ -1340,8 +1353,8 @@ pub enum Persistence {
 /// An event handled by Noatun.
 ///
 /// Messages carry all primary data in Noatun. The noatun materialized
-/// view is a function of the complete set of messages. Messages are the events in
-/// the event source pattern followed by Noatun.
+/// view is a function of the complete set of messages. Noatun can be seen as following
+/// the "event sourcing" design-pattern, in which case the messages are the "events".
 ///
 /// As an implementer of Message you need to provide:
 ///

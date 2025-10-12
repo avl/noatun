@@ -19,7 +19,10 @@ opt-level = 3
 [profile.dev.package.memchr]
 opt-level = 3
 
+
+
 [features]
+default = ["tokio"]
 debug_color = ["dep:colored"]
 debug = []
 expensive_tests = []
