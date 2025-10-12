@@ -936,6 +936,7 @@ pub struct Distributor {
     pub outbuf: QueryableOutbuffer,
     #[doc(hidden)]
     pub neighborhood: Neighborhood,
+    auto_resync: bool,
 }
 
 /// Synchronization status
@@ -1020,6 +1021,7 @@ impl Distributor {
         mut initial_node_id: ArcShift<EphemeralNodeId>,
         now: Instant,
         mini_pather: Option<Arc<RwLock<MiniPather>>>,
+        auto_resync: bool,
     ) -> Distributor {
         let node = initial_node_id.get().raw_u16();
         Self {
@@ -1038,6 +1040,7 @@ impl Distributor {
             ),
             ephemeral_node_id: initial_node_id,
             outbuf: QueryableOutbuffer::new(periodic_message_interval, now),
+            auto_resync,
         }
     }
 
@@ -1293,7 +1296,7 @@ impl Distributor {
                                         .insert(src, Instant::now());
                                 }
 
-                                if self.sync_all_inprogress.idle() {
+                                if self.sync_all_inprogress.idle() && self.auto_resync {
                                     self.sync_all_inprogress = SyncAllState::Starting;
                                 }
                                 break;

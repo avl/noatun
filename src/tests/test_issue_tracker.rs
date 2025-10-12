@@ -203,7 +203,7 @@ async fn create_app(
     .unwrap();
 
     let log = driver.debug_events.clone();
-    let mut config = DatabaseCommunicationConfig {
+    let mut config =  DatabaseCommunicationConfig {
         listen_address: "dummy".to_string(),
         multicast_address: "dummy".to_string(),
         mtu: 1500,
@@ -218,6 +218,7 @@ async fn create_app(
         initial_ephemeral_node_id: None,
         disable_retransmit: false,
         enable_diagnostics: false,
+        auto_resync: true,
     };
 
     if let Some(modify) = modify {

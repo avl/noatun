@@ -110,6 +110,7 @@ async fn create_app(
         initial_ephemeral_node_id: None,
         disable_retransmit: false,
         enable_diagnostics: false,
+        auto_resync: true,
     };
 
     if let Some(modify) = modify {

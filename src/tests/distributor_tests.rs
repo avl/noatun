@@ -65,12 +65,14 @@ fn test_distributor() {
         ArcShift::new(EphemeralNodeId::new(1)),
         Instant::now(),
         None,
+        true
     );
     let mut dist2 = Distributor::new(
         Duration::from_secs(5),
         ArcShift::new(EphemeralNodeId::new(2)),
         Instant::now(),
         None,
+        true
     );
 
     dist1.neighborhood =

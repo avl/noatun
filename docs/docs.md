@@ -396,7 +396,7 @@ _Messages with dependencies_
 In this example, none of the messages can be deleted. Even though none of the values written by Event1 remain in the 
 database, the value "1", written to field A, was later read by Event2. Any value subsequently written by Event2
 (i.e, the write to Field B) might depend on the value read from field A. In fact, it is highly likely that the
-value written to field B depends on what wa read from field A. Otherwise, the implementation of Event2 should just
+value written to field B depends on what was read from field A. Otherwise, the implementation of Event2 should just
 be changed to eliminate an apparently useless read. 
 
 Noatun tracks this type of information flow dependency between events, and will thus _not_ prune Event1 in this case.
@@ -909,7 +909,7 @@ Generally, there are two options:
 This chapter goes into some of the internals of Noatun. While it can be of interest to users,
 the aspiration is that users should not need to know of these details.
 
-## MessageId
+## Messages
 
 ```mermaid 
 block-beta
@@ -950,14 +950,17 @@ in a single long linked list.
 
 With more than one node, the messages and their parents form a DAG (directed acyclic graph). It is
 a Noatun-invariant that a message is never stored in a Noatun database unless all the parents of the message
-also are, with one caveat (see further below).
+also are.
 
 The upshot of all this is that knowing the set of update-heads of a Noatun database is enough to
-know the entire database state (with one caveat, which we'll get to).
+know the entire database state (with one caveat: messages timestamped before the cutoff time).
 
 This allows Noatun to easily detect if two nodes are in sync or not.
 
-However, Noatun has the concept of "cutoff_time". See
+However, Noatun has the concept of "cutoff_time", as described in an earlier section. Noatun
+maintains a checksum of all message-ids before the cutoff time. If two nodes have a mismatching
+checksum, a somewhat expensive complete resync is initiated. This works by both nodes transmitting
+the full set of message ids to the peer.
 
 
 ### Pruning
@@ -1042,6 +1045,20 @@ past all their overwriters.
 
 Noatun also tracks reads. For each message, a list of readers is maintained. This allows
 maintaining a dependency graph for read-dependencies between all messages in the database.
+
+## Rolling out new versions incrementally
+
+Nodes can have different implementations of the [`Message`] trait. The only hard requirement is that 
+all messages added to the system can be deserialized by all nodes. It is not an error if, for example, 
+some messages cannot be interpreted by some nodes, or if some fields aren't known by some nodes.
+
+Naturally, information in a field that a node doesn't understand won't affect its materialized view.
+This means that when Noatun is run in a configuration with non-identical materializers (non identical
+[`Message`] impls), eventual consistency is not guaranteed. Some nodes may prune messages that other
+nodes do not. In this situation it is strongly encouraged to disable the setting 
+[`DatabaseCommunicationConfig::auto_resync`]. For bug-fixes, it may be that auto_resync can be left
+enabled if the bug doesn't cause messages to be erroneously pruned/not pruned. 
+
 
 # Communication
 

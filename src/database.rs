@@ -100,6 +100,7 @@ pub struct DatabaseSettings {
     /// Default value is true - automatically delete messages that no longer affect the
     /// state.
     pub auto_prune: bool,
+    
     /// The maximum size the noatun database can grow to.
     /// This amount of virtual memory space will be reserved by noatun. Note,
     /// the memory isn't actually used until data is put in the database.

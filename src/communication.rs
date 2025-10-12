@@ -578,6 +578,7 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     valid_packets_received: Counter,
     packets_sent: Counter,
     retransmit_request_count: Counter,
+    auto_resync: bool,
 }
 impl<Socket: CommunicationDriver> Drop for MulticastSenderLoop<Socket> {
     fn drop(&mut self) {
@@ -645,6 +646,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         retransmit_responsibility_query: Box<
             dyn FnMut(/*src: */ EphemeralNodeId) -> Duration + 'static + Send + Sync,
         >,
+        auto_resync: bool
     ) -> Result<MulticastSenderLoop<Socket>> {
         let (send_socket, receive_socket) = driver
             .initialize(bind_address, multicast_group, mtu)
@@ -705,6 +707,7 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             valid_packets_received,
             packets_sent,
             retransmit_request_count,
+            auto_resync
         })
     }
     pub(crate) fn send_buf(
@@ -1222,6 +1225,15 @@ pub struct DatabaseCommunicationConfig {
     ///
     /// This in turn enables use of the ratatui feature, to render a TUI debug UI.
     pub enable_diagnostics: bool,
+
+    /// True if databases that mismatch before the cutoff interval should be automatically
+    /// resynchronized.
+    ///
+    /// By default, Noatun initiates a total resynchronization if databases do not have
+    /// the same checksum for messages older than the cutoff interval. This behavior can be
+    /// potentially bad if the nodes do not have the exact same Message-definition and can
+    /// therefore be disabled.
+    pub auto_resync: bool,
 }
 const REPORT_HEAD_INTERVAL_DEFAULT: Duration = Duration::from_secs(5);
 
@@ -1239,6 +1251,7 @@ impl Default for DatabaseCommunicationConfig {
             initial_ephemeral_node_id: None,
             disable_retransmit: false,
             enable_diagnostics: false,
+            auto_resync: true,
         }
     }
 }
@@ -1840,6 +1853,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             config.disable_retransmit,
             our_node_id.clone(),
             should_ask_for_retransmission,
+            config.auto_resync
         )
         .await?;
 
@@ -1864,6 +1878,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
                 our_node_id,
                 Instant::now(),
                 Some(mini_pather),
+                config.auto_resync
             ),
             node: node.clone(),
             database: database.clone(),
@@ -1979,6 +1994,7 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(1)),
             Box::new(|_| Duration::ZERO),
+            true
         )
         .await
         .unwrap();
@@ -1997,6 +2013,7 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(2)),
             Box::new(|_| Duration::ZERO),
+            true
         )
         .await
         .unwrap();
@@ -2096,6 +2113,7 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(1)),
             Box::new(|_| Duration::ZERO),
+            true
         )
         .await
         .unwrap();
@@ -2114,6 +2132,7 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(2)),
             Box::new(|_| Duration::ZERO),
+            true
         )
         .await
         .unwrap();
