@@ -1990,7 +1990,6 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(1)),
             Box::new(|_| Duration::ZERO),
-            true,
         )
         .await
         .unwrap();
@@ -2009,7 +2008,6 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(2)),
             Box::new(|_| Duration::ZERO),
-            true,
         )
         .await
         .unwrap();
@@ -2109,7 +2107,6 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(1)),
             Box::new(|_| Duration::ZERO),
-            true,
         )
         .await
         .unwrap();
@@ -2128,7 +2125,6 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(2)),
             Box::new(|_| Duration::ZERO),
-            true,
         )
         .await
         .unwrap();

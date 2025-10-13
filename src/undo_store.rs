@@ -68,6 +68,7 @@ pub enum HowToProceed {
 /// In principle, this guarantee can only be upheld if the caller has full control over the
 /// memory, for example, having allocated it from a memory-mapped file with known options.
 #[inline]
+#[allow(unused)]
 pub(crate) unsafe fn magic_initialize_ptr<T>(data_ptr: *mut T) {
     // Safety: Executing a 'nop' instruction is expected to be safe on
     // all architectures.
