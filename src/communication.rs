@@ -1874,7 +1874,7 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
                 our_node_id,
                 Instant::now(),
                 Some(mini_pather),
-                config.auto_resync
+                config.auto_resync,
             ),
             node: node.clone(),
             database: database.clone(),
@@ -1990,7 +1990,7 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(1)),
             Box::new(|_| Duration::ZERO),
-            true
+            true,
         )
         .await
         .unwrap();
@@ -2009,7 +2009,7 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(2)),
             Box::new(|_| Duration::ZERO),
-            true
+            true,
         )
         .await
         .unwrap();
@@ -2109,7 +2109,7 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(1)),
             Box::new(|_| Duration::ZERO),
-            true
+            true,
         )
         .await
         .unwrap();
@@ -2128,7 +2128,7 @@ mod tests {
             false,
             ArcShift::new(EphemeralNodeId::new(2)),
             Box::new(|_| Duration::ZERO),
-            true
+            true,
         )
         .await
         .unwrap();

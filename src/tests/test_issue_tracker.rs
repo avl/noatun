@@ -203,7 +203,7 @@ async fn create_app(
     .unwrap();
 
     let log = driver.debug_events.clone();
-    let mut config =  DatabaseCommunicationConfig {
+    let mut config = DatabaseCommunicationConfig {
         listen_address: "dummy".to_string(),
         multicast_address: "dummy".to_string(),
         mtu: 1500,
