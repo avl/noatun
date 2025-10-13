@@ -578,7 +578,6 @@ struct MulticastSenderLoop<Socket: CommunicationDriver> {
     valid_packets_received: Counter,
     packets_sent: Counter,
     retransmit_request_count: Counter,
-    auto_resync: bool,
 }
 impl<Socket: CommunicationDriver> Drop for MulticastSenderLoop<Socket> {
     fn drop(&mut self) {
@@ -646,7 +645,6 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
         retransmit_responsibility_query: Box<
             dyn FnMut(/*src: */ EphemeralNodeId) -> Duration + 'static + Send + Sync,
         >,
-        auto_resync: bool
     ) -> Result<MulticastSenderLoop<Socket>> {
         let (send_socket, receive_socket) = driver
             .initialize(bind_address, multicast_group, mtu)
@@ -707,7 +705,6 @@ impl<Socket: CommunicationDriver> MulticastSenderLoop<Socket> {
             valid_packets_received,
             packets_sent,
             retransmit_request_count,
-            auto_resync
         })
     }
     pub(crate) fn send_buf(
@@ -1853,7 +1850,6 @@ impl<MSG: Message + 'static + Send> DatabaseCommunication<MSG> {
             config.disable_retransmit,
             our_node_id.clone(),
             should_ask_for_retransmission,
-            config.auto_resync
         )
         .await?;
 

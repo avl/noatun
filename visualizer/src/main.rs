@@ -197,7 +197,7 @@ impl Node {
             db,
             distributor: Distributor::new(Duration::from_secs(5), ArcShift::new(ephemeral_node_id.unwrap_or(
                 EphemeralNodeId::new(id.into())
-            )), now.into(), None),
+            )), now.into(), None, true),
             last_periodic: now,
         }
     }
