@@ -718,8 +718,7 @@ impl<MSG: Message + 'static> Database<MSG> {
     /// the materialized view and all auxiliary data associated with it.
     /// It does not include any file system overhead.
     pub fn disk_space_used_bytes(&self) -> u64 {
-        self.message_store.disk_space_used_bytes() +
-        self.context.disk_space_used_bytes()
+        self.message_store.disk_space_used_bytes() + self.context.disk_space_used_bytes()
     }
 
     /// Sync all writes to disk

@@ -35,8 +35,7 @@ impl<MSG: Message + 'static> Projector<MSG> {
         Ok(())
     }
     pub fn disk_space_used_bytes(&self) -> u64 {
-        self.messages.disk_space_used_bytes() + 
-            self.head_tracker.disk_space_used_bytes()
+        self.messages.disk_space_used_bytes() + self.head_tracker.disk_space_used_bytes()
     }
     pub(crate) fn advance_cutoff(
         &mut self,

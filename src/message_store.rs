@@ -546,9 +546,9 @@ impl<M> OnDiskMessageStore<M> {
         Ok(())
     }
     pub(crate) fn disk_space_used_bytes(&self) -> u64 {
-        self.index_mmap.disk_space_used_bytes() +
-            self.data_files[0].file.disk_space_used_bytes() +
-            self.data_files[1].file.disk_space_used_bytes()
+        self.index_mmap.disk_space_used_bytes()
+            + self.data_files[0].file.disk_space_used_bytes()
+            + self.data_files[1].file.disk_space_used_bytes()
     }
 
     pub fn sync_outstanding(&mut self) -> Result<()> {
