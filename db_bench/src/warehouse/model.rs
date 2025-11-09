@@ -2,6 +2,7 @@
 use indexmap::IndexMap;
 use rand::prelude::{IteratorRandom, SmallRng};
 use rand::Rng;
+use crate::{BenchmarkTask, TasksInTransaction};
 
 /// Identifier for a box (or container, pallet, shelf whatever)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Savefile)]
@@ -13,7 +14,7 @@ pub struct ArticleId(pub u32);
 
 /// An operation performed in the warehouse
 #[derive(Debug, Savefile)]
-pub enum Task {
+pub enum WarehouseTask {
     /// A new box is created
     CreateBox {
         /// The id of the box.
@@ -51,12 +52,39 @@ pub enum Task {
     },
 }
 
-/// A set of tasks performed in one database transaction
-pub struct TasksInTransaction(pub Vec<Task>);
+pub struct Query {
+    pub box_id: BoxId,
+    pub article_id: ArticleId,
+}
+impl BenchmarkTask for WarehouseTask {
+    type Query = Query;
+
+    fn generate_tasks(rng: SmallRng) -> impl Iterator<Item=Self> {
+        generate_sequence(rng)
+    }
+
+    fn generate_queries(rng: SmallRng) -> impl Iterator<Item=Self::Query> {
+        let mut temp: Vec<Query> = Vec::new();
+        for boxid in 0..4 {
+            for article_id in 0..4 {
+                temp.push(Query {
+                    box_id: BoxId(boxid),
+                    article_id: ArticleId(article_id),
+                });
+            }
+        }
+        temp.into_iter()
+    }
+
+    fn name() -> &'static str {
+        "warehouse"
+    }
+}
+
 
 /// Generate random test-sequence of events for the warehouse
-pub fn generate_sequence(mut rng: SmallRng) -> impl Iterator<Item = TasksInTransaction> {
-    const MAX_BOXES: usize = 100;
+pub fn generate_sequence(mut rng: SmallRng) -> impl Iterator<Item = WarehouseTask> {
+    const MAX_BOXES: usize = 10_000;
 
     let mut boxes: IndexMap<BoxId, /*parent*/ Option<BoxId>> = IndexMap::new();
     let qtys: IndexMap<(BoxId, ArticleId), u32> = IndexMap::new();
@@ -76,55 +104,52 @@ pub fn generate_sequence(mut rng: SmallRng) -> impl Iterator<Item = TasksInTrans
     }
     let mut next_box_id = 0;
     std::iter::from_fn(move || {
-        let mut ret = Vec::new();
-        let count = rng.gen_range(1..1000);
-        for _cnt in 0..count {
-            if boxes.is_empty() {
-                boxes.insert(BoxId(0), None);
-                next_box_id = 1;
-                ret.push(Task::CreateBox { id: BoxId(0) });
-                continue;
+
+        /*let count = rng.gen_range(1..1000);
+        for _cnt in 0..count {*/
+        if boxes.is_empty() {
+            boxes.insert(BoxId(0), None);
+            next_box_id = 1;
+            return Some(WarehouseTask::CreateBox { id: BoxId(0) });
+        }
+        match rng.gen_range(0..2) {
+            0 if boxes.len() < MAX_BOXES => {
+                let id = next_box_id;
+                next_box_id += 1;
+                boxes.insert(BoxId(id), None);
+                return Some(WarehouseTask::CreateBox { id: BoxId(id) });
             }
-            match rng.gen_range(0..2) {
-                0 if boxes.len() < MAX_BOXES => {
-                    let id = next_box_id;
-                    next_box_id += 1;
-                    boxes.insert(BoxId(id), None);
-                    ret.push(Task::CreateBox { id: BoxId(id) });
-                    continue;
+            1 if boxes.len() > 2 => {
+                let box1 = *boxes.keys().choose(&mut rng).unwrap();
+                let box2 = *boxes.keys().choose(&mut rng).unwrap();
+                if box1 != box2 && !any_parent_contains(&mut boxes, box2, box1) {
+                    boxes.insert(box1, Some(box2));
+                    return Some(WarehouseTask::MoveBox {
+                        id: box1,
+                        to: Some(box2),
+                    });
                 }
-                1 if boxes.len() > 2 => {
-                    let box1 = *boxes.keys().choose(&mut rng).unwrap();
-                    let box2 = *boxes.keys().choose(&mut rng).unwrap();
-                    if box1 != box2 && !any_parent_contains(&mut boxes, box2, box1) {
-                        boxes.insert(box1, Some(box2));
-                        ret.push(Task::MoveBox {
-                            id: box1,
-                            to: Some(box2),
-                        });
-                        continue;
-                    }
-                }
-                _ => {}
             }
-            let box_id = *boxes.keys().choose(&mut rng).unwrap();
-            let article = rng.gen_range(0..10);
-            let qty = rng.gen_range(0..10);
-            match rng.gen_range(0..2) {
-                0 if *qtys.get(&(box_id, ArticleId(article))).unwrap_or(&0) >= qty => {
-                    ret.push(Task::RemoveArticle {
-                        id: box_id,
-                        article_id: article,
-                        quantity: qty,
-                    })
-                }
-                _ => ret.push(Task::AddArticle {
+            _ => {}
+        }
+        let box_id = *boxes.keys().choose(&mut rng).unwrap();
+        let article = rng.gen_range(0..10);
+        let qty = rng.gen_range(0..10);
+        match rng.gen_range(0..2) {
+            0 if *qtys.get(&(box_id, ArticleId(article))).unwrap_or(&0) >= qty => {
+                return Some(WarehouseTask::RemoveArticle {
                     id: box_id,
                     article_id: article,
                     quantity: qty,
-                }),
+                });
             }
+            _ => return Some(WarehouseTask::AddArticle {
+                id: box_id,
+                article_id: article,
+                quantity: qty,
+            }),
         }
-        Some(TasksInTransaction(ret))
+        //}
+        //Some(ret)
     })
 }

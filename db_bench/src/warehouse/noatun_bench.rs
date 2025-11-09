@@ -1,5 +1,5 @@
 //! Implementation of the warehouse benchmark for noatun
-use crate::{ArticleId, Benchmark, BoxId, TasksInTransaction};
+use crate::{Benchmark, TasksInTransaction};
 use noatun::data_types::{NoatunHashMap, NoatunOption, NoatunVec};
 use noatun::database::DatabaseSettings;
 use noatun::{
@@ -7,8 +7,10 @@ use noatun::{
     SavefileMessageSerializer,
 };
 
-use crate::model::Task;
+
 use std::pin::Pin;
+use crate::noatun_helper::{run_test, NoatunImpl};
+use crate::warehouse::model::{ArticleId, BoxId, Query, WarehouseTask};
 
 noatun_object!(
     /// Define the schema for a box in the warehouse
@@ -33,7 +35,7 @@ noatun_object!(
     }
 );
 
-impl Message for Task {
+impl Message for WarehouseTask {
     type Root = MainDoc;
     type Serializer = SavefileMessageSerializer<Self>;
 
@@ -42,7 +44,7 @@ impl Message for Task {
         let mut project = root.pin_project();
         
         match self {
-            Task::CreateBox { id } => {
+            WarehouseTask::CreateBox { id } => {
                 
                 project.boxes.insert(
                     id.0,
@@ -54,7 +56,7 @@ impl Message for Task {
                     },
                 );
             }
-            Task::MoveBox { id, to } => {
+            WarehouseTask::MoveBox { id, to } => {
                 let mut prev_parent = None;
                 if let Some(abox) = project.boxes.as_mut().get_mut_val(&id.0) {
                     let abox = abox.pin_project();
@@ -78,19 +80,19 @@ impl Message for Task {
                     }
                 }
             }
-            t @ Task::AddArticle {
+            t @ WarehouseTask::AddArticle {
                 id,
                 article_id,
                 quantity,
             }
-            | t @ Task::RemoveArticle {
+            | t @ WarehouseTask::RemoveArticle {
                 id,
                 article_id,
                 quantity,
             } => {
                 if let Some(abox) = project.boxes.get_mut_val(&id.0) {
                     let mut abox = abox.pin_project();
-                    let subtract = matches!(t, Task::RemoveArticle { .. });
+                    let subtract = matches!(t, WarehouseTask::RemoveArticle { .. });
                     if let Some(art) = abox.articles.as_mut().get_mut_val(article_id) {
                         let cur = art.get();
                         let new = if subtract {
@@ -110,28 +112,22 @@ impl Message for Task {
     }
 }
 
-/// Implementatino of the warehouse benchmark for noatun
-pub struct NoatunImpl {
-    /// The noatun db instance.
-    ///
-    /// This contains all data in the db, including the materialized view and
-    /// the message store.
-    pub db: Database<Task>,
-    event_count: usize,
-    transaction_count: usize,
-}
 
-impl Benchmark for NoatunImpl {
-    fn run(tasks: Vec<TasksInTransaction>) -> impl Benchmark {
-        run_test(tasks.into_iter(), false)
+
+
+impl Benchmark for NoatunImpl<WarehouseTask> {
+    type Task = WarehouseTask;
+
+    fn run(tasks: Vec<TasksInTransaction<Self::Task>>) -> Self {
+        run_test(tasks, false)
     }
 
-    fn single_query(&self, box_id: BoxId, article_id: ArticleId) -> u32 {
+    fn single_query(&self, query: Query) -> u64 {
         let sess = self.db.begin_session().unwrap();
 
         sess.with_root(|root| {
             let mut temp = Vec::with_capacity(20);
-            temp.push(box_id.0);
+            temp.push(query.box_id.0);
             let mut temp2 = Vec::with_capacity(20);
             let mut sum = 0;
             while !temp.is_empty() {
@@ -139,9 +135,9 @@ impl Benchmark for NoatunImpl {
                     if let Some(abox) = root.boxes.get(&x) {
                         sum += abox
                             .articles
-                            .get(&article_id.0)
+                            .get(&query.article_id.0)
                             .map(|x| x.get())
-                            .unwrap_or(0);
+                            .unwrap_or(0) as u64;
 
                         for child in abox.children.iter() {
                             temp2.push(child.get());
@@ -154,6 +150,10 @@ impl Benchmark for NoatunImpl {
         })
     }
 
+    fn space_used(&self) -> f64 {
+        self.db.disk_space_used_bytes() as f64
+    }
+
     fn event_count(&self) -> usize {
         self.event_count
     }
@@ -164,54 +164,5 @@ impl Benchmark for NoatunImpl {
 
     fn name() -> &'static str {
         "Noatun"
-    }
-}
-
-pub(crate) fn run_test(input: impl Iterator<Item = TasksInTransaction>, in_memory: bool) -> NoatunImpl {
-    let noatun_time = NoatunTime::now();
-
-    let mut db;
-    if in_memory {
-        db = Database::<Task>::create_in_memory(
-            50_000,
-            DatabaseSettings {
-                auto_prune: false,
-                ..DatabaseSettings::default()
-            },
-        )
-        .unwrap();
-    } else {
-        db = Database::<Task>::create_new(
-            "test_noatun.bin",
-            OpenMode::Overwrite,
-            DatabaseSettings {
-                auto_prune: true,
-
-                max_file_size: 1000_000_000,
-                ..DatabaseSettings::default()
-            },
-        )
-        .unwrap();
-    }
-
-    db.set_abort_on_panic();
-
-    let mut transaction_count = 0;
-    let mut tot_events = 0;
-    let mut sess = db.begin_session_mut().unwrap();
-    //sess.disable_filesystem_sync().unwrap();
-    for trans in input {
-        tot_events += trans.0.len();
-        sess.append_many_local_at(noatun_time, trans.0.into_iter())
-            .unwrap();
-        transaction_count += 1;
-    }
-
-    sess.commit().unwrap();
-
-    NoatunImpl {
-        db,
-        event_count: tot_events,
-        transaction_count,
     }
 }

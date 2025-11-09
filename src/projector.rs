@@ -34,6 +34,10 @@ impl<MSG: Message + 'static> Projector<MSG> {
         self.head_tracker.sync_all()?;
         Ok(())
     }
+    pub fn disk_space_used_bytes(&self) -> u64 {
+        self.messages.disk_space_used_bytes() + 
+            self.head_tracker.disk_space_used_bytes()
+    }
     pub(crate) fn advance_cutoff(
         &mut self,
         new_cutoff_at: CutOffTime,

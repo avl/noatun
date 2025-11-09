@@ -62,7 +62,7 @@ impl CommunicationDriver for TokioUdpDriver {
         if mtu >= u16::MAX as usize {
             bail!("Maximum MTU supported by noatun is 65534");
         }
-        info!("Binding to group {:?}", multicast_group);
+        info!("Binding to group {:?}", multicast_group);    
         let receive_socket;
         match (multicast_group.ip(), bind_address) {
             (IpAddr::V4(multicast_ipv4), SocketAddr::V4(bind_ipv4)) => {

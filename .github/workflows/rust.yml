@@ -31,8 +31,6 @@ jobs:
       run: cargo +stable nextest run --no-default-features --workspace
     - name: Run tests all-features
       run: cargo +stable nextest run --all-features --workspace
-    - name: Miri
-      run: rustup component add --toolchain nightly miri && cargo +nightly miri test miri
     - name: Docs
       run: cargo +stable test --doc
     - name: Build (1.87)

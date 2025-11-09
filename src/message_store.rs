@@ -237,7 +237,8 @@ const MAGIC: [u8; 8] = [b'N', 152, 202, 45, 103, 197, 68, b'N'];
 struct FileHeaderEntry {
     header_checksum: [u8; HASH_SIZE],
     magic: [u8; 8],
-    sha2: [u8; HASH_SIZE],
+    // Checksum of message
+    message_sha2: [u8; HASH_SIZE],
     // The following field, and below, are included in the header checksum!
     payload_size: u64,
     message_id: MessageId,
@@ -258,10 +259,10 @@ unsafe impl NoatunStorable for FileHeaderEntry {
 
 impl FileHeaderEntry {
     pub fn is_deleted(&self) -> bool {
-        self.sha2 == [0u8; 16]
+        self.message_sha2 == [0u8; 16]
     }
     pub fn set_deleted(&mut self) {
-        self.sha2 = [0u8; 16];
+        self.message_sha2 = [0u8; 16];
     }
 
     pub fn total_size(&self) -> usize {
@@ -543,6 +544,11 @@ impl<M> OnDiskMessageStore<M> {
     pub fn sync_all(&mut self) -> Result<()> {
         self.index_mmap.sync_all()?;
         Ok(())
+    }
+    pub(crate) fn disk_space_used_bytes(&self) -> u64 {
+        self.index_mmap.disk_space_used_bytes() +
+            self.data_files[0].file.disk_space_used_bytes() +
+            self.data_files[1].file.disk_space_used_bytes()
     }
 
     pub fn sync_outstanding(&mut self) -> Result<()> {
@@ -955,7 +961,7 @@ impl<M> OnDiskMessageStore<M> {
 
                     file_info.with_bytes(header.payload_size as usize, |payload_bytes| {
                         let actual_sha2 = sha2_message(header.message_id, payload_bytes);
-                        if actual_sha2 != header.sha2 {
+                        if actual_sha2 != header.message_sha2 {
                             return Err(anyhow!("data corrupted on disk - checksum mismatch"));
                         }
                         Ok(())
@@ -1200,7 +1206,7 @@ impl<M> OnDiskMessageStore<M> {
         file.seek(SeekFrom::Start(offset + header.offset_of_payload() as u64))?;
 
         let msg_payload = file.with_bytes(header.payload_size as usize, |bytes| {
-            if sha2_message(header.message_id, bytes) != header.sha2 {
+            if sha2_message(header.message_id, bytes) != header.message_sha2 {
                 return Err(anyhow!("Data corruption detected!"));
             }
             M::deserialize(bytes)
@@ -1729,7 +1735,7 @@ impl<M> OnDiskMessageStore<M> {
         file.seek(SeekFrom::Start(start_pos))?;
         let header = FileHeaderEntry {
             header_checksum: [0; HASH_SIZE],
-            sha2: sha2_hash,
+            message_sha2: sha2_hash,
             magic: MAGIC,
             message_id: msg.id(),
             payload_size,

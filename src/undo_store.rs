@@ -34,6 +34,9 @@ pub struct UndoLog {
 }
 
 impl UndoLog {
+    pub fn disk_space_used_bytes(&self) -> u64 {
+        self.store_mmap.disk_space_used_bytes()
+    }
     pub(crate) fn clear(&mut self) -> Result<()> {
         self.store_mmap.truncate(0)
     }

@@ -9,6 +9,9 @@ pub(crate) struct UpdateHeadTracker {
 }
 
 impl UpdateHeadTracker {
+    pub fn disk_space_used_bytes(&self) -> u64 {
+        self.file.disk_space_used_bytes()
+    }
     pub(crate) fn sync_all(&mut self) -> Result<()> {
         self.file.sync_all()?;
         Ok(())

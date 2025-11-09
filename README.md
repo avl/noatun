@@ -7,35 +7,46 @@
 
 Welcome to Noatun!
 
-Noatun is an in-process, multi master, distributed database with automatic
-garbage collection and a materialized view support, written in 100% Rust.
+Noatun is an in-process, multi-master, distributed database with automatic
+garbage collection and materialized view support. It is 100% written in Rust.
 Noatun currently supports linux.
 
-Using Noatun:
+## When to use Noatun
+
+Noatun might be a good choice if:
+
+ * You need "offline first", multi-master semantics
+ * You need very fast query performance
+ * Your system is well modeled using an "event sourcing" approach
+ * Events interact in complex ways 
+
+## How using Noatun works
 
  * Define your messages
  * Define rules to apply messages to a materialized view
  * Noatun applies messages in order, time-traveling as needed if messages arrive out-of-order
  * Query materialized view using native rust
 
-Noatun properties:
+## Noatun properties
+
  * Synchronizes messages efficiently over networks
  * Automatically prunes messages that no longer have any effect
  * Fast, in-process, memory mapped materialized view
 
-Resources:
+## Resources
 
 [Rust Docs](https://docs.rs/noatun/latest/noatun/) 
 
 [Manual](https://github.com/avl/noatun/blob/master/docs/docs.md)
 
-### Limitations
+## Limitations
 
  * Noatun is very new. There is an extensive test suite, but there may be bugs.
  * Currently only linux is supported. Macos/windows support is possible, and PR:s are welcome.
- * Only 64 bit, little endian machines are supported (this includes arm and x86_64).
+ * Only 64 bit, little endian machines are supported. This includes arm and x86_64. This restriction
+   could be lifted if interest exists. 
 
-### Benchmark
+## Benchmark
 
 See "db_bench"-subfolder for more information. As always, do your own benchmarking, your mileage
 may vary. This benchmark compares Noatun with sqlite. Suggestions for other products to benchmark
@@ -51,18 +62,19 @@ _Queries_:
 
 Noatun write speed is expected to be similar to Sqlite, because a similar amount of work needs
 to be performed. Noatun write speed will be reduced with more complex materialization rules.
-Sqlite write performance is affected by the complexity of indices. 
+Sqlite write performance is affected by the complexity of indices. Generally, for large bulk writes,
+Sqlite is expected to be faster.
 
 For simple queries in a moderately sized database, Noatun will likely always be significantly faster than 
 Sqlite. The reason is that noatun queries are written in rust, and operate directly on memory-mapped RAM.
-For complex queries, sqlite query optimizer may give it the edge. 
+For complex queries, sqlite query optimizer may give it the edge in case the dataset does not fit in RAM. 
  
-### Examples
+## Examples
 
 The folder `examples` contains several examples. `examples/issue_tracker.rs` contains a ratatui-based
 issue tracker.
 
-### Sample code
+## Sample code
 
 Check the `examples`-folder for examples that feature distribution.
 
@@ -153,7 +165,7 @@ fn main() -> Result<()> {
     
     employees.sort_by_key(|emp| emp.name.clone());
     
-    // Check that database contains the employees we expect 
+    // Verify the database contains the employees we expect 
     assert_eq!(
         employees,
         vec![

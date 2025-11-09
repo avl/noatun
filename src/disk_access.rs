@@ -185,6 +185,9 @@ impl Read for FileAccessor {
 }
 
 impl FileAccessor {
+    pub fn disk_space_used_bytes(&self) -> u64 {
+        self.committed_size as u64
+    }
     fn make_gauge(name: &str, description: &str) -> Gauge {
         let committed_size_gauge = gauge!(name.to_string());
         describe_gauge!(name.to_string(), Unit::Bytes, description.to_string(),);

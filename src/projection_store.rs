@@ -374,6 +374,10 @@ fn index_rounded_up_to_custom_align(curr: usize, align: usize) -> Option<usize> 
 }
 
 impl DatabaseContextData {
+    pub fn disk_space_used_bytes(&self) -> u64 {
+        self.main_db_mmap.disk_space_used_bytes() +
+        self.undo_log.disk_space_used_bytes()
+    }
     pub fn sync_all(&mut self) -> Result<()> {
         self.main_db_mmap.sync_all()?;
         Ok(())

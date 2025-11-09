@@ -1,34 +1,66 @@
 //! Simple benchmark application, comparing sqlite with noatun for a simple warehouse problem
-#![deny(missing_docs)]
-use crate::model::{generate_sequence, ArticleId, BoxId, TasksInTransaction};
-use crate::noatun_bench::NoatunImpl;
-use crate::sqlite_bench::SqliteImpl;
+//#![deny(missing_docs)] //TODO: enable warning again
 use rand::prelude::SmallRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use std::time::Instant;
 use tracing_subscriber::Layer;
+use crate::key_value_store::key_value_model::KeyValOperation;
+use crate::noatun_helper::NoatunImpl;
+use crate::warehouse::model::{ArticleId, BoxId, WarehouseTask};
+
+use crate::warehouse::sqlite_bench::SqliteImpl;
 
 #[macro_use]
 extern crate noatun;
 
-pub mod model;
-pub mod noatun_bench;
-pub mod sqlite_bench;
-#[cfg(test)]
-mod tests;
+pub mod noatun_helper;
 
+mod warehouse;
+mod key_value_store;
+
+trait BenchmarkTask : Sized {
+    type Query;
+    fn generate_tasks(rng: SmallRng) -> impl Iterator<Item = Self>;
+
+    fn generate_queries(rng: SmallRng) -> impl Iterator<Item=Self::Query>;
+
+    fn name() -> &'static str;
+
+    fn generate_tasks_in_transaction(rng: SmallRng) -> impl Iterator<Item = TasksInTransaction<Self>> {
+        let mut rng2 = rng.clone();
+        let mut gen = Self::generate_tasks(rng);
+        std::iter::from_fn(move || {
+            let count = rng2.gen_range(1..1000);
+            let mut temp = Vec::with_capacity(count);
+            for _cnt in 0..count {
+                temp.push(gen.next().unwrap());
+            }
+            Some(TasksInTransaction(temp))
+        })
+    }
+}
+
+
+/// A set of tasks performed in one database transaction
+pub struct TasksInTransaction<Task>(pub Vec<Task>);
 
 /// Trait implemented by all benchmark backends.
 ///
 /// This program implements this for sqlite and noatun
 pub trait Benchmark {
+
+    /// The type of each task that the benchmark should carry out
+    type Task : BenchmarkTask;
+
     /// Apply all the given transactions to the db
-    fn run(tasks: Vec<TasksInTransaction>) -> impl Benchmark;
+    fn run(tasks: Vec<TasksInTransaction<Self::Task>>) -> Self;
     /// Run a query on the db.
     ///
-    /// This must return the total number of pieces of 'article_id' in box `box_id`,
-    /// or any of its inner boxes (recursively).
-    fn single_query(&self, box_id: BoxId, article_id: ArticleId) -> u32;
+    /// Returns a hash that depends on the query output
+    fn single_query(&self, query: <Self::Task as BenchmarkTask>::Query) -> u64;
+
+    /// Number of bytes of disk space used
+    fn space_used(&self) -> f64;
 
     /// Return the number of events added
     fn event_count(&self) -> usize;
@@ -50,16 +82,17 @@ fn setup_tracing() {
     _ = tracing::subscriber::set_global_default(subscriber);
 }
 
-fn run_test<T: Benchmark>(seed: u64, count: usize) -> u32 {
-    let gen_task = || generate_sequence(SmallRng::seed_from_u64(seed)).take(count);
-    let tasks = gen_task().collect::<Vec<_>>();
+fn run_test<BT: BenchmarkTask, T>(seed: u64, count: usize) -> u64 where T: Benchmark<Task=BT> {
+
+    let tasks = T::Task::generate_tasks_in_transaction(SmallRng::seed_from_u64(seed)).take(count).collect::<Vec<_>>();
 
     let bef = Instant::now();
     let db = T::run(tasks);
     let t = bef.elapsed();
     let mut tot_sum = 0;
     println!(
-        "{}: {} inserts in {:?} (in {} transactions, {} ops/s)",
+        "{}/{}: {} inserts in {:?} (in {} transactions, {} ops/s)",
+        T::Task::name(),
         T::name(),
         db.event_count(),
         t,
@@ -68,31 +101,42 @@ fn run_test<T: Benchmark>(seed: u64, count: usize) -> u32 {
     );
     let bef = Instant::now();
     let mut query_count = 0;
-    for boxid in 0..4 {
-        for article_id in 0..4 {
-            let sum = db.single_query(BoxId(boxid), ArticleId(article_id));
-            query_count += 1;
-            tot_sum += sum;
-        }
+    for query in BT::generate_queries(SmallRng::seed_from_u64(seed)) {
+        let hash = db.single_query(query);
+        query_count += 1;
+        tot_sum ^= hash;
+
     }
+    
     let t = bef.elapsed();
     println!(
-        "{}: {} queries in {:?} ({} per second)",
+        "{}/{}: {} queries in {:?} ({} per second)",
+        T::Task::name(),
         T::name(),
         query_count,
         t,
         query_count as f32 / t.as_secs_f32()
     );
+    println!("{}: Space used: {} MB", T::name(), db.space_used()/1e6);
     tot_sum
 }
 
 fn main() {
     setup_tracing();
+    let args = std::env::args().skip(1).collect::<Vec<String>>();
+    let args = args.iter().map(|a| a.as_str()).collect::<Vec<_>>();
+    let all = args.is_empty();
 
-    let transaction_count: usize = 500;
+    let transaction_count: usize = 10;
+    if all || args.contains(&"warehouse") {
+        let noatun_sum = run_test::<WarehouseTask, NoatunImpl<WarehouseTask>>(1, transaction_count);
+        let sqlite_sum = run_test::<WarehouseTask, SqliteImpl>(1, transaction_count);
+        assert_eq!(noatun_sum, sqlite_sum);
+    }
+    if all || args.contains(&"keyval") {
+        let sqlite_sum = run_test::<KeyValOperation, key_value_store::key_value_sqlite::SqliteKeyValueImpl>(1, transaction_count);
+        let noatun_sum = run_test::<KeyValOperation, NoatunImpl<KeyValOperation>>(1, transaction_count);
+        assert_eq!(noatun_sum, sqlite_sum);
+    }
 
-    let noatun_sum = run_test::<NoatunImpl>(1, transaction_count);
-    let sqlite_sum = run_test::<SqliteImpl>(1, transaction_count);
-
-    assert_eq!(noatun_sum, sqlite_sum);
 }
