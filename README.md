@@ -140,7 +140,7 @@ impl Message for ExampleMessage {
 
         root.employees.insert(
             self.name.as_str(),
-            // We can't directly create `Employee` instances directly, but we can
+            // We can't directly create `Employee` instances, but we can
             // create `EmployeeNative` instances which are converted automatically by noatun.
             &EmployeeNative {
                 name: self.name.clone(),
