@@ -1,6 +1,8 @@
 //! This module contains the main user-facing database type: [`Database`].
 use crate::cutoff::{Acceptability, CutOffDuration, CutOffHashPos, CutOffTime};
-use crate::disk_abstraction::{InMemoryDisk, StandardDisk};
+use crate::disk_abstraction::InMemoryDisk;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::disk_abstraction::StandardDisk;
 use crate::projector::Projector;
 use crate::sequence_nr::SequenceNr;
 use crate::{
@@ -1109,6 +1111,7 @@ impl<MSG: Message + 'static> Database<MSG> {
     /// until needed.
     ///
     /// params - Can be anything. Will be provided at initialization time
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn create_new(
         path: impl AsRef<Path>,
         mode: OpenMode,
@@ -1407,6 +1410,7 @@ impl<MSG: Message + 'static> Database<MSG> {
         Ok(db)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn create(target: Target, settings: DatabaseSettings) -> Result<Database<MSG>> {
         let mut disk = StandardDisk;
 

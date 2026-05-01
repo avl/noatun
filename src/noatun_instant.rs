@@ -4,8 +4,10 @@ use std::time::Duration;
 
 #[cfg(feature = "tokio")]
 type Inner = tokio::time::Instant;
-#[cfg(not(feature = "tokio"))]
+#[cfg(all(not(feature = "tokio"), not(target_arch = "wasm32")))]
 type Inner = std::time::Instant;
+#[cfg(all(not(feature = "tokio"), target_arch = "wasm32"))]
+type Inner = web_time::Instant;
 
 /// Noatun Instant.
 ///
@@ -20,6 +22,7 @@ impl Debug for Instant {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<std::time::Instant> for Instant {
     fn from(value: std::time::Instant) -> Self {
         #[cfg(feature = "tokio")]

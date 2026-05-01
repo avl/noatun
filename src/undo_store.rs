@@ -4,6 +4,7 @@ use crate::sequence_nr::SequenceNr;
 use crate::{bytes_of, read_unaligned, Target};
 use anyhow::Result;
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
+#[cfg(not(target_arch = "wasm32"))]
 use std::arch::asm;
 use std::io::{Seek, SeekFrom, Write};
 
@@ -75,12 +76,17 @@ pub enum HowToProceed {
 pub(crate) unsafe fn magic_initialize_ptr<T>(data_ptr: *mut T) {
     // Safety: Executing a 'nop' instruction is expected to be safe on
     // all architectures.
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         asm!(
         "nop",
         "/* magic {0} */",
             in(reg) data_ptr
         )
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::hint::black_box(data_ptr);
     }
 }
 

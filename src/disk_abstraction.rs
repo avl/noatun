@@ -174,6 +174,7 @@ impl Drop for InMemoryGrowableFileMappingData {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Disk for StandardDisk {
     fn open_file(
         &mut self,

@@ -1,3 +1,4 @@
+#[cfg(not(target_arch = "wasm32"))]
 use crate::platform_specific::FileMapping;
 use crate::{from_bytes, from_bytes_mut, NoatunStorable, Target};
 use anyhow::{bail, Context, Result};
@@ -364,6 +365,7 @@ impl FileAccessor {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn new(
         target: &Target,
         file: &str,

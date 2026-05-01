@@ -1,7 +1,11 @@
+#[cfg(not(target_arch = "wasm32"))]
 use crate::platform_specific::get_boot_time;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::sha2_helper::sha2;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 
+#[cfg(not(target_arch = "wasm32"))]
 static BOOT_CHECKSUM: OnceLock<[u8; 16]> = OnceLock::new();
 
 /// Returns a unique identifier that identifies this current boot.
@@ -10,8 +14,15 @@ static BOOT_CHECKSUM: OnceLock<[u8; 16]> = OnceLock::new();
 ///
 /// We use this to determine if unflushed memory mapped data might have been lost
 pub(crate) fn get_boot_checksum() -> [u8; 16] {
-    *BOOT_CHECKSUM.get_or_init(|| {
-        let boot_time = get_boot_time();
-        sha2(boot_time.as_bytes())
-    })
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        *BOOT_CHECKSUM.get_or_init(|| {
+            let boot_time = get_boot_time();
+            sha2(boot_time.as_bytes())
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        [0u8; 16]
+    }
 }

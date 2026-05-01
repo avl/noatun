@@ -9,6 +9,14 @@ compile_error!("noatun does not currently support windows");
 #[cfg(target_os = "macos")]
 compile_error!("noatun does not currently support macos");
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn get_boot_time() -> String {
+    String::new()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) struct FileMapping;
+
 #[cfg(unix)]
 mod unix {
     use crate::disk_access::FileBackend;

@@ -765,6 +765,7 @@ unsafe impl NoatunStorable for MessageId {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const _ASSURE_SUPPORTED_USIZE: () = const {
     if size_of::<usize>() != 8 {
         panic!("noatun currently only supports 64 bit platforms with 64 bit usize");
