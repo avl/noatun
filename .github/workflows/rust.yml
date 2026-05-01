@@ -20,7 +20,7 @@ jobs:
     - name: Install rust
       run: rustup toolchain install stable && rustup toolchain install 1.87
     - name: Install nextest
-      run: cargo install cargo-nextest
+      run: cargo install --locked cargo-nextest
     - name: Run bench
       run: cd db_bench && cargo +stable run --release
     - name: Build examples
