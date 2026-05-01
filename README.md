@@ -18,8 +18,16 @@ Noatun might be a good choice if:
  * You need "offline first", multi-master semantics
  * You need very fast query performance
  * Your system is well modeled using an "event sourcing" approach
- * Events interact in complex ways 
+ * Events interact in complex ways
 
+## When not to use Noatun
+
+Noatun might be a bad fit when:
+
+ * You don't need replication
+ * You need to store large amounts of data with minimal on-disk overhead
+ * Your active data set does not fit in RAM
+ 
 ## How using Noatun works
 
  * Define your messages
@@ -49,7 +57,8 @@ Noatun might be a good choice if:
 ## Benchmark
 
 See "db_bench"-subfolder for more information. As always, do your own benchmarking, your mileage
-may vary. This benchmark compares Noatun with sqlite. Suggestions for other products to benchmark
+may vary. This benchmark compares Noatun with sqlite. Note that sqlite is a different class of product, 
+without the multi-master replication features of noatun. Suggestions for other products to benchmark
 against are welcome!
 
 _Writes_:
@@ -87,7 +96,7 @@ use noatun::{noatun_object, Database, Message, MessageId, Object, SavefileMessag
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
-// Define our database 
+// Define our database schema
 noatun_object!(
     struct ExampleDb {
         pod total_salary_cost: u32,
@@ -95,7 +104,11 @@ noatun_object!(
     }
 );
 
-// Define the Employee type used in the database
+// Define the Employee type used in the database schema
+//
+// This generates the Employee type used internally in the database, as well as an
+// external type called EmployeeNative, that is a regular rust struct that can be used
+// as a vessel for importing and exporting data from the database.
 noatun_object!(
     #[derive(PartialEq)]
     struct Employee {
@@ -118,6 +131,8 @@ impl Message for ExampleMessage {
 
     // Define a rule for applying the message to the database
     fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
+        // The `noatun_object!` macro generates a 'pin_project' method that
+        // gives safe pinned access to all the fields of the object. 
         let root = root.pin_project();
 
         let new_total_salary = root.total_salary_cost.export() + self.salary;
@@ -125,6 +140,8 @@ impl Message for ExampleMessage {
 
         root.employees.insert(
             self.name.as_str(),
+            // We can't directly create `Employee` instances directly, but we can
+            // create `EmployeeNative` instances which are converted automatically by noatun.
             &EmployeeNative {
                 name: self.name.clone(),
                 salary: self.salary,

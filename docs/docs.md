@@ -148,18 +148,18 @@ impl Message for WarehouseEvent {
 /// other reachable noatun nodes.
 async fn example() {
     
-    /// Create the database on disk
-    /// Note, this example creates a purely local database. See further examples
-    /// for how to setup synchronization.
+    // Create the database on disk
+    // Note, this example creates a purely local database. See further examples
+    // for how to setup synchronization.
     let mut db: Database<WarehouseEvent> = Database::create_new(
         "warehouse_db",
         OpenMode::OpenCreate,
         DatabaseSettings::default(),
     ).unwrap();
 
-    /// Arrange for the database to be distributed
-    /// We use a standard UDP driver here, but anything implementing the trait
-    /// [`noatun::CommunicationDriver`] can be used.
+    // Arrange for the database to be distributed
+    // We use a standard UDP driver here, but anything implementing the trait
+    // [`noatun::CommunicationDriver`] can be used.
     let distributed_db = DatabaseCommunication::new_custom(
         &mut TokioUdpDriver, 
         db,

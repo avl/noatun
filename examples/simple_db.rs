@@ -6,6 +6,7 @@ use noatun::{noatun_object, Database, Message, MessageId, Object, SavefileMessag
 use savefile_derive::Savefile;
 use std::pin::Pin;
 
+// Define the Employee type used in the database
 noatun_object!(
     #[derive(PartialEq)]
     struct Employee {
@@ -14,6 +15,7 @@ noatun_object!(
     }
 );
 
+// Define our database
 noatun_object!(
     struct ExampleDb {
         pod total_salary_cost: u32,
@@ -21,6 +23,7 @@ noatun_object!(
     }
 );
 
+// Define our event (in real projects, this would usually be an enum)
 #[derive(Savefile, Debug)]
 pub struct ExampleMessage {
     name: String,
@@ -31,6 +34,7 @@ impl Message for ExampleMessage {
     type Root = ExampleDb;
     type Serializer = SavefileMessageSerializer<Self>;
 
+    // Define a rule for applying the message to the database
     fn apply(&self, _time: MessageId, root: Pin<&mut Self::Root>) {
         let root = root.pin_project();
 
@@ -48,6 +52,7 @@ impl Message for ExampleMessage {
 }
 
 fn main() -> Result<()> {
+    // Create a new database
     let mut db: Database<ExampleMessage> = Database::create_new(
         "test/example1.bin",
         OpenMode::Overwrite,
@@ -55,6 +60,7 @@ fn main() -> Result<()> {
     )
     .unwrap();
 
+    // Add some messages
     let mut s = db.begin_session_mut()?;
     s.append_local(ExampleMessage {
         name: "Andersen".to_string(),
@@ -68,11 +74,14 @@ fn main() -> Result<()> {
 
     let s = db.begin_session()?;
     let mut employees: Vec<_> = s.with_root(|root| {
+        // Verify total salary is the expected value
         assert_eq!(root.total_salary_cost.get(), 45);
+        // Extract the list of employees
         root.employees.export().values().cloned().collect()
     });
 
     employees.sort_by_key(|emp| emp.name.clone());
+    // Verify the database contains the employees we expect
     assert_eq!(
         employees,
         vec![

@@ -1,12 +1,16 @@
 [package]
 name = "noatun"
-version = "0.2.0"
+version = "0.1.2"
 edition = "2021"
 resolver = "2"
 rust-version = "1.87"
 repository = "https://github.com/avl/noatun"
 license = "MIT"
 description = "Noatun is an in-process, distributed database with materialized view support."
+keywords = ["database", "distributed", "event-sourcing", "replication", "crdt"]
+categories = ["database", "network-programming", "data-structures"]
+homepage = "https://github.com/avl/noatun"
+
 
 [[bench]]
 name = "meta"
