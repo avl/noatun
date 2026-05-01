@@ -2074,7 +2074,7 @@ mod meta_tests {
             Some(ProbeRunResult::FoundUnoccupied(BucketNr(13 + 32), needle))
         );
         assert_eq!(first_deleted, Some(BucketNr(34)));
-        assert_eq!(found, vec![]);
+        assert_eq!(found, vec![0usize; 0]);
     }
 
     #[test]

@@ -3327,7 +3327,7 @@ mod tests {
             temp
         }
 
-        assert_eq!(dedup(&[]), &[]);
+        assert_eq!(dedup(&[]), vec![0u32; 0]);
         assert_eq!(dedup(&[1]), &[1]);
         assert_eq!(dedup(&[1, 2]), &[1, 2]);
         assert_eq!(dedup(&[1, 1]), &[1]);

@@ -1712,7 +1712,7 @@ impl DatabaseContextData {
         let mut info = unsafe { uses.get_mut(self, seq.index()) };
         info.increase_use(self, wrote_non_opaque);
         trace!(
-            "increased use of {:?} to {} (tainted:{}, cur: {})",
+            "increased use of {:?} to {} (tainted:{}, cur: {})", //
             seq,
             info.get_use(),
             info.overwriter_tainted(),
@@ -1733,7 +1733,7 @@ impl DatabaseContextData {
         let mut cur = unsafe { uses.get_mut(self, tracker.owner.index()) };
         let cur_use = cur.get_use();
         if cur_use == 0 {
-            println!("Corrupt use count for sequence nr {tracker:?}, use = {cur_use}");
+            println!("Corrupt use count for sequence nr {tracker:?}, use = {cur_use}"); //
             std::process::abort();
         }
 
@@ -1744,7 +1744,7 @@ impl DatabaseContextData {
                 .decrease_use(self, overwriter_tainted)
         };
         trace!(
-            "decreased use of {:?} is {} (taint:{}) (because overwriter: {:?}(tainted:{}))",
+            "decreased use of {:?} is {} (taint:{}) (because overwriter: {:?}(tainted:{}))", //
             tracker,
             cur.get_use(),
             cur.overwriter_tainted(),
@@ -1754,7 +1754,7 @@ impl DatabaseContextData {
         if cur.get_use() == 0 {
             // This is the normal way messages end up in 'unused_messages'
             trace!(
-                "Adding {:?} as unused (overwriter.tainted: {}, tracker owner tainted: {}, cur tombstone: {})",
+                "Adding {:?} as unused (overwriter.tainted: {}, tracker owner tainted: {}, cur tombstone: {})",//
                 tracker,
                 overwriter_tainted,
                 cur.overwriter_tainted(),

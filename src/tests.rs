@@ -154,16 +154,25 @@ pub fn setup_tracing() {
             write!(w, "{:>10?}", (t - self.0))
         }
     }
-
-    let stdout_log = tracing_subscriber::fmt::layer()
-        .with_timer(TracingTimer(Instant::now()))
-        .with_ansi(true)
-        .pretty()
-        .with_filter(tracing_subscriber::EnvFilter::from_default_env());
-
     use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-    let subscriber = tracing_subscriber::registry().with(stdout_log);
-    _ = tracing::subscriber::set_global_default(subscriber);
+    if std::env::var("RUST_LOG_JSON").is_ok() {
+        let stdout_log = tracing_subscriber::fmt::layer()
+            .with_timer(TracingTimer(Instant::now()))
+            .with_ansi(false)
+            .json()
+            .with_filter(tracing_subscriber::EnvFilter::from_default_env());
+
+        let subscriber = tracing_subscriber::registry().with(stdout_log);
+        _ = tracing::subscriber::set_global_default(subscriber);
+    } else {
+        let stdout_log = tracing_subscriber::fmt::layer()
+            .with_timer(TracingTimer(Instant::now()))
+            .with_ansi(false)
+            .with_filter(tracing_subscriber::EnvFilter::from_default_env());
+
+        let subscriber = tracing_subscriber::registry().with(stdout_log);
+        _ = tracing::subscriber::set_global_default(subscriber);
+    }
     info!("Tracing enabled");
 }
 
