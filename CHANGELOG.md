@@ -1,5 +1,8 @@
 # Changelog
 
+## [0.1.3]
+Fix CI misconfig and code formatting
+
 ## [0.1.2]
 
 Rudimentary wasm-support (mostly useful for demos, no persistence supported).
